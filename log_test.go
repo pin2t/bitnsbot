@@ -12,11 +12,11 @@ func TestMessageLogging(t *testing.T) {
 		w.Write([]byte(`{"ok":true,"result":true}`))
 	}))
 	defer server.Close()
-	bot := NewBot("TESTTOKEN", server.URL)
+	bot := newBot("TESTTOKEN", server.URL)
 	var buf bytes.Buffer
 	log.SetOutput(&buf)
 	defer log.SetOutput(nil)
-	handleUpdate(bot, Update{Message: &Message{
+	update(bot, Update{Message: &Message{
 		Chat: Chat{ID: 42},
 		From: &User{Username: "alice"},
 		Text: "/start",
@@ -25,7 +25,7 @@ func TestMessageLogging(t *testing.T) {
 		t.Fatalf("expected log line for username case, got: %q", buf.String())
 	}
 	buf.Reset()
-	handleUpdate(bot, Update{Message: &Message{
+	update(bot, Update{Message: &Message{
 		Chat: Chat{ID: 7},
 		From: &User{FirstName: "Bob"},
 		Text: "hi",
@@ -34,7 +34,7 @@ func TestMessageLogging(t *testing.T) {
 		t.Fatalf("expected log line for first-name fallback, got: %q", buf.String())
 	}
 	buf.Reset()
-	handleUpdate(bot, Update{Message: &Message{Chat: Chat{ID: 9}, Text: "anon"}})
+	update(bot, Update{Message: &Message{Chat: Chat{ID: 9}, Text: "anon"}})
 	if !strings.Contains(buf.String(), "message from unknown (chat 9): anon") {
 		t.Fatalf("expected log line for nil From, got: %q", buf.String())
 	}
