@@ -97,16 +97,20 @@ func update(bot *bot, update Update) {
 	case "/start":
 		sendReply(bot, msg.Chat.ID, "Hello! I'm bitnsbot. I'll notify you about Bitcoin network events.")
 	case "/info":
-		handleInfo(bot, msg.Chat.ID, arg)
+		info(bot, msg.Chat.ID, arg)
 	case "/watch":
 		watch(bot, msg.Chat.ID, arg)
 	case "":
-		if takePendingInfo(msg.Chat.ID) {
-			handleInfo(bot, msg.Chat.ID, msg.Text)
+		pendingInfoMu.Lock()
+		var pending = pendingInfoChats[msg.Chat.ID]
+		delete(pendingInfoChats, msg.Chat.ID)
+		pendingInfoMu.Unlock()
+		if pending {
+			info(bot, msg.Chat.ID, msg.Text)
 			return
 		}
 		pendingWatchMu.Lock()
-		var pending = pendingWatchChats[msg.Chat.ID]
+		pending = pendingWatchChats[msg.Chat.ID]
 		delete(pendingWatchChats, msg.Chat.ID)
 		pendingWatchMu.Unlock()
 		if pending {
@@ -138,36 +142,18 @@ func parseCommand(text string) (command, arg string) {
 	return command, arg
 }
 
-func handleInfo(bot *bot, chatID int64, arg string) {
+func info(bot *bot, chatID int64, arg string) {
 	if arg == "" {
-		setPendingInfo(chatID)
+		pendingInfoMu.Lock()
+		pendingInfoChats[chatID] = true
+		pendingInfoMu.Unlock()
 		sendReply(bot, chatID, "Please send the info text in a separate message.")
 		return
 	}
-	clearPendingInfo(chatID)
+	pendingInfoMu.Lock()
+	delete(pendingInfoChats, chatID)
+	pendingInfoMu.Unlock()
 	sendReply(bot, chatID, "Info: "+arg)
-}
-
-func setPendingInfo(chatID int64) {
-	pendingInfoMu.Lock()
-	pendingInfoChats[chatID] = true
-	pendingInfoMu.Unlock()
-}
-
-func takePendingInfo(chatID int64) bool {
-	pendingInfoMu.Lock()
-	defer pendingInfoMu.Unlock()
-	if !pendingInfoChats[chatID] {
-		return false
-	}
-	delete(pendingInfoChats, chatID)
-	return true
-}
-
-func clearPendingInfo(chatID int64) {
-	pendingInfoMu.Lock()
-	delete(pendingInfoChats, chatID)
-	pendingInfoMu.Unlock()
 }
 
 var pendingWatchMu sync.Mutex

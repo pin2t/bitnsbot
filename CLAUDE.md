@@ -44,7 +44,7 @@ Commands that take a free-text argument (`/info`, `/watch`) share one shape: cal
 
 Pending state is tracked per command with its own package-level `sync.Mutex` + `map[int64]bool` (`pendingInfoMu`/`pendingInfoChats` and `pendingWatchMu`/`pendingWatchChats`) — there is no shared/generic pending mechanism, and that's intentional: an earlier pass had the opportunity to unify this and deliberately kept it duplicated per command. Follow that precedent for any new argument-taking command rather than generalizing.
 
-Note the two existing commands aren't even implemented at the same level of indirection as each other: `/info`'s pending logic is wrapped in named functions (`setPendingInfo`, `takePendingInfo`, `clearPendingInfo`), while `/watch`'s equivalent logic is inlined directly into `watch()` and `update()` (no wrapper functions at all). This asymmetry is the result of deliberate incremental simplification, not an oversight — match whichever neighboring pattern you're extending, don't "fix" the inconsistency by making them match.
+Both commands are implemented the same way, one-word handler names (`info`, `watch`) with no wrapper functions around their pending-state maps: the lock/set-or-delete/unlock logic is inlined directly into `info()`/`watch()` (setting pending) and into `update()`'s `case ""` (checking and clearing pending). There was an earlier pass where `/info` kept named helper functions (`setPendingInfo`, `takePendingInfo`, `clearPendingInfo`) while `/watch` was already inlined — that asymmetry was deliberately removed by request, so treat the current inlined-everywhere shape as the pattern to extend, not something to re-wrap in helpers.
 
 ## Style conventions specific to this repo
 
