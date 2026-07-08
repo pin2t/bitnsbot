@@ -2,6 +2,7 @@ package main
 
 import "context"
 import "crypto/subtle"
+import "encoding/hex"
 import "encoding/json"
 import "flag"
 import "fmt"
@@ -18,6 +19,9 @@ var webhookURL   = flag.String("webhook-url", "", "URL the Bot API server should
 var apiBaseURL   = flag.String("api-base-url", "http://localhost:8081", "base URL of the local telegram-bot-api server")
 var secretToken  = flag.String("secret-token", "", "optional secret checked against the X-Telegram-Bot-Api-Secret-Token header")
 var registerHook = flag.Bool("register-webhook", true, "call setWebhook on startup")
+var dbPath       = flag.String("db", "watches.db", "path to the bbolt watches database")
+
+var store *watchStore
 
 func main() {
 	flag.Usage = func() {
@@ -30,6 +34,12 @@ func main() {
 		log.Fatal("TELEGRAM_BOT_TOKEN environment variable must be set")
 	}
 	var bot = newBot(token, *apiBaseURL)
+	var err error
+	store, err = openWatchStore(*dbPath)
+	if err != nil {
+		log.Fatal("open watches database: ", err)
+	}
+	defer store.close()
 	if *registerHook {
 		if *webhookURL == "" {
 			log.Fatal("-webhook-url is required when -register-webhook=true")
@@ -44,7 +54,7 @@ func main() {
 	}
 	http.HandleFunc(*webhookPath, webhookHandler(bot))
 	fmt.Println("Listening", *listenAddr, "...")
-	var err = http.ListenAndServe(*listenAddr, nil)
+	err = http.ListenAndServe(*listenAddr, nil)
 	if err != nil {
 		log.Fatal("error listening: ", err)
 	}
@@ -88,9 +98,19 @@ func update(bot *bot, update Update) {
 		sendReply(bot, msg.Chat.ID, "Hello! I'm bitnsbot. I'll notify you about Bitcoin network events.")
 	case "/info":
 		handleInfo(bot, msg.Chat.ID, arg)
+	case "/watch":
+		watch(bot, msg.Chat.ID, arg)
 	case "":
 		if takePendingInfo(msg.Chat.ID) {
 			handleInfo(bot, msg.Chat.ID, msg.Text)
+			return
+		}
+		pendingWatchMu.Lock()
+		var pending = pendingWatchChats[msg.Chat.ID]
+		delete(pendingWatchChats, msg.Chat.ID)
+		pendingWatchMu.Unlock()
+		if pending {
+			watch(bot, msg.Chat.ID, msg.Text)
 		}
 	}
 }
@@ -148,6 +168,32 @@ func clearPendingInfo(chatID int64) {
 	pendingInfoMu.Lock()
 	delete(pendingInfoChats, chatID)
 	pendingInfoMu.Unlock()
+}
+
+var pendingWatchMu sync.Mutex
+var pendingWatchChats = make(map[int64]bool)
+
+func watch(bot *bot, chatID int64, arg string) {
+	if arg == "" {
+		pendingWatchMu.Lock()
+		pendingWatchChats[chatID] = true
+		pendingWatchMu.Unlock()
+		sendReply(bot, chatID, "Please send what you'd like to watch in a separate message.")
+		return
+	}
+	pendingWatchMu.Lock()
+	delete(pendingWatchChats, chatID)
+	pendingWatchMu.Unlock()
+	var typ = watchTypeAddress
+	if _, err := hex.DecodeString(arg); len(arg) == 64 && err == nil {
+		typ = watchTypeTransaction
+	}
+	if err := store.add(chatID, typ, arg); err != nil {
+		log.Println("add watch:", err)
+		sendReply(bot, chatID, "Sorry, something went wrong saving that watch.")
+		return
+	}
+	sendReply(bot, chatID, "Watching "+string(typ)+": "+arg)
 }
 
 func sendReply(bot *bot, chatID int64, text string) {
