@@ -6,9 +6,12 @@ import "encoding/hex"
 import "encoding/json"
 import "flag"
 import "fmt"
+import "html"
 import "log"
+import "math"
 import "net/http"
 import "os"
+import "strconv"
 import "strings"
 import "sync"
 import "time"
@@ -164,6 +167,14 @@ func logMessage(msg *Message) {
     log.Printf("message from %s (chat %d): %s", from, msg.Chat.ID, msg.Text)
 }
 
+func isTxid(s string) bool {
+    if len(s) != 64 {
+        return false
+    }
+    var _, err = hex.DecodeString(s)
+    return err == nil
+}
+
 func parseCommand(text string) (command, arg string) {
     var fields = strings.SplitN(strings.TrimSpace(text), " ", 2)
     if !strings.HasPrefix(fields[0], "/") {
@@ -174,6 +185,36 @@ func parseCommand(text string) (command, arg string) {
         arg = strings.TrimSpace(fields[1])
     }
     return command, arg
+}
+
+func ago(n int, unit string) string {
+    if n == 1 { return "1 " + unit + " ago" }
+    return fmt.Sprintf("%d %ss ago", n, unit)
+}
+
+func when(unix int64) string {
+    var t = time.Unix(unix, 0)
+    if t.After(time.Now().AddDate(0, -3, 0)) {
+        var since = time.Since(t)
+        switch {
+        case since < time.Minute:
+            return "just now"
+        case since < time.Hour:
+            return ago(int(since.Minutes()), "minute")
+        case since < 24*time.Hour:
+            return ago(int(since.Hours()), "hour")
+        case since < 31*24*time.Hour:
+            return ago(int(since.Hours()/24), "day")
+        default:
+            return ago(int(since.Hours()/24/30), "month")
+        }
+    }
+    return strings.ToLower(t.UTC().Format("2 January 2006 15:04"))
+}
+
+func short(s string) string {
+    if len(s) <= 15 { return s }
+    return s[:6] + "..." + s[len(s)-6:]
 }
 
 func info(bot *bot, chatID int64, arg string) {
@@ -187,7 +228,95 @@ func info(bot *bot, chatID int64, arg string) {
     pendingInfoMu.Lock()
     delete(pendingInfoChats, chatID)
     pendingInfoMu.Unlock()
-    sendReply(bot, chatID, "Info: "+arg)
+    if btcd == nil {
+        sendReply(bot, chatID, "Bitcoin node connection is not configured.")
+        return
+    }
+    var ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
+    defer cancel()
+    if isTxid(arg) {
+        transaction(ctx, bot, chatID, arg)
+        return
+    }
+    if height, err := strconv.ParseInt(arg, 10, 64); err == nil && height >= 0 {
+        block(ctx, bot, chatID, height)
+        return
+    }
+    address(ctx, bot, chatID, arg)
+}
+
+func transaction(ctx context.Context, bot *bot, chatID int64, txid string) {
+    var tx, err = btcd.getRawTransaction(ctx, txid)
+    if err != nil {
+        sendReply(bot, chatID, "Couldn't find transaction "+short(txid)+".")
+        return
+    }
+    var total float64
+    for _, vout := range tx.Vout {
+        total += vout.Value
+    }
+    var amount = strconv.FormatInt(int64(math.Round(total*1e8)), 10)
+    for i := len(amount) - 3; i > 0; i -= 3 {
+        amount = amount[:i] + " " + amount[i:]
+    }
+    if tx.Confirmations == 0 {
+        sendReply(bot, chatID, fmt.Sprintf("Transaction %s\n\n<pre>Status: unconfirmed (in mempool)\nAmount: %s satoshi</pre>", short(tx.Txid), amount))
+        return
+    }
+    sendReply(bot, chatID, fmt.Sprintf(
+        "Transaction %s\n\n<pre>Status: confirmed (%d confirmations)\nBlock:  %s\nTime:   %s\nAmount: %s satoshi</pre>",
+        short(tx.Txid), tx.Confirmations, short(tx.BlockHash), when(tx.Time), amount,
+    ))
+}
+
+func block(ctx context.Context, bot *bot, chatID int64, height int64) {
+    var hash, err = btcd.getBlockHash(ctx, height)
+    if err != nil {
+        sendReply(bot, chatID, fmt.Sprintf("Couldn't find block %d.", height))
+        return
+    }
+    var header, headerErr = btcd.getBlockHeader(ctx, hash)
+    if headerErr != nil {
+        log.Println("get block header:", headerErr)
+        sendReply(bot, chatID, "Sorry, something went wrong fetching that block.")
+        return
+    }
+    var difficulty = header.Difficulty
+    var unit = ""
+    for _, u := range []string{" k", " M", " G", " T", " P", " E"} {
+        if difficulty < 1000 { break }
+        difficulty /= 1000
+        unit = u
+    }
+    var diff = strings.TrimRight(strings.TrimRight(strconv.FormatFloat(difficulty, 'f', 2, 64), "0"), ".") + unit
+    sendReply(bot, chatID, fmt.Sprintf(
+        "Block #%d\n\n<pre>Hash:          %s\nTime:          %s\nConfirmations: %d\nDifficulty:    %s</pre>",
+        header.Height, short(header.Hash), when(header.Time), header.Confirmations, diff,
+    ))
+}
+
+func address(ctx context.Context, bot *bot, chatID int64, addr string) {
+    var addrInfo, err = btcd.validateAddress(ctx, addr)
+    if err != nil {
+        log.Println("validate address:", err)
+        sendReply(bot, chatID, "Sorry, something went wrong looking up that address.")
+        return
+    }
+    if !addrInfo.IsValid {
+        sendReply(bot, chatID, html.EscapeString(addr)+" doesn't look like a valid Bitcoin address.")
+        return
+    }
+    var addrType = "standard (P2PKH)"
+    if addrInfo.IsWitness {
+        addrType = "segwit (bech32)"
+    } else if addrInfo.IsScript {
+        addrType = "script hash (P2SH)"
+    }
+    var activity = "unavailable (address index not enabled)"
+    if txs, txErr := btcd.searchRawTransactions(ctx, addr, 10); txErr == nil {
+        activity = fmt.Sprintf("%d transaction(s) found", len(txs))
+    }
+    sendReply(bot, chatID, fmt.Sprintf("Address %s\n\n<pre>Type:            %s\nRecent activity: %s</pre>", short(addr), addrType, activity))
 }
 
 var pendingWatchMu sync.Mutex
@@ -205,7 +334,7 @@ func watch(bot *bot, chatID int64, arg string) {
     delete(pendingWatchChats, chatID)
     pendingWatchMu.Unlock()
     var typ = watchTypeAddress
-    if _, err := hex.DecodeString(arg); len(arg) == 64 && err == nil {
+    if isTxid(arg) {
         typ = watchTypeTransaction
     }
     if err := store.add(chatID, typ, arg); err != nil {
@@ -213,7 +342,7 @@ func watch(bot *bot, chatID int64, arg string) {
         sendReply(bot, chatID, "Sorry, something went wrong saving that watch.")
         return
     }
-    sendReply(bot, chatID, "Watching "+string(typ)+": "+arg)
+    sendReply(bot, chatID, "Watching "+string(typ)+": "+html.EscapeString(arg))
 }
 
 func sendReply(bot *bot, chatID int64, text string) {

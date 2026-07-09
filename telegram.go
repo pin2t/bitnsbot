@@ -73,7 +73,7 @@ func (b *bot) call(ctx context.Context, method string, payload any) (json.RawMes
 }
 
 func (b *bot) send(ctx context.Context, chatID int64, text string) error {
-    var _, err = b.call(ctx, "sendMessage", map[string]any{"chat_id": chatID, "text": text})
+    var _, err = b.call(ctx, "sendMessage", map[string]any{"chat_id": chatID, "text": text, "parse_mode": "HTML"})
     return err
 }
 
