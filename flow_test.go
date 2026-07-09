@@ -103,11 +103,9 @@ func TestInfoFlow(t *testing.T) {
     btcd = dialFakeBtcd(t, btcdServer, &recordingHandler{})
     defer btcd.close()
     update(bot, Update{Message: &Message{Chat: Chat{ID: 5}, Text: "/info 100"}})
-    if len(sent) != 4 || !strings.Contains(sent[3], "Block #100") || !strings.Contains(sent[3], "Time: 14 november 2023 22:13") {
+    var wantBlock = "Block #100\n\nHash:          000000...ckhash\nTime:          14 november 2023 22:13\nConfirmations: 10\nDifficulty:    1.50"
+    if len(sent) != 4 || sent[3] != wantBlock {
         t.Fatalf("unexpected block reply: %#v", sent)
-    }
-    if !strings.Contains(sent[3], "Hash: 000000...ckhash") {
-        t.Fatalf("expected shortened block hash, got: %#v", sent[3])
     }
     var txid = "f21b47a9143a23e80cc59e81588d21558b394005580b285961957cb3bed5b3e0"
     update(bot, Update{Message: &Message{Chat: Chat{ID: 6}, Text: "/info " + txid}})
@@ -116,7 +114,8 @@ func TestInfoFlow(t *testing.T) {
         t.Fatalf("unexpected transaction reply: %#v", sent)
     }
     update(bot, Update{Message: &Message{Chat: Chat{ID: 7}, Text: "/info 1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"}})
-    if len(sent) != 6 || !strings.Contains(sent[5], "Address 1A1zP1...DivfNa") || !strings.Contains(sent[5], "unavailable") {
+    var wantAddr = "Address 1A1zP1...DivfNa\n\nType:            standard (P2PKH)\nRecent activity: unavailable (address index not enabled)"
+    if len(sent) != 6 || sent[5] != wantAddr {
         t.Fatalf("unexpected address (no history) reply: %#v", sent)
     }
     update(bot, Update{Message: &Message{Chat: Chat{ID: 8}, Text: "/info addresswithhistory"}})
@@ -132,7 +131,7 @@ func TestInfoFlow(t *testing.T) {
         t.Fatalf("expected relative time format for recent transaction, got: %#v", sent)
     }
     update(bot, Update{Message: &Message{Chat: Chat{ID: 11}, Text: "/info 200"}})
-    if len(sent) != 10 || !strings.Contains(sent[9], "Block #200") || !strings.Contains(sent[9], "Time: 2 days ago") {
+    if len(sent) != 10 || !strings.Contains(sent[9], "Block #200") || !strings.Contains(sent[9], "Time:          2 days ago") {
         t.Fatalf("expected relative time format for recent block, got: %#v", sent)
     }
 }

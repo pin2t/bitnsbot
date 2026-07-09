@@ -281,7 +281,7 @@ func block(ctx context.Context, bot *bot, chatID int64, height int64) {
         return
     }
     sendReply(bot, chatID, fmt.Sprintf(
-        "Block #%d\nHash: %s\nTime: %s\nConfirmations: %d\nDifficulty: %.2f",
+        "Block #%d\n\nHash:          %s\nTime:          %s\nConfirmations: %d\nDifficulty:    %.2f",
         header.Height, short(header.Hash), when(header.Time), header.Confirmations, header.Difficulty,
     ))
 }
@@ -307,7 +307,7 @@ func address(ctx context.Context, bot *bot, chatID int64, addr string) {
     if txs, txErr := btcd.searchRawTransactions(ctx, addr, 10); txErr == nil {
         activity = fmt.Sprintf("%d transaction(s) found", len(txs))
     }
-    sendReply(bot, chatID, fmt.Sprintf("Address %s\nType: %s\nRecent activity: %s", short(addr), addrType, activity))
+    sendReply(bot, chatID, fmt.Sprintf("Address %s\n\nType:            %s\nRecent activity: %s", short(addr), addrType, activity))
 }
 
 var pendingWatchMu sync.Mutex
