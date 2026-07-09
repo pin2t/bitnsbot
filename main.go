@@ -6,6 +6,7 @@ import "encoding/hex"
 import "encoding/json"
 import "flag"
 import "fmt"
+import "html"
 import "log"
 import "math"
 import "net/http"
@@ -259,11 +260,11 @@ func transaction(ctx context.Context, bot *bot, chatID int64, txid string) {
         amount = amount[:i] + " " + amount[i:]
     }
     if tx.Confirmations == 0 {
-        sendReply(bot, chatID, fmt.Sprintf("Transaction %s\n\nStatus: unconfirmed (in mempool)\nAmount: %s satoshi", short(tx.Txid), amount))
+        sendReply(bot, chatID, fmt.Sprintf("Transaction %s\n\n<pre>Status: unconfirmed (in mempool)\nAmount: %s satoshi</pre>", short(tx.Txid), amount))
         return
     }
     sendReply(bot, chatID, fmt.Sprintf(
-        "Transaction %s\n\nStatus: confirmed (%d confirmations)\nBlock:  %s\nTime:   %s\nAmount: %s satoshi",
+        "Transaction %s\n\n<pre>Status: confirmed (%d confirmations)\nBlock:  %s\nTime:   %s\nAmount: %s satoshi</pre>",
         short(tx.Txid), tx.Confirmations, short(tx.BlockHash), when(tx.Time), amount,
     ))
 }
@@ -281,7 +282,7 @@ func block(ctx context.Context, bot *bot, chatID int64, height int64) {
         return
     }
     sendReply(bot, chatID, fmt.Sprintf(
-        "Block #%d\n\nHash:          %s\nTime:          %s\nConfirmations: %d\nDifficulty:    %.2f",
+        "Block #%d\n\n<pre>Hash:          %s\nTime:          %s\nConfirmations: %d\nDifficulty:    %.2f</pre>",
         header.Height, short(header.Hash), when(header.Time), header.Confirmations, header.Difficulty,
     ))
 }
@@ -294,7 +295,7 @@ func address(ctx context.Context, bot *bot, chatID int64, addr string) {
         return
     }
     if !addrInfo.IsValid {
-        sendReply(bot, chatID, addr+" doesn't look like a valid Bitcoin address.")
+        sendReply(bot, chatID, html.EscapeString(addr)+" doesn't look like a valid Bitcoin address.")
         return
     }
     var addrType = "standard (P2PKH)"
@@ -307,7 +308,7 @@ func address(ctx context.Context, bot *bot, chatID int64, addr string) {
     if txs, txErr := btcd.searchRawTransactions(ctx, addr, 10); txErr == nil {
         activity = fmt.Sprintf("%d transaction(s) found", len(txs))
     }
-    sendReply(bot, chatID, fmt.Sprintf("Address %s\n\nType:            %s\nRecent activity: %s", short(addr), addrType, activity))
+    sendReply(bot, chatID, fmt.Sprintf("Address %s\n\n<pre>Type:            %s\nRecent activity: %s</pre>", short(addr), addrType, activity))
 }
 
 var pendingWatchMu sync.Mutex
@@ -333,7 +334,7 @@ func watch(bot *bot, chatID int64, arg string) {
         sendReply(bot, chatID, "Sorry, something went wrong saving that watch.")
         return
     }
-    sendReply(bot, chatID, "Watching "+string(typ)+": "+arg)
+    sendReply(bot, chatID, "Watching "+string(typ)+": "+html.EscapeString(arg))
 }
 
 func sendReply(bot *bot, chatID int64, text string) {

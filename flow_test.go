@@ -11,12 +11,15 @@ import "time"
 
 func TestInfoFlow(t *testing.T) {
     var sent []string
+    var lastMode string
     server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
         var body struct {
-            Text string `json:"text"`
+            Text      string `json:"text"`
+            ParseMode string `json:"parse_mode"`
         }
         json.NewDecoder(r.Body).Decode(&body)
         sent = append(sent, body.Text)
+        lastMode = body.ParseMode
         json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": true})
     }))
     defer server.Close()
@@ -103,18 +106,21 @@ func TestInfoFlow(t *testing.T) {
     btcd = dialFakeBtcd(t, btcdServer, &recordingHandler{})
     defer btcd.close()
     update(bot, Update{Message: &Message{Chat: Chat{ID: 5}, Text: "/info 100"}})
-    var wantBlock = "Block #100\n\nHash:          000000...ckhash\nTime:          14 november 2023 22:13\nConfirmations: 10\nDifficulty:    1.50"
+    var wantBlock = "Block #100\n\n<pre>Hash:          000000...ckhash\nTime:          14 november 2023 22:13\nConfirmations: 10\nDifficulty:    1.50</pre>"
     if len(sent) != 4 || sent[3] != wantBlock {
         t.Fatalf("unexpected block reply: %#v", sent)
     }
+    if lastMode != "HTML" {
+        t.Fatalf("expected HTML parse mode, got: %q", lastMode)
+    }
     var txid = "f21b47a9143a23e80cc59e81588d21558b394005580b285961957cb3bed5b3e0"
     update(bot, Update{Message: &Message{Chat: Chat{ID: 6}, Text: "/info " + txid}})
-    var wantTx = "Transaction f21b47...d5b3e0\n\nStatus: confirmed (6 confirmations)\nBlock:  000000...ckhash\nTime:   14 november 2023 22:13\nAmount: 150 000 000 satoshi"
+    var wantTx = "Transaction f21b47...d5b3e0\n\n<pre>Status: confirmed (6 confirmations)\nBlock:  000000...ckhash\nTime:   14 november 2023 22:13\nAmount: 150 000 000 satoshi</pre>"
     if len(sent) != 5 || sent[4] != wantTx {
         t.Fatalf("unexpected transaction reply: %#v", sent)
     }
     update(bot, Update{Message: &Message{Chat: Chat{ID: 7}, Text: "/info 1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"}})
-    var wantAddr = "Address 1A1zP1...DivfNa\n\nType:            standard (P2PKH)\nRecent activity: unavailable (address index not enabled)"
+    var wantAddr = "Address 1A1zP1...DivfNa\n\n<pre>Type:            standard (P2PKH)\nRecent activity: unavailable (address index not enabled)</pre>"
     if len(sent) != 6 || sent[5] != wantAddr {
         t.Fatalf("unexpected address (no history) reply: %#v", sent)
     }
