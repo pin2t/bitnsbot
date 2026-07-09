@@ -210,6 +210,11 @@ func when(unix int64) string {
     return strings.ToLower(t.UTC().Format("2 January 2006 15:04"))
 }
 
+func short(s string) string {
+    if len(s) <= 15 { return s }
+    return s[:6] + "..." + s[len(s)-6:]
+}
+
 func info(bot *bot, chatID int64, arg string) {
     if arg == "" {
         pendingInfoMu.Lock()
@@ -241,7 +246,7 @@ func info(bot *bot, chatID int64, arg string) {
 func transaction(ctx context.Context, bot *bot, chatID int64, txid string) {
     var tx, err = btcd.getRawTransaction(ctx, txid)
     if err != nil {
-        sendReply(bot, chatID, "Couldn't find transaction "+txid+".")
+        sendReply(bot, chatID, "Couldn't find transaction "+short(txid)+".")
         return
     }
     var total float64
@@ -249,12 +254,12 @@ func transaction(ctx context.Context, bot *bot, chatID int64, txid string) {
         total += vout.Value
     }
     if tx.Confirmations == 0 {
-        sendReply(bot, chatID, fmt.Sprintf("Transaction %s\nStatus: unconfirmed (in mempool)\nAmount: %.8f BTC", tx.Txid, total))
+        sendReply(bot, chatID, fmt.Sprintf("Transaction %s\nStatus: unconfirmed (in mempool)\nAmount: %.8f BTC", short(tx.Txid), total))
         return
     }
     sendReply(bot, chatID, fmt.Sprintf(
         "Transaction %s\nStatus: confirmed (%d confirmations)\nBlock: %s\nTime: %s\nAmount: %.8f BTC",
-        tx.Txid, tx.Confirmations, tx.BlockHash, when(tx.Time), total,
+        short(tx.Txid), tx.Confirmations, short(tx.BlockHash), when(tx.Time), total,
     ))
 }
 
@@ -272,7 +277,7 @@ func block(ctx context.Context, bot *bot, chatID int64, height int64) {
     }
     sendReply(bot, chatID, fmt.Sprintf(
         "Block #%d\nHash: %s\nTime: %s\nConfirmations: %d\nDifficulty: %.2f",
-        header.Height, header.Hash, when(header.Time), header.Confirmations, header.Difficulty,
+        header.Height, short(header.Hash), when(header.Time), header.Confirmations, header.Difficulty,
     ))
 }
 
@@ -297,7 +302,7 @@ func address(ctx context.Context, bot *bot, chatID int64, addr string) {
     if txs, txErr := btcd.searchRawTransactions(ctx, addr, 10); txErr == nil {
         activity = fmt.Sprintf("%d transaction(s) found", len(txs))
     }
-    sendReply(bot, chatID, fmt.Sprintf("Address %s\nType: %s\nRecent activity: %s", addr, addrType, activity))
+    sendReply(bot, chatID, fmt.Sprintf("Address %s\nType: %s\nRecent activity: %s", short(addr), addrType, activity))
 }
 
 var pendingWatchMu sync.Mutex

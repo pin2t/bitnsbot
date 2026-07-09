@@ -106,16 +106,19 @@ func TestInfoFlow(t *testing.T) {
     if len(sent) != 4 || !strings.Contains(sent[3], "Block #100") || !strings.Contains(sent[3], "Time: 14 november 2023 22:13") {
         t.Fatalf("unexpected block reply: %#v", sent)
     }
+    if !strings.Contains(sent[3], "Hash: 000000...ckhash") {
+        t.Fatalf("expected shortened block hash, got: %#v", sent[3])
+    }
     var txid = "f21b47a9143a23e80cc59e81588d21558b394005580b285961957cb3bed5b3e0"
     update(bot, Update{Message: &Message{Chat: Chat{ID: 6}, Text: "/info " + txid}})
-    if len(sent) != 5 || !strings.Contains(sent[4], "Transaction "+txid) || !strings.Contains(sent[4], "1.50000000 BTC") {
+    if len(sent) != 5 || !strings.Contains(sent[4], "Transaction f21b47...d5b3e0") || !strings.Contains(sent[4], "1.50000000 BTC") {
         t.Fatalf("unexpected transaction reply: %#v", sent)
     }
     if !strings.Contains(sent[4], "Time: 14 november 2023 22:13") {
         t.Fatalf("expected absolute time format for old transaction, got: %#v", sent[4])
     }
     update(bot, Update{Message: &Message{Chat: Chat{ID: 7}, Text: "/info 1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"}})
-    if len(sent) != 6 || !strings.Contains(sent[5], "unavailable") {
+    if len(sent) != 6 || !strings.Contains(sent[5], "Address 1A1zP1...DivfNa") || !strings.Contains(sent[5], "unavailable") {
         t.Fatalf("unexpected address (no history) reply: %#v", sent)
     }
     update(bot, Update{Message: &Message{Chat: Chat{ID: 8}, Text: "/info addresswithhistory"}})
