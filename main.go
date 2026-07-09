@@ -185,6 +185,31 @@ func parseCommand(text string) (command, arg string) {
     return command, arg
 }
 
+func ago(n int, unit string) string {
+    if n == 1 { return "1 " + unit + " ago" }
+    return fmt.Sprintf("%d %ss ago", n, unit)
+}
+
+func when(unix int64) string {
+    var t = time.Unix(unix, 0)
+    if t.After(time.Now().AddDate(0, -3, 0)) {
+        var since = time.Since(t)
+        switch {
+        case since < time.Minute:
+            return "just now"
+        case since < time.Hour:
+            return ago(int(since.Minutes()), "minute")
+        case since < 24*time.Hour:
+            return ago(int(since.Hours()), "hour")
+        case since < 31*24*time.Hour:
+            return ago(int(since.Hours()/24), "day")
+        default:
+            return ago(int(since.Hours()/24/30), "month")
+        }
+    }
+    return strings.ToLower(t.UTC().Format("2 January 2006 15:04"))
+}
+
 func info(bot *bot, chatID int64, arg string) {
     if arg == "" {
         pendingInfoMu.Lock()
@@ -203,52 +228,63 @@ func info(bot *bot, chatID int64, arg string) {
     var ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
     defer cancel()
     if isTxid(arg) {
-        var tx, err = btcd.getRawTransaction(ctx, arg)
-        if err != nil {
-            sendReply(bot, chatID, "Couldn't find transaction "+arg+".")
-            return
-        }
-        var total float64
-        for _, vout := range tx.Vout {
-            total += vout.Value
-        }
-        if tx.Confirmations == 0 {
-            sendReply(bot, chatID, fmt.Sprintf("Transaction %s\nStatus: unconfirmed (in mempool)\nAmount: %.8f BTC", tx.Txid, total))
-            return
-        }
-        sendReply(bot, chatID, fmt.Sprintf(
-            "Transaction %s\nStatus: confirmed (%d confirmations)\nBlock: %s\nTime: %s\nAmount: %.8f BTC",
-            tx.Txid, tx.Confirmations, tx.BlockHash, time.Unix(tx.Time, 0).UTC().Format("2006-01-02 15:04:05 UTC"), total,
-        ))
+        transaction(ctx, bot, chatID, arg)
         return
     }
     if height, err := strconv.ParseInt(arg, 10, 64); err == nil && height >= 0 {
-        var hash, hashErr = btcd.getBlockHash(ctx, height)
-        if hashErr != nil {
-            sendReply(bot, chatID, "Couldn't find block "+arg+".")
-            return
-        }
-        var header, headerErr = btcd.getBlockHeader(ctx, hash)
-        if headerErr != nil {
-            log.Println("get block header:", headerErr)
-            sendReply(bot, chatID, "Sorry, something went wrong fetching that block.")
-            return
-        }
-        sendReply(bot, chatID, fmt.Sprintf(
-            "Block #%d\nHash: %s\nTime: %s\nConfirmations: %d\nDifficulty: %.2f",
-            header.Height, header.Hash, time.Unix(header.Time, 0).UTC().Format("2006-01-02 15:04:05 UTC"),
-            header.Confirmations, header.Difficulty,
-        ))
+        block(ctx, bot, chatID, height)
         return
     }
-    var addrInfo, err = btcd.validateAddress(ctx, arg)
+    address(ctx, bot, chatID, arg)
+}
+
+func transaction(ctx context.Context, bot *bot, chatID int64, txid string) {
+    var tx, err = btcd.getRawTransaction(ctx, txid)
+    if err != nil {
+        sendReply(bot, chatID, "Couldn't find transaction "+txid+".")
+        return
+    }
+    var total float64
+    for _, vout := range tx.Vout {
+        total += vout.Value
+    }
+    if tx.Confirmations == 0 {
+        sendReply(bot, chatID, fmt.Sprintf("Transaction %s\nStatus: unconfirmed (in mempool)\nAmount: %.8f BTC", tx.Txid, total))
+        return
+    }
+    sendReply(bot, chatID, fmt.Sprintf(
+        "Transaction %s\nStatus: confirmed (%d confirmations)\nBlock: %s\nTime: %s\nAmount: %.8f BTC",
+        tx.Txid, tx.Confirmations, tx.BlockHash, when(tx.Time), total,
+    ))
+}
+
+func block(ctx context.Context, bot *bot, chatID int64, height int64) {
+    var hash, err = btcd.getBlockHash(ctx, height)
+    if err != nil {
+        sendReply(bot, chatID, fmt.Sprintf("Couldn't find block %d.", height))
+        return
+    }
+    var header, headerErr = btcd.getBlockHeader(ctx, hash)
+    if headerErr != nil {
+        log.Println("get block header:", headerErr)
+        sendReply(bot, chatID, "Sorry, something went wrong fetching that block.")
+        return
+    }
+    sendReply(bot, chatID, fmt.Sprintf(
+        "Block #%d\nHash: %s\nTime: %s\nConfirmations: %d\nDifficulty: %.2f",
+        header.Height, header.Hash, when(header.Time), header.Confirmations, header.Difficulty,
+    ))
+}
+
+func address(ctx context.Context, bot *bot, chatID int64, addr string) {
+    var addrInfo, err = btcd.validateAddress(ctx, addr)
     if err != nil {
         log.Println("validate address:", err)
         sendReply(bot, chatID, "Sorry, something went wrong looking up that address.")
         return
     }
     if !addrInfo.IsValid {
-        sendReply(bot, chatID, arg+" doesn't look like a valid Bitcoin address.")
+        sendReply(bot, chatID, addr+" doesn't look like a valid Bitcoin address.")
         return
     }
     var addrType = "standard (P2PKH)"
@@ -258,10 +294,10 @@ func info(bot *bot, chatID int64, arg string) {
         addrType = "script hash (P2SH)"
     }
     var activity = "unavailable (address index not enabled)"
-    if txs, txErr := btcd.searchRawTransactions(ctx, arg, 10); txErr == nil {
+    if txs, txErr := btcd.searchRawTransactions(ctx, addr, 10); txErr == nil {
         activity = fmt.Sprintf("%d transaction(s) found", len(txs))
     }
-    sendReply(bot, chatID, fmt.Sprintf("Address %s\nType: %s\nRecent activity: %s", arg, addrType, activity))
+    sendReply(bot, chatID, fmt.Sprintf("Address %s\nType: %s\nRecent activity: %s", addr, addrType, activity))
 }
 
 var pendingWatchMu sync.Mutex

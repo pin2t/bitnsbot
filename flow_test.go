@@ -7,6 +7,7 @@ import "net/http/httptest"
 import "path/filepath"
 import "strings"
 import "testing"
+import "time"
 
 func TestInfoFlow(t *testing.T) {
     var sent []string
@@ -43,26 +44,44 @@ func TestInfoFlow(t *testing.T) {
     if len(sent) != 3 {
         t.Fatalf("expected no reply for plain text without pending state, got: %#v", sent)
     }
+    var recentTxid = "aaaa47a9143a23e80cc59e81588d21558b394005580b285961957cb3bed5b3e0"
+    var recentTime = time.Now().Add(-48 * time.Hour).Unix()
     var btcdServer = newFakeBtcdServer(t, func(method string, params json.RawMessage) (interface{}, error) {
         var p []interface{}
         json.Unmarshal(params, &p)
         switch method {
         case "getblockhash":
+            var height, _ = p[0].(float64)
+            if height == 200 {
+                return "00000000000000recentblockhash", nil
+            }
             return "0000000000000000000blockhash", nil
         case "getblockheader":
+            var hash, _ = p[0].(string)
+            var blockTime int64 = 1700000000
+            var height = 100
+            if hash == "00000000000000recentblockhash" {
+                blockTime = recentTime
+                height = 200
+            }
             return map[string]any{
-                "hash":          "0000000000000000000blockhash",
+                "hash":          hash,
                 "confirmations": 10,
-                "height":        100,
-                "time":          1700000000,
+                "height":        height,
+                "time":          blockTime,
                 "difficulty":    1.5,
             }, nil
         case "getrawtransaction":
+            var reqTxid, _ = p[0].(string)
+            var txTime int64 = 1700000000
+            if reqTxid == recentTxid {
+                txTime = recentTime
+            }
             return map[string]any{
-                "txid":          "f21b47a9143a23e80cc59e81588d21558b394005580b285961957cb3bed5b3e0",
+                "txid":          reqTxid,
                 "confirmations": 6,
                 "blockhash":     "0000000000000000000blockhash",
-                "time":          1700000000,
+                "time":          txTime,
                 "vout":          []map[string]any{{"value": 1.5}},
             }, nil
         case "validateaddress":
@@ -84,13 +103,16 @@ func TestInfoFlow(t *testing.T) {
     btcd = dialFakeBtcd(t, btcdServer, &recordingHandler{})
     defer btcd.close()
     update(bot, Update{Message: &Message{Chat: Chat{ID: 5}, Text: "/info 100"}})
-    if len(sent) != 4 || !strings.Contains(sent[3], "Block #100") {
+    if len(sent) != 4 || !strings.Contains(sent[3], "Block #100") || !strings.Contains(sent[3], "Time: 14 november 2023 22:13") {
         t.Fatalf("unexpected block reply: %#v", sent)
     }
     var txid = "f21b47a9143a23e80cc59e81588d21558b394005580b285961957cb3bed5b3e0"
     update(bot, Update{Message: &Message{Chat: Chat{ID: 6}, Text: "/info " + txid}})
     if len(sent) != 5 || !strings.Contains(sent[4], "Transaction "+txid) || !strings.Contains(sent[4], "1.50000000 BTC") {
         t.Fatalf("unexpected transaction reply: %#v", sent)
+    }
+    if !strings.Contains(sent[4], "Time: 14 november 2023 22:13") {
+        t.Fatalf("expected absolute time format for old transaction, got: %#v", sent[4])
     }
     update(bot, Update{Message: &Message{Chat: Chat{ID: 7}, Text: "/info 1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"}})
     if len(sent) != 6 || !strings.Contains(sent[5], "unavailable") {
@@ -103,6 +125,14 @@ func TestInfoFlow(t *testing.T) {
     update(bot, Update{Message: &Message{Chat: Chat{ID: 9}, Text: "/info invalidaddr"}})
     if len(sent) != 8 || !strings.Contains(sent[7], "doesn't look like a valid Bitcoin address") {
         t.Fatalf("unexpected invalid address reply: %#v", sent)
+    }
+    update(bot, Update{Message: &Message{Chat: Chat{ID: 10}, Text: "/info " + recentTxid}})
+    if len(sent) != 9 || !strings.Contains(sent[8], "Time: 2 days ago") {
+        t.Fatalf("expected relative time format for recent transaction, got: %#v", sent)
+    }
+    update(bot, Update{Message: &Message{Chat: Chat{ID: 11}, Text: "/info 200"}})
+    if len(sent) != 10 || !strings.Contains(sent[9], "Block #200") || !strings.Contains(sent[9], "Time: 2 days ago") {
+        t.Fatalf("expected relative time format for recent block, got: %#v", sent)
     }
 }
 
