@@ -63,16 +63,18 @@ func TestInfoFlow(t *testing.T) {
             var hash, _ = p[0].(string)
             var blockTime int64 = 1700000000
             var height = 100
+            var difficulty = 1.5
             if hash == "00000000000000recentblockhash" {
                 blockTime = recentTime
                 height = 200
+                difficulty = 1e9
             }
             return map[string]any{
                 "hash":          hash,
                 "confirmations": 10,
                 "height":        height,
                 "time":          blockTime,
-                "difficulty":    1.5,
+                "difficulty":    difficulty,
             }, nil
         case "getrawtransaction":
             var reqTxid, _ = p[0].(string)
@@ -106,7 +108,7 @@ func TestInfoFlow(t *testing.T) {
     btcd = dialFakeBtcd(t, btcdServer, &recordingHandler{})
     defer btcd.close()
     update(bot, Update{Message: &Message{Chat: Chat{ID: 5}, Text: "/info 100"}})
-    var wantBlock = "Block #100\n\n<pre>Hash:          000000...ckhash\nTime:          14 november 2023 22:13\nConfirmations: 10\nDifficulty:    1.50</pre>"
+    var wantBlock = "Block #100\n\n<pre>Hash:          000000...ckhash\nTime:          14 november 2023 22:13\nConfirmations: 10\nDifficulty:    1.5</pre>"
     if len(sent) != 4 || sent[3] != wantBlock {
         t.Fatalf("unexpected block reply: %#v", sent)
     }
@@ -139,6 +141,9 @@ func TestInfoFlow(t *testing.T) {
     update(bot, Update{Message: &Message{Chat: Chat{ID: 11}, Text: "/info 200"}})
     if len(sent) != 10 || !strings.Contains(sent[9], "Block #200") || !strings.Contains(sent[9], "Time:          2 days ago") {
         t.Fatalf("expected relative time format for recent block, got: %#v", sent)
+    }
+    if !strings.Contains(sent[9], "Difficulty:    1 G") {
+        t.Fatalf("expected human readable difficulty, got: %#v", sent[9])
     }
 }
 

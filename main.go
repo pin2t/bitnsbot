@@ -281,9 +281,17 @@ func block(ctx context.Context, bot *bot, chatID int64, height int64) {
         sendReply(bot, chatID, "Sorry, something went wrong fetching that block.")
         return
     }
+    var difficulty = header.Difficulty
+    var unit = ""
+    for _, u := range []string{" k", " M", " G", " T", " P", " E"} {
+        if difficulty < 1000 { break }
+        difficulty /= 1000
+        unit = u
+    }
+    var diff = strings.TrimRight(strings.TrimRight(strconv.FormatFloat(difficulty, 'f', 2, 64), "0"), ".") + unit
     sendReply(bot, chatID, fmt.Sprintf(
-        "Block #%d\n\n<pre>Hash:          %s\nTime:          %s\nConfirmations: %d\nDifficulty:    %.2f</pre>",
-        header.Height, short(header.Hash), when(header.Time), header.Confirmations, header.Difficulty,
+        "Block #%d\n\n<pre>Hash:          %s\nTime:          %s\nConfirmations: %d\nDifficulty:    %s</pre>",
+        header.Height, short(header.Hash), when(header.Time), header.Confirmations, diff,
     ))
 }
 
