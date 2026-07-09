@@ -14,7 +14,7 @@ bitnsbot is a Bitcoin network events notification bot for Telegram. It's a singl
 - Test one: `go test -run TestWatchFlow -v` (other tests: `TestInfoFlow`, `TestMessageLogging`, `TestWatchStoreAdd`)
 - Vet: `go vet ./...`
 
-There is no Makefile, linter config, or CI in this repo — `go build`/`go vet`/`go test` are the only checks available. `gofmt -l .` will flag files as unformatted by design; see Style below before "fixing" that.
+There is no Makefile or linter config in this repo — `go build`/`go vet`/`go test` are the only checks available (and are exactly what `.github/workflows/ci.yml` runs on every pull request, on Go 1.26). `gofmt -l .` will flag files as unformatted by design; see Style below before "fixing" that.
 
 Flags (all in `main.go`): `-listen` (address this bot's webhook server binds to), `-webhook-path`, `-webhook-url` (the URL registered via `setWebhook`), `-api-base-url` (Bot API server to call), `-secret-token` (optional), `-register-webhook` (set false to skip calling `setWebhook` on startup), `-db` (path to the bbolt watches database, default `watches.db`).
 
