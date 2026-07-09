@@ -41,3 +41,60 @@ func TestWatchStoreAdd(t *testing.T) {
         t.Fatalf("expected non-zero CreatedAt")
     }
 }
+
+func TestWatchStoreList(t *testing.T) {
+    var s, err = openWatchStore(filepath.Join(t.TempDir(), "watches.db"))
+    if err != nil {
+        t.Fatalf("openWatchStore: %v", err)
+    }
+    defer s.close()
+    s.add(1, watchTypeAddress, "addrA")
+    s.add(2, watchTypeTransaction, "txB")
+    var records, listErr = s.list()
+    if listErr != nil {
+        t.Fatalf("list: %v", listErr)
+    }
+    if len(records) != 2 {
+        t.Fatalf("expected 2 records, got %d", len(records))
+    }
+    if records[0].ChatID != 1 || records[0].WatchID != "addrA" {
+        t.Fatalf("unexpected first record: %#v", records[0])
+    }
+    if records[1].ChatID != 2 || records[1].Type != watchTypeTransaction {
+        t.Fatalf("unexpected second record: %#v", records[1])
+    }
+}
+
+func TestWatchStoreRemove(t *testing.T) {
+    var s, err = openWatchStore(filepath.Join(t.TempDir(), "watches.db"))
+    if err != nil {
+        t.Fatalf("openWatchStore: %v", err)
+    }
+    defer s.close()
+    // two chats watch the same address; a third watch is unrelated
+    s.add(1, watchTypeAddress, "sharedAddr")
+    s.add(2, watchTypeAddress, "sharedAddr")
+    s.add(1, watchTypeAddress, "otherAddr")
+    // removing chat 1's watch on sharedAddr must not touch chat 2's identical watch
+    var removed, remErr = s.remove(1, "sharedAddr")
+    if remErr != nil {
+        t.Fatalf("remove: %v", remErr)
+    }
+    if removed != 1 {
+        t.Fatalf("expected 1 removed, got %d", removed)
+    }
+    var records, _ = s.list()
+    if len(records) != 2 {
+        t.Fatalf("expected 2 remaining records, got %d: %#v", len(records), records)
+    }
+    for _, r := range records {
+        if r.ChatID == 1 && r.WatchID == "sharedAddr" {
+            t.Fatalf("chat 1's sharedAddr watch should be gone: %#v", records)
+        }
+    }
+    // removing a watch that doesn't belong to the chat removes nothing
+    var n, _ = s.remove(999, "sharedAddr")
+    if n != 0 {
+        t.Fatalf("expected 0 removed for wrong chat, got %d", n)
+    }
+}

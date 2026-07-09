@@ -4,6 +4,7 @@ import "bytes"
 import "log"
 import "net/http"
 import "net/http/httptest"
+import "os"
 import "strings"
 import "testing"
 
@@ -15,7 +16,7 @@ func TestMessageLogging(t *testing.T) {
     bot := newBot("TESTTOKEN", server.URL)
     var buf bytes.Buffer
     log.SetOutput(&buf)
-    defer log.SetOutput(nil)
+    defer log.SetOutput(os.Stderr)
     update(bot, Update{Message: &Message{
         Chat: Chat{ID: 42},
         From: &User{Username: "alice"},
