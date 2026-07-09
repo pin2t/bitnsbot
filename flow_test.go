@@ -111,11 +111,9 @@ func TestInfoFlow(t *testing.T) {
     }
     var txid = "f21b47a9143a23e80cc59e81588d21558b394005580b285961957cb3bed5b3e0"
     update(bot, Update{Message: &Message{Chat: Chat{ID: 6}, Text: "/info " + txid}})
-    if len(sent) != 5 || !strings.Contains(sent[4], "Transaction f21b47...d5b3e0") || !strings.Contains(sent[4], "1.50000000 BTC") {
+    var wantTx = "Transaction f21b47...d5b3e0\n\nStatus: confirmed (6 confirmations)\nBlock:  000000...ckhash\nTime:   14 november 2023 22:13\nAmount: 150 000 000 satoshi"
+    if len(sent) != 5 || sent[4] != wantTx {
         t.Fatalf("unexpected transaction reply: %#v", sent)
-    }
-    if !strings.Contains(sent[4], "Time: 14 november 2023 22:13") {
-        t.Fatalf("expected absolute time format for old transaction, got: %#v", sent[4])
     }
     update(bot, Update{Message: &Message{Chat: Chat{ID: 7}, Text: "/info 1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"}})
     if len(sent) != 6 || !strings.Contains(sent[5], "Address 1A1zP1...DivfNa") || !strings.Contains(sent[5], "unavailable") {
@@ -130,7 +128,7 @@ func TestInfoFlow(t *testing.T) {
         t.Fatalf("unexpected invalid address reply: %#v", sent)
     }
     update(bot, Update{Message: &Message{Chat: Chat{ID: 10}, Text: "/info " + recentTxid}})
-    if len(sent) != 9 || !strings.Contains(sent[8], "Time: 2 days ago") {
+    if len(sent) != 9 || !strings.Contains(sent[8], "Time:   2 days ago") {
         t.Fatalf("expected relative time format for recent transaction, got: %#v", sent)
     }
     update(bot, Update{Message: &Message{Chat: Chat{ID: 11}, Text: "/info 200"}})

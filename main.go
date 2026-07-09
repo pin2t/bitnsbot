@@ -7,6 +7,7 @@ import "encoding/json"
 import "flag"
 import "fmt"
 import "log"
+import "math"
 import "net/http"
 import "os"
 import "strconv"
@@ -253,13 +254,17 @@ func transaction(ctx context.Context, bot *bot, chatID int64, txid string) {
     for _, vout := range tx.Vout {
         total += vout.Value
     }
+    var amount = strconv.FormatInt(int64(math.Round(total*1e8)), 10)
+    for i := len(amount) - 3; i > 0; i -= 3 {
+        amount = amount[:i] + " " + amount[i:]
+    }
     if tx.Confirmations == 0 {
-        sendReply(bot, chatID, fmt.Sprintf("Transaction %s\nStatus: unconfirmed (in mempool)\nAmount: %.8f BTC", short(tx.Txid), total))
+        sendReply(bot, chatID, fmt.Sprintf("Transaction %s\n\nStatus: unconfirmed (in mempool)\nAmount: %s satoshi", short(tx.Txid), amount))
         return
     }
     sendReply(bot, chatID, fmt.Sprintf(
-        "Transaction %s\nStatus: confirmed (%d confirmations)\nBlock: %s\nTime: %s\nAmount: %.8f BTC",
-        short(tx.Txid), tx.Confirmations, short(tx.BlockHash), when(tx.Time), total,
+        "Transaction %s\n\nStatus: confirmed (%d confirmations)\nBlock:  %s\nTime:   %s\nAmount: %s satoshi",
+        short(tx.Txid), tx.Confirmations, short(tx.BlockHash), when(tx.Time), amount,
     ))
 }
 
