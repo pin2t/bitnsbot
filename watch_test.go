@@ -161,3 +161,51 @@ func TestUnwatchFlow(t *testing.T) {
         t.Fatalf("expected no watchers left, got %#v", watchersByAddr[addr])
     }
 }
+
+func TestWatchesFlow(t *testing.T) {
+    var sent []string
+    var server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        var body struct {
+            Text string `json:"text"`
+        }
+        json.NewDecoder(r.Body).Decode(&body)
+        sent = append(sent, body.Text)
+        json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": true})
+    }))
+    defer server.Close()
+    var b = newBot("TESTTOKEN", server.URL)
+    store, _ = openWatchStore(filepath.Join(t.TempDir(), "watches.db"))
+    defer store.close()
+    // nothing watched yet
+    update(b, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/watches"}})
+    if sent[len(sent)-1] != "You're not watching anything yet." {
+        t.Fatalf("unexpected empty reply: %q", sent[len(sent)-1])
+    }
+    var addr = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
+    var txid = "f21b47a9143a23e80cc59e81588d21558b394005580b285961957cb3bed5b3e0"
+    store.add(1, watchTypeAddress, addr)
+    store.add(1, watchTypeTransaction, txid)
+    store.add(2, watchTypeAddress, "someoneElsesAddress")
+    update(b, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/watches"}})
+    var msg = sent[len(sent)-1]
+    // full ids present (not shortened) and tap-to-copy wrapped
+    if !strings.Contains(msg, "<code>"+addr+"</code>") {
+        t.Fatalf("expected full address in <code>, got: %q", msg)
+    }
+    if !strings.Contains(msg, "<code>"+txid+"</code>") {
+        t.Fatalf("expected full txid in <code>, got: %q", msg)
+    }
+    if !strings.Contains(msg, "Addresses:") || !strings.Contains(msg, "Transactions:") {
+        t.Fatalf("expected grouped sections, got: %q", msg)
+    }
+    // scoping: another chat's watch must not appear
+    if strings.Contains(msg, "someoneElsesAddress") {
+        t.Fatalf("must not list another chat's watch: %q", msg)
+    }
+    // a watch id containing HTML metacharacters must be escaped
+    store.add(3, watchTypeAddress, "a<b>c")
+    update(b, Update{Message: &Message{Chat: Chat{ID: 3}, Text: "/watches"}})
+    if last := sent[len(sent)-1]; !strings.Contains(last, "a&lt;b&gt;c") {
+        t.Fatalf("expected HTML-escaped watch id, got: %q", last)
+    }
+}

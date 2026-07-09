@@ -11,7 +11,7 @@ bitnsbot is a Bitcoin network events notification bot for Telegram. It's a singl
 - Build: `go build ./...`
 - Run: `go run . -tg-bot-token <token> -webhook-url http://localhost:8080/bot -api-base-url http://localhost:8081`
 - Test all: `go test ./...`
-- Test one: `go test -run TestWatchFlow -v` (other tests: `TestInfoFlow`, `TestUnwatchFlow`, `TestWatchNotification`, `TestMessageLogging`, `TestWatchStore*`, `TestConfig`, `TestBtcd*`). Run the whole suite with `-race` (`go test -race ./...`) — the watch-notification path is concurrent.
+- Test one: `go test -run TestWatchFlow -v` (other tests: `TestInfoFlow`, `TestUnwatchFlow`, `TestWatchesFlow`, `TestWatchNotification`, `TestMessageLogging`, `TestWatchStore*`, `TestConfig`, `TestBtcd*`). Run the whole suite with `-race` (`go test -race ./...`) — the watch-notification path is concurrent.
 - Vet: `go vet ./...`
 
 There is no Makefile or linter config in this repo — `go build`/`go vet`/`go test` are the only checks available (and are exactly what `.github/workflows/ci.yml` runs on every pull request, on Go 1.26). `gofmt -l .` will flag files as unformatted by design; see Style below before "fixing" that.
@@ -79,7 +79,7 @@ The `relevanttxaccepted`→decode→notify path and the `restoreWatches` re-subs
 
 ### Command dispatch and the "pending argument" pattern
 
-`update()` in `main.go` is the single entry point for every incoming Telegram update: pull `Update.Message`, log it (`logMessage`), split it into a command and argument (`parseCommand`), then switch on the command.
+`update()` in `main.go` is the single entry point for every incoming Telegram update: pull `Update.Message`, log it (`logMessage`), split it into a command and argument (`parseCommand`), then switch on the command. `/start` and `/watches` take no argument and act immediately (`/watches` lists the calling chat's watches — filters `store.list()` by `chatID`, groups into Addresses/Transactions, and prints each id **un-shortened** inside `<code>…</code>` for Telegram tap-to-copy; ids are `html.EscapeString`'d because address-type watch ids are arbitrary unvalidated user input, unlike txids).
 
 Commands that take a free-text argument (`/info`, `/watch`, `/unwatch`) share one shape: called with an argument (`/info foo`) they act immediately; called bare (`/info`) they reply asking the user to send the text as a follow-up message and mark that chat "pending" for that command. The next plain-text (non-command) message from a pending chat is then treated as the missing argument.
 

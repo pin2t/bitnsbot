@@ -246,6 +246,8 @@ func update(bot *bot, update Update) {
         watch(bot, msg.Chat.ID, arg)
     case "/unwatch":
         unwatch(bot, msg.Chat.ID, arg)
+    case "/watches":
+        watches(bot, msg.Chat.ID)
     case "":
         pendingInfoMu.Lock()
         var pending = pendingInfoChats[msg.Chat.ID]
@@ -512,6 +514,44 @@ func unwatch(bot *bot, chatID int64, arg string) {
         }
     }
     sendReply(bot, chatID, "Stopped watching "+html.EscapeString(arg)+".")
+}
+
+func watches(bot *bot, chatID int64) {
+    var records, err = store.list()
+    if err != nil {
+        log.Println("list watches:", err)
+        sendReply(bot, chatID, "Sorry, something went wrong listing your watches.")
+        return
+    }
+    var addresses, transactions []string
+    for _, r := range records {
+        if r.ChatID != chatID {
+            continue
+        }
+        if r.Type == watchTypeTransaction {
+            transactions = append(transactions, r.WatchID)
+        } else {
+            addresses = append(addresses, r.WatchID)
+        }
+    }
+    if len(addresses) == 0 && len(transactions) == 0 {
+        sendReply(bot, chatID, "You're not watching anything yet.")
+        return
+    }
+    var lines = []string{"Your watches:"}
+    if len(addresses) > 0 {
+        lines = append(lines, "", "Addresses:")
+        for _, a := range addresses {
+            lines = append(lines, "<code>"+html.EscapeString(a)+"</code>")
+        }
+    }
+    if len(transactions) > 0 {
+        lines = append(lines, "", "Transactions:")
+        for _, t := range transactions {
+            lines = append(lines, "<code>"+html.EscapeString(t)+"</code>")
+        }
+    }
+    sendReply(bot, chatID, strings.Join(lines, "\n"))
 }
 
 func sendReply(bot *bot, chatID int64, text string) {
