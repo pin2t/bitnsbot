@@ -9,29 +9,34 @@ bitnsbot is a Bitcoin network events notification bot for Telegram. It's a singl
 ## Commands
 
 - Build: `go build ./...`
-- Run: `TELEGRAM_BOT_TOKEN=<token> go run . -webhook-url http://localhost:8080/bot -api-base-url http://localhost:8081`
+- Run: `go run . -tg-bot-token <token> -webhook-url http://localhost:8080/bot -api-base-url http://localhost:8081`
 - Test all: `go test ./...`
-- Test one: `go test -run TestWatchFlow -v` (other tests: `TestInfoFlow`, `TestMessageLogging`, `TestWatchStoreAdd`, `TestBtcd*`)
+- Test one: `go test -run TestWatchFlow -v` (other tests: `TestInfoFlow`, `TestMessageLogging`, `TestWatchStoreAdd`, `TestConfig`, `TestBtcd*`)
 - Vet: `go vet ./...`
 
 There is no Makefile or linter config in this repo — `go build`/`go vet`/`go test` are the only checks available (and are exactly what `.github/workflows/ci.yml` runs on every pull request, on Go 1.26). `gofmt -l .` will flag files as unformatted by design; see Style below before "fixing" that.
 
-Flags (all in `main.go`): `-listen` (address this bot's webhook server binds to), `-webhook-path`, `-webhook-url` (the URL registered via `setWebhook`), `-api-base-url` (Bot API server to call), `-secret-token` (optional), `-register-webhook` (set false to skip calling `setWebhook` on startup), `-db` (path to the bbolt watches database, default `watches.db`), `-btcd-url`/`-btcd-user`/`-btcd-pass`/`-btcd-cert`/`-btcd-insecure-tls` (btcd RPC connection; leaving `-btcd-url` empty skips connecting to btcd entirely).
+Flags (all in `main.go`): `-config` (path to a `name=value` properties file to load flag values from — see The config file below), `-tg-bot-token` (Telegram bot token, required), `-listen` (address this bot's webhook server binds to), `-webhook-path`, `-webhook-url` (the URL registered via `setWebhook`), `-api-base-url` (Bot API server to call), `-secret-token` (optional), `-register-webhook` (set false to skip calling `setWebhook` on startup), `-db` (path to the bbolt watches database, default `watches.db`), `-btcd-url`/`-btcd-user`/`-btcd-pass`/`-btcd-cert`/`-btcd-insecure-tls` (btcd RPC connection; leaving `-btcd-url` empty skips connecting to btcd entirely).
 
 ## Runtime model
 
 The bot is designed to run behind a self-hosted `telegram-bot-api` proxy (https://github.com/tdlib/telegram-bot-api) on localhost, not directly against `https://api.telegram.org`:
 - `-api-base-url` defaults to `http://localhost:8081`; `telegram.go`'s `bot.call` builds every outgoing request URL from it.
 - The webhook HTTP server itself is plain `http.ListenAndServe` — no TLS. The local proxy is assumed to own the real HTTPS conversation with Telegram; the hop from proxy to this bot is local/plaintext.
-- Two secrets: `TELEGRAM_BOT_TOKEN` (env var, required) authenticates outbound Bot API calls. `-secret-token` (flag, optional) is passed to `setWebhook` and then checked against the `X-Telegram-Bot-Api-Secret-Token` header on every incoming request (constant-time compare in `main.go`'s webhook handler) — this is the only thing stopping an arbitrary POST to the webhook path from being treated as a real Telegram update.
+- Two secrets, both flags: `-tg-bot-token` (required) authenticates outbound Bot API calls. `-secret-token` (optional) is passed to `setWebhook` and then checked against the `X-Telegram-Bot-Api-Secret-Token` header on every incoming request (constant-time compare in `main.go`'s webhook handler) — this is the only thing stopping an arbitrary POST to the webhook path from being treated as a real Telegram update. Since both are flags they can be supplied via the `-config` file; prefer that over the command line for real deployments, since command-line args are visible to other users via `ps`.
 
 ## Architecture
 
-Four source files, all `package main`:
+Five source files, all `package main`:
 - `telegram.go` — the Bot API client: the unexported `bot` type, `newBot`, and `call`/`send`/`setWebhook` methods, plus the wire types (`Update`, `Message`, `User`, `Chat`) decoded from incoming webhook JSON.
 - `watches.go` — the `watchStore` (a single bbolt bucket named `watches`), storing one JSON-encoded `watchRecord` per watch under an auto-incrementing key (`bbolt.Bucket.NextSequence` + big-endian encoding, the standard bbolt idiom for ordered keys). No update/list/delete — only `add`, since nothing else needs it yet.
 - `btcd.go` — a `btcdClient` for talking to a `btcd` node's JSON-RPC-over-websocket API (see below).
+- `config.go` — `applyConfig`, a tiny `name=value` properties-file parser that sets flags from a `-config` file (see below).
 - `main.go` — flags, the HTTP webhook server, and all command handling/dispatch.
+
+### The config file
+
+`-config <path>` points at a plain `name=value` properties file whose names are flag names (`btcd-url=wss://localhost:1234/ws`, `listen=:8082`). `applyConfig` (in `config.go`) is called from `main()` immediately after `flag.Parse()`: it reads the file and calls `flag.Set` for each line, so config values land in the same `*flag.Flag` variables the rest of the code already reads — no separate config struct. Blank lines and `#` comments are skipped; names and values are whitespace-trimmed; an unknown name or a malformed (no `=`) line is a fatal error with `path:line` context. Command-line flags win over the file: `applyConfig` first records which flags were already set on the command line via `flag.Visit` and skips those, so precedence is CLI > file > flag default. Because it's driven entirely by the flag set, every flag is automatically config-settable and no per-flag wiring is needed when flags are added.
 
 ### The btcd RPC client
 

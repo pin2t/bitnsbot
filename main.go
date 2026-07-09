@@ -18,6 +18,8 @@ import "time"
 
 import "github.com/sourcegraph/jsonrpc2"
 
+var configPath      = flag.String("config", "", "path to a properties file (name=value lines) with flag values; command-line flags take precedence")
+var botToken        = flag.String("tg-bot-token", "", "Telegram bot token authenticating outbound Bot API calls (required)")
 var listenAddr      = flag.String("listen", ":8080", "listen address")
 var webhookPath     = flag.String("webhook-path", "/bot", "path the Bot API server will POST updates to")
 var webhookURL      = flag.String("webhook-url", "", "URL the Bot API server should send updates to, e.g. http://localhost:8080/bot")
@@ -50,11 +52,15 @@ func main() {
         flag.PrintDefaults()
     }
     flag.Parse()
-    var token = os.Getenv("TELEGRAM_BOT_TOKEN")
-    if token == "" {
-        log.Fatal("TELEGRAM_BOT_TOKEN environment variable must be set")
+    if *configPath != "" {
+        if err := applyConfig(*configPath); err != nil {
+            log.Fatal("apply config: ", err)
+        }
     }
-    var bot = newBot(token, *apiBaseURL)
+    if *botToken == "" {
+        log.Fatal("-tg-bot-token is required")
+    }
+    var bot = newBot(*botToken, *apiBaseURL)
     var err error
     store, err = openWatchStore(*dbPath)
     if err != nil {
