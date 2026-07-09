@@ -141,6 +141,28 @@ func (c *btcdClient) searchRawTransactions(ctx context.Context, address string, 
     return txs, nil
 }
 
+type btcdScriptPubKey struct {
+    Address   string   `json:"address"`
+    Addresses []string `json:"addresses"`
+}
+
+type btcdDecodedVout struct {
+    Value        float64          `json:"value"`
+    ScriptPubKey btcdScriptPubKey `json:"scriptPubKey"`
+}
+
+type btcdDecodedTx struct {
+    Txid string            `json:"txid"`
+    Vout []btcdDecodedVout `json:"vout"`
+}
+
+func (c *btcdClient) decodeRawTransaction(ctx context.Context, txHex string) (*btcdDecodedTx, error) {
+    var tx btcdDecodedTx
+    var err = c.conn.Call(ctx, "decoderawtransaction", []interface{}{txHex}, &tx)
+    if err != nil { return nil, err }
+    return &tx, nil
+}
+
 type btcdOutpoint struct {
     Hash  string `json:"hash"`
     Index uint32 `json:"index"`

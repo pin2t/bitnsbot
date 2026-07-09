@@ -4,3 +4,4 @@
 /bitnsbot
 *.db
 *.cert
+bitnsbot.cfg
