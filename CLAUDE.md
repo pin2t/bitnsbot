@@ -16,7 +16,7 @@ bitnsbot is a Bitcoin network events notification bot for Telegram. It's a singl
 
 There is no Makefile, linter config, or CI in this repo — `go build`/`go vet`/`go test` are the only checks available. `gofmt -l .` will flag files as unformatted by design; see Style below before "fixing" that.
 
-Flags (all in `main.go`): `-listen` (address this bot's webhook server binds to), `-webhook-path`, `-webhook-url` (the URL registered via `setWebhook`), `-api-base-url` (Bot API server to call), `-secret-token` (optional), `-register-webhook` (set false to skip calling `setWebhook` on startup), `-db` (path to the bbolt watches database, default `watches.db`).
+Flags (all in `main.go`): `-listen` (address this bot's webhook server binds to), `-webhook-path`, `-webhook-url` (the URL registered via `setWebhook`), `-api-base-url` (Bot API server to call), `-secret-token` (optional), `-register-webhook` (set false to skip calling `setWebhook` on startup), `-db` (path to the bbolt watches database, default `watches.db`), `-btcd-url`/`-btcd-user`/`-btcd-pass`/`-btcd-cert`/`-btcd-insecure-tls` (btcd RPC connection; leaving `-btcd-url` empty skips connecting to btcd entirely).
 
 ## Runtime model
 
@@ -30,7 +30,7 @@ The bot is designed to run behind a self-hosted `telegram-bot-api` proxy (https:
 Four source files, all `package main`:
 - `telegram.go` — the Bot API client: the unexported `bot` type, `newBot`, and `call`/`send`/`setWebhook` methods, plus the wire types (`Update`, `Message`, `User`, `Chat`) decoded from incoming webhook JSON.
 - `watches.go` — the `watchStore` (a single bbolt bucket named `watches`), storing one JSON-encoded `watchRecord` per watch under an auto-incrementing key (`bbolt.Bucket.NextSequence` + big-endian encoding, the standard bbolt idiom for ordered keys). No update/list/delete — only `add`, since nothing else needs it yet.
-- `btcd.go` — a `btcdClient` for talking to a `btcd` node's JSON-RPC-over-websocket API (see below). Not currently wired into `main()` or any command handler — nothing calls `dialBtcd` yet.
+- `btcd.go` — a `btcdClient` for talking to a `btcd` node's JSON-RPC-over-websocket API (see below).
 - `main.go` — flags, the HTTP webhook server, and all command handling/dispatch.
 
 ### The btcd RPC client
@@ -41,7 +41,9 @@ btcd/bitcoind's JSON-RPC dialect predates JSON-RPC 2.0 and always uses positiona
 
 Only a handful of RPC methods are wrapped as typed methods so far (`getBlockCount`, `getRawTransaction`, `loadTxFilter`, `notifyBlocks`) — enough to prove the transport works and to cover the address/transaction-watching use case this bot exists for, not the full btcd API surface. Add more the same way: a thin method on `btcdClient` that calls `c.conn.Call(ctx, "methodname", []interface{}{...}, &result)`.
 
-Server-pushed notifications (e.g. `blockconnected`, `relevanttxaccepted` — see `/Users/pin/code/btcd/docs/json_rpc_api.md` for the full list) are delivered to whatever `jsonrpc2.Handler` is passed into `dialBtcd`; this repo doesn't yet have a concrete handler wired to Telegram notifications.
+Server-pushed notifications (e.g. `blockconnected`, `relevanttxaccepted` — see `/Users/pin/code/btcd/docs/json_rpc_api.md` for the full list) are delivered to whatever `jsonrpc2.Handler` is passed into `dialBtcd`.
+
+`main()` dials btcd (if `-btcd-url` is set; empty means skip it entirely) right after opening the watches store and before registering the Telegram webhook or starting to listen — the package-level `var btcd *btcdClient` holds the connection, `defer btcd.close()` on shutdown, and a dial failure is fatal (matches how `store`'s open failure is handled). The handler passed in is `btcdNotificationLogger`, which just logs every notification (`log.Printf("btcd notification: ...")`) — nothing yet matches a notification against a specific watch or sends a Telegram message for it; that logic doesn't exist.
 
 `btcd_test.go` fakes the btcd server with an in-process `httptest.Server` + `websocket.Upgrader` (same philosophy as the Telegram tests — no real btcd node needed to run `go test`). It was additionally verified once, manually, against a real locally-built `btcd --regtest --notls` node; that was throwaway verification, not something reflected in the checked-in tests.
 
@@ -62,6 +64,7 @@ Both commands are implemented the same way, one-word handler names (`info`, `wat
 ## Style conventions specific to this repo
 
 These diverge from typical idiomatic Go on purpose (established through explicit instruction over this repo's history) — don't "clean them up":
+- Indent with 4 spaces, never tabs — this includes running `gofmt`/`goimports` with a post-process step (or an editor setting) to expand tabs, since Go's own tooling always indents with tabs by default.
 - Prefer unexported identifiers even for the main API (`bot`/`newBot`/`send`, not `Bot`/`NewBot`/`SendMessage`) — nothing outside `package main` consumes this code.
 - One `import "x"` line per import, never a grouped `import (...)` block.
 - `var x = expr()` instead of `x := expr()` wherever Go's grammar allows it. It doesn't allow `var` in an `if`/`for` initializer, and a `var` can't redeclare a name already in scope the way `:=` can (e.g. `req, err := ...` when `err` already exists) — those cases keep `:=`.
