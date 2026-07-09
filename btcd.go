@@ -68,12 +68,17 @@ func (c *btcdClient) getBlockCount(ctx context.Context) (int64, error) {
     return count, err
 }
 
+type btcdVout struct {
+    Value float64 `json:"value"`
+}
+
 type btcdTransaction struct {
-    Txid          string `json:"txid"`
-    Hash          string `json:"hash"`
-    Confirmations uint64 `json:"confirmations"`
-    BlockHash     string `json:"blockhash"`
-    Time          int64  `json:"time"`
+    Txid          string     `json:"txid"`
+    Hash          string     `json:"hash"`
+    Confirmations uint64     `json:"confirmations"`
+    BlockHash     string     `json:"blockhash"`
+    Time          int64      `json:"time"`
+    Vout          []btcdVout `json:"vout"`
 }
 
 func (c *btcdClient) getRawTransaction(ctx context.Context, txid string) (*btcdTransaction, error) {
@@ -81,6 +86,59 @@ func (c *btcdClient) getRawTransaction(ctx context.Context, txid string) (*btcdT
     var err = c.conn.Call(ctx, "getrawtransaction", []interface{}{txid, 1}, &tx)
     if err != nil { return nil, err }
     return &tx, nil
+}
+
+func (c *btcdClient) getBlockHash(ctx context.Context, height int64) (string, error) {
+    var hash string
+    var err = c.conn.Call(ctx, "getblockhash", []interface{}{height}, &hash)
+    return hash, err
+}
+
+type btcdBlockHeader struct {
+    Hash          string  `json:"hash"`
+    Confirmations int64   `json:"confirmations"`
+    Height        int32   `json:"height"`
+    Version       int32   `json:"version"`
+    MerkleRoot    string  `json:"merkleroot"`
+    Time          int64   `json:"time"`
+    Nonce         uint64  `json:"nonce"`
+    Bits          string  `json:"bits"`
+    Difficulty    float64 `json:"difficulty"`
+    PreviousHash  string  `json:"previousblockhash"`
+    NextHash      string  `json:"nextblockhash"`
+}
+
+func (c *btcdClient) getBlockHeader(ctx context.Context, hash string) (*btcdBlockHeader, error) {
+    var header btcdBlockHeader
+    var err = c.conn.Call(ctx, "getblockheader", []interface{}{hash, true}, &header)
+    if err != nil { return nil, err }
+    return &header, nil
+}
+
+type btcdAddressInfo struct {
+    IsValid   bool   `json:"isvalid"`
+    Address   string `json:"address"`
+    IsScript  bool   `json:"isscript"`
+    IsWitness bool   `json:"iswitness"`
+}
+
+func (c *btcdClient) validateAddress(ctx context.Context, address string) (*btcdAddressInfo, error) {
+    var info btcdAddressInfo
+    var err = c.conn.Call(ctx, "validateaddress", []interface{}{address}, &info)
+    if err != nil { return nil, err }
+    return &info, nil
+}
+
+type btcdAddressTx struct {
+    Txid string `json:"txid"`
+    Time int64  `json:"time"`
+}
+
+func (c *btcdClient) searchRawTransactions(ctx context.Context, address string, count int) ([]btcdAddressTx, error) {
+    var txs []btcdAddressTx
+    var err = c.conn.Call(ctx, "searchrawtransactions", []interface{}{address, 1, 0, count, 0, true}, &txs)
+    if err != nil { return nil, err }
+    return txs, nil
 }
 
 type btcdOutpoint struct {

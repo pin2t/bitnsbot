@@ -39,13 +39,23 @@ Four source files, all `package main`:
 
 btcd/bitcoind's JSON-RPC dialect predates JSON-RPC 2.0 and always uses positional (array) `params`, never named/object params — every method call in `btcd.go` passes `[]interface{}{...}` as the params argument for this reason. Confirmed against btcd source (`btcjson.RPCVersion.IsValid()` accepts both `"1.0"` and `"2.0"`) that sending `"jsonrpc":"2.0"` (what `sourcegraph/jsonrpc2` always sends) doesn't get rejected.
 
-Only a handful of RPC methods are wrapped as typed methods so far (`getBlockCount`, `getRawTransaction`, `loadTxFilter`, `notifyBlocks`) — enough to prove the transport works and to cover the address/transaction-watching use case this bot exists for, not the full btcd API surface. Add more the same way: a thin method on `btcdClient` that calls `c.conn.Call(ctx, "methodname", []interface{}{...}, &result)`.
+Only a handful of RPC methods are wrapped as typed methods so far (`getBlockCount`, `getRawTransaction`, `getBlockHash`, `getBlockHeader`, `validateAddress`, `searchRawTransactions`, `loadTxFilter`, `notifyBlocks`) — enough to cover `/watch` and `/info`'s needs, not the full btcd API surface. Add more the same way: a thin method on `btcdClient` that calls `c.conn.Call(ctx, "methodname", []interface{}{...}, &result)`.
 
 Server-pushed notifications (e.g. `blockconnected`, `relevanttxaccepted` — see `/Users/pin/code/btcd/docs/json_rpc_api.md` for the full list) are delivered to whatever `jsonrpc2.Handler` is passed into `dialBtcd`.
 
 `main()` dials btcd (if `-btcd-url` is set; empty means skip it entirely) right after opening the watches store and before registering the Telegram webhook or starting to listen — the package-level `var btcd *btcdClient` holds the connection, `defer btcd.close()` on shutdown, and a dial failure is fatal (matches how `store`'s open failure is handled). The handler passed in is `btcdNotificationLogger`, which just logs every notification (`log.Printf("btcd notification: ...")`) — nothing yet matches a notification against a specific watch or sends a Telegram message for it; that logic doesn't exist.
 
 `btcd_test.go` fakes the btcd server with an in-process `httptest.Server` + `websocket.Upgrader` (same philosophy as the Telegram tests — no real btcd node needed to run `go test`). It was additionally verified once, manually, against a real locally-built `btcd --regtest --notls` node; that was throwaway verification, not something reflected in the checked-in tests.
+
+### The /info lookup
+
+`info()` in `main.go` classifies its (non-empty) argument into exactly one of three kinds, checked **in this order**: transaction (`isTxid`: exactly 64 hex characters), then block height (parses as a non-negative base-10 integer via `strconv.ParseInt`), then address (the catch-all). The order matters and is not arbitrary: a 64-character string of all decimal digits (e.g. all zeros) satisfies *both* the txid shape and `ParseInt`, since decimal digits are a subset of hex digits — checking txid first is what disambiguates it correctly. This was a real bug caught by manual testing against a live regtest node, not a hypothetical; don't reorder these checks without re-verifying against a real node.
+
+Each of the three branches calls btcd directly and replies with a plain-text (no Markdown/HTML parse_mode) multi-line message: transaction via `getRawTransaction` (reports confirmation status and the summed `Vout[].Value` as the amount — unconfirmed mempool transactions skip the block/time fields entirely rather than showing zero values), block via `getBlockHash` + `getBlockHeader`, and address via `validateAddress` (type derived from `IsWitness`/`IsScript`) plus a best-effort `searchRawTransactions` call for recent activity. The `searchRawTransactions` call requires btcd's `--addrindex` flag; if it errors for any reason (index disabled, still catching up, etc.) `info()` doesn't fail the whole reply, it just reports activity as unavailable — this is deliberate graceful degradation, not a TODO to fix by making it fail loudly.
+
+If the package-level `btcd` is `nil` (not configured via `-btcd-url`), `info()` replies with a fixed "not configured" message instead of attempting any of the above — every branch depends on btcd, so this is checked once up front.
+
+`isTxid` is shared between `info()` and `watch()`'s existing classification (it's the one piece of `/info`'s classification logic used at more than one call site, so unlike everything else here it's a real extracted helper, not inlined).
 
 ### The watches store
 
