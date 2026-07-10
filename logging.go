@@ -2,7 +2,7 @@ package main
 
 import "log"
 
-// verbosity gates which log levels are emitted (set from -verbosity in main()):
+// verbosity gates which log levels are emitted (set from -verbose in main()):
 //   0 (default) — ERR, WARN, and status lines (Listening, Shutting down, ...)
 //   1           — adds INFO (messages sent, subscriptions added/removed, ...)
 //   2           — adds NET (raw btcd/Telegram traffic) and DB (storage requests)

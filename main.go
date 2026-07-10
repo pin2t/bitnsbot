@@ -21,7 +21,7 @@ import "time"
 import "github.com/sourcegraph/jsonrpc2"
 
 var configPath      = flag.String("config", "", "path to a properties file (name=value lines) with flag values; command-line flags take precedence")
-var verbosityFlag   = flag.Int("verbosity", 0, "log verbosity: 0=ERR/WARN/status, 1=+INFO, 2=+NET/DB (raw external traffic and storage requests)")
+var verbosityFlag   = flag.Int("verbose", 0, "log verbosity: 0=ERR/WARN/status, 1=+INFO, 2=+NET/DB (raw external traffic and storage requests)")
 var botToken        = flag.String("tg-bot-token", "", "Telegram bot token authenticating outbound Bot API calls (required)")
 var listenAddr      = flag.String("listen", ":8080", "listen address")
 var webhookPath     = flag.String("webhook-path", "/bot", "path the Bot API server will POST updates to")
