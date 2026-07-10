@@ -11,7 +11,26 @@ import "testing"
 import "time"
 
 import "github.com/gorilla/websocket"
-import "github.com/sourcegraph/jsonrpc2"
+
+func countWatchers(watchID string) int {
+    watchersMu.Lock()
+    defer watchersMu.Unlock()
+    var n int
+    for _, w := range watchers {
+        if w.watchID == watchID { n++ }
+    }
+    return n
+}
+
+func watcherChats(watchID string) []int64 {
+    watchersMu.Lock()
+    defer watchersMu.Unlock()
+    var ids []int64
+    for _, w := range watchers {
+        if w.watchID == watchID { ids = append(ids, w.chatID) }
+    }
+    return ids
+}
 
 // TestWatchNotification drives the full address-watch notification path: a
 // /watch on an address loads it into btcd's filter, btcd pushes a
@@ -70,14 +89,15 @@ func TestWatchNotification(t *testing.T) {
     defer btcdSrv.Close()
     var url = "ws://" + strings.TrimPrefix(btcdSrv.URL, "http://") + "/ws"
     var dialErr error
-    btcd, dialErr = dialBtcd(context.Background(), btcdConfig{url: url, user: "u", pass: "p"}, jsonrpc2.AsyncHandler(btcdNotifier{bot: b}))
+    btcd, dialErr = dialBtcd(context.Background(), btcdConfig{url: url, user: "u", pass: "p"}, notifier{})
     if dialErr != nil {
         t.Fatalf("dialBtcd: %v", dialErr)
     }
     defer func() { btcd.close(); btcd = nil }()
     store, _ = openWatchStore(filepath.Join(t.TempDir(), "watches.db"))
     defer store.close()
-    watchersByAddr = make(map[string][]int64)
+    stopAllWatchers()
+    defer stopAllWatchers()
     watch(b, 42, watchedAddr)
     var deadline = time.Now().Add(3 * time.Second)
     for time.Now().Before(deadline) {
@@ -119,21 +139,22 @@ func TestUnwatchFlow(t *testing.T) {
     defer server.Close()
     var b = newBot("TESTTOKEN", server.URL)
     btcd = nil
-    watchersByAddr = make(map[string][]int64)
+    stopAllWatchers()
+    defer stopAllWatchers()
     store, _ = openWatchStore(filepath.Join(t.TempDir(), "watches.db"))
     defer store.close()
     var addr = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
     update(b, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/watch " + addr}})
     update(b, Update{Message: &Message{Chat: Chat{ID: 2}, Text: "/watch " + addr}})
-    if len(watchersByAddr[addr]) != 2 {
-        t.Fatalf("expected 2 watchers, got %#v", watchersByAddr[addr])
+    if countWatchers(addr) != 2 {
+        t.Fatalf("expected 2 watchers, got %d", countWatchers(addr))
     }
-    // chat 2 unwatches; only chat 1 must remain, both in the routing map and the store
+    // chat 2 unwatches; only chat 1 must remain, both as a live watcher and in the store
     update(b, Update{Message: &Message{Chat: Chat{ID: 2}, Text: "/unwatch " + addr}})
     if sent[len(sent)-1] != "Stopped watching "+addr+"." {
         t.Fatalf("unexpected unwatch reply: %#v", sent)
     }
-    if got := watchersByAddr[addr]; len(got) != 1 || got[0] != 1 {
+    if got := watcherChats(addr); len(got) != 1 || got[0] != 1 {
         t.Fatalf("expected only chat 1 to remain, got %#v", got)
     }
     var records, _ = store.list()
@@ -157,8 +178,8 @@ func TestUnwatchFlow(t *testing.T) {
     if pendingUnwatchChats[1] {
         t.Fatalf("expected pending cleared")
     }
-    if len(watchersByAddr[addr]) != 0 {
-        t.Fatalf("expected no watchers left, got %#v", watchersByAddr[addr])
+    if countWatchers(addr) != 0 {
+        t.Fatalf("expected no watchers left, got %d", countWatchers(addr))
     }
 }
 

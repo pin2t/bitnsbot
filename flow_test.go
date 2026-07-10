@@ -165,6 +165,8 @@ func TestWatchFlow(t *testing.T) {
         t.Fatalf("openWatchStore: %v", err)
     }
     defer store.close()
+    stopAllWatchers()
+    defer stopAllWatchers()
     update(bot, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/watch"}})
     if len(sent) != 1 || sent[0] != "Please send what you'd like to watch in a separate message." {
         t.Fatalf("unexpected first reply: %#v", sent)
