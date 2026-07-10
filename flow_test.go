@@ -40,8 +40,8 @@ func TestInfoFlow(t *testing.T) {
         t.Fatalf("expected chat 1 pending flag cleared")
     }
     update(bot, Update{Message: &Message{Chat: Chat{ID: 3}, Text: "/start"}})
-    if len(sent) != 3 || sent[2] != "Hello! I'm bitnsbot. I'll notify you about Bitcoin network events." {
-        t.Fatalf("unexpected third reply: %#v", sent)
+    if len(sent) != 3 || !strings.Contains(sent[2], "<b>/info</b>") || !strings.Contains(sent[2], "<b>/watches</b>") {
+        t.Fatalf("unexpected /start reply: %#v", sent)
     }
     update(bot, Update{Message: &Message{Chat: Chat{ID: 4}, Text: "just chatting, no pending info"}})
     if len(sent) != 3 {
