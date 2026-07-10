@@ -112,7 +112,7 @@ func notifyWatchers(bot *bot, txHex string) {
     }
     for addr, amount := range received {
         for _, chatID := range watchersOf(addr) {
-            sendReply(bot, chatID, fmt.Sprintf(
+            send(bot, chatID, fmt.Sprintf(
                 "🔔 New transaction on watched address %s\n\n<pre>Tx:     %s\nAmount: %s satoshi</pre>",
                 short(addr), short(tx.Txid), satoshi(amount),
             ))
@@ -239,7 +239,7 @@ func update(bot *bot, update Update) {
     var command, arg = parseCommand(msg.Text)
     switch command {
     case "/start":
-        sendReply(bot, msg.Chat.ID, "Hello! I'm bitnsbot. I'll notify you about Bitcoin network events.")
+        send(bot, msg.Chat.ID, "Hello! I'm bitnsbot. I'll notify you about Bitcoin network events.")
     case "/info":
         info(bot, msg.Chat.ID, arg)
     case "/watch":
@@ -349,14 +349,14 @@ func info(bot *bot, chatID int64, arg string) {
         pendingInfoMu.Lock()
         pendingInfoChats[chatID] = true
         pendingInfoMu.Unlock()
-        sendReply(bot, chatID, "Please send the info text in a separate message.")
+        send(bot, chatID, "Please send Bitcoin address or transaction or block number")
         return
     }
     pendingInfoMu.Lock()
     delete(pendingInfoChats, chatID)
     pendingInfoMu.Unlock()
     if btcd == nil {
-        sendReply(bot, chatID, "Bitcoin node connection is not configured.")
+        send(bot, chatID, "Bitcoin node connection is not configured.")
         return
     }
     var ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
@@ -375,7 +375,7 @@ func info(bot *bot, chatID int64, arg string) {
 func transaction(ctx context.Context, bot *bot, chatID int64, txid string) {
     var tx, err = btcd.getRawTransaction(ctx, txid)
     if err != nil {
-        sendReply(bot, chatID, "Couldn't find transaction "+short(txid)+".")
+        send(bot, chatID, "Couldn't find transaction "+short(txid)+".")
         return
     }
     var total float64
@@ -384,10 +384,10 @@ func transaction(ctx context.Context, bot *bot, chatID int64, txid string) {
     }
     var amount = satoshi(total)
     if tx.Confirmations == 0 {
-        sendReply(bot, chatID, fmt.Sprintf("Transaction %s\n\n<pre>Status: unconfirmed (in mempool)\nAmount: %s satoshi</pre>", short(tx.Txid), amount))
+        send(bot, chatID, fmt.Sprintf("Transaction %s\n\n<pre>Status: unconfirmed (in mempool)\nAmount: %s satoshi</pre>", short(tx.Txid), amount))
         return
     }
-    sendReply(bot, chatID, fmt.Sprintf(
+    send(bot, chatID, fmt.Sprintf(
         "Transaction %s\n\n<pre>Status: confirmed (%d confirmations)\nBlock:  %s\nTime:   %s\nAmount: %s satoshi</pre>",
         short(tx.Txid), tx.Confirmations, short(tx.BlockHash), when(tx.Time), amount,
     ))
@@ -396,13 +396,13 @@ func transaction(ctx context.Context, bot *bot, chatID int64, txid string) {
 func block(ctx context.Context, bot *bot, chatID int64, height int64) {
     var hash, err = btcd.getBlockHash(ctx, height)
     if err != nil {
-        sendReply(bot, chatID, fmt.Sprintf("Couldn't find block %d.", height))
+        send(bot, chatID, fmt.Sprintf("Couldn't find block %d.", height))
         return
     }
     var header, headerErr = btcd.getBlockHeader(ctx, hash)
     if headerErr != nil {
         log.Println("get block header:", headerErr)
-        sendReply(bot, chatID, "Sorry, something went wrong fetching that block.")
+        send(bot, chatID, "Sorry, something went wrong fetching that block.")
         return
     }
     var difficulty = header.Difficulty
@@ -413,7 +413,7 @@ func block(ctx context.Context, bot *bot, chatID int64, height int64) {
         unit = u
     }
     var diff = strings.TrimRight(strings.TrimRight(strconv.FormatFloat(difficulty, 'f', 2, 64), "0"), ".") + unit
-    sendReply(bot, chatID, fmt.Sprintf(
+    send(bot, chatID, fmt.Sprintf(
         "Block #%d\n\n<pre>Hash:          %s\nTime:          %s\nConfirmations: %d\nDifficulty:    %s</pre>",
         header.Height, short(header.Hash), when(header.Time), header.Confirmations, diff,
     ))
@@ -423,11 +423,11 @@ func address(ctx context.Context, bot *bot, chatID int64, addr string) {
     var addrInfo, err = btcd.validateAddress(ctx, addr)
     if err != nil {
         log.Println("validate address:", err)
-        sendReply(bot, chatID, "Sorry, something went wrong looking up that address.")
+        send(bot, chatID, "Sorry, something went wrong looking up that address.")
         return
     }
     if !addrInfo.IsValid {
-        sendReply(bot, chatID, html.EscapeString(addr)+" doesn't look like a valid Bitcoin address.")
+        send(bot, chatID, html.EscapeString(addr)+" doesn't look like a valid Bitcoin address.")
         return
     }
     var addrType = "standard (P2PKH)"
@@ -440,7 +440,7 @@ func address(ctx context.Context, bot *bot, chatID int64, addr string) {
     if txs, txErr := btcd.searchRawTransactions(ctx, addr, 10); txErr == nil {
         activity = fmt.Sprintf("%d transaction(s) found", len(txs))
     }
-    sendReply(bot, chatID, fmt.Sprintf("Address %s\n\n<pre>Type:            %s\nRecent activity: %s</pre>", short(addr), addrType, activity))
+    send(bot, chatID, fmt.Sprintf("Address %s\n\n<pre>Type:            %s\nRecent activity: %s</pre>", short(addr), addrType, activity))
 }
 
 var pendingWatchMu sync.Mutex
@@ -451,7 +451,7 @@ func watch(bot *bot, chatID int64, arg string) {
         pendingWatchMu.Lock()
         pendingWatchChats[chatID] = true
         pendingWatchMu.Unlock()
-        sendReply(bot, chatID, "Please send what you'd like to watch in a separate message.")
+        send(bot, chatID, "Please send what you'd like to watch in a separate message.")
         return
     }
     pendingWatchMu.Lock()
@@ -463,7 +463,7 @@ func watch(bot *bot, chatID int64, arg string) {
     }
     if err := store.add(chatID, typ, arg); err != nil {
         log.Println("add watch:", err)
-        sendReply(bot, chatID, "Sorry, something went wrong saving that watch.")
+        send(bot, chatID, "Sorry, something went wrong saving that watch.")
         return
     }
     if typ == watchTypeAddress {
@@ -476,7 +476,7 @@ func watch(bot *bot, chatID int64, arg string) {
             cancel()
         }
     }
-    sendReply(bot, chatID, "Watching "+string(typ)+": "+html.EscapeString(arg))
+    send(bot, chatID, "Watching "+string(typ)+": "+html.EscapeString(arg))
 }
 
 var pendingUnwatchMu sync.Mutex
@@ -487,7 +487,7 @@ func unwatch(bot *bot, chatID int64, arg string) {
         pendingUnwatchMu.Lock()
         pendingUnwatchChats[chatID] = true
         pendingUnwatchMu.Unlock()
-        sendReply(bot, chatID, "Please send the watch you'd like to stop in a separate message.")
+        send(bot, chatID, "Please send the watch you'd like to stop in a separate message.")
         return
     }
     pendingUnwatchMu.Lock()
@@ -496,11 +496,11 @@ func unwatch(bot *bot, chatID int64, arg string) {
     var removed, err = store.remove(chatID, arg)
     if err != nil {
         log.Println("remove watch:", err)
-        sendReply(bot, chatID, "Sorry, something went wrong removing that watch.")
+        send(bot, chatID, "Sorry, something went wrong removing that watch.")
         return
     }
     if removed == 0 {
-        sendReply(bot, chatID, "You're not watching "+html.EscapeString(arg)+".")
+        send(bot, chatID, "You're not watching "+html.EscapeString(arg)+".")
         return
     }
     if !isTxid(arg) {
@@ -513,14 +513,14 @@ func unwatch(bot *bot, chatID int64, arg string) {
             cancel()
         }
     }
-    sendReply(bot, chatID, "Stopped watching "+html.EscapeString(arg)+".")
+    send(bot, chatID, "Stopped watching "+html.EscapeString(arg)+".")
 }
 
 func watches(bot *bot, chatID int64) {
     var records, err = store.list()
     if err != nil {
         log.Println("list watches:", err)
-        sendReply(bot, chatID, "Sorry, something went wrong listing your watches.")
+        send(bot, chatID, "Sorry, something went wrong listing your watches.")
         return
     }
     var addresses, transactions []string
@@ -535,7 +535,7 @@ func watches(bot *bot, chatID int64) {
         }
     }
     if len(addresses) == 0 && len(transactions) == 0 {
-        sendReply(bot, chatID, "You're not watching anything yet.")
+        send(bot, chatID, "You're not watching anything yet.")
         return
     }
     var lines = []string{"Your watches:"}
@@ -551,10 +551,10 @@ func watches(bot *bot, chatID int64) {
             lines = append(lines, "<code>"+html.EscapeString(t)+"</code>")
         }
     }
-    sendReply(bot, chatID, strings.Join(lines, "\n"))
+    send(bot, chatID, strings.Join(lines, "\n"))
 }
 
-func sendReply(bot *bot, chatID int64, text string) {
+func send(bot *bot, chatID int64, text string) {
     var ctx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
     defer cancel()
     if err := bot.send(ctx, chatID, text); err != nil {
