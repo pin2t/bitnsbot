@@ -302,7 +302,7 @@ func update(bot *bot, update Update) {
     var command, arg = parseCommand(msg.Text)
     switch command {
     case "/start":
-        send(bot, msg.Chat.ID, "Hello! I'm bitnsbot. I'll notify you about Bitcoin network events.")
+        start(bot, msg.Chat.ID)
     case "/info":
         info(bot, msg.Chat.ID, arg)
     case "/watch":
@@ -405,6 +405,18 @@ func satoshi(btc float64) string {
         s = s[:i] + " " + s[i:]
     }
     return s
+}
+
+func start(bot *bot, chatID int64) {
+    send(bot, chatID, strings.Join([]string{
+        "Hi! I'm bitnsbot — I keep an eye on the Bitcoin network for you.",
+        "",
+        "• <b>/info</b> — look up a transaction, block, or address",
+        "• <b>/watch</b> — get notified when an address receives a transaction",
+        "• <b>/unwatch</b> — stop watching an address or transaction",
+        "• <b>/watches</b> — list what you're currently watching",
+        "• <b>/start</b> — show this message",
+    }, "\n"))
 }
 
 func info(bot *bot, chatID int64, arg string) {
