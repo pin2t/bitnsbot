@@ -11,10 +11,12 @@ import "log"
 import "math"
 import "net/http"
 import "os"
+import "os/signal"
 import "slices"
 import "strconv"
 import "strings"
 import "sync"
+import "syscall"
 import "time"
 
 import "github.com/sourcegraph/jsonrpc2"
@@ -166,7 +168,6 @@ func main() {
     if err != nil {
         log.Fatal("open watches database: ", err)
     }
-    defer store.close()
     if *btcdURL != "" {
         var btcdCtx, btcdCancel = context.WithTimeout(context.Background(), 15*time.Second)
         btcd, err = dialBtcd(btcdCtx, btcdConfig{
@@ -180,7 +181,6 @@ func main() {
         if err != nil {
             log.Fatal("dial btcd: ", err)
         }
-        defer btcd.close()
         fmt.Println("Connected to btcd at", *btcdURL)
     }
     restoreWatches()
@@ -197,10 +197,38 @@ func main() {
         fmt.Println("Webhook registered at", *webhookURL)
     }
     http.HandleFunc(*webhookPath, webhookHandler(bot))
-    fmt.Println("Listening", *listenAddr, "...")
-    err = http.ListenAndServe(*listenAddr, nil)
-    if err != nil {
-        log.Fatal("error listening: ", err)
+    var srv = &http.Server{Addr: *listenAddr}
+    var ctx, stop = signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+    defer stop()
+    go func() {
+        fmt.Println("Listening", *listenAddr, "...")
+        if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+            log.Fatal("error listening: ", err)
+        }
+    }()
+    <-ctx.Done()
+    stop()
+    shutdown(srv)
+}
+
+// shutdown tears down in dependency order: the webhook server first, so its
+// handlers (which use store and btcd) all finish before the connections they
+// depend on are closed — srv.Shutdown blocks until in-flight requests drain —
+// then btcd, then the watches database.
+func shutdown(srv *http.Server) {
+    fmt.Println("Shutting down...")
+    var ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
+    defer cancel()
+    if err := srv.Shutdown(ctx); err != nil {
+        log.Println("webhook server shutdown:", err)
+    }
+    if btcd != nil {
+        if err := btcd.close(); err != nil {
+            log.Println("close btcd:", err)
+        }
+    }
+    if err := store.close(); err != nil {
+        log.Println("close watches database:", err)
     }
 }
 
