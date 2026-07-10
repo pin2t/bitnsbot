@@ -11,12 +11,12 @@ bitnsbot is a Bitcoin network events notification bot for Telegram. It's a singl
 - Build: `go build ./...`
 - Run: `go run . -tg-bot-token <token> -webhook-url http://localhost:8080/bot -api-base-url http://localhost:8081`
 - Test all: `go test ./...`
-- Test one: `go test -run TestWatchFlow -v` (other tests: `TestInfoFlow`, `TestUnwatchFlow`, `TestWatchesFlow`, `TestWatchNotification`, `TestShutdown*`, `TestMessageLogging`, `TestWatchStore*`, `TestConfig`, `TestBtcd*`). Run the whole suite with `-race` (`go test -race ./...`) — the watch-notification path is concurrent.
+- Test one: `go test -run TestWatchFlow -v` (other tests: `TestInfoFlow`, `TestUnwatchFlow`, `TestWatchesFlow`, `TestWatchNotification`, `TestShutdown*`, `TestMessageLogging`, `TestLoggingLevels`, `TestWatchStore*`, `TestConfig`, `TestBtcd*`). Run the whole suite with `-race` (`go test -race ./...`) — the watch-notification path is concurrent.
 - Vet: `go vet ./...`
 
 There is no Makefile or linter config in this repo — `go build`/`go vet`/`go test` are the only checks available (and are exactly what `.github/workflows/ci.yml` runs on every pull request, on Go 1.26). `gofmt -l .` will flag files as unformatted by design; see Style below before "fixing" that.
 
-Flags (all in `main.go`): `-config` (path to a `name=value` properties file to load flag values from — see The config file below), `-tg-bot-token` (Telegram bot token, required), `-listen` (address this bot's webhook server binds to), `-webhook-path`, `-webhook-url` (the URL registered via `setWebhook`), `-api-base-url` (Bot API server to call), `-secret-token` (optional), `-register-webhook` (set false to skip calling `setWebhook` on startup), `-db` (path to the bbolt watches database, default `watches.db`), `-btcd-url`/`-btcd-user`/`-btcd-pass`/`-btcd-cert`/`-btcd-insecure-tls` (btcd RPC connection; leaving `-btcd-url` empty skips connecting to btcd entirely).
+Flags (all in `main.go`): `-config` (path to a `name=value` properties file to load flag values from — see The config file below), `-verbosity` (log level 0/1/2 — see Logging below), `-tg-bot-token` (Telegram bot token, required), `-listen` (address this bot's webhook server binds to), `-webhook-path`, `-webhook-url` (the URL registered via `setWebhook`), `-api-base-url` (Bot API server to call), `-secret-token` (optional), `-register-webhook` (set false to skip calling `setWebhook` on startup), `-db` (path to the bbolt watches database, default `watches.db`), `-btcd-url`/`-btcd-user`/`-btcd-pass`/`-btcd-cert`/`-btcd-insecure-tls` (btcd RPC connection; leaving `-btcd-url` empty skips connecting to btcd entirely).
 
 ## Runtime model
 
@@ -28,12 +28,23 @@ The bot is designed to run behind a self-hosted `telegram-bot-api` proxy (https:
 
 ## Architecture
 
-Five source files, all `package main`:
+Six source files, all `package main`:
 - `telegram.go` — the Bot API client: the unexported `bot` type, `newBot`, and `call`/`send`/`setWebhook` methods, plus the wire types (`Update`, `Message`, `User`, `Chat`) decoded from incoming webhook JSON.
-- `watches.go` — the `watchStore` (a single bbolt bucket named `watches`), storing one JSON-encoded `watchRecord` per watch under an auto-incrementing key (`bbolt.Bucket.NextSequence` + big-endian encoding, the standard bbolt idiom for ordered keys). No update/list/delete — only `add`, since nothing else needs it yet.
+- `watches.go` — the `watchStore` (a single bbolt bucket named `watches`), storing one JSON-encoded `watchRecord` per watch under an auto-incrementing key (`bbolt.Bucket.NextSequence` + big-endian encoding, the standard bbolt idiom for ordered keys); exposes `add`/`list`/`remove` (see The watches store below).
 - `btcd.go` — a `btcdClient` for talking to a `btcd` node's JSON-RPC-over-websocket API (see below).
 - `config.go` — `applyConfig`, a tiny `name=value` properties-file parser that sets flags from a `-config` file (see below).
+- `logging.go` — leveled logging helpers and the `-verbosity` gate (see Logging below).
 - `main.go` — flags, the HTTP webhook server, and all command handling/dispatch.
+
+### Logging
+
+Everything logs through the helpers in `logging.go` — never `fmt.Print*` or the `log` package directly (both are considered raw and shouldn't reappear in `main.go`/`telegram.go`/`btcd.go`/`watches.go`). The package var `verbosity` (set from `-verbosity` in `main()`, so it's also `-config`-settable) gates emission:
+- `logErr`/`logWarn` and `logStatus` (lifecycle lines: "listening on …", "shutting down", "connected to btcd …") always print — verbosity 0.
+- `logInfo` (verbosity ≥ 1): high-level events — an incoming message (`logMessage`), a reply sent (`send`), a subscription added/removed (`watch`/`unwatch`).
+- `logNet` and `logDb` (verbosity ≥ 2): raw external traffic and storage requests. NET is emitted from `telegram.go`'s `bot.call` (request method + body, response body) and from `btcd.go` via `jsonrpc2.OnSend`/`OnRecv` hooks that are **only registered when `verbosity >= 2`** (zero overhead otherwise; `verbosity` is set before `dialBtcd` runs). DB is emitted from each `watchStore` method.
+- `logFatal` is `logErr` + `os.Exit` for the startup fatals.
+
+Two deliberate redactions in NET logging, both to avoid leaking secrets that a debug log would otherwise capture: the Telegram request URL (which embeds `-tg-bot-token`) is never logged — only the method and JSON body — and the `setWebhook` body is omitted entirely because it carries `-secret-token`. Everything else (including sent message text and btcd payloads) is logged verbatim at verbosity 2.
 
 ### The config file
 

@@ -38,8 +38,32 @@ func dialBtcd(ctx context.Context, cfg btcdConfig, handler jsonrpc2.Handler) (*b
     var wsConn, _, err = dialer.DialContext(ctx, cfg.url, header)
     if err != nil { return nil, err }
     var stream = jsonrpc2ws.NewObjectStream(wsConn)
-    var conn = jsonrpc2.NewConn(ctx, stream, handler)
+    var opts []jsonrpc2.ConnOpt
+    if verbosity >= 2 {
+        opts = append(opts,
+            jsonrpc2.OnSend(func(req *jsonrpc2.Request, resp *jsonrpc2.Response) { logNet("btcd → %s", btcdMsg(req, resp)) }),
+            jsonrpc2.OnRecv(func(req *jsonrpc2.Request, resp *jsonrpc2.Response) { logNet("btcd ← %s", btcdMsg(req, resp)) }),
+        )
+    }
+    var conn = jsonrpc2.NewConn(ctx, stream, handler, opts...)
     return &btcdClient{conn: conn}, nil
+}
+
+// btcdMsg formats a logged jsonrpc2 message. OnRecv passes both the original
+// request and the response, so a response is preferred when present; a bare
+// request (OnSend, or a received notification) falls through to method+params.
+func btcdMsg(req *jsonrpc2.Request, resp *jsonrpc2.Response) string {
+    if resp != nil {
+        if resp.Error != nil { return "error " + resp.Error.Error() }
+        if resp.Result != nil { return string(*resp.Result) }
+        return ""
+    }
+    if req != nil {
+        var params = ""
+        if req.Params != nil { params = string(*req.Params) }
+        return strings.TrimSpace(req.Method + " " + params)
+    }
+    return ""
 }
 
 func btcdTLSConfig(cfg btcdConfig) (*tls.Config, error) {
