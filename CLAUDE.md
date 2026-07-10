@@ -9,14 +9,14 @@ bitnsbot is a Bitcoin network events notification bot for Telegram. It's a singl
 ## Commands
 
 - Build: `go build ./...`
-- Run: `go run . -tg-bot-token <token> -webhook-url http://localhost:8080/bot -api-base-url http://localhost:8081`
+- Run: `go run . -bot-token <token> -webhook-url http://localhost:8080/bot -api-base-url http://localhost:8081`
 - Test all: `go test ./...`
-- Test one: `go test -run TestWatchFlow -v` (other tests: `TestInfoFlow`, `TestUnwatchFlow`, `TestWatchesFlow`, `TestWatchNotification`, `TestShutdown*`, `TestMessageLogging`, `TestWatchStore*`, `TestConfig`, `TestBtcd*`). Run the whole suite with `-race` (`go test -race ./...`) — the watch-notification path is concurrent.
+- Test one: `go test -run TestWatchFlow -v` (other tests: `TestInfoFlow`, `TestUnwatchFlow`, `TestWatchesFlow`, `TestWatchNotification`, `TestShutdown*`, `TestMessageLogging`, `TestLoggingLevels`, `TestWatchStore*`, `TestConfig`, `TestBtcd*`). Run the whole suite with `-race` (`go test -race ./...`) — the watch-notification path is concurrent.
 - Vet: `go vet ./...`
 
 There is no Makefile or linter config in this repo — `go build`/`go vet`/`go test` are the only checks available (and are exactly what `.github/workflows/ci.yml` runs on every pull request, on Go 1.26). `gofmt -l .` will flag files as unformatted by design; see Style below before "fixing" that.
 
-Flags (all in `main.go`): `-config` (path to a `name=value` properties file to load flag values from — see The config file below), `-tg-bot-token` (Telegram bot token, required), `-listen` (address this bot's webhook server binds to), `-webhook-path`, `-webhook-url` (the URL registered via `setWebhook`), `-api-base-url` (Bot API server to call), `-secret-token` (optional), `-register-webhook` (set false to skip calling `setWebhook` on startup), `-db` (path to the bbolt watches database, default `watches.db`), `-btcd-url`/`-btcd-user`/`-btcd-pass`/`-btcd-cert`/`-btcd-insecure-tls` (btcd RPC connection; leaving `-btcd-url` empty skips connecting to btcd entirely).
+Flags (all in `main.go`): `-config` (path to a `name=value` properties file to load flag values from — see The config file below), `-verbose` (log level 0/1/2 — see Logging below), `-bot-token` (Telegram bot token, required), `-listen` (address this bot's webhook server binds to), `-webhook-path`, `-webhook-url` (the URL registered via `setWebhook`), `-api-base-url` (Bot API server to call), `-secret-token` (optional), `-register-webhook` (set false to skip calling `setWebhook` on startup), `-db` (path to the bbolt watches database, default `watches.db`), `-btcd-url`/`-btcd-user`/`-btcd-pass`/`-btcd-cert`/`-btcd-insecure-tls` (btcd RPC connection; leaving `-btcd-url` empty skips connecting to btcd entirely).
 
 ## Runtime model
 
@@ -24,16 +24,27 @@ The bot is designed to run behind a self-hosted `telegram-bot-api` proxy (https:
 - `-api-base-url` defaults to `http://localhost:8081`; `telegram.go`'s `bot.call` builds every outgoing request URL from it.
 - The webhook HTTP server is a plain `*http.Server` (via `srv.ListenAndServe` in a goroutine) — no TLS. The local proxy is assumed to own the real HTTPS conversation with Telegram; the hop from proxy to this bot is local/plaintext.
 - **Graceful shutdown**: `main()` uses `signal.NotifyContext(…, os.Interrupt, syscall.SIGTERM)` and blocks on the returned context; on SIGINT/SIGTERM it calls `shutdown(srv)`, which tears down **in dependency order — webhook server first, then btcd, then the store**. That order is load-bearing: `srv.Shutdown` blocks until in-flight webhook handlers drain, and those handlers use `store` and `btcd`, so closing the server first guarantees no handler is mid-request when the connections it depends on are closed. After the first signal `stop()` is called to restore default handling, so a second Ctrl+C during a slow drain force-kills. (Note: the old `defer store.close()`/`defer btcd.close()` were dead code — `http.ListenAndServe` blocked forever and only ever returned into a `log.Fatal`, i.e. `os.Exit`, which never runs defers; this feature is the first real cleanup path.)
-- Two secrets, both flags: `-tg-bot-token` (required) authenticates outbound Bot API calls. `-secret-token` (optional) is passed to `setWebhook` and then checked against the `X-Telegram-Bot-Api-Secret-Token` header on every incoming request (constant-time compare in `main.go`'s webhook handler) — this is the only thing stopping an arbitrary POST to the webhook path from being treated as a real Telegram update. Since both are flags they can be supplied via the `-config` file; prefer that over the command line for real deployments, since command-line args are visible to other users via `ps`.
+- Two secrets, both flags: `-bot-token` (required) authenticates outbound Bot API calls. `-secret-token` (optional) is passed to `setWebhook` and then checked against the `X-Telegram-Bot-Api-Secret-Token` header on every incoming request (constant-time compare in `main.go`'s webhook handler) — this is the only thing stopping an arbitrary POST to the webhook path from being treated as a real Telegram update. Since both are flags they can be supplied via the `-config` file; prefer that over the command line for real deployments, since command-line args are visible to other users via `ps`.
 
 ## Architecture
 
-Five source files, all `package main`:
+Six source files, all `package main`:
 - `telegram.go` — the Bot API client: the unexported `bot` type, `newBot`, and `call`/`send`/`setWebhook` methods, plus the wire types (`Update`, `Message`, `User`, `Chat`) decoded from incoming webhook JSON.
-- `watches.go` — the `watchStore` (a single bbolt bucket named `watches`), storing one JSON-encoded `watchRecord` per watch under an auto-incrementing key (`bbolt.Bucket.NextSequence` + big-endian encoding, the standard bbolt idiom for ordered keys). No update/list/delete — only `add`, since nothing else needs it yet.
+- `watches.go` — the `watchStore` (a single bbolt bucket named `watches`), storing one JSON-encoded `watchRecord` per watch under an auto-incrementing key (`bbolt.Bucket.NextSequence` + big-endian encoding, the standard bbolt idiom for ordered keys); exposes `add`/`list`/`remove` (see The watches store below).
 - `btcd.go` — a `btcdClient` for talking to a `btcd` node's JSON-RPC-over-websocket API (see below).
 - `config.go` — `applyConfig`, a tiny `name=value` properties-file parser that sets flags from a `-config` file (see below).
+- `logging.go` — leveled logging helpers and the `-verbose` gate (see Logging below).
 - `main.go` — flags, the HTTP webhook server, and all command handling/dispatch.
+
+### Logging
+
+Everything logs through the helpers in `logging.go` — never `fmt.Print*` or the `log` package directly (both are considered raw and shouldn't reappear in `main.go`/`telegram.go`/`btcd.go`/`watches.go`). The package var `verbosity` (set from `-verbose` in `main()`, so it's also `-config`-settable) gates emission:
+- `logErr`/`logWarn` and `logStatus` (lifecycle lines: "listening on …", "shutting down", "connected to btcd …") always print — verbosity 0.
+- `logInfo` (verbosity ≥ 1): high-level events — an incoming message (`logMessage`), a reply sent (`send`), a subscription added/removed (`watch`/`unwatch`).
+- `logNet` and `logDb` (verbosity ≥ 2): raw external traffic and storage requests. NET is emitted from `telegram.go`'s `bot.call` (request method + body, response body) and from `btcd.go` via `jsonrpc2.OnSend`/`OnRecv` hooks that are **only registered when `verbosity >= 2`** (zero overhead otherwise; `verbosity` is set before `dialBtcd` runs). DB is emitted from each `watchStore` method.
+- `logFatal` is `logErr` + `os.Exit` for the startup fatals.
+
+Two deliberate redactions in NET logging, both to avoid leaking secrets that a debug log would otherwise capture: the Telegram request URL (which embeds `-bot-token`) is never logged — only the method and JSON body — and the `setWebhook` body is omitted entirely because it carries `-secret-token`. Everything else (including sent message text and btcd payloads) is logged verbatim at verbosity 2.
 
 ### The config file
 

@@ -7,7 +7,6 @@ import "encoding/json"
 import "flag"
 import "fmt"
 import "html"
-import "log"
 import "math"
 import "net/http"
 import "os"
@@ -22,7 +21,8 @@ import "time"
 import "github.com/sourcegraph/jsonrpc2"
 
 var configPath      = flag.String("config", "", "path to a properties file (name=value lines) with flag values; command-line flags take precedence")
-var botToken        = flag.String("tg-bot-token", "", "Telegram bot token authenticating outbound Bot API calls (required)")
+var verbosityFlag   = flag.Int("verbose", 0, "log verbosity: 0=ERR/WARN/status, 1=+INFO, 2=+NET/DB (raw external traffic and storage requests)")
+var botToken        = flag.String("bot-token", "", "Telegram bot token authenticating outbound Bot API calls (required)")
 var listenAddr      = flag.String("listen", ":8080", "listen address")
 var webhookPath     = flag.String("webhook-path", "/bot", "path the Bot API server will POST updates to")
 var webhookURL      = flag.String("webhook-url", "", "URL the Bot API server should send updates to, e.g. http://localhost:8080/bot")
@@ -99,7 +99,7 @@ func notifyWatchers(bot *bot, txHex string) {
     defer cancel()
     var tx, err = btcd.decodeRawTransaction(ctx, txHex)
     if err != nil {
-        log.Println("decode notified tx:", err)
+        logErr("decode notified tx: %v", err)
         return
     }
     var received = make(map[string]float64)
@@ -128,7 +128,7 @@ func notifyWatchers(bot *bot, txHex string) {
 func restoreWatches() {
     var records, err = store.list()
     if err != nil {
-        log.Println("list watches:", err)
+        logErr("list watches: %v", err)
         return
     }
     var addrs []string
@@ -142,7 +142,7 @@ func restoreWatches() {
     if btcd != nil && len(addrs) > 0 {
         var ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
         if err := btcd.loadTxFilter(ctx, true, addrs, nil); err != nil {
-            log.Println("load tx filter:", err)
+            logWarn("load tx filter: %v", err)
         }
         cancel()
     }
@@ -156,17 +156,18 @@ func main() {
     flag.Parse()
     if *configPath != "" {
         if err := applyConfig(*configPath); err != nil {
-            log.Fatal("apply config: ", err)
+            logFatal("apply config: %v", err)
         }
     }
+    verbosity = *verbosityFlag
     if *botToken == "" {
-        log.Fatal("-tg-bot-token is required")
+        logFatal("-bot-token is required")
     }
     var bot = newBot(*botToken, *apiBaseURL)
     var err error
     store, err = openWatchStore(*dbPath)
     if err != nil {
-        log.Fatal("open watches database: ", err)
+        logFatal("open watches database: %v", err)
     }
     if *btcdURL != "" {
         var btcdCtx, btcdCancel = context.WithTimeout(context.Background(), 15*time.Second)
@@ -179,31 +180,31 @@ func main() {
         }, jsonrpc2.AsyncHandler(btcdNotifier{bot: bot}))
         btcdCancel()
         if err != nil {
-            log.Fatal("dial btcd: ", err)
+            logFatal("dial btcd: %v", err)
         }
-        fmt.Println("Connected to btcd at", *btcdURL)
+        logStatus("connected to btcd at %s", *btcdURL)
     }
     restoreWatches()
     if *registerHook {
         if *webhookURL == "" {
-            log.Fatal("-webhook-url is required when -register-webhook=true")
+            logFatal("-webhook-url is required when -register-webhook=true")
         }
         var ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
         var err = bot.setWebhook(ctx, *webhookURL, *secretToken)
         cancel()
         if err != nil {
-            log.Fatal("set webhook: ", err)
+            logFatal("set webhook: %v", err)
         }
-        fmt.Println("Webhook registered at", *webhookURL)
+        logStatus("webhook registered at %s", *webhookURL)
     }
     http.HandleFunc(*webhookPath, webhookHandler(bot))
     var srv = &http.Server{Addr: *listenAddr}
     var ctx, stop = signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
     defer stop()
     go func() {
-        fmt.Println("Listening", *listenAddr, "...")
+        logStatus("listening on %s", *listenAddr)
         if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-            log.Fatal("error listening: ", err)
+            logFatal("error listening: %v", err)
         }
     }()
     <-ctx.Done()
@@ -216,19 +217,19 @@ func main() {
 // depend on are closed — srv.Shutdown blocks until in-flight requests drain —
 // then btcd, then the watches database.
 func shutdown(srv *http.Server) {
-    fmt.Println("Shutting down...")
+    logStatus("shutting down")
     var ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
     defer cancel()
     if err := srv.Shutdown(ctx); err != nil {
-        log.Println("webhook server shutdown:", err)
+        logErr("webhook server shutdown: %v", err)
     }
     if btcd != nil {
         if err := btcd.close(); err != nil {
-            log.Println("close btcd:", err)
+            logErr("close btcd: %v", err)
         }
     }
     if err := store.close(); err != nil {
-        log.Println("close watches database:", err)
+        logErr("close watches database: %v", err)
     }
 }
 
@@ -248,7 +249,7 @@ func webhookHandler(bot *bot) http.HandlerFunc {
         defer r.Body.Close()
         var u Update
         if err := json.NewDecoder(r.Body).Decode(&u); err != nil {
-            log.Println("decode update:", err)
+            logErr("decode update: %v", err)
             http.Error(w, "bad request", http.StatusBadRequest)
             return
         }
@@ -311,7 +312,7 @@ func logMessage(msg *Message) {
             from = msg.From.FirstName
         }
     }
-    log.Printf("message from %s (chat %d): %s", from, msg.Chat.ID, msg.Text)
+    logInfo("message from %s (chat %d): %s", from, msg.Chat.ID, msg.Text)
 }
 
 func isTxid(s string) bool {
@@ -429,7 +430,7 @@ func block(ctx context.Context, bot *bot, chatID int64, height int64) {
     }
     var header, headerErr = btcd.getBlockHeader(ctx, hash)
     if headerErr != nil {
-        log.Println("get block header:", headerErr)
+        logErr("get block header: %v", headerErr)
         send(bot, chatID, "Sorry, something went wrong fetching that block.")
         return
     }
@@ -450,7 +451,7 @@ func block(ctx context.Context, bot *bot, chatID int64, height int64) {
 func address(ctx context.Context, bot *bot, chatID int64, addr string) {
     var addrInfo, err = btcd.validateAddress(ctx, addr)
     if err != nil {
-        log.Println("validate address:", err)
+        logErr("validate address: %v", err)
         send(bot, chatID, "Sorry, something went wrong looking up that address.")
         return
     }
@@ -490,16 +491,17 @@ func watch(bot *bot, chatID int64, arg string) {
         typ = watchTypeTransaction
     }
     if err := store.add(chatID, typ, arg); err != nil {
-        log.Println("add watch:", err)
+        logErr("add watch: %v", err)
         send(bot, chatID, "Sorry, something went wrong saving that watch.")
         return
     }
     if typ == watchTypeAddress {
         addWatcher(arg, chatID)
+        logInfo("added address subscription %s for chat %d", arg, chatID)
         if btcd != nil {
             var ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
             if err := btcd.loadTxFilter(ctx, false, []string{arg}, nil); err != nil {
-                log.Println("load tx filter:", err)
+                logWarn("load tx filter: %v", err)
             }
             cancel()
         }
@@ -523,7 +525,7 @@ func unwatch(bot *bot, chatID int64, arg string) {
     pendingUnwatchMu.Unlock()
     var removed, err = store.remove(chatID, arg)
     if err != nil {
-        log.Println("remove watch:", err)
+        logErr("remove watch: %v", err)
         send(bot, chatID, "Sorry, something went wrong removing that watch.")
         return
     }
@@ -533,10 +535,11 @@ func unwatch(bot *bot, chatID int64, arg string) {
     }
     if !isTxid(arg) {
         removeWatcher(arg, chatID)
+        logInfo("removed address subscription %s for chat %d", arg, chatID)
         if btcd != nil {
             var ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
             if err := btcd.loadTxFilter(ctx, true, watchedAddresses(), nil); err != nil {
-                log.Println("load tx filter:", err)
+                logWarn("load tx filter: %v", err)
             }
             cancel()
         }
@@ -547,7 +550,7 @@ func unwatch(bot *bot, chatID int64, arg string) {
 func watches(bot *bot, chatID int64) {
     var records, err = store.list()
     if err != nil {
-        log.Println("list watches:", err)
+        logErr("list watches: %v", err)
         send(bot, chatID, "Sorry, something went wrong listing your watches.")
         return
     }
@@ -586,6 +589,8 @@ func send(bot *bot, chatID int64, text string) {
     var ctx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
     defer cancel()
     if err := bot.send(ctx, chatID, text); err != nil {
-        log.Println("send message:", err)
+        logErr("send message: %v", err)
+        return
     }
+    logInfo("sent message to chat %d", chatID)
 }

@@ -14,6 +14,8 @@ func TestMessageLogging(t *testing.T) {
     }))
     defer server.Close()
     bot := newBot("TESTTOKEN", server.URL)
+    verbosity = 1 // logMessage is INFO-level
+    defer func() { verbosity = 0 }()
     var buf bytes.Buffer
     log.SetOutput(&buf)
     defer log.SetOutput(os.Stderr)
@@ -38,5 +40,42 @@ func TestMessageLogging(t *testing.T) {
     update(bot, Update{Message: &Message{Chat: Chat{ID: 9}, Text: "anon"}})
     if !strings.Contains(buf.String(), "message from unknown (chat 9): anon") {
         t.Fatalf("expected log line for nil From, got: %q", buf.String())
+    }
+}
+
+func TestLoggingLevels(t *testing.T) {
+    var buf bytes.Buffer
+    log.SetOutput(&buf)
+    defer log.SetOutput(os.Stderr)
+    defer func() { verbosity = 0 }()
+    var cases = []struct {
+        v      int
+        shown  []string
+        hidden []string
+    }{
+        {0, []string{"[ERR]", "[WARN]", "status-line"}, []string{"[INFO]", "[NET]", "[DB]"}},
+        {1, []string{"[ERR]", "[WARN]", "[INFO]"}, []string{"[NET]", "[DB]"}},
+        {2, []string{"[ERR]", "[WARN]", "[INFO]", "[NET]", "[DB]"}, nil},
+    }
+    for _, c := range cases {
+        verbosity = c.v
+        buf.Reset()
+        logErr("e")
+        logWarn("w")
+        logStatus("status-line")
+        logInfo("i")
+        logNet("n")
+        logDb("d")
+        var out = buf.String()
+        for _, want := range c.shown {
+            if !strings.Contains(out, want) {
+                t.Errorf("verbosity %d: expected %q in output, got:\n%s", c.v, want, out)
+            }
+        }
+        for _, notWant := range c.hidden {
+            if strings.Contains(out, notWant) {
+                t.Errorf("verbosity %d: did not expect %q in output, got:\n%s", c.v, notWant, out)
+            }
+        }
     }
 }

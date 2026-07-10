@@ -25,6 +25,7 @@ type watchStore struct {
 }
 
 func openWatchStore(path string) (*watchStore, error) {
+    logDb("open %s", path)
     var db, err = bbolt.Open(path, 0600, nil)
     if err != nil { return nil, err }
     err = db.Update(func(tx *bbolt.Tx) error {
@@ -43,6 +44,7 @@ func (s *watchStore) close() error {
 }
 
 func (s *watchStore) add(chatID int64, typ watchType, watchID string) error {
+    logDb("add chat=%d type=%s id=%s", chatID, typ, watchID)
     var data, err = json.Marshal(watchRecord{
         CreatedAt: time.Now(),
         ChatID:    chatID,
@@ -59,6 +61,7 @@ func (s *watchStore) add(chatID int64, typ watchType, watchID string) error {
 }
 
 func (s *watchStore) list() ([]watchRecord, error) {
+    logDb("list")
     var records []watchRecord
     var err = s.db.View(func(tx *bbolt.Tx) error {
         return tx.Bucket(watchesBucket).ForEach(func(k, v []byte) error {
@@ -77,6 +80,7 @@ func (s *watchStore) list() ([]watchRecord, error) {
 // returns how many were deleted. Keys are collected before deleting because
 // bbolt forbids mutating a bucket during ForEach.
 func (s *watchStore) remove(chatID int64, watchID string) (int, error) {
+    logDb("remove chat=%d id=%s", chatID, watchID)
     var removed int
     var err = s.db.Update(func(tx *bbolt.Tx) error {
         var b = tx.Bucket(watchesBucket)

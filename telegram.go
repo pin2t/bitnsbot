@@ -4,6 +4,7 @@ import "bytes"
 import "context"
 import "encoding/json"
 import "fmt"
+import "io"
 import "net/http"
 import "strings"
 import "time"
@@ -50,6 +51,12 @@ type Chat struct {
 func (b *bot) call(ctx context.Context, method string, payload any) (json.RawMessage, error) {
     var buf, err = json.Marshal(payload)
     if err != nil { return nil, err }
+    if method == "setWebhook" {
+        logNet("telegram → %s (body omitted: contains secret_token)", method)
+    } else {
+        logNet("telegram → %s %s", method, buf)
+    }
+    // the token is in the URL, so it is deliberately never logged
     var url = fmt.Sprintf("%s/bot%s/%s", b.baseURL, b.token, method)
     req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(buf))
     if err != nil { return nil, err }
@@ -57,13 +64,16 @@ func (b *bot) call(ctx context.Context, method string, payload any) (json.RawMes
     resp, err := b.httpClient.Do(req)
     if err != nil { return nil, err }
     defer resp.Body.Close()
+    var body, readErr = io.ReadAll(resp.Body)
+    if readErr != nil { return nil, readErr }
+    logNet("telegram ← %s %s", method, body)
     var apiResp struct {
         OK          bool            `json:"ok"`
         Description string          `json:"description"`
         ErrorCode   int             `json:"error_code"`
         Result      json.RawMessage `json:"result"`
     }
-    if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
+    if err := json.Unmarshal(body, &apiResp); err != nil {
         return nil, fmt.Errorf("decode response: %w", err)
     }
     if !apiResp.OK {
