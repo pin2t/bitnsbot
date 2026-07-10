@@ -13,21 +13,21 @@ import "time"
 import "github.com/gorilla/websocket"
 
 func countWatchers(watchID string) int {
-    watchersMu.Lock()
-    defer watchersMu.Unlock()
+    notifyMu.Lock()
+    defer notifyMu.Unlock()
     var n int
-    for _, w := range watchers {
-        if w.watchID == watchID { n++ }
+    for k, _ := range notifies {
+        if k.id == watchID { n++ }
     }
     return n
 }
 
 func watcherChats(watchID string) []int64 {
-    watchersMu.Lock()
-    defer watchersMu.Unlock()
+    notifyMu.Lock()
+    defer notifyMu.Unlock()
     var ids []int64
-    for _, w := range watchers {
-        if w.watchID == watchID { ids = append(ids, w.chatID) }
+    for k, _ := range notifies {
+        if k.id == watchID { ids = append(ids, k.chat) }
     }
     return ids
 }
@@ -96,9 +96,9 @@ func TestWatchNotification(t *testing.T) {
     defer func() { btcd.close(); btcd = nil }()
     store, _ = openWatchStore(filepath.Join(t.TempDir(), "watches.db"))
     defer store.close()
-    stopAllWatchers()
-    defer stopAllWatchers()
-    watch(b, 42, watchedAddr)
+    stopNotify()
+    defer stopNotify()
+    watchCmd(b, 42, watchedAddr)
     var deadline = time.Now().Add(3 * time.Second)
     for time.Now().Before(deadline) {
         sentMu.Lock()
@@ -139,8 +139,8 @@ func TestUnwatchFlow(t *testing.T) {
     defer server.Close()
     var b = newBot("TESTTOKEN", server.URL)
     btcd = nil
-    stopAllWatchers()
-    defer stopAllWatchers()
+    stopNotify()
+    defer stopNotify()
     store, _ = openWatchStore(filepath.Join(t.TempDir(), "watches.db"))
     defer store.close()
     var addr = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
