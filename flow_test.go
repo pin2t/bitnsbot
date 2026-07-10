@@ -25,7 +25,7 @@ func TestInfoFlow(t *testing.T) {
     defer server.Close()
     bot := newBot("TESTTOKEN", server.URL)
     update(bot, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/info"}})
-    if len(sent) != 1 || sent[0] != "Please send the info text in a separate message." {
+    if len(sent) != 1 || sent[0] != "Please send Bitcoin address or transaction or block number" {
         t.Fatalf("unexpected first reply: %#v", sent)
     }
     if !pendingInfoChats[1] {
