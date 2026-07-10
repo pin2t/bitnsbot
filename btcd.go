@@ -39,7 +39,7 @@ func dialBtcd(ctx context.Context, cfg btcdConfig, handler jsonrpc2.Handler) (*b
     if err != nil { return nil, err }
     var stream = jsonrpc2ws.NewObjectStream(wsConn)
     var opts []jsonrpc2.ConnOpt
-    if verbosity >= 2 {
+    if *verbose >= 2 {
         opts = append(opts,
             jsonrpc2.OnSend(func(req *jsonrpc2.Request, resp *jsonrpc2.Response) { logNet("btcd → %s", btcdMsg(req, resp)) }),
             jsonrpc2.OnRecv(func(req *jsonrpc2.Request, resp *jsonrpc2.Response) { logNet("btcd ← %s", btcdMsg(req, resp)) }),

@@ -7,6 +7,8 @@ import "net/http/httptest"
 import "os"
 import "strings"
 import "testing"
+import "flag"
+import "strconv"
 
 func TestMessageLogging(t *testing.T) {
     server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -14,8 +16,8 @@ func TestMessageLogging(t *testing.T) {
     }))
     defer server.Close()
     bot := newBot("TESTTOKEN", server.URL)
-    verbosity = 1 // logMessage is INFO-level
-    defer func() { verbosity = 0 }()
+    flag.Set("verbose", "1")
+    defer func() { *verbose = 0 }()
     var buf bytes.Buffer
     log.SetOutput(&buf)
     defer log.SetOutput(os.Stderr)
@@ -47,7 +49,7 @@ func TestLoggingLevels(t *testing.T) {
     var buf bytes.Buffer
     log.SetOutput(&buf)
     defer log.SetOutput(os.Stderr)
-    defer func() { verbosity = 0 }()
+    defer func() { flag.Set("verbose", "0") }()
     var cases = []struct {
         v      int
         shown  []string
@@ -58,7 +60,7 @@ func TestLoggingLevels(t *testing.T) {
         {2, []string{"[ERR]", "[WARN]", "[INFO]", "[NET]", "[DB]"}, nil},
     }
     for _, c := range cases {
-        verbosity = c.v
+        flag.Set("verbose", strconv.Itoa(c.v))
         buf.Reset()
         logErr("e")
         logWarn("w")

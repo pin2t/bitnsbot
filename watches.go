@@ -76,7 +76,7 @@ func (s *watchStore) list() ([]watchRecord, error) {
 }
 
 // remove deletes every record matching both chatID and watchID (the chatID
-// scoping is what stops one chat from removing another chat's watch) and
+// scoping is what stops one chat from removing another chat's watchCmd) and
 // returns how many were deleted. Keys are collected before deleting because
 // bbolt forbids mutating a bucket during ForEach.
 func (s *watchStore) remove(chatID int64, watchID string) (int, error) {

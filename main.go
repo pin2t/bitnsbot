@@ -21,7 +21,7 @@ import "time"
 import "github.com/sourcegraph/jsonrpc2"
 
 var configPath      = flag.String("config", "", "path to a properties file (name=value lines) with flag values; command-line flags take precedence")
-var verbosityFlag   = flag.Int("verbose", 0, "log verbosity: 0=ERR/WARN/status, 1=+INFO, 2=+NET/DB (raw external traffic and storage requests)")
+var verbose         = flag.Int("verbose", 0, "log verbosity: 0=ERR/WARN/status, 1=+INFO, 2=+NET/DB (raw external traffic and storage requests)")
 var botToken        = flag.String("bot-token", "", "Telegram bot token authenticating outbound Bot API calls (required)")
 var listenAddr      = flag.String("listen", ":8080", "listen address")
 var webhookPath     = flag.String("webhook-path", "/bot", "path the Bot API server will POST updates to")
@@ -39,92 +39,72 @@ var btcdInsecureTLS = flag.Bool("btcd-insecure-tls", false, "skip TLS certificat
 var store *watchStore
 var btcd *btcdClient
 
-// notification is one decoded btcd mempool transaction, broadcast to every
-// watcher goroutine, which each keep only what matches their own watch.
 type notification struct {
     txid     string
-    received map[string]float64 // output address -> amount received in this tx
+    received map[string]float64
 }
 
-// watcher is one persisted watch turned into a live goroutine. It reads the
-// broadcast notification stream on ch and messages its chat only for the
-// notifications that concern its own address or transaction. ch is never
-// closed (so a broadcast can always send to it safely); the goroutine is
-// stopped by closing stop.
-type watcher struct {
-    chatID    int64
-    watchType watchType
-    watchID   string
-    ch        chan notification
-    stop      chan struct{}
+type notifyKey struct {
+    chat int64
+    typ  watchType
+    id   string
 }
 
-var watchersMu sync.Mutex
-var watchers []*watcher
-
-func startWatcher(bot *bot, chatID int64, typ watchType, watchID string) {
-    var w = &watcher{
-        chatID:    chatID,
-        watchType: typ,
-        watchID:   watchID,
-        ch:        make(chan notification, 32),
-        stop:      make(chan struct{}),
-    }
-    watchersMu.Lock()
-    watchers = append(watchers, w)
-    watchersMu.Unlock()
-    go w.run(bot)
+type notifyChans struct {
+    ch   chan notification
+    stop chan struct{}
 }
 
-func (w *watcher) run(bot *bot) {
-    for {
-        select {
-        case <-w.stop:
-            return
-        case n := <-w.ch:
-            if w.watchType == watchTypeAddress {
-                if amount, ok := n.received[w.watchID]; ok {
-                    send(bot, w.chatID, fmt.Sprintf(
-                        "🔔 New transaction on watched address %s\n\n<pre>Tx:     %s\nAmount: %s satoshi</pre>",
-                        short(w.watchID), short(n.txid), satoshi(amount),
-                    ))
+var notifyMu sync.Mutex
+var notifies = make(map[notifyKey]notifyChans)
+
+func startNotifyChat(b *bot, chatID int64, typ watchType, watchID string) {
+    var ch = make(chan notification)
+    var stop = make(chan struct{})
+    notifyMu.Lock()
+    notifies[notifyKey{chatID, typ, watchID}] = notifyChans{ch, stop}
+    notifyMu.Unlock()
+    go func(b *bot, chatID int64, typ watchType, watchID string, ch <-chan notification, stop chan struct{}) {
+        for {
+            select {
+            case <-stop:
+                return
+            case n := <-ch:
+                if typ == watchTypeAddress {
+                    if amount, ok := n.received[watchID]; ok {
+                        send(b, chatID, fmt.Sprintf(
+                            "🔔 New transaction on watched address %s\n\n<pre>Tx:     %s\nAmount: %s satoshi</pre>",
+                            short(watchID), short(n.txid), satoshi(amount),
+                        ))
+                    }
+                } else if n.txid == watchID {
+                    send(b, chatID, "🔔 Watched transaction "+short(watchID)+" was accepted to the mempool.")
                 }
-            } else if n.txid == w.watchID {
-                send(bot, w.chatID, "🔔 Watched transaction "+short(w.watchID)+" was accepted to the mempool.")
             }
         }
+    }(b, chatID, typ, watchID, ch, stop)
+}
+
+func stopNotifyChat(chat int64, typ watchType, id string) {
+    notifyMu.Lock()
+    defer notifyMu.Unlock()
+    var key = notifyKey{chat, typ, id}
+    if c, found := notifies[key]; found {
+        close(c.stop)
+        delete(notifies, key)
     }
 }
 
-// stopWatchers terminates and drops every watcher matching (chatID, watchID),
-// returning how many were stopped. Scoped by chatID like the store's remove.
-func stopWatchers(chatID int64, watchID string) int {
-    watchersMu.Lock()
-    defer watchersMu.Unlock()
-    var kept []*watcher
-    var stopped int
-    for _, w := range watchers {
-        if w.chatID == chatID && w.watchID == watchID {
-            close(w.stop)
-            stopped++
-        } else {
-            kept = append(kept, w)
+func notifyAddresses() (res []string) {
+    notifyMu.Lock()
+    defer notifyMu.Unlock()
+    res = make([]string, 0, len(notifies))
+    for k, _ := range notifies {
+        if k.typ == watchTypeAddress && !slices.Contains(res, k.id) {
+            res = append(res, k.id)
         }
     }
-    watchers = kept
-    return stopped
-}
-
-func watchedAddresses() []string {
-    watchersMu.Lock()
-    defer watchersMu.Unlock()
-    var addrs []string
-    for _, w := range watchers {
-        if w.watchType == watchTypeAddress && !slices.Contains(addrs, w.watchID) {
-            addrs = append(addrs, w.watchID)
-        }
-    }
-    return addrs
+    return res
 }
 
 // notifier handles btcd's relevanttxaccepted notifications. Rather than
@@ -161,33 +141,33 @@ func broadcast(txHex string) {
             n.received[addr] += vout.Value
         }
     }
-    watchersMu.Lock()
-    var chans = make([]chan notification, len(watchers))
-    for i, w := range watchers {
-        chans[i] = w.ch
+    notifyMu.Lock()
+    var chans = make([]chan notification, 0)
+    for _, v := range notifies {
+        chans = append(chans, v.ch)
     }
-    watchersMu.Unlock()
+    notifyMu.Unlock()
     for _, ch := range chans {
         select {
         case ch <- n:
-        default: // watcher's buffer full (stopped or very slow); skip it
+        case <-time.After(500 * time.Millisecond):
         }
     }
 }
 
-// restoreWatches turns every persisted watch back into a live watcher goroutine
+// startNotify turns every persisted watchCmd back into a live watcher goroutine
 // on startup and, if btcd is connected, loads the watched addresses into btcd's
 // transaction filter so notifications resume across restarts.
-func restoreWatches(bot *bot) {
+func startNotify(bot *bot) {
     var records, err = store.list()
     if err != nil {
         logErr("list watches: %v", err)
         return
     }
     for _, r := range records {
-        startWatcher(bot, r.ChatID, r.Type, r.WatchID)
+        startNotifyChat(bot, r.ChatID, r.Type, r.WatchID)
     }
-    var addrs = watchedAddresses()
+    var addrs = notifyAddresses()
     if btcd != nil && len(addrs) > 0 {
         var ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
         if err := btcd.loadTxFilter(ctx, true, addrs, nil); err != nil {
@@ -208,7 +188,6 @@ func main() {
             logFatal("apply config: %v", err)
         }
     }
-    verbosity = *verbosityFlag
     if *botToken == "" {
         logFatal("-bot-token is required")
     }
@@ -233,7 +212,7 @@ func main() {
         }
         logStatus("connected to btcd at %s", *btcdURL)
     }
-    restoreWatches(bot)
+    startNotify(bot)
     if *registerHook {
         if *webhookURL == "" {
             logFatal("-webhook-url is required when -register-webhook=true")
@@ -261,10 +240,6 @@ func main() {
     shutdown(srv)
 }
 
-// shutdown tears down in dependency order: the webhook server first, so its
-// handlers (which use store and btcd) all finish before the connections they
-// depend on are closed — srv.Shutdown blocks until in-flight requests drain —
-// then btcd, then the watches database.
 func shutdown(srv *http.Server) {
     logStatus("shutting down")
     var ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
@@ -277,19 +252,19 @@ func shutdown(srv *http.Server) {
             logErr("close btcd: %v", err)
         }
     }
-    stopAllWatchers()
+    stopNotify()
     if err := store.close(); err != nil {
         logErr("close watches database: %v", err)
     }
 }
 
-func stopAllWatchers() {
-    watchersMu.Lock()
-    defer watchersMu.Unlock()
-    for _, w := range watchers {
-        close(w.stop)
+func stopNotify() {
+    notifyMu.Lock()
+    defer notifyMu.Unlock()
+    for _, v := range notifies {
+        close(v.stop)
     }
-    watchers = nil
+    notifies = make(map[notifyKey]notifyChans)
 }
 
 func webhookHandler(bot *bot) http.HandlerFunc {
@@ -331,7 +306,7 @@ func update(bot *bot, update Update) {
     case "/info":
         info(bot, msg.Chat.ID, arg)
     case "/watch":
-        watch(bot, msg.Chat.ID, arg)
+        watchCmd(bot, msg.Chat.ID, arg)
     case "/unwatch":
         unwatch(bot, msg.Chat.ID, arg)
     case "/watches":
@@ -350,7 +325,7 @@ func update(bot *bot, update Update) {
         delete(pendingWatchChats, msg.Chat.ID)
         pendingWatchMu.Unlock()
         if pending {
-            watch(bot, msg.Chat.ID, msg.Text)
+            watchCmd(bot, msg.Chat.ID, msg.Text)
             return
         }
         pendingUnwatchMu.Lock()
@@ -534,7 +509,7 @@ func address(ctx context.Context, bot *bot, chatID int64, addr string) {
 var pendingWatchMu sync.Mutex
 var pendingWatchChats = make(map[int64]bool)
 
-func watch(bot *bot, chatID int64, arg string) {
+func watchCmd(bot *bot, chatID int64, arg string) {
     if arg == "" {
         pendingWatchMu.Lock()
         pendingWatchChats[chatID] = true
@@ -554,7 +529,7 @@ func watch(bot *bot, chatID int64, arg string) {
         send(bot, chatID, "Sorry, something went wrong saving that watch.")
         return
     }
-    startWatcher(bot, chatID, typ, arg)
+    startNotifyChat(bot, chatID, typ, arg)
     logInfo("added %s subscription %s for chat %d", typ, arg, chatID)
     if typ == watchTypeAddress && btcd != nil {
         var ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
@@ -590,11 +565,13 @@ func unwatch(bot *bot, chatID int64, arg string) {
         send(bot, chatID, "You're not watching "+html.EscapeString(arg)+".")
         return
     }
-    stopWatchers(chatID, arg)
+    var typ = watchTypeAddress
+    if isTxid(arg) { typ = watchTypeTransaction }
+    stopNotifyChat(chatID, typ, arg)
     logInfo("removed subscription %s for chat %d", arg, chatID)
     if !isTxid(arg) && btcd != nil {
         var ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
-        if err := btcd.loadTxFilter(ctx, true, watchedAddresses(), nil); err != nil {
+        if err := btcd.loadTxFilter(ctx, true, notifyAddresses(), nil); err != nil {
             logWarn("load tx filter: %v", err)
         }
         cancel()
