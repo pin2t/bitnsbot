@@ -1,5 +1,6 @@
 package main
 
+import "fmt"
 import "net/http"
 import "net/http/httptest"
 import "path/filepath"
@@ -20,14 +21,61 @@ func TestRateParsers(t *testing.T) {
 }
 
 func TestUSDFormat(t *testing.T) {
-    if got := usd(1.5, 60000); got != "$90,000.00" {
+    if got := usd(1.5, 60000); got != "$90,000" { // ≥ $100 → whole dollars, grouped
         t.Fatalf("1.5 BTC @ 60000 = %q", got)
     }
-    if got := usd(0.001, 58234.12); got != "$58.23" {
+    if got := usd(10, 12345.67); got != "$123,457" { // 123456.70 rounds up
+        t.Fatalf("grouping = %q", got)
+    }
+    if got := usd(1, 100); got != "$100" { // exactly $100 → no cents
+        t.Fatalf("boundary = %q", got)
+    }
+    if got := usd(0.001, 58234.12); got != "$58.23" { // < $100 → keep cents
         t.Fatalf("0.001 BTC @ 58234.12 = %q", got)
     }
-    if got := usd(10, 12345.67); got != "$123,456.70" { // 10 * 12345.67 = 123456.70
-        t.Fatalf("grouping = %q", got)
+    if got := usd(0.5, 199); got != "$99.50" { // just under $100 → keep cents
+        t.Fatalf("sub-100 = %q", got)
+    }
+}
+
+func TestParseRateHistory(t *testing.T) {
+    var body = []byte(`{"status":"ok","values":[{"x":1230940800,"y":0.0},{"x":1420070400,"y":320.19},{"x":1783987200,"y":62242.32}]}`)
+    var records, err = parseRateHistory(body)
+    if err != nil {
+        t.Fatalf("parse: %v", err)
+    }
+    if len(records) != 2 { // the y=0 early sample is skipped
+        t.Fatalf("expected 2 non-zero records, got %d", len(records))
+    }
+    if records[0].Time.Unix() != 1420070400 || records[0].USD != 320.19 {
+        t.Fatalf("first record = %+v", records[0])
+    }
+}
+
+func TestBackfillRates(t *testing.T) {
+    if err := openDB(filepath.Join(t.TempDir(), "watches.db")); err != nil {
+        t.Fatalf("openDB: %v", err)
+    }
+    defer closeDB()
+    var old = time.Now().Add(-5 * 365 * 24 * time.Hour).Unix()
+    var hits int
+    var srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        hits++
+        fmt.Fprintf(w, `{"values":[{"x":%d,"y":250.5},{"x":0,"y":0}]}`, old)
+    }))
+    defer srv.Close()
+    var saved = rateHistoryURL
+    defer func() { rateHistoryURL = saved }()
+    rateHistoryURL = srv.URL
+    backfillRates()
+    // the backfilled old sample is retrievable for a tx around that time
+    if r, ok := rateAt(time.Unix(old, 0)); !ok || r.USD != 250.5 {
+        t.Fatalf("expected backfilled rate, got %v %v", r, ok)
+    }
+    // a second call is a no-op: deep history now exists, so no re-download
+    backfillRates()
+    if hits != 1 {
+        t.Fatalf("expected exactly 1 history fetch, got %d", hits)
     }
 }
 
@@ -55,8 +103,8 @@ func TestRateStorage(t *testing.T) {
         t.Fatalf("rateAt(+30m) = %v %v", r, ok)
     }
     // far outside the recorded window → unavailable
-    if _, ok := rateAt(base.Add(-3 * time.Hour)); ok {
-        t.Fatalf("expected no rate 3h before earliest sample")
+    if _, ok := rateAt(base.Add(-72 * time.Hour)); ok {
+        t.Fatalf("expected no rate days before earliest sample")
     }
 }
 
@@ -120,7 +168,21 @@ func TestAmountLineUSD(t *testing.T) {
     }
     storeRate(rateRecord{Time: time.Now(), Source: "x", USD: 60000})
     var s = amountLine(1.5, time.Time{}, true)
-    if !strings.Contains(s, "150 000 000 satoshi") || !strings.Contains(s, "$90,000.00") {
+    if !strings.Contains(s, "150 000 000 satoshi") || !strings.Contains(s, "$90,000") {
         t.Fatalf("amountLine = %q", s)
+    }
+}
+
+func TestAmountLineFallback(t *testing.T) {
+    if err := openDB(filepath.Join(t.TempDir(), "watches.db")); err != nil {
+        t.Fatalf("openDB: %v", err)
+    }
+    defer closeDB()
+    storeRate(rateRecord{Time: time.Now(), Source: "x", USD: 60000})
+    // a confirmed tx whose block time predates our rate history (older than
+    // rateTolerance) still shows USD, falling back to the latest known rate.
+    var s = amountLine(1.5, time.Now().Add(-5*24*time.Hour), false)
+    if !strings.Contains(s, "$90,000") {
+        t.Fatalf("expected USD via fallback for an old confirmed tx: %q", s)
     }
 }
