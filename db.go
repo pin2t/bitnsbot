@@ -9,8 +9,10 @@ func openDB(path string) error {
     var opened, err = bbolt.Open(path, 0600, nil)
     if err != nil { return err }
     err = opened.Update(func(tx *bbolt.Tx) error {
-        var _, err = tx.CreateBucketIfNotExists(watchesBucket)
-        return err
+        for _, name := range [][]byte{watchesBucket, ratesBucket} {
+            if _, err := tx.CreateBucketIfNotExists(name); err != nil { return err }
+        }
+        return nil
     })
     if err != nil {
         opened.Close()
