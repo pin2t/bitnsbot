@@ -12,11 +12,10 @@ import "time"
 // closed out from under it — and once shutdown returns, the store is closed.
 func TestShutdownDrainsHandlersBeforeClosingStore(t *testing.T) {
     var err error
-    store, err = openWatchStore(filepath.Join(t.TempDir(), "watches.db"))
+    err = openDB(filepath.Join(t.TempDir(), "watches.db"))
     if err != nil {
-        t.Fatalf("openWatchStore: %v", err)
+        t.Fatalf("openDB: %v", err)
     }
-    var s = store
     btcd = nil
     var started = make(chan struct{})
     var finished = make(chan error, 1)
@@ -24,7 +23,7 @@ func TestShutdownDrainsHandlersBeforeClosingStore(t *testing.T) {
     mux.HandleFunc("/slow", func(w http.ResponseWriter, r *http.Request) {
         close(started)
         time.Sleep(200 * time.Millisecond)
-        var _, listErr = s.list() // the store must still be open while a handler runs
+        var _, listErr = listWatches() // the store must still be open while a handler runs
         finished <- listErr
         w.WriteHeader(http.StatusOK)
     })
@@ -40,7 +39,7 @@ func TestShutdownDrainsHandlersBeforeClosingStore(t *testing.T) {
     if handlerErr := <-finished; handlerErr != nil {
         t.Fatalf("store was closed while a handler was still running: %v", handlerErr)
     }
-    if _, err := s.list(); err == nil {
+    if _, err := listWatches(); err == nil {
         t.Fatalf("expected the store to be closed after shutdown")
     }
 }

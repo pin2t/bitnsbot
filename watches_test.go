@@ -8,16 +8,16 @@ import "go.etcd.io/bbolt"
 
 func TestWatchStoreAdd(t *testing.T) {
     var path = filepath.Join(t.TempDir(), "watches.db")
-    var s, err = openWatchStore(path)
+    var err = openDB(path)
     if err != nil {
-        t.Fatalf("openWatchStore: %v", err)
+        t.Fatalf("openDB: %v", err)
     }
-    defer s.close()
-    if err := s.add(42, watchTypeAddress, "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"); err != nil {
+    defer closeDB()
+    if err := addWatch(42, watchTypeAddress, "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"); err != nil {
         t.Fatalf("add: %v", err)
     }
     var records []watchRecord
-    err = s.db.View(func(tx *bbolt.Tx) error {
+    err = db.View(func(tx *bbolt.Tx) error {
         return tx.Bucket(watchesBucket).ForEach(func(k, v []byte) error {
             var r watchRecord
             if err := json.Unmarshal(v, &r); err != nil {
@@ -43,14 +43,14 @@ func TestWatchStoreAdd(t *testing.T) {
 }
 
 func TestWatchStoreList(t *testing.T) {
-    var s, err = openWatchStore(filepath.Join(t.TempDir(), "watches.db"))
+    var err = openDB(filepath.Join(t.TempDir(), "watches.db"))
     if err != nil {
-        t.Fatalf("openWatchStore: %v", err)
+        t.Fatalf("openDB: %v", err)
     }
-    defer s.close()
-    s.add(1, watchTypeAddress, "addrA")
-    s.add(2, watchTypeTransaction, "txB")
-    var records, listErr = s.list()
+    defer closeDB()
+    addWatch(1, watchTypeAddress, "addrA")
+    addWatch(2, watchTypeTransaction, "txB")
+    var records, listErr = listWatches()
     if listErr != nil {
         t.Fatalf("list: %v", listErr)
     }
@@ -66,24 +66,24 @@ func TestWatchStoreList(t *testing.T) {
 }
 
 func TestWatchStoreRemove(t *testing.T) {
-    var s, err = openWatchStore(filepath.Join(t.TempDir(), "watches.db"))
+    var err = openDB(filepath.Join(t.TempDir(), "watches.db"))
     if err != nil {
-        t.Fatalf("openWatchStore: %v", err)
+        t.Fatalf("openDB: %v", err)
     }
-    defer s.close()
+    defer closeDB()
     // two chats watch the same address; a third watch is unrelated
-    s.add(1, watchTypeAddress, "sharedAddr")
-    s.add(2, watchTypeAddress, "sharedAddr")
-    s.add(1, watchTypeAddress, "otherAddr")
+    addWatch(1, watchTypeAddress, "sharedAddr")
+    addWatch(2, watchTypeAddress, "sharedAddr")
+    addWatch(1, watchTypeAddress, "otherAddr")
     // removing chat 1's watch on sharedAddr must not touch chat 2's identical watch
-    var removed, remErr = s.remove(1, "sharedAddr")
+    var removed, remErr = removeWatch(1, "sharedAddr")
     if remErr != nil {
         t.Fatalf("remove: %v", remErr)
     }
     if removed != 1 {
         t.Fatalf("expected 1 removed, got %d", removed)
     }
-    var records, _ = s.list()
+    var records, _ = listWatches()
     if len(records) != 2 {
         t.Fatalf("expected 2 remaining records, got %d: %#v", len(records), records)
     }
@@ -93,7 +93,7 @@ func TestWatchStoreRemove(t *testing.T) {
         }
     }
     // removing a watch that doesn't belong to the chat removes nothing
-    var n, _ = s.remove(999, "sharedAddr")
+    var n, _ = removeWatch(999, "sharedAddr")
     if n != 0 {
         t.Fatalf("expected 0 removed for wrong chat, got %d", n)
     }

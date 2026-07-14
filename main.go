@@ -36,7 +36,6 @@ var btcdPass        = flag.String("btcd-pass", "", "btcd RPC password")
 var btcdCert        = flag.String("btcd-cert", "", "path to btcd's rpc.cert for self-signed TLS trust")
 var btcdInsecureTLS = flag.Bool("btcd-insecure-tls", false, "skip TLS certificate verification for the btcd connection (dev only)")
 
-var store *watchStore
 var btcd *btcdClient
 
 type notification struct {
@@ -159,7 +158,7 @@ func broadcast(txHex string) {
 // on startup and, if btcd is connected, loads the watched addresses into btcd's
 // transaction filter so notifications resume across restarts.
 func startNotify(bot *bot) {
-    var records, err = store.list()
+    var records, err = listWatches()
     if err != nil {
         logErr("list watches: %v", err)
         return
@@ -193,8 +192,7 @@ func main() {
     }
     var bot = newBot(*botToken, *apiBaseURL)
     var err error
-    store, err = openWatchStore(*dbPath)
-    if err != nil {
+    if err = openDB(*dbPath); err != nil {
         logFatal("open watches database: %v", err)
     }
     if *btcdURL != "" {
@@ -253,7 +251,7 @@ func shutdown(srv *http.Server) {
         }
     }
     stopNotify()
-    if err := store.close(); err != nil {
+    if err := closeDB(); err != nil {
         logErr("close watches database: %v", err)
     }
 }
@@ -536,7 +534,7 @@ func watchCmd(bot *bot, chatID int64, arg string) {
     if isTxid(arg) {
         typ = watchTypeTransaction
     }
-    if err := store.add(chatID, typ, arg); err != nil {
+    if err := addWatch(chatID, typ, arg); err != nil {
         logErr("add watch: %v", err)
         send(bot, chatID, "Sorry, something went wrong saving that watch.")
         return
@@ -567,7 +565,7 @@ func unwatch(bot *bot, chatID int64, arg string) {
     pendingUnwatchMu.Lock()
     delete(pendingUnwatchChats, chatID)
     pendingUnwatchMu.Unlock()
-    var removed, err = store.remove(chatID, arg)
+    var removed, err = removeWatch(chatID, arg)
     if err != nil {
         logErr("remove watch: %v", err)
         send(bot, chatID, "Sorry, something went wrong removing that watch.")
@@ -592,7 +590,7 @@ func unwatch(bot *bot, chatID int64, arg string) {
 }
 
 func watches(bot *bot, chatID int64) {
-    var records, err = store.list()
+    var records, err = listWatches()
     if err != nil {
         logErr("list watches: %v", err)
         send(bot, chatID, "Sorry, something went wrong listing your watches.")
