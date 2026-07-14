@@ -11,7 +11,7 @@ bitnsbot is a Bitcoin network events notification bot for Telegram. It's a singl
 - Build: `go build ./...`
 - Run: `go run . -bot-token <token> -webhook-url http://localhost:8080/bot -api-base-url http://localhost:8081`
 - Test all: `go test ./...`
-- Test one: `go test -run TestWatchFlow -v` (other tests: `TestInfoFlow`, `TestUnwatchFlow`, `TestWatchesFlow`, `TestWatchNotification`, `TestShutdown*`, `TestMessageLogging`, `TestLoggingLevels`, `TestWatchStore*`, `TestConfig`, `TestBtcd*`). Run the whole suite with `-race` (`go test -race ./...`) — the watch-notification path is concurrent.
+- Test one: `go test -run TestWatchFlow -v` (other tests: `TestInfoFlow`, `TestUnwatchFlow`, `TestWatchesFlow`, `TestWatchNotification`, `TestShutdown*`, `TestMessageLogging`, `TestLoggingLevels`, `TestWatchStore*`, `TestRate*`, `TestUSDFormat`, `TestUpdateRatesAverages`, `TestAmountLineUSD`, `TestConfig`, `TestBtcd*`). Run the whole suite with `-race` (`go test -race ./...`) — the watch-notification path is concurrent.
 - Vet: `go vet ./...`
 
 There is no Makefile or linter config in this repo — `go build`/`go vet`/`go test` are the only checks available (and are exactly what `.github/workflows/ci.yml` runs on every pull request, on Go 1.26). `gofmt -l .` will flag files as unformatted by design; see Style below before "fixing" that.
@@ -28,10 +28,11 @@ The bot is designed to run behind a self-hosted `telegram-bot-api` proxy (https:
 
 ## Architecture
 
-Seven source files, all `package main`:
+Eight source files, all `package main`:
 - `telegram.go` — the Bot API client: the unexported `bot` type, `newBot`, and `call`/`send`/`setWebhook` methods, plus the wire types (`Update`, `Message`, `User`, `Chat`) decoded from incoming webhook JSON.
-- `db.go` — the bbolt connection: the package-level `var db *bbolt.DB` and `openDB(path)`/`closeDB()` (opening also creates the `watches` bucket). This is the only place the connection lifecycle lives.
+- `db.go` — the bbolt connection: the package-level `var db *bbolt.DB` and `openDB(path)`/`closeDB()` (opening also creates the `watches` and `rates` buckets). This is the only place the connection lifecycle lives.
 - `watches.go` — the watch storage functions (`addWatch`/`listWatches`/`removeWatch`) operating on the global `db`, plus the `watchRecord`/`watchType` types and the `watches` bucket name. One JSON-encoded `watchRecord` per watch under an auto-incrementing key (`bbolt.Bucket.NextSequence` + big-endian encoding, the standard bbolt idiom for ordered keys). See The watches store below.
+- `rates.go` — BTC/USD exchange-rate history in the `rates` bucket, plus the 5-minute updater goroutine that averages three free price APIs (see Exchange rates below).
 - `btcd.go` — a `btcdClient` for talking to a `btcd` node's JSON-RPC-over-websocket API (see below).
 - `config.go` — `applyConfig`, a tiny `name=value` properties-file parser that sets flags from a `-config` file (see below).
 - `logging.go` — leveled logging helpers and the `-verbose` gate (see Logging below).
@@ -42,7 +43,7 @@ Seven source files, all `package main`:
 Everything logs through the helpers in `logging.go` — never `fmt.Print*` or the `log` package directly (both are considered raw and shouldn't reappear in `main.go`/`telegram.go`/`btcd.go`/`watches.go`). The package var `verbosity` (set from `-verbose` in `main()`, so it's also `-config`-settable) gates emission:
 - `logErr`/`logWarn` and `logStatus` (lifecycle lines: "listening on …", "shutting down", "connected to btcd …") always print — verbosity 0.
 - `logInfo` (verbosity ≥ 1): high-level events — an incoming message (`logMessage`), a reply sent (`send`), a subscription added/removed (`watch`/`unwatch`).
-- `logNet` and `logDb` (verbosity ≥ 2): raw external traffic and storage requests. NET is emitted from `telegram.go`'s `bot.call` (request method + body, response body) and from `btcd.go` via `jsonrpc2.OnSend`/`OnRecv` hooks that are **only registered when `verbosity >= 2`** (zero overhead otherwise; `verbosity` is set before `dialBtcd` runs). DB is emitted from each watch function in `watches.go` (and `openDB`).
+- `logNet` and `logDb` (verbosity ≥ 2): raw external traffic and storage requests. NET is emitted from `telegram.go`'s `bot.call` (request method + body, response body) and `rates.go`'s `fetchRate` (each price-API GET + response), plus `btcd.go` via `jsonrpc2.OnSend`/`OnRecv` hooks that are **only registered when `verbosity >= 2`** (zero overhead otherwise; `verbosity` is set before `dialBtcd` runs). DB is emitted from each watch/rate function (and `openDB`).
 - `logFatal` is `logErr` + `os.Exit` for the startup fatals.
 
 Two deliberate redactions in NET logging, both to avoid leaking secrets that a debug log would otherwise capture: the Telegram request URL (which embeds `-bot-token`) is never logged — only the method and JSON body — and the `setWebhook` body is omitted entirely because it carries `-secret-token`. Everything else (including sent message text and btcd payloads) is logged verbatim at verbosity 2.
@@ -91,6 +92,12 @@ The whole path (`/watch` → real signed payment → `relevanttxaccepted` → br
 The bbolt connection is a plain package-level `var db *bbolt.DB` (in `db.go`), opened once in `main()` via `openDB(-db path)` and closed during graceful shutdown (`closeDB`, see Runtime model) — not threaded through parameters, consistent with how this codebase handles cross-cutting state (`btcd`, the pending-argument maps, etc.). The watch operations are package functions in `watches.go` that use that global `db`; there is no `watchStore` struct.
 
 `/watch <arg>` persists a `watchRecord{CreatedAt, ChatID, Type, WatchID}` via `addWatch`. `watch()`/`watchCmd()` in `main.go` classifies `arg` before storing it via `isTxid` (exactly 64 hex characters → `watchTypeTransaction`, anything else → `watchTypeAddress`) — a heuristic, not real address/txid validation (no checksum verification), good enough to route the record but not to guarantee the input is well-formed. The other two functions are `listWatches()` (used by `restoreWatches`, `/watches`, `/unwatch`) and `removeWatch(chatID, watchID)` (for `/unwatch`); no update. `removeWatch` deletes every record matching **both** fields and returns the count — the `chatID` half is the security scoping that stops one chat from removing another chat's watch, and the count lets `/unwatch` distinguish "removed" from "you weren't watching that". It collects keys during a `ForEach` and deletes them after, because bbolt forbids mutating a bucket mid-iteration.
+
+### Exchange rates
+
+`rates.go` keeps a BTC/USD price history in the `rates` bucket (same db file), so `/info` and notifications can show a rough fiat value. Each `rateRecord{Time, Source, USD}` is stored under its `Time.Unix()` big-endian key (reusing `itob`), so keys sort chronologically. `startRatesUpdater()` (launched from `main()` right after `openDB`) fetches once immediately then every 5 minutes: `updateRates()` hits all `rateSources` (CoinGecko, Coinbase, blockchain.info — free, no-auth GETs), **averages the ones that succeed** (a failed source is just skipped; if all fail nothing is stored), and writes one averaged record. The updater goroutine isn't explicitly stopped on shutdown — `main()` returns microseconds after `closeDB`, so a write-after-close is effectively impossible; not worth a stop channel. Each source has a `parse` func tested against real API payloads (blockchain.info returns *every* fiat — we pluck `USD.last` out of it); `rateSources` is a package var so tests point it at `httptest` servers.
+
+Two reads, **both DB-only, never online**: `lastRate()` (cursor `Last()` — the newest sample) and `rateAt(t)` (the sample nearest `t` via `Seek`+`Prev`/`Last`, or not-found if the closest is more than `rateTolerance` = 1h away, meaning the tx predates our history). Both return `(record, false)` when `db == nil` so USD is silently omitted in tests that don't open a db — USD is best-effort enrichment, not a hard dependency. `amountLine(btc, at, current)` renders `"<sat> satoshi (≈ $usd)"`, appending the USD part only when a rate is available: `current=true` uses `lastRate()` (mempool `/info` and **new-transaction notifications**, which have no confirmed time = "now"), `current=false` uses `rateAt(at)` (a confirmed transaction's block time). `usd(btc, rate)` formats `"$1,234.56"` (comma-grouped, 2 decimals). Only transaction *amounts* get USD — blocks and addresses have no amount.
 
 ### Command dispatch and the "pending argument" pattern
 

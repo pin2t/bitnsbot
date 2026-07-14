@@ -72,8 +72,8 @@ func startNotifyChat(b *bot, chatID int64, typ watchType, watchID string) {
                 if typ == watchTypeAddress {
                     if amount, ok := n.received[watchID]; ok {
                         send(b, chatID, fmt.Sprintf(
-                            "🔔 New transaction on watched address %s\n\n<pre>Tx:     %s\nAmount: %s satoshi</pre>",
-                            short(watchID), short(n.txid), satoshi(amount),
+                            "🔔 New transaction on watched address %s\n\n<pre>Tx:     %s\nAmount: %s</pre>",
+                            short(watchID), short(n.txid), amountLine(amount, time.Time{}, true),
                         ))
                     }
                 } else if n.txid == watchID {
@@ -195,6 +195,7 @@ func main() {
     if err = openDB(*dbPath); err != nil {
         logFatal("open watches database: %v", err)
     }
+    startRatesUpdater()
     if *btcdURL != "" {
         var btcdCtx, btcdCancel = context.WithTimeout(context.Background(), 15*time.Second)
         btcd, err = dialBtcd(btcdCtx, btcdConfig{
@@ -455,14 +456,13 @@ func transaction(ctx context.Context, bot *bot, chatID int64, txid string) {
     for _, vout := range tx.Vout {
         total += vout.Value
     }
-    var amount = satoshi(total)
     if tx.Confirmations == 0 {
-        send(bot, chatID, fmt.Sprintf("Transaction %s\n\n<pre>Status: unconfirmed (in mempool)\nAmount: %s satoshi</pre>", short(tx.Txid), amount))
+        send(bot, chatID, fmt.Sprintf("Transaction %s\n\n<pre>Status: unconfirmed (in mempool)\nAmount: %s</pre>", short(tx.Txid), amountLine(total, time.Time{}, true)))
         return
     }
     send(bot, chatID, fmt.Sprintf(
-        "Transaction %s\n\n<pre>Status: confirmed (%d confirmations)\nBlock:  %s\nTime:   %s\nAmount: %s satoshi</pre>",
-        short(tx.Txid), tx.Confirmations, short(tx.BlockHash), when(tx.Time), amount,
+        "Transaction %s\n\n<pre>Status: confirmed (%d confirmations)\nBlock:  %s\nTime:   %s\nAmount: %s</pre>",
+        short(tx.Txid), tx.Confirmations, short(tx.BlockHash), when(tx.Time), amountLine(total, time.Unix(tx.Time, 0), false),
     ))
 }
 
