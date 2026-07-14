@@ -160,11 +160,11 @@ func TestWatchFlow(t *testing.T) {
     defer server.Close()
     bot := newBot("TESTTOKEN", server.URL)
     var err error
-    store, err = openWatchStore(filepath.Join(t.TempDir(), "watches.db"))
+    err = openDB(filepath.Join(t.TempDir(), "watches.db"))
     if err != nil {
-        t.Fatalf("openWatchStore: %v", err)
+        t.Fatalf("openDB: %v", err)
     }
-    defer store.close()
+    defer closeDB()
     stopNotify()
     defer stopNotify()
     update(bot, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/watch"}})

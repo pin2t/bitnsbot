@@ -94,8 +94,8 @@ func TestWatchNotification(t *testing.T) {
         t.Fatalf("dialBtcd: %v", dialErr)
     }
     defer func() { btcd.close(); btcd = nil }()
-    store, _ = openWatchStore(filepath.Join(t.TempDir(), "watches.db"))
-    defer store.close()
+    openDB(filepath.Join(t.TempDir(), "watches.db"))
+    defer closeDB()
     stopNotify()
     defer stopNotify()
     watchCmd(b, 42, watchedAddr)
@@ -141,8 +141,8 @@ func TestUnwatchFlow(t *testing.T) {
     btcd = nil
     stopNotify()
     defer stopNotify()
-    store, _ = openWatchStore(filepath.Join(t.TempDir(), "watches.db"))
-    defer store.close()
+    openDB(filepath.Join(t.TempDir(), "watches.db"))
+    defer closeDB()
     var addr = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
     update(b, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/watch " + addr}})
     update(b, Update{Message: &Message{Chat: Chat{ID: 2}, Text: "/watch " + addr}})
@@ -157,7 +157,7 @@ func TestUnwatchFlow(t *testing.T) {
     if got := watcherChats(addr); len(got) != 1 || got[0] != 1 {
         t.Fatalf("expected only chat 1 to remain, got %#v", got)
     }
-    var records, _ = store.list()
+    var records, _ = listWatches()
     if len(records) != 1 || records[0].ChatID != 1 {
         t.Fatalf("expected only chat 1's record in store, got %#v", records)
     }
@@ -195,8 +195,8 @@ func TestWatchesFlow(t *testing.T) {
     }))
     defer server.Close()
     var b = newBot("TESTTOKEN", server.URL)
-    store, _ = openWatchStore(filepath.Join(t.TempDir(), "watches.db"))
-    defer store.close()
+    openDB(filepath.Join(t.TempDir(), "watches.db"))
+    defer closeDB()
     // nothing watched yet
     update(b, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/watches"}})
     if sent[len(sent)-1] != "You're not watching anything yet." {
@@ -204,9 +204,9 @@ func TestWatchesFlow(t *testing.T) {
     }
     var addr = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
     var txid = "f21b47a9143a23e80cc59e81588d21558b394005580b285961957cb3bed5b3e0"
-    store.add(1, watchTypeAddress, addr)
-    store.add(1, watchTypeTransaction, txid)
-    store.add(2, watchTypeAddress, "someoneElsesAddress")
+    addWatch(1, watchTypeAddress, addr)
+    addWatch(1, watchTypeTransaction, txid)
+    addWatch(2, watchTypeAddress, "someoneElsesAddress")
     update(b, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/watches"}})
     var msg = sent[len(sent)-1]
     // full ids present (not shortened) and tap-to-copy wrapped
@@ -224,7 +224,7 @@ func TestWatchesFlow(t *testing.T) {
         t.Fatalf("must not list another chat's watch: %q", msg)
     }
     // a watch id containing HTML metacharacters must be escaped
-    store.add(3, watchTypeAddress, "a<b>c")
+    addWatch(3, watchTypeAddress, "a<b>c")
     update(b, Update{Message: &Message{Chat: Chat{ID: 3}, Text: "/watches"}})
     if last := sent[len(sent)-1]; !strings.Contains(last, "a&lt;b&gt;c") {
         t.Fatalf("expected HTML-escaped watch id, got: %q", last)
