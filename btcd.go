@@ -92,6 +92,15 @@ func (c *btcdClient) getBlockCount(ctx context.Context) (int64, error) {
     return count, err
 }
 
+// estimateFee returns the fee, in BTC per kilobyte, needed for a transaction to
+// confirm within numBlocks blocks. btcd's estimator errors ("not enough blocks
+// have been observed") until the node has seen enough mempool activity.
+func (c *btcdClient) estimateFee(ctx context.Context, numBlocks int) (float64, error) {
+    var btcPerKB float64
+    var err = c.conn.Call(ctx, "estimatefee", []interface{}{numBlocks}, &btcPerKB)
+    return btcPerKB, err
+}
+
 type btcdVout struct {
     Value float64 `json:"value"`
 }

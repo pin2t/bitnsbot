@@ -310,6 +310,8 @@ func update(bot *bot, update Update) {
         unwatch(bot, msg.Chat.ID, arg)
     case "/watches":
         watches(bot, msg.Chat.ID)
+    case "/fees":
+        fees(bot, msg.Chat.ID)
     case "":
         pendingInfoMu.Lock()
         var pending = pendingInfoChats[msg.Chat.ID]
@@ -414,6 +416,7 @@ func start(bot *bot, chatID int64) {
         "• <b>/watch</b> — get notified when an address receives a transaction",
         "• <b>/unwatch</b> — stop watching an address or transaction",
         "• <b>/watches</b> — list what you're currently watching",
+        "• <b>/fees</b> — show current network fee estimates",
         "• <b>/start</b> — show this message",
     }, "\n"))
 }
@@ -625,6 +628,64 @@ func watches(bot *bot, chatID int64) {
         }
     }
     send(bot, chatID, strings.Join(lines, "\n"))
+}
+
+// fees replies with current network fee estimates for three confirmation
+// speeds. btcd's estimatefee returns BTC/kB, converted to sat/vB (×1e5); a tier
+// btcd can't estimate yet shows "n/a", and if none are available the whole
+// reply degrades to a short "not available yet" note. The three per-tier calls
+// run concurrently (jsonrpc2 multiplexes them over the one connection) so the
+// reply waits on the slowest rather than the sum.
+func fees(bot *bot, chatID int64) {
+    if btcd == nil {
+        send(bot, chatID, "Bitcoin node connection is not configured.")
+        return
+    }
+    var ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
+    defer cancel()
+    var tiers = []struct {
+        label  string
+        blocks int
+    }{
+        {"Fast (10-20 min):", 2},
+        {"Medium (~1h):", 6},
+        {"Slow (2h+):", 12},
+    }
+    var results = make([]struct {
+        btcPerKB float64
+        err      error
+    }, len(tiers))
+    var wg sync.WaitGroup
+    for i, t := range tiers {
+        wg.Add(1)
+        go func(i, blocks int) {
+            defer wg.Done()
+            results[i].btcPerKB, results[i].err = btcd.estimateFee(ctx, blocks)
+        }(i, t.blocks)
+    }
+    wg.Wait()
+    var pad int
+    for _, t := range tiers {
+        if len(t.label) > pad {
+            pad = len(t.label)
+        }
+    }
+    var lines []string
+    var available bool
+    for i, t := range tiers {
+        if results[i].err != nil || results[i].btcPerKB <= 0 {
+            lines = append(lines, fmt.Sprintf("%-*s  n/a", pad, t.label))
+            continue
+        }
+        available = true
+        var rate = strings.TrimSuffix(strconv.FormatFloat(results[i].btcPerKB*1e5, 'f', 1, 64), ".0")
+        lines = append(lines, fmt.Sprintf("%-*s  %s sat/vB", pad, t.label, rate))
+    }
+    if !available {
+        send(bot, chatID, "Fee estimates aren't available yet — the node hasn't observed enough network activity.")
+        return
+    }
+    send(bot, chatID, "Estimated network fees\n\n<pre>"+strings.Join(lines, "\n")+"</pre>")
 }
 
 func send(bot *bot, chatID int64, text string) {

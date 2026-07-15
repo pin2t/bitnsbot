@@ -187,3 +187,76 @@ func TestWatchFlow(t *testing.T) {
         t.Fatalf("unexpected third reply: %#v", sent)
     }
 }
+
+func TestFeesFlow(t *testing.T) {
+    var sent []string
+    var lastMode string
+    var server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        var body struct {
+            Text      string `json:"text"`
+            ParseMode string `json:"parse_mode"`
+        }
+        json.NewDecoder(r.Body).Decode(&body)
+        sent = append(sent, body.Text)
+        lastMode = body.ParseMode
+        json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": true})
+    }))
+    defer server.Close()
+    var bot = newBot("TESTTOKEN", server.URL)
+    // not configured → fixed message
+    btcd = nil
+    update(bot, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/fees"}})
+    if len(sent) != 1 || sent[0] != "Bitcoin node connection is not configured." {
+        t.Fatalf("unexpected not-configured reply: %#v", sent)
+    }
+    // configured: BTC/kB values convert to sat/vB by ×1e5 (0.0001 → 10 sat/vB)
+    var rates = map[float64]float64{2: 0.0001, 6: 0.00007, 12: 0.00003}
+    var btcdServer = newFakeBtcdServer(t, func(method string, params json.RawMessage) (interface{}, error) {
+        if method != "estimatefee" {
+            return nil, fmt.Errorf("unexpected method %s", method)
+        }
+        var p []interface{}
+        json.Unmarshal(params, &p)
+        var blocks, _ = p[0].(float64)
+        return rates[blocks], nil
+    })
+    defer btcdServer.Close()
+    btcd = dialFakeBtcd(t, btcdServer, notifier{})
+    defer func() { btcd.close(); btcd = nil }()
+    update(bot, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/fees"}})
+    if len(sent) != 2 {
+        t.Fatalf("expected a fees reply, got %#v", sent)
+    }
+    for _, want := range []string{"Estimated network fees", "<pre>", "Fast (10-20 min):", "10 sat/vB", "Medium (~1h):", "7 sat/vB", "Slow (2h+):", "3 sat/vB"} {
+        if !strings.Contains(sent[1], want) {
+            t.Fatalf("fees reply missing %q: %q", want, sent[1])
+        }
+    }
+    if lastMode != "HTML" {
+        t.Fatalf("expected HTML parse mode, got %q", lastMode)
+    }
+}
+
+func TestFeesUnavailable(t *testing.T) {
+    var sent []string
+    var server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        var body struct {
+            Text string `json:"text"`
+        }
+        json.NewDecoder(r.Body).Decode(&body)
+        sent = append(sent, body.Text)
+        json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": true})
+    }))
+    defer server.Close()
+    var bot = newBot("TESTTOKEN", server.URL)
+    var btcdServer = newFakeBtcdServer(t, func(method string, params json.RawMessage) (interface{}, error) {
+        return nil, fmt.Errorf("not enough blocks have been observed")
+    })
+    defer btcdServer.Close()
+    btcd = dialFakeBtcd(t, btcdServer, notifier{})
+    defer func() { btcd.close(); btcd = nil }()
+    update(bot, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/fees"}})
+    if len(sent) != 1 || !strings.Contains(sent[0], "aren't available") {
+        t.Fatalf("unexpected unavailable reply: %#v", sent)
+    }
+}
