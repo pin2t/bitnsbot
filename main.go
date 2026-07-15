@@ -489,10 +489,105 @@ func block(ctx context.Context, bot *bot, chatID int64, height int64) {
         unit = u
     }
     var diff = strings.TrimRight(strings.TrimRight(strconv.FormatFloat(difficulty, 'f', 2, 64), "0"), ".") + unit
-    send(bot, chatID, fmt.Sprintf(
-        "Block #%d\n\n<pre>Hash:          %s\nTime:          %s\nConfirmations: %d\nDifficulty:    %s</pre>",
-        header.Height, short(header.Hash), when(header.Time), header.Confirmations, diff,
-    ))
+    var fields = fmt.Sprintf("Hash:          %s\nTime:          %s\nConfirmations: %d\nDifficulty:    %s",
+        short(header.Hash), when(header.Time), header.Confirmations, diff)
+    if blk, blkErr := btcd.getBlockVerbose(ctx, hash); blkErr != nil {
+        logWarn("get block transactions: %v", blkErr)
+        fields += "\nTransactions:  unavailable"
+    } else {
+        fields += fmt.Sprintf("\nTransactions:  %d", len(blk.Tx))
+        var low, avg, high, count, feeErr = blockFees(ctx, blk.Tx)
+        switch {
+        case feeErr != nil:
+            logWarn("block fees: %v", feeErr)
+            fields += "\nFees:          unavailable"
+        case count == 0:
+            fields += "\nFees:          none (coinbase only)"
+        default:
+            fields += fmt.Sprintf("\nLowest fee:    %s satoshi\nAverage fee:   %s satoshi\nHighest fee:   %s satoshi",
+                satoshi(low), satoshi(avg), satoshi(high))
+        }
+    }
+    send(bot, chatID, fmt.Sprintf("Block #%d\n\n<pre>%s</pre>", header.Height, fields))
+}
+
+// blockFees computes each non-coinbase transaction's fee (sum of input prevout
+// values minus output values) and returns the low/average/high in BTC with the
+// count of fee-paying transactions. btcd's getblock omits input values, so every
+// referenced prevout transaction is fetched concurrently (bounded) and cached;
+// if any fetch fails (e.g. txindex disabled, or a genuinely missing prevout) it
+// returns an error so the caller reports fees as unavailable rather than wrong.
+func blockFees(ctx context.Context, txs []btcdBlockTx) (low, avg, high float64, count int, err error) {
+    var ids = map[string]bool{}
+    for _, tx := range txs {
+        if len(tx.Vin) > 0 && tx.Vin[0].Coinbase != "" {
+            continue
+        }
+        for _, in := range tx.Vin {
+            ids[in.Txid] = true
+        }
+    }
+    if len(ids) == 0 {
+        return 0, 0, 0, 0, nil
+    }
+    var prevouts = map[string]*btcdTransaction{}
+    var mu sync.Mutex
+    var wg sync.WaitGroup
+    var sem = make(chan struct{}, 16)
+    var fetchErr error
+    for id := range ids {
+        wg.Add(1)
+        sem <- struct{}{}
+        go func(id string) {
+            defer wg.Done()
+            defer func() { <-sem }()
+            var tx, e = btcd.getRawTransaction(ctx, id)
+            mu.Lock()
+            if e != nil {
+                if fetchErr == nil { fetchErr = e }
+            } else {
+                prevouts[id] = tx
+            }
+            mu.Unlock()
+        }(id)
+    }
+    wg.Wait()
+    if fetchErr != nil {
+        return 0, 0, 0, 0, fetchErr
+    }
+    var total float64
+    for _, tx := range txs {
+        if len(tx.Vin) > 0 && tx.Vin[0].Coinbase != "" {
+            continue
+        }
+        var in, out float64
+        for _, vin := range tx.Vin {
+            var p = prevouts[vin.Txid]
+            if p == nil || int(vin.Vout) >= len(p.Vout) {
+                return 0, 0, 0, 0, fmt.Errorf("missing prevout %s:%d", vin.Txid, vin.Vout)
+            }
+            in += p.Vout[vin.Vout].Value
+        }
+        for _, vout := range tx.Vout {
+            out += vout.Value
+        }
+        var fee = in - out
+        if fee < 0 {
+            fee = 0
+        }
+        if count == 0 {
+            low, high = fee, fee
+        } else {
+            if fee < low { low = fee }
+            if fee > high { high = fee }
+        }
+        total += fee
+        count++
+    }
+    if count == 0 {
+        return 0, 0, 0, 0, nil
+    }
+    return low, total / float64(count), high, count, nil
 }
 
 func address(ctx context.Context, bot *bot, chatID int64, addr string) {

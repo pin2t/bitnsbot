@@ -148,6 +148,37 @@ func (c *btcdClient) getBlockHeader(ctx context.Context, hash string) (*btcdBloc
     return &header, nil
 }
 
+type btcdVin struct {
+    Txid     string `json:"txid"`
+    Vout     uint32 `json:"vout"`
+    Coinbase string `json:"coinbase"`
+}
+
+type btcdBlockTx struct {
+    Txid string     `json:"txid"`
+    Vin  []btcdVin  `json:"vin"`
+    Vout []btcdVout `json:"vout"`
+}
+
+type btcdVerboseBlock struct {
+    Hash string `json:"hash"`
+    // btcd puts the full transactions under "rawtx" at verbosity 2; "tx" holds
+    // only txids (verbosity 1). Bitcoin Core uses "tx" for both — this is a
+    // btcd-specific quirk, caught against a real regtest node.
+    Tx []btcdBlockTx `json:"rawtx"`
+}
+
+// getBlockVerbose fetches a block with full transaction details (getblock
+// verbosity 2), listing every tx's inputs and outputs. Inputs still reference
+// their prevouts by txid:vout with no value, so computing fees requires fetching
+// those prevout transactions separately.
+func (c *btcdClient) getBlockVerbose(ctx context.Context, hash string) (*btcdVerboseBlock, error) {
+    var blk btcdVerboseBlock
+    var err = c.conn.Call(ctx, "getblock", []interface{}{hash, 2}, &blk)
+    if err != nil { return nil, err }
+    return &blk, nil
+}
+
 type btcdAddressInfo struct {
     IsValid   bool   `json:"isvalid"`
     Address   string `json:"address"`
