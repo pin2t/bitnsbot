@@ -113,12 +113,22 @@ func notifyAddresses() (res []string) {
 type notifier struct{}
 
 func (notifier) Handle(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) {
-    if req.Method != "relevanttxaccepted" || req.Params == nil { return }
-    var params []string
-    if err := json.Unmarshal(*req.Params, &params); err != nil || len(params) == 0 {
-        return
+    if req.Params == nil { return }
+    switch req.Method {
+    case "relevanttxaccepted":
+        var params []string
+        if err := json.Unmarshal(*req.Params, &params); err == nil && len(params) > 0 {
+            go broadcast(params[0])
+        }
+    case "blockconnected":
+        var params []json.RawMessage
+        if err := json.Unmarshal(*req.Params, &params); err == nil && len(params) > 0 {
+            var hash string
+            if json.Unmarshal(params[0], &hash) == nil {
+                go cacheBlockHash(hash)
+            }
+        }
     }
-    go broadcast(params[0])
 }
 
 func broadcast(txHex string) {
@@ -212,6 +222,7 @@ func main() {
         logStatus("connected to btcd at %s", *btcdURL)
     }
     startNotify(bot)
+    startBlockCache()
     if *registerHook {
         if *webhookURL == "" {
             logFatal("-webhook-url is required when -register-webhook=true")
@@ -400,12 +411,16 @@ func short(s string) string {
     return s[:6] + "..." + s[len(s)-6:]
 }
 
-func satoshi(btc float64) string {
-    var s = strconv.FormatInt(int64(math.Round(btc*1e8)), 10)
+func group(n int64) string {
+    var s = strconv.FormatInt(n, 10)
     for i := len(s) - 3; i > 0; i -= 3 {
         s = s[:i] + " " + s[i:]
     }
     return s
+}
+
+func satoshi(btc float64) string {
+    return group(int64(math.Round(btc * 1e8)))
 }
 
 func start(bot *bot, chatID int64) {
@@ -470,45 +485,23 @@ func transaction(ctx context.Context, bot *bot, chatID int64, txid string) {
 }
 
 func block(ctx context.Context, bot *bot, chatID int64, height int64) {
+    if bi, ok := loadBlock(height); ok {
+        send(bot, chatID, formatBlock(bi))
+        return
+    }
     var hash, err = btcd.getBlockHash(ctx, height)
     if err != nil {
         send(bot, chatID, fmt.Sprintf("Couldn't find block %d.", height))
         return
     }
-    var header, headerErr = btcd.getBlockHeader(ctx, hash)
-    if headerErr != nil {
-        logErr("get block header: %v", headerErr)
+    var bi, ciErr = computeBlockInfo(ctx, hash)
+    if ciErr != nil {
+        logErr("compute block %d: %v", height, ciErr)
         send(bot, chatID, "Sorry, something went wrong fetching that block.")
         return
     }
-    var difficulty = header.Difficulty
-    var unit = ""
-    for _, u := range []string{" k", " M", " G", " T", " P", " E"} {
-        if difficulty < 1000 { break }
-        difficulty /= 1000
-        unit = u
-    }
-    var diff = strings.TrimRight(strings.TrimRight(strconv.FormatFloat(difficulty, 'f', 2, 64), "0"), ".") + unit
-    var fields = fmt.Sprintf("Hash:          %s\nTime:          %s\nConfirmations: %d\nDifficulty:    %s",
-        short(header.Hash), when(header.Time), header.Confirmations, diff)
-    if blk, blkErr := btcd.getBlockVerbose(ctx, hash); blkErr != nil {
-        logWarn("get block transactions: %v", blkErr)
-        fields += "\nTransactions:  unavailable"
-    } else {
-        fields += fmt.Sprintf("\nTransactions:  %d", len(blk.Tx))
-        var low, avg, high, count, feeErr = blockFees(ctx, blk.Tx)
-        switch {
-        case feeErr != nil:
-            logWarn("block fees: %v", feeErr)
-            fields += "\nFees:          unavailable"
-        case count == 0:
-            fields += "\nFees:          none (coinbase only)"
-        default:
-            fields += fmt.Sprintf("\nLowest fee:    %s satoshi\nAverage fee:   %s satoshi\nHighest fee:   %s satoshi",
-                satoshi(low), satoshi(avg), satoshi(high))
-        }
-    }
-    send(bot, chatID, fmt.Sprintf("Block #%d\n\n<pre>%s</pre>", header.Height, fields))
+    storeBlock(bi)
+    send(bot, chatID, formatBlock(bi))
 }
 
 // blockFees computes each non-coinbase transaction's fee (sum of input prevout

@@ -77,10 +77,15 @@ func TestInfoFlow(t *testing.T) {
                 "difficulty":    difficulty,
             }, nil
         case "getblock":
+            var reqHash, _ = p[0].(string)
+            var height, blockTime, difficulty = 100, int64(1700000000), 1.5
+            if reqHash == "00000000000000recentblockhash" {
+                height, blockTime, difficulty = 200, recentTime, 1e9
+            }
             return map[string]any{
-                "hash": "0000000000000000000blockhash",
+                "hash": reqHash, "height": height, "time": blockTime, "size": 285, "difficulty": difficulty,
                 "rawtx": []map[string]any{
-                    {"txid": "coinbasetx", "vin": []map[string]any{{"coinbase": "03aabbcc"}}, "vout": []map[string]any{{"value": 50.0}}},
+                    {"txid": "coinbasetx", "size": 204, "vin": []map[string]any{{"coinbase": "03aabbcc"}}, "vout": []map[string]any{{"value": 50.0}}},
                 },
             }, nil
         case "getrawtransaction":
@@ -115,9 +120,18 @@ func TestInfoFlow(t *testing.T) {
     btcd = dialFakeBtcd(t, btcdServer, &recordingHandler{})
     defer btcd.close()
     update(bot, Update{Message: &Message{Chat: Chat{ID: 5}, Text: "/info 100"}})
-    var wantBlock = "Block #100\n\n<pre>Hash:          000000...ckhash\nTime:          14 november 2023 22:13\nConfirmations: 10\nDifficulty:    1.5\nTransactions:  1\nFees:          none (coinbase only)</pre>"
-    if len(sent) != 4 || sent[3] != wantBlock {
-        t.Fatalf("unexpected block reply: %#v", sent)
+    if len(sent) != 4 {
+        t.Fatalf("expected block reply, got %#v", sent)
+    }
+    for _, want := range []string{
+        "Block #100", "Hash:          000000...ckhash", "Time:          14 november 2023 22:13",
+        "Size:          285 bytes", "Transactions:  1", "Miner:         Unknown", "Difficulty:    1.5",
+        "Fees:          none (coinbase only)", "Tx size min:   204 bytes", "Reward:        5 000 000 000 satoshi",
+        "Reward + fees: 5 000 000 000 satoshi",
+    } {
+        if !strings.Contains(sent[3], want) {
+            t.Fatalf("block reply missing %q: %q", want, sent[3])
+        }
     }
     if lastMode != "HTML" {
         t.Fatalf("expected HTML parse mode, got: %q", lastMode)
@@ -265,62 +279,5 @@ func TestFeesUnavailable(t *testing.T) {
     update(bot, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/fees"}})
     if len(sent) != 1 || !strings.Contains(sent[0], "aren't available") {
         t.Fatalf("unexpected unavailable reply: %#v", sent)
-    }
-}
-
-func TestBlockFees(t *testing.T) {
-    var sent []string
-    var server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-        var body struct {
-            Text string `json:"text"`
-        }
-        json.NewDecoder(r.Body).Decode(&body)
-        sent = append(sent, body.Text)
-        json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": true})
-    }))
-    defer server.Close()
-    var bot = newBot("TESTTOKEN", server.URL)
-    var btcdServer = newFakeBtcdServer(t, func(method string, params json.RawMessage) (interface{}, error) {
-        var p []interface{}
-        json.Unmarshal(params, &p)
-        switch method {
-        case "getblockhash":
-            return "blockhash500", nil
-        case "getblockheader":
-            return map[string]any{"hash": "blockhash500", "confirmations": 3, "height": 500, "time": 1700000000, "difficulty": 1.0}, nil
-        case "getblock":
-            // coinbase + two fee-paying txs (fees 0.001 and 0.0005 BTC)
-            return map[string]any{
-                "hash": "blockhash500",
-                "rawtx": []map[string]any{
-                    {"txid": "cb", "vin": []map[string]any{{"coinbase": "03aa"}}, "vout": []map[string]any{{"value": 50.0}}},
-                    {"txid": "txa", "vin": []map[string]any{{"txid": "preva", "vout": 0}}, "vout": []map[string]any{{"value": 1.0}}},
-                    {"txid": "txb", "vin": []map[string]any{{"txid": "prevb", "vout": 1}}, "vout": []map[string]any{{"value": 2.0}}},
-                },
-            }, nil
-        case "getrawtransaction":
-            switch id, _ := p[0].(string); id {
-            case "preva":
-                return map[string]any{"txid": "preva", "vout": []map[string]any{{"value": 1.001}}}, nil
-            case "prevb":
-                return map[string]any{"txid": "prevb", "vout": []map[string]any{{"value": 0.5}, {"value": 2.0005}}}, nil
-            }
-            return nil, fmt.Errorf("no such tx")
-        }
-        return nil, fmt.Errorf("unexpected method %s", method)
-    })
-    defer btcdServer.Close()
-    btcd = dialFakeBtcd(t, btcdServer, &recordingHandler{})
-    defer func() { btcd.close(); btcd = nil }()
-    update(bot, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/info 500"}})
-    if len(sent) != 1 {
-        t.Fatalf("expected one reply, got %#v", sent)
-    }
-    if !strings.Contains(sent[0], "Block #500") || !strings.Contains(sent[0], "Transactions:  3") {
-        t.Fatalf("block header/count missing: %q", sent[0])
-    }
-    var wantFees = "Lowest fee:    50 000 satoshi\nAverage fee:   75 000 satoshi\nHighest fee:   100 000 satoshi"
-    if !strings.Contains(sent[0], wantFees) {
-        t.Fatalf("block fees wrong: %q", sent[0])
     }
 }

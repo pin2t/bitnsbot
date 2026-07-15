@@ -102,7 +102,8 @@ func (c *btcdClient) estimateFee(ctx context.Context, numBlocks int) (float64, e
 }
 
 type btcdVout struct {
-    Value float64 `json:"value"`
+    Value        float64          `json:"value"`
+    ScriptPubKey btcdScriptPubKey `json:"scriptPubKey"`
 }
 
 type btcdTransaction struct {
@@ -127,27 +128,6 @@ func (c *btcdClient) getBlockHash(ctx context.Context, height int64) (string, er
     return hash, err
 }
 
-type btcdBlockHeader struct {
-    Hash          string  `json:"hash"`
-    Confirmations int64   `json:"confirmations"`
-    Height        int32   `json:"height"`
-    Version       int32   `json:"version"`
-    MerkleRoot    string  `json:"merkleroot"`
-    Time          int64   `json:"time"`
-    Nonce         uint64  `json:"nonce"`
-    Bits          string  `json:"bits"`
-    Difficulty    float64 `json:"difficulty"`
-    PreviousHash  string  `json:"previousblockhash"`
-    NextHash      string  `json:"nextblockhash"`
-}
-
-func (c *btcdClient) getBlockHeader(ctx context.Context, hash string) (*btcdBlockHeader, error) {
-    var header btcdBlockHeader
-    var err = c.conn.Call(ctx, "getblockheader", []interface{}{hash, true}, &header)
-    if err != nil { return nil, err }
-    return &header, nil
-}
-
 type btcdVin struct {
     Txid     string `json:"txid"`
     Vout     uint32 `json:"vout"`
@@ -156,12 +136,17 @@ type btcdVin struct {
 
 type btcdBlockTx struct {
     Txid string     `json:"txid"`
+    Size int32      `json:"size"`
     Vin  []btcdVin  `json:"vin"`
     Vout []btcdVout `json:"vout"`
 }
 
 type btcdVerboseBlock struct {
-    Hash string `json:"hash"`
+    Hash       string  `json:"hash"`
+    Height     int64   `json:"height"`
+    Time       int64   `json:"time"`
+    Size       int32   `json:"size"`
+    Difficulty float64 `json:"difficulty"`
     // btcd puts the full transactions under "rawtx" at verbosity 2; "tx" holds
     // only txids (verbosity 1). Bitcoin Core uses "tx" for both — this is a
     // btcd-specific quirk, caught against a real regtest node.
