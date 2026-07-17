@@ -474,14 +474,144 @@ func transaction(ctx context.Context, bot *bot, chatID int64, txid string) {
     for _, vout := range tx.Vout {
         total += vout.Value
     }
-    if tx.Confirmations == 0 {
-        send(bot, chatID, fmt.Sprintf("Transaction %s\n\n<pre>Status: unconfirmed (in mempool)\nAmount: %s</pre>", short(tx.Txid), amountLine(total, time.Time{}, true)))
-        return
+    var coinbase = len(tx.Vin) > 0 && tx.Vin[0].Coinbase != ""
+    var fee float64
+    var inputs []string
+    var feeOK bool
+    if !coinbase {
+        fee, inputs, feeOK = txInputs(ctx, tx)
     }
-    send(bot, chatID, fmt.Sprintf(
-        "Transaction %s\n\n<pre>Status: confirmed (%d confirmations)\nBlock:  %s\nTime:   %s\nAmount: %s</pre>",
-        short(tx.Txid), tx.Confirmations, short(tx.BlockHash), when(tx.Time), amountLine(total, time.Unix(tx.Time, 0), false),
-    ))
+    var pairs [][2]string
+    var at = time.Time{}
+    var current = true
+    if tx.Confirmations == 0 {
+        pairs = append(pairs, [2]string{"Status", "unconfirmed (in mempool)"})
+    } else {
+        at, current = time.Unix(tx.Time, 0), false
+        pairs = append(pairs,
+            [2]string{"Status", fmt.Sprintf("confirmed (%d confirmations)", tx.Confirmations)},
+            [2]string{"Confirmed", when(tx.Time)},
+            [2]string{"Block", short(tx.BlockHash)},
+        )
+    }
+    pairs = append(pairs, [2]string{"Amount", amountLine(total, at, current)})
+    switch {
+    case coinbase:
+        pairs = append(pairs, [2]string{"Fee", "none (coinbase)"})
+    case feeOK:
+        pairs = append(pairs, [2]string{"Fee", satoshi(fee) + " satoshi"})
+    default:
+        pairs = append(pairs, [2]string{"Fee", "unavailable"})
+    }
+    pairs = append(pairs, [2]string{"Size", group(int64(tx.Size)) + " bytes"})
+    switch {
+    case coinbase:
+        pairs = append(pairs, [2]string{"Inputs", "coinbase (newly generated)"})
+    case feeOK:
+        pairs = append(pairs, [2]string{"Inputs", compactAddrs(inputs)})
+    default:
+        pairs = append(pairs, [2]string{"Inputs", "unavailable"})
+    }
+    pairs = append(pairs, [2]string{"Outputs", compactAddrs(outputAddrs(tx))})
+    var pad int
+    for _, p := range pairs {
+        if len(p[0])+1 > pad { pad = len(p[0]) + 1 }
+    }
+    var lines []string
+    for _, p := range pairs {
+        lines = append(lines, fmt.Sprintf("%-*s %s", pad, p[0]+":", p[1]))
+    }
+    send(bot, chatID, fmt.Sprintf("Transaction %s\n\n<pre>%s</pre>", short(tx.Txid), strings.Join(lines, "\n")))
+}
+
+// txInputs fetches each input's prevout transaction to sum the input values (for
+// the fee = inputs − outputs) and collect the spent addresses. btcd's
+// getrawtransaction gives inputs only as txid:vout refs, so the prevouts are
+// fetched concurrently (bounded); any fetch failure yields ok=false so the reply
+// shows the fee/inputs as unavailable rather than wrong.
+func txInputs(ctx context.Context, tx *btcdTransaction) (fee float64, addrs []string, ok bool) {
+    var ids = map[string]bool{}
+    for _, in := range tx.Vin {
+        ids[in.Txid] = true
+    }
+    var prevouts = map[string]*btcdTransaction{}
+    var mu sync.Mutex
+    var wg sync.WaitGroup
+    var sem = make(chan struct{}, 16)
+    var fetchErr error
+    for id := range ids {
+        wg.Add(1)
+        sem <- struct{}{}
+        go func(id string) {
+            defer wg.Done()
+            defer func() { <-sem }()
+            var p, e = btcd.getRawTransaction(ctx, id)
+            mu.Lock()
+            if e != nil {
+                if fetchErr == nil { fetchErr = e }
+            } else {
+                prevouts[id] = p
+            }
+            mu.Unlock()
+        }(id)
+    }
+    wg.Wait()
+    if fetchErr != nil {
+        return 0, nil, false
+    }
+    var inSum float64
+    for _, vin := range tx.Vin {
+        var p = prevouts[vin.Txid]
+        if p == nil || int(vin.Vout) >= len(p.Vout) {
+            return 0, nil, false
+        }
+        inSum += p.Vout[vin.Vout].Value
+        addrs = append(addrs, addressOf(p.Vout[vin.Vout]))
+    }
+    var outSum float64
+    for _, v := range tx.Vout {
+        outSum += v.Value
+    }
+    fee = inSum - outSum
+    if fee < 0 {
+        fee = 0
+    }
+    return fee, addrs, true
+}
+
+func outputAddrs(tx *btcdTransaction) []string {
+    var addrs []string
+    for _, v := range tx.Vout {
+        addrs = append(addrs, addressOf(v))
+    }
+    return addrs
+}
+
+func addressOf(v btcdVout) string {
+    if v.ScriptPubKey.Address != "" { return v.ScriptPubKey.Address }
+    if len(v.ScriptPubKey.Addresses) > 0 { return v.ScriptPubKey.Addresses[0] }
+    return "(non-standard)"
+}
+
+// compactAddrs joins shortened addresses, showing at most the first three with a
+// trailing "..." when there are more.
+func compactAddrs(addrs []string) string {
+    if len(addrs) == 0 {
+        return "none"
+    }
+    var show, more = addrs, false
+    if len(addrs) > 3 {
+        show, more = addrs[:3], true
+    }
+    var parts []string
+    for _, a := range show {
+        parts = append(parts, short(a))
+    }
+    var s = strings.Join(parts, ", ")
+    if more {
+        s += ", ..."
+    }
+    return s
 }
 
 func block(ctx context.Context, bot *bot, chatID int64, height int64) {
