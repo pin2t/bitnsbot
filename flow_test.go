@@ -90,6 +90,9 @@ func TestInfoFlow(t *testing.T) {
             }, nil
         case "getrawtransaction":
             var reqTxid, _ = p[0].(string)
+            if reqTxid == "prevtx" { // the input's prevout (value 1.5015 → fee 0.0015)
+                return map[string]any{"vout": []map[string]any{{"value": 1.5015, "scriptPubKey": map[string]any{"address": "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"}}}}, nil
+            }
             var txTime int64 = 1700000000
             if reqTxid == recentTxid {
                 txTime = recentTime
@@ -99,7 +102,9 @@ func TestInfoFlow(t *testing.T) {
                 "confirmations": 6,
                 "blockhash":     "0000000000000000000blockhash",
                 "time":          txTime,
-                "vout":          []map[string]any{{"value": 1.5}},
+                "size":          225,
+                "vin":           []map[string]any{{"txid": "prevtx", "vout": 0}},
+                "vout":          []map[string]any{{"value": 1.5, "scriptPubKey": map[string]any{"address": "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"}}},
             }, nil
         case "validateaddress":
             var addr, _ = p[0].(string)
@@ -138,9 +143,17 @@ func TestInfoFlow(t *testing.T) {
     }
     var txid = "f21b47a9143a23e80cc59e81588d21558b394005580b285961957cb3bed5b3e0"
     update(bot, Update{Message: &Message{Chat: Chat{ID: 6}, Text: "/info " + txid}})
-    var wantTx = "Transaction f21b47...d5b3e0\n\n<pre>Status: confirmed (6 confirmations)\nBlock:  000000...ckhash\nTime:   14 november 2023 22:13\nAmount: 150 000 000 satoshi</pre>"
-    if len(sent) != 5 || sent[4] != wantTx {
-        t.Fatalf("unexpected transaction reply: %#v", sent)
+    if len(sent) != 5 {
+        t.Fatalf("expected transaction reply, got %#v", sent)
+    }
+    for _, want := range []string{
+        "Transaction f21b47...d5b3e0", "confirmed (6 confirmations)", "Confirmed:", "14 november 2023 22:13",
+        "Amount:", "150 000 000 satoshi", "Fee:", "150 000 satoshi", "Size:", "225 bytes",
+        "Inputs:", "1A1zP1...DivfNa", "Outputs:", "bc1qw5...v8f3t4",
+    } {
+        if !strings.Contains(sent[4], want) {
+            t.Fatalf("transaction reply missing %q: %q", want, sent[4])
+        }
     }
     update(bot, Update{Message: &Message{Chat: Chat{ID: 7}, Text: "/info 1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"}})
     var wantAddr = "Address 1A1zP1...DivfNa\n\n<pre>Type:            standard (P2PKH)\nRecent activity: unavailable (address index not enabled)</pre>"
@@ -156,8 +169,8 @@ func TestInfoFlow(t *testing.T) {
         t.Fatalf("unexpected invalid address reply: %#v", sent)
     }
     update(bot, Update{Message: &Message{Chat: Chat{ID: 10}, Text: "/info " + recentTxid}})
-    if len(sent) != 9 || !strings.Contains(sent[8], "Time:   2 days ago") {
-        t.Fatalf("expected relative time format for recent transaction, got: %#v", sent)
+    if len(sent) != 9 || !strings.Contains(sent[8], "Confirmed:") || !strings.Contains(sent[8], "2 days ago") {
+        t.Fatalf("expected relative confirmation time for recent transaction, got: %#v", sent)
     }
     update(bot, Update{Message: &Message{Chat: Chat{ID: 11}, Text: "/info 200"}})
     if len(sent) != 10 || !strings.Contains(sent[9], "Block #200") || !strings.Contains(sent[9], "Time:          2 days ago") {
@@ -279,5 +292,20 @@ func TestFeesUnavailable(t *testing.T) {
     update(bot, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/fees"}})
     if len(sent) != 1 || !strings.Contains(sent[0], "aren't available") {
         t.Fatalf("unexpected unavailable reply: %#v", sent)
+    }
+}
+
+func TestCompactAddrs(t *testing.T) {
+    if got := compactAddrs(nil); got != "none" {
+        t.Fatalf("empty = %q", got)
+    }
+    if got := compactAddrs([]string{"a", "b", "c"}); got != "a, b, c" { // exactly 3 shown in full
+        t.Fatalf("three = %q", got)
+    }
+    if got := compactAddrs([]string{"a", "b", "c", "d", "e"}); got != "a, b, c, ..." { // >3 → first 3 + ...
+        t.Fatalf("more = %q", got)
+    }
+    if got := compactAddrs([]string{"1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"}); got != "1A1zP1...DivfNa" { // shortened
+        t.Fatalf("short = %q", got)
     }
 }

@@ -112,6 +112,8 @@ type btcdTransaction struct {
     Confirmations uint64     `json:"confirmations"`
     BlockHash     string     `json:"blockhash"`
     Time          int64      `json:"time"`
+    Size          int32      `json:"size"`
+    Vin           []btcdVin  `json:"vin"`
     Vout          []btcdVout `json:"vout"`
 }
 
