@@ -202,7 +202,7 @@ func TestWatchFlow(t *testing.T) {
     stopNotify()
     defer stopNotify()
     update(bot, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/watch"}})
-    if len(sent) != 1 || sent[0] != "Please send what you'd like to watch in a separate message." {
+    if len(sent) != 1 || !strings.Contains(sent[0], "alias") {
         t.Fatalf("unexpected first reply: %#v", sent)
     }
     if !pendingWatchChats[1] {
@@ -219,6 +219,23 @@ func TestWatchFlow(t *testing.T) {
     update(bot, Update{Message: &Message{Chat: Chat{ID: 2}, Text: "/watch " + txid}})
     if len(sent) != 3 || sent[2] != "Watching transaction: "+txid {
         t.Fatalf("unexpected third reply: %#v", sent)
+    }
+    // an alias as the second parameter (one message)
+    var aliasAddr = "1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2"
+    update(bot, Update{Message: &Message{Chat: Chat{ID: 5}, Text: "/watch " + aliasAddr + " Savings"}})
+    if sent[len(sent)-1] != "Watching address: "+aliasAddr+" (Savings)" {
+        t.Fatalf("unexpected alias reply: %#v", sent)
+    }
+    // and through the bare-/watch follow-up — target and alias in the same message
+    update(bot, Update{Message: &Message{Chat: Chat{ID: 6}, Text: "/watch"}})
+    update(bot, Update{Message: &Message{Chat: Chat{ID: 6}, Text: aliasAddr + " Cold storage"}})
+    if sent[len(sent)-1] != "Watching address: "+aliasAddr+" (Cold storage)" {
+        t.Fatalf("unexpected pending-alias reply: %#v", sent)
+    }
+    // /watches lists the alias next to the id
+    update(bot, Update{Message: &Message{Chat: Chat{ID: 5}, Text: "/watches"}})
+    if !strings.Contains(sent[len(sent)-1], "<code>"+aliasAddr+"</code> (Savings)") {
+        t.Fatalf("expected alias in /watches listing: %q", sent[len(sent)-1])
     }
 }
 
