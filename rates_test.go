@@ -162,13 +162,13 @@ func TestAmountLineUSD(t *testing.T) {
         t.Fatalf("openDB: %v", err)
     }
     defer closeDB()
-    // no rate stored yet → satoshi only, no USD
+    // no rate stored yet → sats only, no USD
     if s := amountLine(1.5, time.Time{}, true); strings.Contains(s, "$") {
         t.Fatalf("expected no USD without a rate: %q", s)
     }
     storeRate(rateRecord{Time: time.Now(), Source: "x", USD: 60000})
     var s = amountLine(1.5, time.Time{}, true)
-    if !strings.Contains(s, "150 000 000 satoshi") || !strings.Contains(s, "$90,000") {
+    if !strings.Contains(s, "150 000 000 sats") || !strings.Contains(s, "$90,000") {
         t.Fatalf("amountLine = %q", s)
     }
 }
