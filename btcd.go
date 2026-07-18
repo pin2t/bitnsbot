@@ -124,6 +124,21 @@ func (c *btcdClient) getRawTransaction(ctx context.Context, txid string) (*btcdT
     return &tx, nil
 }
 
+// mempoolTime returns when this node first accepted txid into its mempool. btcd
+// implements no getmempoolentry, so the whole verbose mempool is fetched and the
+// entry looked up — only worth doing for an unconfirmed transaction, whose
+// getrawtransaction carries no time of its own.
+func (c *btcdClient) mempoolTime(ctx context.Context, txid string) (int64, bool) {
+    var mp map[string]struct {
+        Time int64 `json:"time"`
+    }
+    if err := c.conn.Call(ctx, "getrawmempool", []interface{}{true}, &mp); err != nil {
+        return 0, false
+    }
+    var e, ok = mp[txid]
+    return e.Time, ok
+}
+
 func (c *btcdClient) getBlockHash(ctx context.Context, height int64) (string, error) {
     var hash string
     var err = c.conn.Call(ctx, "getblockhash", []interface{}{height}, &hash)
