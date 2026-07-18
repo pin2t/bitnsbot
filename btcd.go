@@ -192,6 +192,7 @@ type btcdTransaction struct {
     BlockHash     string     `json:"blockhash"`
     Time          int64      `json:"time"`
     Size          int32      `json:"size"`
+    Vsize         int32      `json:"vsize"`
     Vin           []btcdVin  `json:"vin"`
     Vout          []btcdVout `json:"vout"`
 }

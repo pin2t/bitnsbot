@@ -39,8 +39,12 @@ var btcdInsecureTLS = flag.Bool("btcd-insecure-tls", false, "skip TLS certificat
 var btcd *btcdClient
 
 type notification struct {
-    txid     string
-    received map[string]float64
+    txid         string
+    received     map[string]float64
+    fee          float64 // BTC
+    feeRate      float64 // sat/vB
+    confEstimate string  // "~10-20 min" etc; "" if unavailable
+    feeOK        bool    // whether fee/feeRate are populated
 }
 
 type notifyKey struct {
@@ -71,10 +75,28 @@ func startNotifyChat(b *bot, chatID int64, typ watchType, watchID string) {
             case n := <-ch:
                 if typ == watchTypeAddress {
                     if amount, ok := n.received[watchID]; ok {
-                        send(b, chatID, fmt.Sprintf(
-                            "🔔 New transaction on watched address %s\n\n<pre>Tx:     %s\nAmount: %s</pre>",
-                            short(watchID), short(n.txid), amountLine(amount, time.Time{}, true),
-                        ))
+                        var pairs = [][2]string{
+                            {"Tx", short(n.txid)},
+                            {"Amount", amountLine(amount, time.Time{}, true)},
+                        }
+                        if n.feeOK {
+                            pairs = append(pairs,
+                                [2]string{"Fee", satoshi(n.fee) + " satoshi"},
+                                [2]string{"Fee rate", strings.TrimSuffix(strconv.FormatFloat(n.feeRate, 'f', 1, 64), ".0") + " sat/vB"},
+                            )
+                            if n.confEstimate != "" {
+                                pairs = append(pairs, [2]string{"Confirms", n.confEstimate})
+                            }
+                        }
+                        var pad int
+                        for _, p := range pairs {
+                            if len(p[0])+1 > pad { pad = len(p[0]) + 1 }
+                        }
+                        var lines []string
+                        for _, p := range pairs {
+                            lines = append(lines, fmt.Sprintf("%-*s %s", pad, p[0]+":", p[1]))
+                        }
+                        send(b, chatID, "🔔 New transaction on watched address "+short(watchID)+"\n\n<pre>"+strings.Join(lines, "\n")+"</pre>")
                     }
                 } else if n.txid == watchID {
                     send(b, chatID, "🔔 Watched transaction "+short(watchID)+" was accepted to the mempool.")
@@ -150,6 +172,14 @@ func broadcast(txHex string) {
             n.received[addr] += vout.Value
         }
     }
+    if full, ferr := btcd.getRawTransaction(ctx, tx.Txid); ferr == nil && full.Vsize > 0 {
+        if fee, _, ok := txInputs(ctx, full); ok {
+            n.fee = fee
+            n.feeRate = math.Round(fee*1e8) / float64(full.Vsize)
+            n.confEstimate = confEstimate(ctx, n.feeRate)
+            n.feeOK = true
+        }
+    }
     notifyMu.Lock()
     var chans = make([]chan notification, 0)
     for _, v := range notifies {
@@ -161,6 +191,25 @@ func broadcast(txHex string) {
         case ch <- n:
         case <-time.After(500 * time.Millisecond):
         }
+    }
+}
+
+// confEstimate maps a transaction's fee rate (sat/vB) to a rough confirmation
+// window by comparing it to btcd's fee estimates (BTC/kB → sat/vB via ×1e5) for
+// the 2- and 6-block targets. Returns "" if the estimator has no data yet.
+func confEstimate(ctx context.Context, feeRate float64) string {
+    var fast, ferr = btcd.estimateFee(ctx, 2)
+    var medium, merr = btcd.estimateFee(ctx, 6)
+    if ferr != nil || merr != nil || fast <= 0 || medium <= 0 {
+        return ""
+    }
+    switch {
+    case feeRate >= fast*1e5:
+        return "~10-20 min"
+    case feeRate >= medium*1e5:
+        return "~1h"
+    default:
+        return "2h+"
     }
 }
 
