@@ -186,6 +186,24 @@ func startNotify(bot *bot) {
     }
 }
 
+// reapplyBtcdState re-establishes btcd's stateful subscriptions after a
+// reconnect — the block-notification subscription and the transaction filter for
+// every watched address. Passed to btcd.supervise as its reconnect callback.
+func reapplyBtcdState() {
+    if btcd == nil { return }
+    var ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
+    defer cancel()
+    if err := btcd.notifyBlocks(ctx); err != nil {
+        logWarn("resubscribe to blocks: %v", err)
+    }
+    var addrs = notifyAddresses()
+    if len(addrs) > 0 {
+        if err := btcd.loadTxFilter(ctx, true, addrs, nil); err != nil {
+            logWarn("reload tx filter: %v", err)
+        }
+    }
+}
+
 func main() {
     flag.Usage = func() {
         fmt.Fprintf(flag.CommandLine.Output(), "Usage of %s:\n", os.Args[0])
@@ -223,6 +241,9 @@ func main() {
     }
     startNotify(bot)
     startBlockCache()
+    if btcd != nil {
+        btcd.supervise(reapplyBtcdState)
+    }
     if *registerHook {
         if *webhookURL == "" {
             logFatal("-webhook-url is required when -register-webhook=true")

@@ -8,6 +8,8 @@ import "fmt"
 import "net/http"
 import "os"
 import "strings"
+import "sync"
+import "sync/atomic"
 import "time"
 
 import "github.com/gorilla/websocket"
@@ -22,11 +24,21 @@ type btcdConfig struct {
     insecureTLS bool
 }
 
+// btcdClient is a long-lived handle whose underlying jsonrpc2 connection is
+// atomically swapped by supervise() on reconnect, so callers keep using the same
+// *btcdClient (and every `btcd.foo()` call site stays unchanged) while the dead
+// connection is replaced beneath them. cfg/handler are retained so a reconnect
+// can redial identically; stop ends the supervise goroutine.
 type btcdClient struct {
-    conn *jsonrpc2.Conn
+    conn     atomic.Pointer[jsonrpc2.Conn]
+    cfg      btcdConfig
+    handler  jsonrpc2.Handler
+    stop     chan struct{}
+    stopOnce sync.Once
 }
 
-func dialBtcd(ctx context.Context, cfg btcdConfig, handler jsonrpc2.Handler) (*btcdClient, error) {
+// dialConn establishes a single jsonrpc2 connection to btcd over websocket.
+func dialConn(ctx context.Context, cfg btcdConfig, handler jsonrpc2.Handler) (*jsonrpc2.Conn, error) {
     var header = http.Header{}
     header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte(cfg.user+":"+cfg.pass)))
     var dialer = websocket.Dialer{HandshakeTimeout: 15 * time.Second}
@@ -45,8 +57,74 @@ func dialBtcd(ctx context.Context, cfg btcdConfig, handler jsonrpc2.Handler) (*b
             jsonrpc2.OnRecv(func(req *jsonrpc2.Request, resp *jsonrpc2.Response) { logNet("btcd ← %s", btcdMsg(req, resp)) }),
         )
     }
-    var conn = jsonrpc2.NewConn(ctx, stream, handler, opts...)
-    return &btcdClient{conn: conn}, nil
+    return jsonrpc2.NewConn(ctx, stream, handler, opts...), nil
+}
+
+func dialBtcd(ctx context.Context, cfg btcdConfig, handler jsonrpc2.Handler) (*btcdClient, error) {
+    var conn, err = dialConn(ctx, cfg, handler)
+    if err != nil { return nil, err }
+    var c = &btcdClient{cfg: cfg, handler: handler, stop: make(chan struct{})}
+    c.conn.Store(conn)
+    return c, nil
+}
+
+// btcdPingInterval is how often supervise health-checks the connection. A
+// package var so tests can shrink it.
+var btcdPingInterval = 10 * time.Second
+
+// supervise pings btcd every btcdPingInterval and, when a ping fails, reconnects
+// — swapping in a fresh connection and reapplying the stateful subscriptions
+// (transaction filter + block notification) via reapply. Started from main()
+// after the initial dial; the goroutine exits when close() is called.
+func (c *btcdClient) supervise(reapply func()) {
+    go func() {
+        var ticker = time.NewTicker(btcdPingInterval)
+        defer ticker.Stop()
+        for {
+            select {
+            case <-c.stop:
+                return
+            case <-ticker.C:
+                var ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
+                var err = c.ping(ctx)
+                cancel()
+                if err == nil { continue }
+                logWarn("btcd ping failed: %v — reconnecting", err)
+                if c.reconnect() {
+                    reapply()
+                }
+            }
+        }
+    }()
+}
+
+// ping is a lightweight round-trip that fails if the connection is dead.
+func (c *btcdClient) ping(ctx context.Context) error {
+    var count int64
+    return c.conn.Load().Call(ctx, "getblockcount", []interface{}{}, &count)
+}
+
+// reconnect dials a fresh connection and swaps it in for the dead one, closing
+// the old one. Returns false (retried on the next tick) if the dial failed or
+// close() fired mid-dial.
+func (c *btcdClient) reconnect() bool {
+    var ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
+    defer cancel()
+    var conn, err = dialConn(ctx, c.cfg, c.handler)
+    if err != nil {
+        logErr("btcd reconnect failed: %v", err)
+        return false
+    }
+    select {
+    case <-c.stop:
+        conn.Close()
+        return false
+    default:
+    }
+    var old = c.conn.Swap(conn)
+    if old != nil { old.Close() }
+    logStatus("reconnected to btcd at %s", c.cfg.url)
+    return true
 }
 
 // btcdMsg formats a logged jsonrpc2 message. OnRecv passes both the original
@@ -83,12 +161,13 @@ func btcdTLSConfig(cfg btcdConfig) (*tls.Config, error) {
 }
 
 func (c *btcdClient) close() error {
-    return c.conn.Close()
+    c.stopOnce.Do(func() { close(c.stop) })
+    return c.conn.Load().Close()
 }
 
 func (c *btcdClient) getBlockCount(ctx context.Context) (int64, error) {
     var count int64
-    var err = c.conn.Call(ctx, "getblockcount", []interface{}{}, &count)
+    var err = c.conn.Load().Call(ctx, "getblockcount", []interface{}{}, &count)
     return count, err
 }
 
@@ -97,7 +176,7 @@ func (c *btcdClient) getBlockCount(ctx context.Context) (int64, error) {
 // have been observed") until the node has seen enough mempool activity.
 func (c *btcdClient) estimateFee(ctx context.Context, numBlocks int) (float64, error) {
     var btcPerKB float64
-    var err = c.conn.Call(ctx, "estimatefee", []interface{}{numBlocks}, &btcPerKB)
+    var err = c.conn.Load().Call(ctx, "estimatefee", []interface{}{numBlocks}, &btcPerKB)
     return btcPerKB, err
 }
 
@@ -119,7 +198,7 @@ type btcdTransaction struct {
 
 func (c *btcdClient) getRawTransaction(ctx context.Context, txid string) (*btcdTransaction, error) {
     var tx btcdTransaction
-    var err = c.conn.Call(ctx, "getrawtransaction", []interface{}{txid, 1}, &tx)
+    var err = c.conn.Load().Call(ctx, "getrawtransaction", []interface{}{txid, 1}, &tx)
     if err != nil { return nil, err }
     return &tx, nil
 }
@@ -132,7 +211,7 @@ func (c *btcdClient) mempoolTime(ctx context.Context, txid string) (int64, bool)
     var mp map[string]struct {
         Time int64 `json:"time"`
     }
-    if err := c.conn.Call(ctx, "getrawmempool", []interface{}{true}, &mp); err != nil {
+    if err := c.conn.Load().Call(ctx, "getrawmempool", []interface{}{true}, &mp); err != nil {
         return 0, false
     }
     var e, ok = mp[txid]
@@ -141,7 +220,7 @@ func (c *btcdClient) mempoolTime(ctx context.Context, txid string) (int64, bool)
 
 func (c *btcdClient) getBlockHash(ctx context.Context, height int64) (string, error) {
     var hash string
-    var err = c.conn.Call(ctx, "getblockhash", []interface{}{height}, &hash)
+    var err = c.conn.Load().Call(ctx, "getblockhash", []interface{}{height}, &hash)
     return hash, err
 }
 
@@ -176,7 +255,7 @@ type btcdVerboseBlock struct {
 // those prevout transactions separately.
 func (c *btcdClient) getBlockVerbose(ctx context.Context, hash string) (*btcdVerboseBlock, error) {
     var blk btcdVerboseBlock
-    var err = c.conn.Call(ctx, "getblock", []interface{}{hash, 2}, &blk)
+    var err = c.conn.Load().Call(ctx, "getblock", []interface{}{hash, 2}, &blk)
     if err != nil { return nil, err }
     return &blk, nil
 }
@@ -190,7 +269,7 @@ type btcdAddressInfo struct {
 
 func (c *btcdClient) validateAddress(ctx context.Context, address string) (*btcdAddressInfo, error) {
     var info btcdAddressInfo
-    var err = c.conn.Call(ctx, "validateaddress", []interface{}{address}, &info)
+    var err = c.conn.Load().Call(ctx, "validateaddress", []interface{}{address}, &info)
     if err != nil { return nil, err }
     return &info, nil
 }
@@ -202,7 +281,7 @@ type btcdAddressTx struct {
 
 func (c *btcdClient) searchRawTransactions(ctx context.Context, address string, count int) ([]btcdAddressTx, error) {
     var txs []btcdAddressTx
-    var err = c.conn.Call(ctx, "searchrawtransactions", []interface{}{address, 1, 0, count, 0, true}, &txs)
+    var err = c.conn.Load().Call(ctx, "searchrawtransactions", []interface{}{address, 1, 0, count, 0, true}, &txs)
     if err != nil { return nil, err }
     return txs, nil
 }
@@ -224,7 +303,7 @@ type btcdDecodedTx struct {
 
 func (c *btcdClient) decodeRawTransaction(ctx context.Context, txHex string) (*btcdDecodedTx, error) {
     var tx btcdDecodedTx
-    var err = c.conn.Call(ctx, "decoderawtransaction", []interface{}{txHex}, &tx)
+    var err = c.conn.Load().Call(ctx, "decoderawtransaction", []interface{}{txHex}, &tx)
     if err != nil { return nil, err }
     return &tx, nil
 }
@@ -241,9 +320,9 @@ func (c *btcdClient) loadTxFilter(ctx context.Context, reload bool, addresses []
     if outpoints == nil {
         outpoints = []btcdOutpoint{}
     }
-    return c.conn.Call(ctx, "loadtxfilter", []interface{}{reload, addresses, outpoints}, nil)
+    return c.conn.Load().Call(ctx, "loadtxfilter", []interface{}{reload, addresses, outpoints}, nil)
 }
 
 func (c *btcdClient) notifyBlocks(ctx context.Context) error {
-    return c.conn.Call(ctx, "notifyblocks", []interface{}{}, nil)
+    return c.conn.Load().Call(ctx, "notifyblocks", []interface{}{}, nil)
 }
