@@ -7,6 +7,7 @@ import "net/http"
 import "net/http/httptest"
 import "strings"
 import "sync"
+import "sync/atomic"
 import "testing"
 import "time"
 
@@ -186,5 +187,69 @@ func TestBtcdNotifyBlocksDispatchesNotification(t *testing.T) {
     var calls = handler.snapshot()
     if len(calls) != 1 || calls[0].Method != "blockconnected" {
         t.Fatalf("expected one blockconnected notification, got: %#v", calls)
+    }
+}
+
+func TestBtcdReconnect(t *testing.T) {
+    var saved = btcdPingInterval
+    btcdPingInterval = 30 * time.Millisecond
+    defer func() { btcdPingInterval = saved }()
+    var connNum, reapplied int32
+    var upgrader websocket.Upgrader
+    var server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        var conn, err = upgrader.Upgrade(w, r, nil)
+        if err != nil {
+            return
+        }
+        defer conn.Close()
+        var n = atomic.AddInt32(&connNum, 1)
+        for {
+            var req struct {
+                ID     json.RawMessage `json:"id"`
+                Method string          `json:"method"`
+                Params json.RawMessage `json:"params"`
+            }
+            if conn.ReadJSON(&req) != nil {
+                return
+            }
+            if n == 1 {
+                return // first connection: drop it on the first request (the ping)
+            }
+            if req.Method == "notifyblocks" || req.Method == "loadtxfilter" {
+                atomic.AddInt32(&reapplied, 1)
+            }
+            conn.WriteJSON(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": int64(800000)})
+        }
+    }))
+    defer server.Close()
+    var url = "ws://" + strings.TrimPrefix(server.URL, "http://") + "/ws"
+    var c, err = dialBtcd(context.Background(), btcdConfig{url: url, user: "u", pass: "p"}, &recordingHandler{})
+    if err != nil {
+        t.Fatalf("dialBtcd: %v", err)
+    }
+    defer c.close()
+    var reapplyDone = make(chan struct{}, 1)
+    c.supervise(func() {
+        c.notifyBlocks(context.Background())
+        c.loadTxFilter(context.Background(), true, []string{"addr"}, nil)
+        select {
+        case reapplyDone <- struct{}{}:
+        default:
+        }
+    })
+    select {
+    case <-reapplyDone:
+    case <-time.After(3 * time.Second):
+        t.Fatal("btcd did not reconnect and reapply state within 3s")
+    }
+    // the freshly reconnected connection is usable
+    if got, err := c.getBlockCount(context.Background()); err != nil || got != 800000 {
+        t.Fatalf("getBlockCount after reconnect = %d, %v", got, err)
+    }
+    if atomic.LoadInt32(&connNum) < 2 {
+        t.Fatalf("expected a reconnect (>=2 connections), got %d", connNum)
+    }
+    if atomic.LoadInt32(&reapplied) < 2 { // both notifyblocks and loadtxfilter reapplied
+        t.Fatalf("expected both subscriptions reapplied, got %d", reapplied)
     }
 }
