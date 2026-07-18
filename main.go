@@ -486,9 +486,6 @@ func transaction(ctx context.Context, bot *bot, chatID int64, txid string) {
     var current = true
     if tx.Confirmations == 0 {
         pairs = append(pairs, [2]string{"Status", "unconfirmed (in mempool)"})
-        if seen, ok := btcd.mempoolTime(ctx, tx.Txid); ok {
-            pairs = append(pairs, [2]string{"Seen", when(seen)})
-        }
     } else {
         at, current = time.Unix(tx.Time, 0), false
         pairs = append(pairs,
