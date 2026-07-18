@@ -163,14 +163,7 @@ func startBlockCache() {
 
 // formatBlock renders a cached block record as the /info block reply.
 func formatBlock(bi *blockInfo) string {
-    var diff = bi.Difficulty
-    var unit = ""
-    for _, u := range []string{" k", " M", " G", " T", " P", " E"} {
-        if diff < 1000 { break }
-        diff /= 1000
-        unit = u
-    }
-    var difficulty = strings.TrimRight(strings.TrimRight(strconv.FormatFloat(diff, 'f', 2, 64), "0"), ".") + unit
+    var difficulty = metric(bi.Difficulty, 2)
     var pairs = [][2]string{
         {"Hash", short(bi.Hash)},
         {"Time", when(bi.Time)},

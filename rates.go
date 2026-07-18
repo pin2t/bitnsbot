@@ -167,6 +167,24 @@ func amountLine(btc float64, at time.Time, current bool) string {
     return s
 }
 
+// btcAmount renders a BTC value as "<btc> BTC (≈ $usd)" at the latest rate —
+// used for the large /mempool totals, where sats would be unwieldy. Values ≥ 1
+// BTC show two decimals ("9449.72 BTC"); smaller ones keep satoshi precision
+// (trailing zeros trimmed) so a fraction of a BTC doesn't round away to nothing.
+func btcAmount(btc float64) string {
+    var num string
+    if btc >= 1 || btc <= -1 {
+        num = strconv.FormatFloat(btc, 'f', 2, 64)
+    } else {
+        num = strings.TrimRight(strings.TrimRight(strconv.FormatFloat(btc, 'f', 8, 64), "0"), ".")
+    }
+    var s = num + " BTC"
+    if r, ok := lastRate(); ok {
+        s += " (≈ " + usd(btc, r.USD) + ")"
+    }
+    return s
+}
+
 var rateHTTP = &http.Client{Timeout: 10 * time.Second}
 
 type rateSource struct {
