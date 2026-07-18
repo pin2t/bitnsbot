@@ -13,7 +13,7 @@ func TestWatchStoreAdd(t *testing.T) {
         t.Fatalf("openDB: %v", err)
     }
     defer closeDB()
-    if err := addWatch(42, watchTypeAddress, "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"); err != nil {
+    if err := addWatch(42, watchTypeAddress, "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa", "Cold wallet"); err != nil {
         t.Fatalf("add: %v", err)
     }
     var records []watchRecord
@@ -34,7 +34,7 @@ func TestWatchStoreAdd(t *testing.T) {
         t.Fatalf("expected 1 record, got %d", len(records))
     }
     var r = records[0]
-    if r.ChatID != 42 || r.Type != watchTypeAddress || r.WatchID != "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa" {
+    if r.ChatID != 42 || r.Type != watchTypeAddress || r.WatchID != "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa" || r.Alias != "Cold wallet" {
         t.Fatalf("unexpected record: %#v", r)
     }
     if r.CreatedAt.IsZero() {
@@ -48,8 +48,8 @@ func TestWatchStoreList(t *testing.T) {
         t.Fatalf("openDB: %v", err)
     }
     defer closeDB()
-    addWatch(1, watchTypeAddress, "addrA")
-    addWatch(2, watchTypeTransaction, "txB")
+    addWatch(1, watchTypeAddress, "addrA", "")
+    addWatch(2, watchTypeTransaction, "txB", "")
     var records, listErr = listWatches()
     if listErr != nil {
         t.Fatalf("list: %v", listErr)
@@ -72,9 +72,9 @@ func TestWatchStoreRemove(t *testing.T) {
     }
     defer closeDB()
     // two chats watch the same address; a third watch is unrelated
-    addWatch(1, watchTypeAddress, "sharedAddr")
-    addWatch(2, watchTypeAddress, "sharedAddr")
-    addWatch(1, watchTypeAddress, "otherAddr")
+    addWatch(1, watchTypeAddress, "sharedAddr", "")
+    addWatch(2, watchTypeAddress, "sharedAddr", "")
+    addWatch(1, watchTypeAddress, "otherAddr", "")
     // removing chat 1's watch on sharedAddr must not touch chat 2's identical watch
     var removed, remErr = removeWatch(1, "sharedAddr")
     if remErr != nil {

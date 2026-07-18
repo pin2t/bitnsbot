@@ -120,7 +120,7 @@ func TestWatchNotification(t *testing.T) {
     defer closeDB()
     stopNotify()
     defer stopNotify()
-    watchCmd(b, 42, watchedAddr)
+    watchCmd(b, 42, watchedAddr+" John") // alias "John"
     var deadline = time.Now().Add(3 * time.Second)
     for time.Now().Before(deadline) {
         sentMu.Lock()
@@ -142,6 +142,9 @@ func TestWatchNotification(t *testing.T) {
     }
     if !strings.Contains(found, short(watchedAddr)) || !strings.Contains(found, short(txid)) {
         t.Fatalf("notification missing address/txid: %q", found)
+    }
+    if !strings.Contains(found, "watched address "+short(watchedAddr)+" (John)") {
+        t.Fatalf("notification missing alias: %q", found)
     }
     if !strings.Contains(found, "250 000 000 sats") {
         t.Fatalf("expected 250 000 000 sats in notification, got: %q", found)
@@ -232,9 +235,9 @@ func TestWatchesFlow(t *testing.T) {
     }
     var addr = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
     var txid = "f21b47a9143a23e80cc59e81588d21558b394005580b285961957cb3bed5b3e0"
-    addWatch(1, watchTypeAddress, addr)
-    addWatch(1, watchTypeTransaction, txid)
-    addWatch(2, watchTypeAddress, "someoneElsesAddress")
+    addWatch(1, watchTypeAddress, addr, "")
+    addWatch(1, watchTypeTransaction, txid, "")
+    addWatch(2, watchTypeAddress, "someoneElsesAddress", "")
     update(b, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/watches"}})
     var msg = sent[len(sent)-1]
     // full ids present (not shortened) and tap-to-copy wrapped
@@ -252,7 +255,7 @@ func TestWatchesFlow(t *testing.T) {
         t.Fatalf("must not list another chat's watch: %q", msg)
     }
     // a watch id containing HTML metacharacters must be escaped
-    addWatch(3, watchTypeAddress, "a<b>c")
+    addWatch(3, watchTypeAddress, "a<b>c", "")
     update(b, Update{Message: &Message{Chat: Chat{ID: 3}, Text: "/watches"}})
     if last := sent[len(sent)-1]; !strings.Contains(last, "a&lt;b&gt;c") {
         t.Fatalf("expected HTML-escaped watch id, got: %q", last)

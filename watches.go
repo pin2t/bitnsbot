@@ -18,15 +18,17 @@ type watchRecord struct {
     ChatID    int64
     Type      watchType
     WatchID   string
+    Alias     string
 }
 
-func addWatch(chatID int64, typ watchType, watchID string) error {
-    logDb("add chat=%d type=%s id=%s", chatID, typ, watchID)
+func addWatch(chatID int64, typ watchType, watchID, alias string) error {
+    logDb("add chat=%d type=%s id=%s alias=%s", chatID, typ, watchID, alias)
     var data, err = json.Marshal(watchRecord{
         CreatedAt: time.Now(),
         ChatID:    chatID,
         Type:      typ,
         WatchID:   watchID,
+        Alias:     alias,
     })
     if err != nil { return err }
     return db.Update(func(tx *bbolt.Tx) error {

@@ -61,13 +61,17 @@ type notifyChans struct {
 var notifyMu sync.Mutex
 var notifies = make(map[notifyKey]notifyChans)
 
-func startNotifyChat(b *bot, chatID int64, typ watchType, watchID string) {
+func startNotifyChat(b *bot, chatID int64, typ watchType, watchID, alias string) {
     var ch = make(chan notification)
     var stop = make(chan struct{})
     notifyMu.Lock()
     notifies[notifyKey{chatID, typ, watchID}] = notifyChans{ch, stop}
     notifyMu.Unlock()
-    go func(b *bot, chatID int64, typ watchType, watchID string, ch <-chan notification, stop chan struct{}) {
+    go func(b *bot, chatID int64, typ watchType, watchID, alias string, ch <-chan notification, stop chan struct{}) {
+        var label = short(watchID)
+        if alias != "" {
+            label += " (" + html.EscapeString(alias) + ")"
+        }
         for {
             select {
             case <-stop:
@@ -96,14 +100,14 @@ func startNotifyChat(b *bot, chatID int64, typ watchType, watchID string) {
                         for _, p := range pairs {
                             lines = append(lines, fmt.Sprintf("%-*s %s", pad, p[0]+":", p[1]))
                         }
-                        send(b, chatID, "🔔 New transaction on watched address "+short(watchID)+"\n\n<pre>"+strings.Join(lines, "\n")+"</pre>")
+                        send(b, chatID, "🔔 New transaction on watched address "+label+"\n\n<pre>"+strings.Join(lines, "\n")+"</pre>")
                     }
                 } else if n.txid == watchID {
-                    send(b, chatID, "🔔 Watched transaction "+short(watchID)+" was accepted to the mempool.")
+                    send(b, chatID, "🔔 Watched transaction "+label+" was accepted to the mempool.")
                 }
             }
         }
-    }(b, chatID, typ, watchID, ch, stop)
+    }(b, chatID, typ, watchID, alias, ch, stop)
 }
 
 func stopNotifyChat(chat int64, typ watchType, id string) {
@@ -223,7 +227,7 @@ func startNotify(bot *bot) {
         return
     }
     for _, r := range records {
-        startNotifyChat(bot, r.ChatID, r.Type, r.WatchID)
+        startNotifyChat(bot, r.ChatID, r.Type, r.WatchID, r.Alias)
     }
     var addrs = notifyAddresses()
     if btcd != nil && len(addrs) > 0 {
@@ -815,31 +819,41 @@ func watchCmd(bot *bot, chatID int64, arg string) {
         pendingWatchMu.Lock()
         pendingWatchChats[chatID] = true
         pendingWatchMu.Unlock()
-        send(bot, chatID, "Please send what you'd like to watch in a separate message.")
+        send(bot, chatID, "Please send the address or transaction to watch, optionally followed by an alias — all in one message, e.g. bc1q… John")
         return
     }
     pendingWatchMu.Lock()
     delete(pendingWatchChats, chatID)
     pendingWatchMu.Unlock()
+    var fields = strings.SplitN(arg, " ", 2)
+    var watchID = fields[0]
+    var alias string
+    if len(fields) > 1 {
+        alias = strings.TrimSpace(fields[1])
+    }
     var typ = watchTypeAddress
-    if isTxid(arg) {
+    if isTxid(watchID) {
         typ = watchTypeTransaction
     }
-    if err := addWatch(chatID, typ, arg); err != nil {
+    if err := addWatch(chatID, typ, watchID, alias); err != nil {
         logErr("add watch: %v", err)
         send(bot, chatID, "Sorry, something went wrong saving that watch.")
         return
     }
-    startNotifyChat(bot, chatID, typ, arg)
-    logInfo("added %s subscription %s for chat %d", typ, arg, chatID)
+    startNotifyChat(bot, chatID, typ, watchID, alias)
+    logInfo("added %s subscription %s for chat %d (alias %q)", typ, watchID, chatID, alias)
     if typ == watchTypeAddress && btcd != nil {
         var ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
-        if err := btcd.loadTxFilter(ctx, false, []string{arg}, nil); err != nil {
+        if err := btcd.loadTxFilter(ctx, false, []string{watchID}, nil); err != nil {
             logWarn("load tx filter: %v", err)
         }
         cancel()
     }
-    send(bot, chatID, "Watching "+string(typ)+": "+html.EscapeString(arg))
+    var msg = "Watching " + string(typ) + ": " + html.EscapeString(watchID)
+    if alias != "" {
+        msg += " (" + html.EscapeString(alias) + ")"
+    }
+    send(bot, chatID, msg)
 }
 
 var pendingUnwatchMu sync.Mutex
@@ -892,10 +906,14 @@ func watches(bot *bot, chatID int64) {
         if r.ChatID != chatID {
             continue
         }
+        var line = "<code>" + html.EscapeString(r.WatchID) + "</code>"
+        if r.Alias != "" {
+            line += " (" + html.EscapeString(r.Alias) + ")"
+        }
         if r.Type == watchTypeTransaction {
-            transactions = append(transactions, r.WatchID)
+            transactions = append(transactions, line)
         } else {
-            addresses = append(addresses, r.WatchID)
+            addresses = append(addresses, line)
         }
     }
     if len(addresses) == 0 && len(transactions) == 0 {
@@ -905,15 +923,11 @@ func watches(bot *bot, chatID int64) {
     var lines = []string{"Your watches:"}
     if len(addresses) > 0 {
         lines = append(lines, "", "Addresses:")
-        for _, a := range addresses {
-            lines = append(lines, "<code>"+html.EscapeString(a)+"</code>")
-        }
+        lines = append(lines, addresses...)
     }
     if len(transactions) > 0 {
         lines = append(lines, "", "Transactions:")
-        for _, t := range transactions {
-            lines = append(lines, "<code>"+html.EscapeString(t)+"</code>")
-        }
+        lines = append(lines, transactions...)
     }
     send(bot, chatID, strings.Join(lines, "\n"))
 }
