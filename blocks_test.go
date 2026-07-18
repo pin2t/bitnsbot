@@ -110,11 +110,11 @@ func TestFormatBlock(t *testing.T) {
         "Transactions:  2",
         "Miner:         Foundry USA",
         "Difficulty:    79 T",
-        "Lowest fee:    130 satoshi",
-        "Highest fee:   2 500 000 satoshi",
+        "Lowest fee:    130 sats",
+        "Highest fee:   2 500 000 sats",
         "Tx size max:   98 000 bytes",
-        "Reward:        312 500 000 satoshi",
-        "Reward + fees: 375 500 000 satoshi</pre>",
+        "Reward:        312 500 000 sats",
+        "Reward + fees: 375 500 000 sats</pre>",
     } {
         if !strings.Contains(s, want) {
             t.Fatalf("formatBlock missing %q in:\n%s", want, s)

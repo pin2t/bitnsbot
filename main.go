@@ -81,7 +81,7 @@ func startNotifyChat(b *bot, chatID int64, typ watchType, watchID string) {
                         }
                         if n.feeOK {
                             pairs = append(pairs,
-                                [2]string{"Fee", satoshi(n.fee) + " satoshi"},
+                                [2]string{"Fee", satoshi(n.fee) + " sats"},
                                 [2]string{"Fee rate", strings.TrimSuffix(strconv.FormatFloat(n.feeRate, 'f', 1, 64), ".0") + " sat/vB"},
                             )
                             if n.confEstimate != "" {
@@ -569,7 +569,7 @@ func transaction(ctx context.Context, bot *bot, chatID int64, txid string) {
     case coinbase:
         pairs = append(pairs, [2]string{"Fee", "none (coinbase)"})
     case feeOK:
-        pairs = append(pairs, [2]string{"Fee", satoshi(fee) + " satoshi"})
+        pairs = append(pairs, [2]string{"Fee", satoshi(fee) + " sats"})
     default:
         pairs = append(pairs, [2]string{"Fee", "unavailable"})
     }

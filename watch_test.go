@@ -143,11 +143,11 @@ func TestWatchNotification(t *testing.T) {
     if !strings.Contains(found, short(watchedAddr)) || !strings.Contains(found, short(txid)) {
         t.Fatalf("notification missing address/txid: %q", found)
     }
-    if !strings.Contains(found, "250 000 000 satoshi") {
-        t.Fatalf("expected 250 000 000 satoshi in notification, got: %q", found)
+    if !strings.Contains(found, "250 000 000 sats") {
+        t.Fatalf("expected 250 000 000 sats in notification, got: %q", found)
     }
     // fee 0.0001 BTC = 10000 sat over 100 vB = 100 sat/vB; 100 >= 50 (2-block) → ~10-20 min
-    for _, want := range []string{"Fee:", "10 000 satoshi", "Fee rate:", "100 sat/vB", "Confirms:", "~10-20 min"} {
+    for _, want := range []string{"Fee:", "10 000 sats", "Fee rate:", "100 sat/vB", "Confirms:", "~10-20 min"} {
         if !strings.Contains(found, want) {
             t.Fatalf("notification missing %q: %q", want, found)
         }

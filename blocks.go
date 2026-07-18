@@ -186,17 +186,17 @@ func formatBlock(bi *blockInfo) string {
         pairs = append(pairs, [2]string{"Fees", "none (coinbase only)"})
     default:
         pairs = append(pairs,
-            [2]string{"Lowest fee", satoshi(bi.FeeMin) + " satoshi"},
-            [2]string{"Average fee", satoshi(bi.FeeAvg) + " satoshi"},
-            [2]string{"Highest fee", satoshi(bi.FeeMax) + " satoshi"},
+            [2]string{"Lowest fee", satoshi(bi.FeeMin) + " sats"},
+            [2]string{"Average fee", satoshi(bi.FeeAvg) + " sats"},
+            [2]string{"Highest fee", satoshi(bi.FeeMax) + " sats"},
         )
     }
     pairs = append(pairs,
         [2]string{"Tx size min", group(int64(bi.TxSizeMin)) + " bytes"},
         [2]string{"Tx size avg", group(int64(bi.TxSizeAvg)) + " bytes"},
         [2]string{"Tx size max", group(int64(bi.TxSizeMax)) + " bytes"},
-        [2]string{"Reward", satoshi(bi.Reward) + " satoshi"},
-        [2]string{"Reward + fees", satoshi(bi.Total) + " satoshi"},
+        [2]string{"Reward", satoshi(bi.Reward) + " sats"},
+        [2]string{"Reward + fees", satoshi(bi.Total) + " sats"},
     )
     var pad int
     for _, p := range pairs {

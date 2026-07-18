@@ -131,8 +131,8 @@ func TestInfoFlow(t *testing.T) {
     for _, want := range []string{
         "Block #100", "Hash:          000000...ckhash", "Time:          14 november 2023 22:13",
         "Size:          285 bytes", "Transactions:  1", "Miner:         Unknown", "Difficulty:    1.5",
-        "Fees:          none (coinbase only)", "Tx size min:   204 bytes", "Reward:        5 000 000 000 satoshi",
-        "Reward + fees: 5 000 000 000 satoshi",
+        "Fees:          none (coinbase only)", "Tx size min:   204 bytes", "Reward:        5 000 000 000 sats",
+        "Reward + fees: 5 000 000 000 sats",
     } {
         if !strings.Contains(sent[3], want) {
             t.Fatalf("block reply missing %q: %q", want, sent[3])
@@ -148,7 +148,7 @@ func TestInfoFlow(t *testing.T) {
     }
     for _, want := range []string{
         "Transaction f21b47...d5b3e0", "confirmed (6 confirmations)", "Confirmed:", "14 november 2023 22:13",
-        "Amount:", "150 000 000 satoshi", "Fee:", "150 000 satoshi", "Size:", "225 bytes",
+        "Amount:", "150 000 000 sats", "Fee:", "150 000 sats", "Size:", "225 bytes",
         "Inputs:", "1A1zP1...DivfNa", "Outputs:", "bc1qw5...v8f3t4",
     } {
         if !strings.Contains(sent[4], want) {

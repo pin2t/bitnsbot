@@ -143,14 +143,14 @@ func usd(btc, rate float64) string {
     return "$" + s
 }
 
-// amountLine formats a BTC amount as "<sat> satoshi (≈ $usd)", appending the USD
+// amountLine formats a BTC amount as "<sat> sats (≈ $usd)", appending the USD
 // approximation only when a rate is available. current selects the rate: the
 // last stored rate for mempool/notification amounts (no confirmed time), or the
 // rate nearest the transaction's time otherwise — falling back to the last
 // stored rate for confirmed times that predate our rate history, so an old
 // transaction still shows its value at today's rate rather than nothing.
 func amountLine(btc float64, at time.Time, current bool) string {
-    var s = satoshi(btc) + " satoshi"
+    var s = satoshi(btc) + " sats"
     var r rateRecord
     var ok bool
     if current {
