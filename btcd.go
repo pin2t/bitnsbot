@@ -204,17 +204,38 @@ func (c *btcdClient) getRawTransaction(ctx context.Context, txid string) (*btcdT
     return &tx, nil
 }
 
-// mempoolTime returns when this node first accepted txid into its mempool. btcd
-// implements no getmempoolentry, so the whole verbose mempool is fetched and the
-// entry looked up — only worth doing for an unconfirmed transaction, whose
-// getrawtransaction carries no time of its own.
+type btcdMempoolInfo struct {
+    Size  int64 `json:"size"`  // number of transactions in the mempool
+    Bytes int64 `json:"bytes"` // total serialized size of the mempool
+}
+
+func (c *btcdClient) getMempoolInfo(ctx context.Context) (*btcdMempoolInfo, error) {
+    var info btcdMempoolInfo
+    var err = c.conn.Load().Call(ctx, "getmempoolinfo", []interface{}{}, &info)
+    if err != nil { return nil, err }
+    return &info, nil
+}
+
+type btcdMempoolEntry struct {
+    Fee  float64 `json:"fee"`
+    Time int64   `json:"time"`
+}
+
+// rawMempoolVerbose fetches every mempool entry (txid → {fee, time}). btcd has no
+// getmempoolentry, so this whole-mempool fetch is the only way to read a single
+// entry's fields (mempoolTime) or aggregate across the mempool (/mempool totals).
+func (c *btcdClient) rawMempoolVerbose(ctx context.Context) (map[string]btcdMempoolEntry, error) {
+    var mp map[string]btcdMempoolEntry
+    var err = c.conn.Load().Call(ctx, "getrawmempool", []interface{}{true}, &mp)
+    return mp, err
+}
+
+// mempoolTime returns when this node first accepted txid into its mempool —
+// worth doing only for an unconfirmed transaction, whose getrawtransaction
+// carries no time of its own.
 func (c *btcdClient) mempoolTime(ctx context.Context, txid string) (int64, bool) {
-    var mp map[string]struct {
-        Time int64 `json:"time"`
-    }
-    if err := c.conn.Load().Call(ctx, "getrawmempool", []interface{}{true}, &mp); err != nil {
-        return 0, false
-    }
+    var mp, err = c.rawMempoolVerbose(ctx)
+    if err != nil { return 0, false }
     var e, ok = mp[txid]
     return e.Time, ok
 }

@@ -326,3 +326,139 @@ func TestCompactAddrs(t *testing.T) {
         t.Fatalf("short = %q", got)
     }
 }
+
+func TestMempoolFlow(t *testing.T) {
+    var sent []string
+    var server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        var body struct {
+            Text string `json:"text"`
+        }
+        json.NewDecoder(r.Body).Decode(&body)
+        sent = append(sent, body.Text)
+        json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": true})
+    }))
+    defer server.Close()
+    var bot = newBot("TESTTOKEN", server.URL)
+    btcd = nil
+    update(bot, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/mempool"}})
+    if len(sent) != 1 || sent[0] != "Bitcoin node connection is not configured." {
+        t.Fatalf("unexpected not-configured reply: %#v", sent)
+    }
+    var btcdServer = newFakeBtcdServer(t, func(method string, params json.RawMessage) (interface{}, error) {
+        switch method {
+        case "getmempoolinfo":
+            return map[string]any{"size": 6700, "bytes": 3500000}, nil // → "6.7 k" txs, "3.5 M"
+        case "getrawmempool":
+            return map[string]any{"tx1": map[string]any{"fee": 0.0001}, "tx2": map[string]any{"fee": 0.0002}}, nil // fees sum 0.0003 = 30000 sats
+        case "getrawtransaction":
+            var p []interface{}
+            json.Unmarshal(params, &p)
+            switch id, _ := p[0].(string); id {
+            case "tx1":
+                return map[string]any{"vout": []map[string]any{{"value": 1.0}}}, nil
+            case "tx2":
+                return map[string]any{"vout": []map[string]any{{"value": 2.0}, {"value": 0.5}}}, nil // amounts sum 3.5 = 350000000 sats
+            }
+            return nil, fmt.Errorf("no such tx")
+        }
+        return nil, fmt.Errorf("unexpected method %s", method)
+    })
+    defer btcdServer.Close()
+    btcd = dialFakeBtcd(t, btcdServer, &recordingHandler{})
+    defer func() { btcd.close(); btcd = nil }()
+    update(bot, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/mempool"}})
+    if len(sent) != 2 {
+        t.Fatalf("expected a mempool reply, got %#v", sent)
+    }
+    for _, want := range []string{
+        "Mempool", "Size:", "3.5 M", "Transactions: 6.7 k",
+        "Total amount:", "3.50 BTC", "Total fees:", "0.0003 BTC", // amounts 3.5 BTC, fees 0.0003 BTC
+    } {
+        if !strings.Contains(sent[1], want) {
+            t.Fatalf("mempool reply missing %q: %q", want, sent[1])
+        }
+    }
+    // a mempool over the limit degrades to size + count only
+    var saved = mempoolSummaryLimit
+    mempoolSummaryLimit = 1
+    defer func() { mempoolSummaryLimit = saved }()
+    update(bot, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/mempool"}})
+    if !strings.Contains(sent[2], "Totals:") || strings.Contains(sent[2], "Total amount") {
+        t.Fatalf("expected totals skipped for oversized mempool: %q", sent[2])
+    }
+}
+
+func TestMempoolFlowRate(t *testing.T) {
+    var savedInterval, savedLimit = flowInterval, mempoolSummaryLimit
+    flowInterval = 10 * time.Second // known divisor
+    mempoolSummaryLimit = 1         // skip totals — this test is about the flow line
+    flowMu.Lock()
+    flowHaveCount, flowRateOK, flowChangeOK = false, false, false
+    flowMu.Unlock()
+    defer func() {
+        flowInterval, mempoolSummaryLimit = savedInterval, savedLimit
+        flowMu.Lock()
+        flowHaveCount, flowRateOK, flowChangeOK = false, false, false
+        flowMu.Unlock()
+    }()
+    updateFlow(1000) // baseline — no rate yet
+    flowMu.Lock()
+    var ok1 = flowRateOK
+    flowMu.Unlock()
+    if ok1 {
+        t.Fatal("expected no rate after one sample")
+    }
+    updateFlow(1025) // rate (1025-1000)/10 = 2.5, no change yet
+    flowMu.Lock()
+    var r2, cok2 = flowRate, flowChangeOK
+    flowMu.Unlock()
+    if r2 != 2.5 || cok2 {
+        t.Fatalf("after two samples: rate=%v changeOK=%v (want 2.5, false)", r2, cok2)
+    }
+    updateFlow(1055) // rate (1055-1025)/10 = 3.0, change 3.0-2.5 = 0.5
+    flowMu.Lock()
+    var r3, ch3, cok3 = flowRate, flowChange, flowChangeOK
+    flowMu.Unlock()
+    if r3 != 3.0 || !cok3 || ch3 != 0.5 {
+        t.Fatalf("after three samples: rate=%v change=%v (want 3.0, 0.5)", r3, ch3)
+    }
+    updateFlow(900) // count DROPPED (likely a mined block) → rate/change unchanged, baseline re-set
+    flowMu.Lock()
+    var rDrop, chDrop = flowRate, flowChange
+    flowMu.Unlock()
+    if rDrop != 3.0 || chDrop != 0.5 {
+        t.Fatalf("after a decrease: rate=%v change=%v (want unchanged 3.0, 0.5)", rDrop, chDrop)
+    }
+    updateFlow(950) // increase from the re-set baseline: (950-900)/10 = 5.0, change 5.0-3.0 = 2.0
+    flowMu.Lock()
+    var rUp, chUp = flowRate, flowChange
+    flowMu.Unlock()
+    if rUp != 5.0 || chUp != 2.0 {
+        t.Fatalf("after re-increase: rate=%v change=%v (want 5.0, 2.0)", rUp, chUp)
+    }
+    // and it renders in the /mempool reply
+    var sent []string
+    var tg = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        var body struct {
+            Text string `json:"text"`
+        }
+        json.NewDecoder(r.Body).Decode(&body)
+        sent = append(sent, body.Text)
+        json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": true})
+    }))
+    defer tg.Close()
+    var b = newBot("TESTTOKEN", tg.URL)
+    var srv = newFakeBtcdServer(t, func(method string, params json.RawMessage) (interface{}, error) {
+        if method == "getmempoolinfo" {
+            return map[string]any{"size": 5000, "bytes": 2000000}, nil
+        }
+        return nil, fmt.Errorf("unexpected method %s", method)
+    })
+    defer srv.Close()
+    btcd = dialFakeBtcd(t, srv, &recordingHandler{})
+    defer func() { btcd.close(); btcd = nil }()
+    update(b, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/mempool"}})
+    if len(sent) != 1 || !strings.Contains(sent[0], "Flow rate:") || !strings.Contains(sent[0], "5.0 tx/sec (+2.0)") {
+        t.Fatalf("expected flow rate line in reply: %#v", sent)
+    }
+}

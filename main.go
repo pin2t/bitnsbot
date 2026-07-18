@@ -294,6 +294,7 @@ func main() {
     }
     startNotify(bot)
     startBlockCache()
+    startMempoolFlow()
     if btcd != nil {
         btcd.supervise(reapplyBtcdState)
     }
@@ -397,6 +398,8 @@ func update(bot *bot, update Update) {
         watches(bot, msg.Chat.ID)
     case "/fees":
         fees(bot, msg.Chat.ID)
+    case "/mempool":
+        mempoolCmd(bot, msg.Chat.ID)
     case "":
         pendingInfoMu.Lock()
         var pending = pendingInfoChats[msg.Chat.ID]
@@ -497,6 +500,19 @@ func satoshi(btc float64) string {
     return group(int64(math.Round(btc * 1e8)))
 }
 
+// metric renders a large number with a metric suffix, scaling by 1000 —
+// e.g. metric(3299245, 1) → "3.3 M", metric(6719, 1) → "6.7 k", and (used for
+// block difficulty) metric(79000000000000, 2) → "79 T".
+func metric(f float64, decimals int) string {
+    var unit = ""
+    for _, u := range []string{" k", " M", " G", " T", " P", " E"} {
+        if f < 1000 { break }
+        f /= 1000
+        unit = u
+    }
+    return strings.TrimRight(strings.TrimRight(strconv.FormatFloat(f, 'f', decimals, 64), "0"), ".") + unit
+}
+
 func start(bot *bot, chatID int64) {
     send(bot, chatID, strings.Join([]string{
         "Hi! I'm bitnsbot — I keep an eye on the Bitcoin network for you.",
@@ -506,6 +522,7 @@ func start(bot *bot, chatID int64) {
         "• <b>/unwatch</b> — stop watching an address or transaction",
         "• <b>/watches</b> — list what you're currently watching",
         "• <b>/fees</b> — show current network fee estimates",
+        "• <b>/mempool</b> — show current mempool size and totals",
         "• <b>/start</b> — show this message",
     }, "\n"))
 }
@@ -988,6 +1005,179 @@ func fees(bot *bot, chatID int64) {
         return
     }
     send(bot, chatID, "Estimated network fees\n\n<pre>"+strings.Join(lines, "\n")+"</pre>")
+}
+
+// flowInterval is how often startMempoolFlow polls the mempool tx count. A
+// package var so tests can shrink it.
+var flowInterval = 10 * time.Second
+
+// The mempool flow rate — transactions per second flowing into the mempool, as
+// Δcount over the poll interval — and how much that rate changed since the last
+// poll. In-memory only (guarded by flowMu); never persisted.
+var flowMu sync.Mutex
+var flowRate float64    // current tx/sec
+var flowRateOK bool     // a rate has been computed (≥ 2 samples)
+var flowChange float64  // Δ rate since the previous rate
+var flowChangeOK bool   // a change has been computed (≥ 2 rates)
+var flowPrevCount int64
+var flowHaveCount bool
+
+// updateFlow folds one mempool tx-count sample into the flow-rate state: the rate
+// is Δcount over flowInterval, and the change is Δrate (flowRate still holds the
+// previous rate when this runs). The first sample only sets the baseline. A
+// non-increase (count ≤ prev — most likely a just-mined block clearing the
+// mempool, which would skew the inflow measurement) keeps the last rate/change,
+// but still re-baselines the count so the next increase spans one clean interval.
+func updateFlow(count int64) {
+    flowMu.Lock()
+    defer flowMu.Unlock()
+    if !flowHaveCount {
+        flowPrevCount, flowHaveCount = count, true
+        return
+    }
+    var delta = count - flowPrevCount
+    flowPrevCount = count
+    if delta <= 0 {
+        return
+    }
+    var rate = float64(delta) / flowInterval.Seconds()
+    if flowRateOK {
+        flowChange, flowChangeOK = rate-flowRate, true
+    }
+    flowRate, flowRateOK = rate, true
+}
+
+// startMempoolFlow polls getmempoolinfo every flowInterval and feeds the tx count
+// to updateFlow, so /mempool can show a live flow rate. The goroutine isn't
+// stopped on shutdown — like the rates updater, the process exits right after.
+func startMempoolFlow() {
+    if btcd == nil {
+        return
+    }
+    go func() {
+        var sample = func() {
+            var ctx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
+            var info, err = btcd.getMempoolInfo(ctx)
+            cancel()
+            if err != nil {
+                logWarn("mempool flow: %v", err)
+                return
+            }
+            updateFlow(info.Size)
+        }
+        sample()
+        var t = time.NewTicker(flowInterval)
+        defer t.Stop()
+        for range t.C {
+            sample()
+        }
+    }()
+}
+
+// mempoolSummaryLimit caps how many transactions /mempool will total up — above
+// it, the totals (which need the whole verbose mempool plus a fetch per tx) would
+// take too long, so the reply degrades to just size and count. A package var so
+// it's tunable/testable.
+var mempoolSummaryLimit int64 = 20000
+
+// mempoolCmd replies with the current mempool size and transaction count, plus —
+// when the mempool is small enough to total up in reasonable time — the summed
+// output amount and summed fees of every mempool transaction, in sats and USD.
+func mempoolCmd(bot *bot, chatID int64) {
+    if btcd == nil {
+        send(bot, chatID, "Bitcoin node connection is not configured.")
+        return
+    }
+    var ctx, cancel = context.WithTimeout(context.Background(), 30*time.Second)
+    defer cancel()
+    var info, err = btcd.getMempoolInfo(ctx)
+    if err != nil {
+        logErr("get mempool info: %v", err)
+        send(bot, chatID, "Sorry, something went wrong reading the mempool.")
+        return
+    }
+    var pairs = [][2]string{
+        {"Size", metric(float64(info.Bytes), 1)},
+        {"Transactions", metric(float64(info.Size), 1)},
+    }
+    flowMu.Lock()
+    var rate, rateOK, change, changeOK = flowRate, flowRateOK, flowChange, flowChangeOK
+    flowMu.Unlock()
+    if rateOK {
+        var fr = fmt.Sprintf("%.1f tx/sec", rate)
+        if changeOK {
+            fr += fmt.Sprintf(" (%+.1f)", change)
+        }
+        pairs = append(pairs, [2]string{"Flow rate", fr})
+    }
+    switch {
+    case info.Size == 0:
+        // nothing to total
+    case info.Size > mempoolSummaryLimit:
+        pairs = append(pairs, [2]string{"Totals", "skipped (mempool too large)"})
+    default:
+        if amount, fee, ok := mempoolTotals(ctx); ok {
+            pairs = append(pairs,
+                [2]string{"Total amount", btcAmount(amount)},
+                [2]string{"Total fees", btcAmount(fee)},
+            )
+        } else {
+            pairs = append(pairs, [2]string{"Totals", "unavailable"})
+        }
+    }
+    var pad int
+    for _, p := range pairs {
+        if len(p[0])+1 > pad { pad = len(p[0]) + 1 }
+    }
+    var lines []string
+    for _, p := range pairs {
+        lines = append(lines, fmt.Sprintf("%-*s %s", pad, p[0]+":", p[1]))
+    }
+    send(bot, chatID, "Mempool\n\n<pre>"+strings.Join(lines, "\n")+"</pre>")
+}
+
+// mempoolTotals sums the fee (from the verbose mempool) and the output amount
+// (fetching each transaction, concurrently and bounded) across the whole
+// mempool. Individual tx churn — a tx confirmed or replaced between the two
+// passes — is tolerated (its outputs are just skipped); a context timeout means
+// the mempool was too large and returns ok=false so the reply shows "unavailable".
+func mempoolTotals(ctx context.Context) (amount, fee float64, ok bool) {
+    var mp, err = btcd.rawMempoolVerbose(ctx)
+    if err != nil {
+        return 0, 0, false
+    }
+    var txids = make([]string, 0, len(mp))
+    for id, e := range mp {
+        fee += e.Fee
+        txids = append(txids, id)
+    }
+    var mu sync.Mutex
+    var wg sync.WaitGroup
+    var sem = make(chan struct{}, 16)
+    for _, id := range txids {
+        wg.Add(1)
+        sem <- struct{}{}
+        go func(id string) {
+            defer wg.Done()
+            defer func() { <-sem }()
+            var tx, e = btcd.getRawTransaction(ctx, id)
+            if e != nil {
+                return
+            }
+            var out float64
+            for _, v := range tx.Vout {
+                out += v.Value
+            }
+            mu.Lock()
+            amount += out
+            mu.Unlock()
+        }(id)
+    }
+    wg.Wait()
+    if ctx.Err() != nil {
+        return 0, 0, false
+    }
+    return amount, fee, true
 }
 
 func send(bot *bot, chatID int64, text string) {
