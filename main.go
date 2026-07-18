@@ -101,9 +101,8 @@ func startNotifyChat(b *bot, chatID int64, typ watchType, watchID, alias string)
                             lines = append(lines, fmt.Sprintf("%-*s %s", pad, p[0]+":", p[1]))
                         }
                         send(b, chatID, "🔔 New transaction on watched address "+label+"\n\n<pre>"+strings.Join(lines, "\n")+"</pre>")
+                        addAddrConfirm(n.txid, chatID, watchID, alias)
                     }
-                } else if n.txid == watchID {
-                    send(b, chatID, "🔔 Watched transaction "+label+" was accepted to the mempool.")
                 }
             }
         }
@@ -132,13 +131,14 @@ func notifyAddresses() (res []string) {
     return res
 }
 
-// notifier handles btcd's relevanttxaccepted notifications. Rather than
-// wrapping it in jsonrpc2.AsyncHandler, Handle spawns the work itself: broadcast
-// calls back into btcd (decoderawtransaction) which would deadlock the
-// connection's single read loop if run inside a synchronous Handle.
-type notifier struct{}
+// notifier handles btcd's push notifications. Rather than wrapping it in
+// jsonrpc2.AsyncHandler, Handle spawns the work itself: broadcast, cacheBlockHash
+// and checkConfirmations all call back into btcd, which would deadlock the
+// connection's single read loop if run inside a synchronous Handle. It holds the
+// bot so checkConfirmations can message chats about their confirmed transactions.
+type notifier struct{ bot *bot }
 
-func (notifier) Handle(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) {
+func (n notifier) Handle(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) {
     if req.Params == nil { return }
     switch req.Method {
     case "relevanttxaccepted":
@@ -152,6 +152,7 @@ func (notifier) Handle(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.R
             var hash string
             if json.Unmarshal(params[0], &hash) == nil {
                 go cacheBlockHash(hash)
+                go checkConfirmations(n.bot, hash)
             }
         }
     }
@@ -227,6 +228,7 @@ func startNotify(bot *bot) {
         return
     }
     for _, r := range records {
+        if r.Type != watchTypeAddress { continue }
         startNotifyChat(bot, r.ChatID, r.Type, r.WatchID, r.Alias)
     }
     var addrs = notifyAddresses()
@@ -285,7 +287,7 @@ func main() {
             pass:        *btcdPass,
             certFile:    *btcdCert,
             insecureTLS: *btcdInsecureTLS,
-        }, notifier{})
+        }, notifier{bot: bot})
         btcdCancel()
         if err != nil {
             logFatal("dial btcd: %v", err)
@@ -345,11 +347,12 @@ func shutdown(srv *http.Server) {
 
 func stopNotify() {
     notifyMu.Lock()
-    defer notifyMu.Unlock()
     for _, v := range notifies {
         close(v.stop)
     }
     notifies = make(map[notifyKey]notifyChans)
+    notifyMu.Unlock()
+    resetTxWatches()
 }
 
 func webhookHandler(bot *bot) http.HandlerFunc {
@@ -518,7 +521,7 @@ func start(bot *bot, chatID int64) {
         "Hi! I'm bitnsbot — I keep an eye on the Bitcoin network for you.",
         "",
         "• <b>/info</b> — look up a transaction, block, or address",
-        "• <b>/watch</b> — get notified when an address receives a transaction",
+        "• <b>/watch</b> — get notified when an address receives a payment, or when a transaction confirms",
         "• <b>/unwatch</b> — stop watching an address or transaction",
         "• <b>/watches</b> — list what you're currently watching",
         "• <b>/fees</b> — show current network fee estimates",
@@ -852,20 +855,24 @@ func watchCmd(bot *bot, chatID int64, arg string) {
     if isTxid(watchID) {
         typ = watchTypeTransaction
     }
-    if err := addWatch(chatID, typ, watchID, alias); err != nil {
-        logErr("add watch: %v", err)
-        send(bot, chatID, "Sorry, something went wrong saving that watch.")
-        return
-    }
-    startNotifyChat(bot, chatID, typ, watchID, alias)
-    logInfo("added %s subscription %s for chat %d (alias %q)", typ, watchID, chatID, alias)
-    if typ == watchTypeAddress && btcd != nil {
-        var ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
-        if err := btcd.loadTxFilter(ctx, false, []string{watchID}, nil); err != nil {
-            logWarn("load tx filter: %v", err)
+    if typ == watchTypeTransaction {
+        addTxWatch(watchID, chatID, alias)
+    } else {
+        if err := addWatch(chatID, typ, watchID, alias); err != nil {
+            logErr("add watch: %v", err)
+            send(bot, chatID, "Sorry, something went wrong saving that watch.")
+            return
         }
-        cancel()
+        startNotifyChat(bot, chatID, typ, watchID, alias)
+        if btcd != nil {
+            var ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
+            if err := btcd.loadTxFilter(ctx, false, []string{watchID}, nil); err != nil {
+                logWarn("load tx filter: %v", err)
+            }
+            cancel()
+        }
     }
+    logInfo("added %s subscription %s for chat %d (alias %q)", typ, watchID, chatID, alias)
     var msg = "Watching " + string(typ) + ": " + html.EscapeString(watchID)
     if alias != "" {
         msg += " (" + html.EscapeString(alias) + ")"
@@ -887,6 +894,15 @@ func unwatch(bot *bot, chatID int64, arg string) {
     pendingUnwatchMu.Lock()
     delete(pendingUnwatchChats, chatID)
     pendingUnwatchMu.Unlock()
+    if isTxid(arg) {
+        if removeTxWatch(arg, chatID) == 0 {
+            send(bot, chatID, "You're not watching "+html.EscapeString(arg)+".")
+            return
+        }
+        logInfo("removed transaction watch %s for chat %d", arg, chatID)
+        send(bot, chatID, "Stopped watching "+html.EscapeString(arg)+".")
+        return
+    }
     var removed, err = removeWatch(chatID, arg)
     if err != nil {
         logErr("remove watch: %v", err)
@@ -897,11 +913,10 @@ func unwatch(bot *bot, chatID int64, arg string) {
         send(bot, chatID, "You're not watching "+html.EscapeString(arg)+".")
         return
     }
-    var typ = watchTypeAddress
-    if isTxid(arg) { typ = watchTypeTransaction }
-    stopNotifyChat(chatID, typ, arg)
+    stopNotifyChat(chatID, watchTypeAddress, arg)
+    removeAddrConfirms(arg, chatID)
     logInfo("removed subscription %s for chat %d", arg, chatID)
-    if !isTxid(arg) && btcd != nil {
+    if btcd != nil {
         var ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
         if err := btcd.loadTxFilter(ctx, true, notifyAddresses(), nil); err != nil {
             logWarn("load tx filter: %v", err)
@@ -920,18 +935,21 @@ func watches(bot *bot, chatID int64) {
     }
     var addresses, transactions []string
     for _, r := range records {
-        if r.ChatID != chatID {
+        if r.ChatID != chatID || r.Type != watchTypeAddress {
             continue
         }
         var line = "<code>" + html.EscapeString(r.WatchID) + "</code>"
         if r.Alias != "" {
             line += " (" + html.EscapeString(r.Alias) + ")"
         }
-        if r.Type == watchTypeTransaction {
-            transactions = append(transactions, line)
-        } else {
-            addresses = append(addresses, line)
+        addresses = append(addresses, line)
+    }
+    for _, e := range txWatchesFor(chatID) {
+        var line = "<code>" + html.EscapeString(e.txid) + "</code>"
+        if e.alias != "" {
+            line += " (" + html.EscapeString(e.alias) + ")"
         }
+        transactions = append(transactions, line)
     }
     if len(addresses) == 0 && len(transactions) == 0 {
         send(bot, chatID, "You're not watching anything yet.")

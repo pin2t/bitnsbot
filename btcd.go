@@ -282,6 +282,21 @@ func (c *btcdClient) getBlockVerbose(ctx context.Context, hash string) (*btcdVer
     return &blk, nil
 }
 
+type btcdBlockTxids struct {
+    Height int64    `json:"height"`
+    Tx     []string `json:"tx"`
+}
+
+// getBlockTxids fetches a block at verbosity 1, where "tx" carries only the
+// txids — far cheaper than getBlockVerbose (verbosity 2, full transactions) when
+// all that's wanted is which transactions the block contains.
+func (c *btcdClient) getBlockTxids(ctx context.Context, hash string) (*btcdBlockTxids, error) {
+    var blk btcdBlockTxids
+    var err = c.conn.Load().Call(ctx, "getblock", []interface{}{hash, 1}, &blk)
+    if err != nil { return nil, err }
+    return &blk, nil
+}
+
 type btcdAddressInfo struct {
     IsValid   bool   `json:"isvalid"`
     Address   string `json:"address"`

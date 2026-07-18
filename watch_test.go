@@ -155,6 +155,19 @@ func TestWatchNotification(t *testing.T) {
             t.Fatalf("notification missing %q: %q", want, found)
         }
     }
+    // the mempool notification also registers a one-shot confirmation watch, so
+    // the chat gets a second message once this transaction is mined
+    txWatchMu.Lock()
+    var registered bool
+    for _, w := range txWatches[txid] {
+        if w.chatID == 42 && w.addr == watchedAddr {
+            registered = true
+        }
+    }
+    txWatchMu.Unlock()
+    if !registered {
+        t.Fatalf("expected a confirmation watch registered for the watched-address tx")
+    }
 }
 
 func TestUnwatchFlow(t *testing.T) {
@@ -228,6 +241,8 @@ func TestWatchesFlow(t *testing.T) {
     var b = newBot("TESTTOKEN", server.URL)
     openDB(filepath.Join(t.TempDir(), "watches.db"))
     defer closeDB()
+    stopNotify()
+    defer stopNotify()
     // nothing watched yet
     update(b, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/watches"}})
     if sent[len(sent)-1] != "You're not watching anything yet." {
@@ -236,7 +251,7 @@ func TestWatchesFlow(t *testing.T) {
     var addr = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
     var txid = "f21b47a9143a23e80cc59e81588d21558b394005580b285961957cb3bed5b3e0"
     addWatch(1, watchTypeAddress, addr, "")
-    addWatch(1, watchTypeTransaction, txid, "")
+    addTxWatch(txid, 1, "")
     addWatch(2, watchTypeAddress, "someoneElsesAddress", "")
     update(b, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/watches"}})
     var msg = sent[len(sent)-1]
@@ -259,5 +274,156 @@ func TestWatchesFlow(t *testing.T) {
     update(b, Update{Message: &Message{Chat: Chat{ID: 3}, Text: "/watches"}})
     if last := sent[len(sent)-1]; !strings.Contains(last, "a&lt;b&gt;c") {
         t.Fatalf("expected HTML-escaped watch id, got: %q", last)
+    }
+}
+
+func TestTxConfirmation(t *testing.T) {
+    var sentMu sync.Mutex
+    var sent []string
+    var tg = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        var body struct {
+            Text string `json:"text"`
+        }
+        json.NewDecoder(r.Body).Decode(&body)
+        sentMu.Lock()
+        sent = append(sent, body.Text)
+        sentMu.Unlock()
+        json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": true})
+    }))
+    defer tg.Close()
+    var b = newBot("TESTTOKEN", tg.URL)
+    var txid = "f21b47a9143a23e80cc59e81588d21558b394005580b285961957cb3bed5b3e0"
+    var srv = newFakeBtcdServer(t, func(method string, params json.RawMessage) (interface{}, error) {
+        switch method {
+        case "notifyblocks":
+            return nil, nil
+        case "getblock":
+            var p []interface{}
+            json.Unmarshal(params, &p)
+            if len(p) > 1 && p[1].(float64) == 1 {
+                return map[string]any{"height": 100, "tx": []string{txid}}, nil
+            }
+            return map[string]any{"hash": "0000000000000000abc", "height": 100, "time": 1700000000, "size": 300,
+                "rawtx": []map[string]any{{"txid": "cb", "size": 100, "vin": []map[string]any{{"coinbase": "03"}}, "vout": []map[string]any{{"value": 50.0}}}}}, nil
+        }
+        return nil, nil
+    })
+    defer srv.Close()
+    btcd = dialFakeBtcd(t, srv, notifier{bot: b})
+    defer func() { btcd.close(); btcd = nil }()
+    openDB(filepath.Join(t.TempDir(), "watches.db"))
+    defer closeDB()
+    stopNotify()
+    defer stopNotify()
+    // watch a transaction as if 5½ minutes ago, so the confirmation reports "5 min"
+    txWatchMu.Lock()
+    txWatches[txid] = []txWatch{{chatID: 7, alias: "Alice", watchedAt: time.Now().Add(-5*time.Minute - 30*time.Second)}}
+    txWatchMu.Unlock()
+    // notifyblocks makes the fake push a blockconnected, which the notifier turns
+    // into a checkConfirmations that finds txid in the block and messages chat 7.
+    if err := btcd.notifyBlocks(context.Background()); err != nil {
+        t.Fatalf("notifyBlocks: %v", err)
+    }
+    var found string
+    var deadline = time.Now().Add(3 * time.Second)
+    for time.Now().Before(deadline) {
+        sentMu.Lock()
+        for _, m := range sent {
+            if strings.Contains(m, "was confirmed") { found = m }
+        }
+        sentMu.Unlock()
+        if found != "" { break }
+        time.Sleep(10 * time.Millisecond)
+    }
+    if found == "" {
+        t.Fatalf("expected a confirmation notification, got: %#v", sent)
+    }
+    for _, want := range []string{"Watched transaction " + short(txid), "(Alice)", "confirmed in block #100", "after 5 min"} {
+        if !strings.Contains(found, want) {
+            t.Fatalf("confirmation missing %q: %q", want, found)
+        }
+    }
+}
+
+func TestDurationText(t *testing.T) {
+    var cases = []struct {
+        d    time.Duration
+        want string
+    }{
+        {30 * time.Second, "30 sec"},
+        {5 * time.Minute, "5 min"},
+        {90 * time.Minute, "1 h 30 min"},
+        {2 * time.Hour, "2 h"},
+    }
+    for _, c := range cases {
+        if got := durationText(c.d); got != c.want {
+            t.Errorf("durationText(%v) = %q, want %q", c.d, got, c.want)
+        }
+    }
+}
+
+func TestAddrConfirmation(t *testing.T) {
+    var sentMu sync.Mutex
+    var sent []string
+    var tg = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        var body struct {
+            Text string `json:"text"`
+        }
+        json.NewDecoder(r.Body).Decode(&body)
+        sentMu.Lock()
+        sent = append(sent, body.Text)
+        sentMu.Unlock()
+        json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": true})
+    }))
+    defer tg.Close()
+    var b = newBot("TESTTOKEN", tg.URL)
+    var addr = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
+    var txid = "f21b47a9143a23e80cc59e81588d21558b394005580b285961957cb3bed5b3e0"
+    var srv = newFakeBtcdServer(t, func(method string, params json.RawMessage) (interface{}, error) {
+        if method == "getblock" {
+            return map[string]any{"height": 200, "tx": []string{txid}}, nil
+        }
+        return nil, nil
+    })
+    defer srv.Close()
+    btcd = dialFakeBtcd(t, srv, &recordingHandler{})
+    defer func() { btcd.close(); btcd = nil }()
+    stopNotify()
+    defer stopNotify()
+    // a transaction on the watched address, first seen 3½ minutes ago
+    txWatchMu.Lock()
+    txWatches[txid] = []txWatch{{chatID: 7, alias: "John", watchedAt: time.Now().Add(-3*time.Minute - 30*time.Second), addr: addr}}
+    txWatchMu.Unlock()
+    checkConfirmations(b, "hash200")
+    sentMu.Lock()
+    defer sentMu.Unlock()
+    var found string
+    for _, m := range sent {
+        if strings.Contains(m, "was confirmed") {
+            found = m
+        }
+    }
+    if found == "" {
+        t.Fatalf("expected a confirmation message, got %#v", sent)
+    }
+    for _, want := range []string{"Transaction " + short(txid), "on watched address " + short(addr), "(John)", "confirmed in block #200", "after 3 min"} {
+        if !strings.Contains(found, want) {
+            t.Fatalf("address confirmation missing %q: %q", want, found)
+        }
+    }
+}
+
+func TestAddrConfirmDedup(t *testing.T) {
+    resetTxWatches()
+    defer resetTxWatches()
+    addAddrConfirm("txabc", 5, "addrX", "Alias")
+    addAddrConfirm("txabc", 5, "addrX", "Alias")
+    addTxWatch("txabc", 5, "")
+    txWatchMu.Lock()
+    var n = len(txWatches["txabc"])
+    txWatchMu.Unlock()
+    // the two identical address confirmations dedup to one; the direct watch (addr "") stays distinct
+    if n != 2 {
+        t.Fatalf("expected 2 entries (deduped addr-confirm + distinct direct watch), got %d", n)
     }
 }
