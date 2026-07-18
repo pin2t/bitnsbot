@@ -100,7 +100,7 @@ func startNotifyChat(b *bot, chatID int64, typ watchType, watchID, alias string)
                         for _, p := range pairs {
                             lines = append(lines, fmt.Sprintf("%-*s %s", pad, p[0]+":", p[1]))
                         }
-                        send(b, chatID, "🔔 New transaction on watched address "+short(watchID)+"\n\n<pre>"+strings.Join(lines, "\n")+"</pre>")
+                        send(b, chatID, "🔔 New transaction on watched address "+label+"\n\n<pre>"+strings.Join(lines, "\n")+"</pre>")
                     }
                 } else if n.txid == watchID {
                     send(b, chatID, "🔔 Watched transaction "+label+" was accepted to the mempool.")
