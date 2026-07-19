@@ -6,6 +6,8 @@ import "path/filepath"
 import "testing"
 import "time"
 
+import "bitnsbot/watches"
+
 // TestShutdownDrainsHandlersBeforeClosingStore verifies the ordering the
 // feature exists for: the webhook server is stopped first and waits for
 // in-flight handlers to finish, so a handler using the store never sees it
@@ -23,7 +25,7 @@ func TestShutdownDrainsHandlersBeforeClosingStore(t *testing.T) {
     mux.HandleFunc("/slow", func(w http.ResponseWriter, r *http.Request) {
         close(started)
         time.Sleep(200 * time.Millisecond)
-        var _, listErr = listWatches() // the store must still be open while a handler runs
+        var _, listErr = watches.List() // the store must still be open while a handler runs
         finished <- listErr
         w.WriteHeader(http.StatusOK)
     })
@@ -39,7 +41,7 @@ func TestShutdownDrainsHandlersBeforeClosingStore(t *testing.T) {
     if handlerErr := <-finished; handlerErr != nil {
         t.Fatalf("store was closed while a handler was still running: %v", handlerErr)
     }
-    if _, err := listWatches(); err == nil {
+    if _, err := watches.List(); err == nil {
         t.Fatalf("expected the store to be closed after shutdown")
     }
 }

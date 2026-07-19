@@ -14,6 +14,7 @@ import "time"
 
 import "github.com/gorilla/websocket"
 import "github.com/sourcegraph/jsonrpc2"
+import "bitnsbot/logging"
 import jsonrpc2ws "github.com/sourcegraph/jsonrpc2/websocket"
 
 type btcdConfig struct {
@@ -53,8 +54,8 @@ func dialConn(ctx context.Context, cfg btcdConfig, handler jsonrpc2.Handler) (*j
     var opts []jsonrpc2.ConnOpt
     if *verbose >= 2 {
         opts = append(opts,
-            jsonrpc2.OnSend(func(req *jsonrpc2.Request, resp *jsonrpc2.Response) { logNet("btcd → %s", btcdMsg(req, resp)) }),
-            jsonrpc2.OnRecv(func(req *jsonrpc2.Request, resp *jsonrpc2.Response) { logNet("btcd ← %s", btcdMsg(req, resp)) }),
+            jsonrpc2.OnSend(func(req *jsonrpc2.Request, resp *jsonrpc2.Response) { logging.Net("btcd → %s", btcdMsg(req, resp)) }),
+            jsonrpc2.OnRecv(func(req *jsonrpc2.Request, resp *jsonrpc2.Response) { logging.Net("btcd ← %s", btcdMsg(req, resp)) }),
         )
     }
     return jsonrpc2.NewConn(ctx, stream, handler, opts...), nil
@@ -89,7 +90,7 @@ func (c *btcdClient) supervise(reapply func()) {
                 var err = c.ping(ctx)
                 cancel()
                 if err == nil { continue }
-                logWarn("btcd ping failed: %v — reconnecting", err)
+                logging.Warn("btcd ping failed: %v — reconnecting", err)
                 if c.reconnect() {
                     reapply()
                 }
@@ -112,7 +113,7 @@ func (c *btcdClient) reconnect() bool {
     defer cancel()
     var conn, err = dialConn(ctx, c.cfg, c.handler)
     if err != nil {
-        logErr("btcd reconnect failed: %v", err)
+        logging.Err("btcd reconnect failed: %v", err)
         return false
     }
     select {
@@ -123,7 +124,7 @@ func (c *btcdClient) reconnect() bool {
     }
     var old = c.conn.Swap(conn)
     if old != nil { old.Close() }
-    logStatus("reconnected to btcd at %s", c.cfg.url)
+    logging.Status("reconnected to btcd at %s", c.cfg.url)
     return true
 }
 

@@ -7,8 +7,7 @@ import "net/http/httptest"
 import "os"
 import "strings"
 import "testing"
-import "flag"
-import "strconv"
+import "bitnsbot/logging"
 
 func TestMessageLogging(t *testing.T) {
     server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -16,8 +15,8 @@ func TestMessageLogging(t *testing.T) {
     }))
     defer server.Close()
     bot := newBot("TESTTOKEN", server.URL)
-    flag.Set("verbose", "1")
-    defer func() { *verbose = 0 }()
+    logging.SetVerbosity(1)
+    defer logging.SetVerbosity(0)
     var buf bytes.Buffer
     log.SetOutput(&buf)
     defer log.SetOutput(os.Stderr)
@@ -49,7 +48,7 @@ func TestLoggingLevels(t *testing.T) {
     var buf bytes.Buffer
     log.SetOutput(&buf)
     defer log.SetOutput(os.Stderr)
-    defer func() { flag.Set("verbose", "0") }()
+    defer logging.SetVerbosity(0)
     var cases = []struct {
         v      int
         shown  []string
@@ -60,14 +59,14 @@ func TestLoggingLevels(t *testing.T) {
         {2, []string{"[ERR]", "[WARN]", "[INFO]", "[NET]", "[DB]"}, nil},
     }
     for _, c := range cases {
-        flag.Set("verbose", strconv.Itoa(c.v))
+        logging.SetVerbosity(c.v)
         buf.Reset()
-        logErr("e")
-        logWarn("w")
-        logStatus("status-line")
-        logInfo("i")
-        logNet("n")
-        logDb("d")
+        logging.Err("e")
+        logging.Warn("w")
+        logging.Status("status-line")
+        logging.Info("i")
+        logging.Net("n")
+        logging.Db("d")
         var out = buf.String()
         for _, want := range c.shown {
             if !strings.Contains(out, want) {
