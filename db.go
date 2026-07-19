@@ -4,14 +4,15 @@ import "encoding/binary"
 
 import "go.etcd.io/bbolt"
 import "bitnsbot/logging"
+import "bitnsbot/miners"
 import "bitnsbot/rates"
 import "bitnsbot/watches"
 
 var db *bbolt.DB
 
 // openDB opens the shared bbolt file, creates the block-cache bucket, and hands
-// the same handle to the rates and watches packages (which own their own
-// buckets). One file, one handle, three buckets.
+// the same handle to the rates, watches, and miners packages (which own their
+// own buckets). One file, one handle, four buckets.
 func openDB(path string) error {
     logging.Db("open %s", path)
     var opened, err = bbolt.Open(path, 0600, nil)
@@ -29,6 +30,7 @@ func openDB(path string) error {
     db = opened
     if err := rates.Init(db); err != nil { return err }
     if err := watches.Init(db); err != nil { return err }
+    if err := miners.Init(db); err != nil { return err }
     return nil
 }
 

@@ -17,6 +17,7 @@ import "syscall"
 import "time"
 
 import "bitnsbot/logging"
+import "bitnsbot/miners"
 import "bitnsbot/rates"
 import "bitnsbot/txwatches"
 import "bitnsbot/watches"
@@ -76,6 +77,7 @@ func main() {
         logging.Status("connected to btcd at %s", *btcdURL)
     }
     startNotify(bot)
+    miners.Start()
     startBlockCache()
     startMempoolFlow()
     if btcd != nil {

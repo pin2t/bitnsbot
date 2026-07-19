@@ -9,6 +9,7 @@ import "time"
 
 import "go.etcd.io/bbolt"
 import "bitnsbot/logging"
+import "bitnsbot/miners"
 
 var blocksBucket = []byte("blocks")
 
@@ -97,11 +98,13 @@ func computeBlockInfo(ctx context.Context, hash string) (*blockInfo, error) {
         if v.ScriptPubKey.Address != "" { addrs = append(addrs, v.ScriptPubKey.Address) }
         addrs = append(addrs, v.ScriptPubKey.Addresses...)
     }
-    var scriptHex string
-    if len(coinbase.Vin) > 0 { scriptHex = coinbase.Vin[0].Coinbase }
+    var miner = "Unknown"
+    for _, a := range addrs {
+        if name := miners.Name(a); name != "" { miner = name; break }
+    }
     return &blockInfo{
         Height: blk.Height, Hash: blk.Hash, Time: blk.Time, Size: blk.Size,
-        NumTx: len(blk.Tx), Miner: minerName(scriptHex, addrs),
+        NumTx: len(blk.Tx), Miner: miner,
         FeesOK: feeErr == nil, FeeMin: low, FeeAvg: avg, FeeMax: high,
         TxSizeMin: szMin, TxSizeAvg: int32(szSum / int64(len(blk.Tx))), TxSizeMax: szMax,
         Reward: subsidy(blk.Height), Total: coinbaseOut, Difficulty: blk.Difficulty,
@@ -141,7 +144,6 @@ func cacheBlockHash(hash string) {
 // and backfills the most recent blocks into the cache.
 func startBlockCache() {
     go func() {
-        if err := loadPools(); err != nil { logging.Warn("load mining pools: %v", err) }
         if btcd == nil { return }
         var nctx, ncancel = context.WithTimeout(context.Background(), 15*time.Second)
         if err := btcd.notifyBlocks(nctx); err != nil { logging.Warn("subscribe to blocks: %v", err) }
