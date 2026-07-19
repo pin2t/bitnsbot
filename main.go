@@ -7,18 +7,19 @@ import "encoding/json"
 import "flag"
 import "fmt"
 import "html"
-import "math"
 import "net/http"
 import "os"
 import "os/signal"
-import "slices"
 import "strconv"
 import "strings"
 import "sync"
 import "syscall"
 import "time"
 
-import "github.com/sourcegraph/jsonrpc2"
+import "bitnsbot/logging"
+import "bitnsbot/rates"
+import "bitnsbot/txwatches"
+import "bitnsbot/watches"
 
 var configPath      = flag.String("config", "", "path to a properties file (name=value lines) with flag values; command-line flags take precedence")
 var verbose         = flag.Int("verbose", 0, "log verbosity: 0=ERR/WARN/status, 1=+INFO, 2=+NET/DB (raw external traffic and storage requests)")
@@ -38,227 +39,6 @@ var btcdInsecureTLS = flag.Bool("btcd-insecure-tls", false, "skip TLS certificat
 
 var btcd *btcdClient
 
-type notification struct {
-    txid         string
-    received     map[string]float64
-    fee          float64 // BTC
-    feeRate      float64 // sat/vB
-    confEstimate string  // "~10-20 min" etc; "" if unavailable
-    feeOK        bool    // whether fee/feeRate are populated
-}
-
-type notifyKey struct {
-    chat int64
-    typ  watchType
-    id   string
-}
-
-type notifyChans struct {
-    ch   chan notification
-    stop chan struct{}
-}
-
-var notifyMu sync.Mutex
-var notifies = make(map[notifyKey]notifyChans)
-
-func startNotifyChat(b *bot, chatID int64, typ watchType, watchID, alias string) {
-    var ch = make(chan notification)
-    var stop = make(chan struct{})
-    notifyMu.Lock()
-    notifies[notifyKey{chatID, typ, watchID}] = notifyChans{ch, stop}
-    notifyMu.Unlock()
-    go func(b *bot, chatID int64, typ watchType, watchID, alias string, ch <-chan notification, stop chan struct{}) {
-        var label = short(watchID)
-        if alias != "" {
-            label += " (" + html.EscapeString(alias) + ")"
-        }
-        for {
-            select {
-            case <-stop:
-                return
-            case n := <-ch:
-                if typ == watchTypeAddress {
-                    if amount, ok := n.received[watchID]; ok {
-                        var pairs = [][2]string{
-                            {"Tx", short(n.txid)},
-                            {"Amount", amountLine(amount, time.Time{}, true)},
-                        }
-                        if n.feeOK {
-                            pairs = append(pairs,
-                                [2]string{"Fee", satoshi(n.fee) + " sats"},
-                                [2]string{"Fee rate", strings.TrimSuffix(strconv.FormatFloat(n.feeRate, 'f', 1, 64), ".0") + " sat/vB"},
-                            )
-                            if n.confEstimate != "" {
-                                pairs = append(pairs, [2]string{"Confirms", n.confEstimate})
-                            }
-                        }
-                        var pad int
-                        for _, p := range pairs {
-                            if len(p[0])+1 > pad { pad = len(p[0]) + 1 }
-                        }
-                        var lines []string
-                        for _, p := range pairs {
-                            lines = append(lines, fmt.Sprintf("%-*s %s", pad, p[0]+":", p[1]))
-                        }
-                        send(b, chatID, "🔔 New transaction on watched address "+label+"\n\n<pre>"+strings.Join(lines, "\n")+"</pre>")
-                        addAddrConfirm(n.txid, chatID, watchID, alias)
-                    }
-                }
-            }
-        }
-    }(b, chatID, typ, watchID, alias, ch, stop)
-}
-
-func stopNotifyChat(chat int64, typ watchType, id string) {
-    notifyMu.Lock()
-    defer notifyMu.Unlock()
-    var key = notifyKey{chat, typ, id}
-    if c, found := notifies[key]; found {
-        close(c.stop)
-        delete(notifies, key)
-    }
-}
-
-func notifyAddresses() (res []string) {
-    notifyMu.Lock()
-    defer notifyMu.Unlock()
-    res = make([]string, 0, len(notifies))
-    for k, _ := range notifies {
-        if k.typ == watchTypeAddress && !slices.Contains(res, k.id) {
-            res = append(res, k.id)
-        }
-    }
-    return res
-}
-
-// notifier handles btcd's push notifications. Rather than wrapping it in
-// jsonrpc2.AsyncHandler, Handle spawns the work itself: broadcast, cacheBlockHash
-// and checkConfirmations all call back into btcd, which would deadlock the
-// connection's single read loop if run inside a synchronous Handle. It holds the
-// bot so checkConfirmations can message chats about their confirmed transactions.
-type notifier struct{ bot *bot }
-
-func (n notifier) Handle(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) {
-    if req.Params == nil { return }
-    switch req.Method {
-    case "relevanttxaccepted":
-        var params []string
-        if err := json.Unmarshal(*req.Params, &params); err == nil && len(params) > 0 {
-            go broadcast(params[0])
-        }
-    case "blockconnected":
-        var params []json.RawMessage
-        if err := json.Unmarshal(*req.Params, &params); err == nil && len(params) > 0 {
-            var hash string
-            if json.Unmarshal(params[0], &hash) == nil {
-                go cacheBlockHash(hash)
-                go checkConfirmations(n.bot, hash)
-            }
-        }
-    }
-}
-
-func broadcast(txHex string) {
-    if btcd == nil { return }
-    var ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
-    defer cancel()
-    var tx, err = btcd.decodeRawTransaction(ctx, txHex)
-    if err != nil {
-        logErr("decode notified tx: %v", err)
-        return
-    }
-    var n = notification{txid: tx.Txid, received: make(map[string]float64)}
-    for _, vout := range tx.Vout {
-        var addrs = vout.ScriptPubKey.Addresses
-        if a := vout.ScriptPubKey.Address; a != "" && !slices.Contains(addrs, a) {
-            addrs = append(addrs, a)
-        }
-        for _, addr := range addrs {
-            n.received[addr] += vout.Value
-        }
-    }
-    if full, ferr := btcd.getRawTransaction(ctx, tx.Txid); ferr == nil && full.Vsize > 0 {
-        if fee, _, ok := txInputs(ctx, full); ok {
-            n.fee = fee
-            n.feeRate = math.Round(fee*1e8) / float64(full.Vsize)
-            n.confEstimate = confEstimate(ctx, n.feeRate)
-            n.feeOK = true
-        }
-    }
-    notifyMu.Lock()
-    var chans = make([]chan notification, 0)
-    for _, v := range notifies {
-        chans = append(chans, v.ch)
-    }
-    notifyMu.Unlock()
-    for _, ch := range chans {
-        select {
-        case ch <- n:
-        case <-time.After(500 * time.Millisecond):
-        }
-    }
-}
-
-// confEstimate maps a transaction's fee rate (sat/vB) to a rough confirmation
-// window by comparing it to btcd's fee estimates (BTC/kB → sat/vB via ×1e5) for
-// the 2- and 6-block targets. Returns "" if the estimator has no data yet.
-func confEstimate(ctx context.Context, feeRate float64) string {
-    var fast, ferr = btcd.estimateFee(ctx, 2)
-    var medium, merr = btcd.estimateFee(ctx, 6)
-    if ferr != nil || merr != nil || fast <= 0 || medium <= 0 {
-        return ""
-    }
-    switch {
-    case feeRate >= fast*1e5:
-        return "~10-20 min"
-    case feeRate >= medium*1e5:
-        return "~1h"
-    default:
-        return "2h+"
-    }
-}
-
-// startNotify turns every persisted watchCmd back into a live watcher goroutine
-// on startup and, if btcd is connected, loads the watched addresses into btcd's
-// transaction filter so notifications resume across restarts.
-func startNotify(bot *bot) {
-    var records, err = listWatches()
-    if err != nil {
-        logErr("list watches: %v", err)
-        return
-    }
-    for _, r := range records {
-        if r.Type != watchTypeAddress { continue }
-        startNotifyChat(bot, r.ChatID, r.Type, r.WatchID, r.Alias)
-    }
-    var addrs = notifyAddresses()
-    if btcd != nil && len(addrs) > 0 {
-        var ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
-        if err := btcd.loadTxFilter(ctx, true, addrs, nil); err != nil {
-            logWarn("load tx filter: %v", err)
-        }
-        cancel()
-    }
-}
-
-// reapplyBtcdState re-establishes btcd's stateful subscriptions after a
-// reconnect — the block-notification subscription and the transaction filter for
-// every watched address. Passed to btcd.supervise as its reconnect callback.
-func reapplyBtcdState() {
-    if btcd == nil { return }
-    var ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
-    defer cancel()
-    if err := btcd.notifyBlocks(ctx); err != nil {
-        logWarn("resubscribe to blocks: %v", err)
-    }
-    var addrs = notifyAddresses()
-    if len(addrs) > 0 {
-        if err := btcd.loadTxFilter(ctx, true, addrs, nil); err != nil {
-            logWarn("reload tx filter: %v", err)
-        }
-    }
-}
-
 func main() {
     flag.Usage = func() {
         fmt.Fprintf(flag.CommandLine.Output(), "Usage of %s:\n", os.Args[0])
@@ -267,18 +47,19 @@ func main() {
     flag.Parse()
     if *configPath != "" {
         if err := applyConfig(*configPath); err != nil {
-            logFatal("apply config: %v", err)
+            logging.Fatal("apply config: %v", err)
         }
     }
+    logging.SetVerbosity(*verbose)
     if *botToken == "" {
-        logFatal("-bot-token is required")
+        logging.Fatal("-bot-token is required")
     }
     var bot = newBot(*botToken, *apiBaseURL)
     var err error
     if err = openDB(*dbPath); err != nil {
-        logFatal("open watches database: %v", err)
+        logging.Fatal("open database: %v", err)
     }
-    startRatesUpdater()
+    rates.Start()
     if *btcdURL != "" {
         var btcdCtx, btcdCancel = context.WithTimeout(context.Background(), 15*time.Second)
         btcd, err = dialBtcd(btcdCtx, btcdConfig{
@@ -290,9 +71,9 @@ func main() {
         }, notifier{bot: bot})
         btcdCancel()
         if err != nil {
-            logFatal("dial btcd: %v", err)
+            logging.Fatal("dial btcd: %v", err)
         }
-        logStatus("connected to btcd at %s", *btcdURL)
+        logging.Status("connected to btcd at %s", *btcdURL)
     }
     startNotify(bot)
     startBlockCache()
@@ -302,24 +83,24 @@ func main() {
     }
     if *registerHook {
         if *webhookURL == "" {
-            logFatal("-webhook-url is required when -register-webhook=true")
+            logging.Fatal("-webhook-url is required when -register-webhook=true")
         }
         var ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
         var err = bot.setWebhook(ctx, *webhookURL, *secretToken)
         cancel()
         if err != nil {
-            logFatal("set webhook: %v", err)
+            logging.Fatal("set webhook: %v", err)
         }
-        logStatus("webhook registered at %s", *webhookURL)
+        logging.Status("webhook registered at %s", *webhookURL)
     }
     http.HandleFunc(*webhookPath, webhookHandler(bot))
     var srv = &http.Server{Addr: *listenAddr}
     var ctx, stop = signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
     defer stop()
     go func() {
-        logStatus("listening on %s", *listenAddr)
+        logging.Status("listening on %s", *listenAddr)
         if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-            logFatal("error listening: %v", err)
+            logging.Fatal("error listening: %v", err)
         }
     }()
     <-ctx.Done()
@@ -328,31 +109,21 @@ func main() {
 }
 
 func shutdown(srv *http.Server) {
-    logStatus("shutting down")
+    logging.Status("shutting down")
     var ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
     defer cancel()
     if err := srv.Shutdown(ctx); err != nil {
-        logErr("webhook server shutdown: %v", err)
+        logging.Err("webhook server shutdown: %v", err)
     }
     if btcd != nil {
         if err := btcd.close(); err != nil {
-            logErr("close btcd: %v", err)
+            logging.Err("close btcd: %v", err)
         }
     }
     stopNotify()
     if err := closeDB(); err != nil {
-        logErr("close watches database: %v", err)
+        logging.Err("close watches database: %v", err)
     }
-}
-
-func stopNotify() {
-    notifyMu.Lock()
-    for _, v := range notifies {
-        close(v.stop)
-    }
-    notifies = make(map[notifyKey]notifyChans)
-    notifyMu.Unlock()
-    resetTxWatches()
 }
 
 func webhookHandler(bot *bot) http.HandlerFunc {
@@ -371,7 +142,7 @@ func webhookHandler(bot *bot) http.HandlerFunc {
         defer r.Body.Close()
         var u Update
         if err := json.NewDecoder(r.Body).Decode(&u); err != nil {
-            logErr("decode update: %v", err)
+            logging.Err("decode update: %v", err)
             http.Error(w, "bad request", http.StatusBadRequest)
             return
         }
@@ -379,9 +150,6 @@ func webhookHandler(bot *bot) http.HandlerFunc {
         w.WriteHeader(http.StatusOK)
     }
 }
-
-var pendingInfoMu sync.Mutex
-var pendingInfoChats = make(map[int64]bool)
 
 func update(bot *bot, update Update) {
     var msg = update.Message
@@ -398,7 +166,7 @@ func update(bot *bot, update Update) {
     case "/unwatch":
         unwatch(bot, msg.Chat.ID, arg)
     case "/watches":
-        watches(bot, msg.Chat.ID)
+        watchesCmd(bot, msg.Chat.ID)
     case "/fees":
         fees(bot, msg.Chat.ID)
     case "/mempool":
@@ -438,7 +206,7 @@ func logMessage(msg *Message) {
             from = msg.From.FirstName
         }
     }
-    logInfo("message from %s (chat %d): %s", from, msg.Chat.ID, msg.Text)
+    logging.Info("message from %s (chat %d): %s", from, msg.Chat.ID, msg.Text)
 }
 
 func isTxid(s string) bool {
@@ -461,125 +229,6 @@ func parseCommand(text string) (command, arg string) {
     return command, arg
 }
 
-func ago(n int, unit string) string {
-    if n == 1 { return "1 " + unit + " ago" }
-    return fmt.Sprintf("%d %ss ago", n, unit)
-}
-
-func when(unix int64) string {
-    var t = time.Unix(unix, 0)
-    if t.After(time.Now().AddDate(0, -3, 0)) {
-        var since = time.Since(t)
-        switch {
-        case since < time.Minute:
-            return "just now"
-        case since < time.Hour:
-            return ago(int(since.Minutes()), "minute")
-        case since < 24*time.Hour:
-            return ago(int(since.Hours()), "hour")
-        case since < 31*24*time.Hour:
-            return ago(int(since.Hours()/24), "day")
-        default:
-            return ago(int(since.Hours()/24/30), "month")
-        }
-    }
-    return strings.ToLower(t.UTC().Format("2 January 2006 15:04"))
-}
-
-func short(s string) string {
-    if len(s) <= 15 { return s }
-    return s[:6] + "..." + s[len(s)-6:]
-}
-
-func group(n int64) string {
-    var s = strconv.FormatInt(n, 10)
-    for i := len(s) - 3; i > 0; i -= 3 {
-        s = s[:i] + " " + s[i:]
-    }
-    return s
-}
-
-func satoshi(btc float64) string {
-    return group(int64(math.Round(btc * 1e8)))
-}
-
-// metric renders a large number with a metric suffix, scaling by 1000 —
-// e.g. metric(3299245, 1) → "3.3 M", metric(6719, 1) → "6.7 k", and (used for
-// block difficulty) metric(79000000000000, 2) → "79 T".
-func metric(f float64, decimals int) string {
-    var unit = ""
-    for _, u := range []string{" k", " M", " G", " T", " P", " E"} {
-        if f < 1000 { break }
-        f /= 1000
-        unit = u
-    }
-    return strings.TrimRight(strings.TrimRight(strconv.FormatFloat(f, 'f', decimals, 64), "0"), ".") + unit
-}
-
-// compactBtc renders a BTC amount compactly with a USD approximation at the
-// latest rate: as BTC once it reaches 0.05 BTC ("0.5 BTC"), otherwise in sats
-// ("100 000 sats"), so large and small amounts each read naturally.
-func compactBtc(btc float64) string {
-    if btc >= 0.05 {
-        return btcAmount(btc)
-    }
-    return amountLine(btc, time.Time{}, true)
-}
-
-// timeCompact renders a past time relatively and compactly ("2 m ago", "5 d ago",
-// "3 h ago", "10 min ago") within the last year, or the exact lowercase date for
-// older ("very old") times. "m" is months here; minutes are "min".
-func timeCompact(unix int64) string {
-    var t = time.Unix(unix, 0)
-    var since = time.Since(t)
-    switch {
-    case since < time.Minute:
-        return "just now"
-    case since < time.Hour:
-        return fmt.Sprintf("%d min ago", int(since.Minutes()))
-    case since < 24*time.Hour:
-        return fmt.Sprintf("%d h ago", int(since.Hours()))
-    case since < 30*24*time.Hour:
-        return fmt.Sprintf("%d d ago", int(since.Hours()/24))
-    case since < 365*24*time.Hour:
-        return fmt.Sprintf("%d m ago", int(since.Hours()/24/30))
-    default:
-        return strings.ToLower(t.UTC().Format("2 January 2006"))
-    }
-}
-
-// periodText renders a duration as its two most-significant non-zero units among
-// years / months / days / hours / minutes — "3 y 2 d", "2 m 1 d", "5 h 10 min".
-// Years and months use 365- and 30-day approximations, extracted in order.
-func periodText(d time.Duration) string {
-    var total = int(d.Minutes())
-    var years = total / (365 * 24 * 60)
-    total -= years * 365 * 24 * 60
-    var months = total / (30 * 24 * 60)
-    total -= months * 30 * 24 * 60
-    var days = total / (24 * 60)
-    total -= days * 24 * 60
-    var hours = total / 60
-    var mins = total - hours*60
-    var units = []struct {
-        n int
-        s string
-    }{{years, "y"}, {months, "m"}, {days, "d"}, {hours, "h"}, {mins, "min"}}
-    var parts []string
-    for _, u := range units {
-        if u.n > 0 {
-            parts = append(parts, fmt.Sprintf("%d %s", u.n, u.s))
-        }
-    }
-    if len(parts) == 0 {
-        return "0 min"
-    }
-    if len(parts) > 2 {
-        parts = parts[:2]
-    }
-    return strings.Join(parts, " ")
-}
-
 func start(bot *bot, chatID int64) {
     send(bot, chatID, strings.Join([]string{
         "Hi! I'm bitnsbot — I keep an eye on the Bitcoin network for you.",
@@ -592,400 +241,6 @@ func start(bot *bot, chatID int64) {
         "• <b>/mempool</b> — show current mempool size and totals",
         "• <b>/start</b> — show this message",
     }, "\n"))
-}
-
-func info(bot *bot, chatID int64, arg string) {
-    if arg == "" {
-        pendingInfoMu.Lock()
-        pendingInfoChats[chatID] = true
-        pendingInfoMu.Unlock()
-        send(bot, chatID, "Please send Bitcoin address or transaction or block number")
-        return
-    }
-    pendingInfoMu.Lock()
-    delete(pendingInfoChats, chatID)
-    pendingInfoMu.Unlock()
-    if btcd == nil {
-        send(bot, chatID, "Bitcoin node connection is not configured.")
-        return
-    }
-    var ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
-    defer cancel()
-    if isTxid(arg) {
-        transaction(ctx, bot, chatID, arg)
-        return
-    }
-    if height, err := strconv.ParseInt(arg, 10, 64); err == nil && height >= 0 {
-        block(ctx, bot, chatID, height)
-        return
-    }
-    address(ctx, bot, chatID, arg)
-}
-
-func transaction(ctx context.Context, bot *bot, chatID int64, txid string) {
-    var tx, err = btcd.getRawTransaction(ctx, txid)
-    if err != nil {
-        send(bot, chatID, "Couldn't find transaction "+short(txid)+".")
-        return
-    }
-    var total float64
-    for _, vout := range tx.Vout {
-        total += vout.Value
-    }
-    var coinbase = len(tx.Vin) > 0 && tx.Vin[0].Coinbase != ""
-    var fee float64
-    var inputs []string
-    var feeOK bool
-    if !coinbase {
-        fee, inputs, feeOK = txInputs(ctx, tx)
-    }
-    var pairs [][2]string
-    var at = time.Time{}
-    var current = true
-    if tx.Confirmations == 0 {
-        pairs = append(pairs, [2]string{"Status", "unconfirmed (in mempool)"})
-    } else {
-        at, current = time.Unix(tx.Time, 0), false
-        pairs = append(pairs,
-            [2]string{"Status", fmt.Sprintf("confirmed (%d confirmations)", tx.Confirmations)},
-            [2]string{"Confirmed", when(tx.Time)},
-            [2]string{"Block", short(tx.BlockHash)},
-        )
-    }
-    pairs = append(pairs, [2]string{"Amount", amountLine(total, at, current)})
-    switch {
-    case coinbase:
-        pairs = append(pairs, [2]string{"Fee", "none (coinbase)"})
-    case feeOK:
-        pairs = append(pairs, [2]string{"Fee", satoshi(fee) + " sats"})
-    default:
-        pairs = append(pairs, [2]string{"Fee", "unavailable"})
-    }
-    pairs = append(pairs, [2]string{"Size", group(int64(tx.Size)) + " bytes"})
-    switch {
-    case coinbase:
-        pairs = append(pairs, [2]string{"Inputs", "coinbase (newly generated)"})
-    case feeOK:
-        pairs = append(pairs, [2]string{"Inputs", compactAddrs(inputs)})
-    default:
-        pairs = append(pairs, [2]string{"Inputs", "unavailable"})
-    }
-    pairs = append(pairs, [2]string{"Outputs", compactAddrs(outputAddrs(tx))})
-    var pad int
-    for _, p := range pairs {
-        if len(p[0])+1 > pad { pad = len(p[0]) + 1 }
-    }
-    var lines []string
-    for _, p := range pairs {
-        lines = append(lines, fmt.Sprintf("%-*s %s", pad, p[0]+":", p[1]))
-    }
-    send(bot, chatID, fmt.Sprintf("Transaction %s\n\n<pre>%s</pre>", short(tx.Txid), strings.Join(lines, "\n")))
-}
-
-// txInputs fetches each input's prevout transaction to sum the input values (for
-// the fee = inputs − outputs) and collect the spent addresses. btcd's
-// getrawtransaction gives inputs only as txid:vout refs, so the prevouts are
-// fetched concurrently (bounded); any fetch failure yields ok=false so the reply
-// shows the fee/inputs as unavailable rather than wrong.
-func txInputs(ctx context.Context, tx *btcdTransaction) (fee float64, addrs []string, ok bool) {
-    var ids = map[string]bool{}
-    for _, in := range tx.Vin {
-        ids[in.Txid] = true
-    }
-    var prevouts = map[string]*btcdTransaction{}
-    var mu sync.Mutex
-    var wg sync.WaitGroup
-    var sem = make(chan struct{}, 16)
-    var fetchErr error
-    for id := range ids {
-        wg.Add(1)
-        sem <- struct{}{}
-        go func(id string) {
-            defer wg.Done()
-            defer func() { <-sem }()
-            var p, e = btcd.getRawTransaction(ctx, id)
-            mu.Lock()
-            if e != nil {
-                if fetchErr == nil { fetchErr = e }
-            } else {
-                prevouts[id] = p
-            }
-            mu.Unlock()
-        }(id)
-    }
-    wg.Wait()
-    if fetchErr != nil {
-        return 0, nil, false
-    }
-    var inSum float64
-    for _, vin := range tx.Vin {
-        var p = prevouts[vin.Txid]
-        if p == nil || int(vin.Vout) >= len(p.Vout) {
-            return 0, nil, false
-        }
-        inSum += p.Vout[vin.Vout].Value
-        addrs = append(addrs, addressOf(p.Vout[vin.Vout]))
-    }
-    var outSum float64
-    for _, v := range tx.Vout {
-        outSum += v.Value
-    }
-    fee = inSum - outSum
-    if fee < 0 {
-        fee = 0
-    }
-    return fee, addrs, true
-}
-
-func outputAddrs(tx *btcdTransaction) []string {
-    var addrs []string
-    for _, v := range tx.Vout {
-        addrs = append(addrs, addressOf(v))
-    }
-    return addrs
-}
-
-func addressOf(v btcdVout) string {
-    if v.ScriptPubKey.Address != "" { return v.ScriptPubKey.Address }
-    if len(v.ScriptPubKey.Addresses) > 0 { return v.ScriptPubKey.Addresses[0] }
-    return "(non-standard)"
-}
-
-// compactAddrs joins shortened addresses, showing at most the first three with a
-// trailing "..." when there are more.
-func compactAddrs(addrs []string) string {
-    if len(addrs) == 0 {
-        return "none"
-    }
-    var show, more = addrs, false
-    if len(addrs) > 3 {
-        show, more = addrs[:3], true
-    }
-    var parts []string
-    for _, a := range show {
-        parts = append(parts, short(a))
-    }
-    var s = strings.Join(parts, ", ")
-    if more {
-        s += ", ..."
-    }
-    return s
-}
-
-func block(ctx context.Context, bot *bot, chatID int64, height int64) {
-    if bi, ok := loadBlock(height); ok {
-        send(bot, chatID, formatBlock(bi))
-        return
-    }
-    var hash, err = btcd.getBlockHash(ctx, height)
-    if err != nil {
-        send(bot, chatID, fmt.Sprintf("Couldn't find block %d.", height))
-        return
-    }
-    var bi, ciErr = computeBlockInfo(ctx, hash)
-    if ciErr != nil {
-        logErr("compute block %d: %v", height, ciErr)
-        send(bot, chatID, "Sorry, something went wrong fetching that block.")
-        return
-    }
-    storeBlock(bi)
-    send(bot, chatID, formatBlock(bi))
-}
-
-// blockFees computes each non-coinbase transaction's fee (sum of input prevout
-// values minus output values) and returns the low/average/high in BTC with the
-// count of fee-paying transactions. btcd's getblock omits input values, so every
-// referenced prevout transaction is fetched concurrently (bounded) and cached;
-// if any fetch fails (e.g. txindex disabled, or a genuinely missing prevout) it
-// returns an error so the caller reports fees as unavailable rather than wrong.
-func blockFees(ctx context.Context, txs []btcdBlockTx) (low, avg, high float64, count int, err error) {
-    var ids = map[string]bool{}
-    for _, tx := range txs {
-        if len(tx.Vin) > 0 && tx.Vin[0].Coinbase != "" {
-            continue
-        }
-        for _, in := range tx.Vin {
-            ids[in.Txid] = true
-        }
-    }
-    if len(ids) == 0 {
-        return 0, 0, 0, 0, nil
-    }
-    var prevouts = map[string]*btcdTransaction{}
-    var mu sync.Mutex
-    var wg sync.WaitGroup
-    var sem = make(chan struct{}, 16)
-    var fetchErr error
-    for id := range ids {
-        wg.Add(1)
-        sem <- struct{}{}
-        go func(id string) {
-            defer wg.Done()
-            defer func() { <-sem }()
-            var tx, e = btcd.getRawTransaction(ctx, id)
-            mu.Lock()
-            if e != nil {
-                if fetchErr == nil { fetchErr = e }
-            } else {
-                prevouts[id] = tx
-            }
-            mu.Unlock()
-        }(id)
-    }
-    wg.Wait()
-    if fetchErr != nil {
-        return 0, 0, 0, 0, fetchErr
-    }
-    var total float64
-    for _, tx := range txs {
-        if len(tx.Vin) > 0 && tx.Vin[0].Coinbase != "" {
-            continue
-        }
-        var in, out float64
-        for _, vin := range tx.Vin {
-            var p = prevouts[vin.Txid]
-            if p == nil || int(vin.Vout) >= len(p.Vout) {
-                return 0, 0, 0, 0, fmt.Errorf("missing prevout %s:%d", vin.Txid, vin.Vout)
-            }
-            in += p.Vout[vin.Vout].Value
-        }
-        for _, vout := range tx.Vout {
-            out += vout.Value
-        }
-        var fee = in - out
-        if fee < 0 {
-            fee = 0
-        }
-        if count == 0 {
-            low, high = fee, fee
-        } else {
-            if fee < low { low = fee }
-            if fee > high { high = fee }
-        }
-        total += fee
-        count++
-    }
-    if count == 0 {
-        return 0, 0, 0, 0, nil
-    }
-    return low, total / float64(count), high, count, nil
-}
-
-var addrTxPageSize = 1000
-var addrTxLimit = 10000
-
-// addressTxs pages through an address's transactions (oldest first), up to
-// addrTxLimit. It returns the transactions and whether the set is complete —
-// false when paging was cut short by the limit or an error (e.g. a timeout), so
-// the caller can present the derived stats as partial. btcd reports both a
-// genuinely empty history and the end of paging as the same "No information"
-// error, treated here as a clean, complete end.
-func addressTxs(ctx context.Context, addr string) ([]btcdAddrTx, bool) {
-    var all []btcdAddrTx
-    for len(all) < addrTxLimit {
-        var page, err = btcd.searchAddressTxs(ctx, addr, len(all), addrTxPageSize)
-        if err != nil {
-            if strings.Contains(err.Error(), "No information available about address") {
-                return all, true
-            }
-            return all, false
-        }
-        all = append(all, page...)
-        if len(page) < addrTxPageSize {
-            return all, true
-        }
-    }
-    return all, false
-}
-
-// addressStats sums an address's on-chain history from its transactions: total
-// received (outputs paying it), total sent (inputs spending from it), fees on its
-// outgoing transactions (Σ inputs − Σ outputs of each tx it sends), and the
-// earliest/latest confirmed transaction times.
-func addressStats(txs []btcdAddrTx, addr string) (received, sent, fees float64, firstT, lastT int64) {
-    for _, tx := range txs {
-        for _, v := range tx.Vout {
-            if v.ScriptPubKey.Address == addr || slices.Contains(v.ScriptPubKey.Addresses, addr) {
-                received += v.Value
-            }
-        }
-        var fromAddr bool
-        for _, in := range tx.Vin {
-            if in.PrevOut != nil && slices.Contains(in.PrevOut.Addresses, addr) {
-                sent += in.PrevOut.Value
-                fromAddr = true
-            }
-        }
-        if fromAddr {
-            var vinSum, voutSum float64
-            var ok = true
-            for _, in := range tx.Vin {
-                if in.Coinbase != "" || in.PrevOut == nil { ok = false; break }
-                vinSum += in.PrevOut.Value
-            }
-            for _, v := range tx.Vout { voutSum += v.Value }
-            if ok { fees += vinSum - voutSum }
-        }
-        if tx.Time > 0 {
-            if firstT == 0 || tx.Time < firstT { firstT = tx.Time }
-            if tx.Time > lastT { lastT = tx.Time }
-        }
-    }
-    return
-}
-
-func address(ctx context.Context, bot *bot, chatID int64, addr string) {
-    var addrInfo, err = btcd.validateAddress(ctx, addr)
-    if err != nil {
-        logErr("validate address: %v", err)
-        send(bot, chatID, "Sorry, something went wrong looking up that address.")
-        return
-    }
-    if !addrInfo.IsValid {
-        send(bot, chatID, html.EscapeString(addr)+" doesn't look like a valid Bitcoin address.")
-        return
-    }
-    var addrType = "standard (P2PKH)"
-    if addrInfo.IsWitness {
-        addrType = "segwit (bech32)"
-    } else if addrInfo.IsScript {
-        addrType = "script hash (P2SH)"
-    }
-    var pairs = [][2]string{{"Type", addrType}}
-    var txs, complete = addressTxs(ctx, addr)
-    if !complete && len(txs) == 0 {
-        pairs = append(pairs, [2]string{"Activity", "unavailable (is the address index enabled?)"})
-    } else {
-        var received, sent, fees, firstT, lastT = addressStats(txs, addr)
-        var count = group(int64(len(txs)))
-        if !complete { count += "+" }
-        pairs = append(pairs,
-            [2]string{"Balance", compactBtc(received - sent)},
-            [2]string{"Total received", compactBtc(received)},
-            [2]string{"Total sent", compactBtc(sent)},
-            [2]string{"Total flow", compactBtc(received + sent)},
-            [2]string{"Total fees", compactBtc(fees)},
-            [2]string{"Transactions", count},
-        )
-        if firstT > 0 {
-            pairs = append(pairs, [2]string{"First tx", timeCompact(firstT)})
-        }
-        if lastT > 0 {
-            pairs = append(pairs, [2]string{"Last tx", timeCompact(lastT)})
-        }
-        if firstT > 0 && lastT > firstT {
-            pairs = append(pairs, [2]string{"Activity period", periodText(time.Duration(lastT-firstT) * time.Second)})
-        }
-    }
-    var pad int
-    for _, p := range pairs {
-        if len(p[0])+1 > pad { pad = len(p[0]) + 1 }
-    }
-    var lines []string
-    for _, p := range pairs {
-        lines = append(lines, fmt.Sprintf("%-*s %s", pad, p[0]+":", p[1]))
-    }
-    send(bot, chatID, fmt.Sprintf("Address %s\n\n<pre>%s</pre>", short(addr), strings.Join(lines, "\n")))
 }
 
 var pendingWatchMu sync.Mutex
@@ -1013,10 +268,10 @@ func watchCmd(bot *bot, chatID int64, arg string) {
         typ = watchTypeTransaction
     }
     if typ == watchTypeTransaction {
-        addTxWatch(watchID, chatID, alias)
+        txwatches.Add(watchID, chatID, alias)
     } else {
-        if err := addWatch(chatID, typ, watchID, alias); err != nil {
-            logErr("add watch: %v", err)
+        if err := watches.Add(chatID, watchID, alias); err != nil {
+            logging.Err("add watch: %v", err)
             send(bot, chatID, "Sorry, something went wrong saving that watch.")
             return
         }
@@ -1024,12 +279,12 @@ func watchCmd(bot *bot, chatID int64, arg string) {
         if btcd != nil {
             var ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
             if err := btcd.loadTxFilter(ctx, false, []string{watchID}, nil); err != nil {
-                logWarn("load tx filter: %v", err)
+                logging.Warn("load tx filter: %v", err)
             }
             cancel()
         }
     }
-    logInfo("added %s subscription %s for chat %d (alias %q)", typ, watchID, chatID, alias)
+    logging.Info("added %s subscription %s for chat %d (alias %q)", typ, watchID, chatID, alias)
     var msg = "Watching " + string(typ) + ": " + html.EscapeString(watchID)
     if alias != "" {
         msg += " (" + html.EscapeString(alias) + ")"
@@ -1052,17 +307,17 @@ func unwatch(bot *bot, chatID int64, arg string) {
     delete(pendingUnwatchChats, chatID)
     pendingUnwatchMu.Unlock()
     if isTxid(arg) {
-        if removeTxWatch(arg, chatID) == 0 {
+        if txwatches.Remove(arg, chatID) == 0 {
             send(bot, chatID, "You're not watching "+html.EscapeString(arg)+".")
             return
         }
-        logInfo("removed transaction watch %s for chat %d", arg, chatID)
+        logging.Info("removed transaction watch %s for chat %d", arg, chatID)
         send(bot, chatID, "Stopped watching "+html.EscapeString(arg)+".")
         return
     }
-    var removed, err = removeWatch(chatID, arg)
+    var removed, err = watches.Remove(chatID, arg)
     if err != nil {
-        logErr("remove watch: %v", err)
+        logging.Err("remove watch: %v", err)
         send(bot, chatID, "Sorry, something went wrong removing that watch.")
         return
     }
@@ -1071,40 +326,40 @@ func unwatch(bot *bot, chatID int64, arg string) {
         return
     }
     stopNotifyChat(chatID, watchTypeAddress, arg)
-    removeAddrConfirms(arg, chatID)
-    logInfo("removed subscription %s for chat %d", arg, chatID)
+    txwatches.RemoveAddrConfirms(arg, chatID)
+    logging.Info("removed subscription %s for chat %d", arg, chatID)
     if btcd != nil {
         var ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
         if err := btcd.loadTxFilter(ctx, true, notifyAddresses(), nil); err != nil {
-            logWarn("load tx filter: %v", err)
+            logging.Warn("load tx filter: %v", err)
         }
         cancel()
     }
     send(bot, chatID, "Stopped watching "+html.EscapeString(arg)+".")
 }
 
-func watches(bot *bot, chatID int64) {
-    var records, err = listWatches()
+func watchesCmd(bot *bot, chatID int64) {
+    var records, err = watches.List()
     if err != nil {
-        logErr("list watches: %v", err)
+        logging.Err("list watches: %v", err)
         send(bot, chatID, "Sorry, something went wrong listing your watches.")
         return
     }
     var addresses, transactions []string
     for _, r := range records {
-        if r.ChatID != chatID || r.Type != watchTypeAddress {
+        if r.ChatID != chatID {
             continue
         }
-        var line = "<code>" + html.EscapeString(r.WatchID) + "</code>"
+        var line = "<code>" + html.EscapeString(r.Address) + "</code>"
         if r.Alias != "" {
             line += " (" + html.EscapeString(r.Alias) + ")"
         }
         addresses = append(addresses, line)
     }
-    for _, e := range txWatchesFor(chatID) {
-        var line = "<code>" + html.EscapeString(e.txid) + "</code>"
-        if e.alias != "" {
-            line += " (" + html.EscapeString(e.alias) + ")"
+    for _, e := range txwatches.For(chatID) {
+        var line = "<code>" + html.EscapeString(e.Txid) + "</code>"
+        if e.Alias != "" {
+            line += " (" + html.EscapeString(e.Alias) + ")"
         }
         transactions = append(transactions, line)
     }
@@ -1235,7 +490,7 @@ func startMempoolFlow() {
             var info, err = btcd.getMempoolInfo(ctx)
             cancel()
             if err != nil {
-                logWarn("mempool flow: %v", err)
+                logging.Warn("mempool flow: %v", err)
                 return
             }
             updateFlow(info.Size)
@@ -1267,7 +522,7 @@ func mempoolCmd(bot *bot, chatID int64) {
     defer cancel()
     var info, err = btcd.getMempoolInfo(ctx)
     if err != nil {
-        logErr("get mempool info: %v", err)
+        logging.Err("get mempool info: %v", err)
         send(bot, chatID, "Sorry, something went wrong reading the mempool.")
         return
     }
@@ -1359,8 +614,8 @@ func send(bot *bot, chatID int64, text string) {
     var ctx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
     defer cancel()
     if err := bot.send(ctx, chatID, text); err != nil {
-        logErr("send message: %v", err)
+        logging.Err("send message: %v", err)
         return
     }
-    logInfo("sent message to chat %d", chatID)
+    logging.Info("sent message to chat %d", chatID)
 }

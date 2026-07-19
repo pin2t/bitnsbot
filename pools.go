@@ -8,6 +8,7 @@ import "net/http"
 import "strings"
 import "sync"
 import "time"
+import "bitnsbot/logging"
 
 var poolsHTTP = &http.Client{Timeout: 15 * time.Second}
 
@@ -34,7 +35,7 @@ type poolDef struct {
 // loadPools fetches and parses the mining-pool definitions used to attribute a
 // block to its miner. On failure the maps stay empty and miners read "Unknown".
 func loadPools() error {
-    logNet("pools → GET %s", poolsURL)
+    logging.Net("pools → GET %s", poolsURL)
     var resp, err = poolsHTTP.Get(poolsURL)
     if err != nil { return err }
     defer resp.Body.Close()
@@ -59,7 +60,7 @@ func loadPools() error {
     poolByAddress = byAddr
     poolTags = tags
     poolsMu.Unlock()
-    logInfo("loaded %d mining pools", len(defs))
+    logging.Info("loaded %d mining pools", len(defs))
     return nil
 }
 

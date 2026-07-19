@@ -8,6 +8,7 @@ import "strings"
 import "time"
 
 import "go.etcd.io/bbolt"
+import "bitnsbot/logging"
 
 var blocksBucket = []byte("blocks")
 
@@ -38,7 +39,7 @@ type blockInfo struct {
 
 func storeBlock(bi *blockInfo) error {
     if db == nil { return nil }
-    logDb("store block %d", bi.Height)
+    logging.Db("store block %d", bi.Height)
     var data, err = json.Marshal(bi)
     if err != nil { return err }
     return db.Update(func(tx *bbolt.Tx) error {
@@ -48,7 +49,7 @@ func storeBlock(bi *blockInfo) error {
 
 func loadBlock(height int64) (*blockInfo, bool) {
     if db == nil { return nil, false }
-    logDb("load block %d", height)
+    logging.Db("load block %d", height)
     var bi blockInfo
     var found bool
     db.View(func(tx *bbolt.Tx) error {
@@ -125,14 +126,14 @@ func cacheBlockHash(hash string) {
     defer cancel()
     var bi, err = computeBlockInfo(ctx, hash)
     if err != nil {
-        logWarn("cache block %s: %v", short(hash), err)
+        logging.Warn("cache block %s: %v", short(hash), err)
         return
     }
     if err := storeBlock(bi); err != nil {
-        logErr("store block %d: %v", bi.Height, err)
+        logging.Err("store block %d: %v", bi.Height, err)
         return
     }
-    logInfo("cached block %d mined by %s", bi.Height, bi.Miner)
+    logging.Info("cached block %d mined by %s", bi.Height, bi.Miner)
 }
 
 // startBlockCache loads the mining-pool definitions, subscribes to btcd block
@@ -140,24 +141,24 @@ func cacheBlockHash(hash string) {
 // and backfills the most recent blocks into the cache.
 func startBlockCache() {
     go func() {
-        if err := loadPools(); err != nil { logWarn("load mining pools: %v", err) }
+        if err := loadPools(); err != nil { logging.Warn("load mining pools: %v", err) }
         if btcd == nil { return }
         var nctx, ncancel = context.WithTimeout(context.Background(), 15*time.Second)
-        if err := btcd.notifyBlocks(nctx); err != nil { logWarn("subscribe to blocks: %v", err) }
+        if err := btcd.notifyBlocks(nctx); err != nil { logging.Warn("subscribe to blocks: %v", err) }
         ncancel()
         var tctx, tcancel = context.WithTimeout(context.Background(), 15*time.Second)
         var tip, err = btcd.getBlockCount(tctx)
         tcancel()
-        if err != nil { logWarn("block cache: get tip: %v", err); return }
+        if err != nil { logging.Warn("block cache: get tip: %v", err); return }
         for h := tip; h > tip-blockBackfillDepth && h >= 0; h-- {
             if _, ok := loadBlock(h); ok { continue }
             var bctx, bcancel = context.WithTimeout(context.Background(), 60*time.Second)
             if err := cacheBlockHeight(bctx, h); err != nil {
-                logWarn("backfill block %d: %v", h, err)
+                logging.Warn("backfill block %d: %v", h, err)
             }
             bcancel()
         }
-        logInfo("block cache backfill complete (%d blocks deep)", blockBackfillDepth)
+        logging.Info("block cache backfill complete (%d blocks deep)", blockBackfillDepth)
     }()
 }
 

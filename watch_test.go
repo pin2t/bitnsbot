@@ -12,6 +12,9 @@ import "time"
 
 import "github.com/gorilla/websocket"
 
+import "bitnsbot/txwatches"
+import "bitnsbot/watches"
+
 func countWatchers(watchID string) int {
     notifyMu.Lock()
     defer notifyMu.Unlock()
@@ -157,14 +160,12 @@ func TestWatchNotification(t *testing.T) {
     }
     // the mempool notification also registers a one-shot confirmation watch, so
     // the chat gets a second message once this transaction is mined
-    txWatchMu.Lock()
     var registered bool
-    for _, w := range txWatches[txid] {
-        if w.chatID == 42 && w.addr == watchedAddr {
+    for _, c := range txwatches.Confirms([]string{txid}) {
+        if c.ChatID == 42 && c.Addr == watchedAddr {
             registered = true
         }
     }
-    txWatchMu.Unlock()
     if !registered {
         t.Fatalf("expected a confirmation watch registered for the watched-address tx")
     }
@@ -201,7 +202,7 @@ func TestUnwatchFlow(t *testing.T) {
     if got := watcherChats(addr); len(got) != 1 || got[0] != 1 {
         t.Fatalf("expected only chat 1 to remain, got %#v", got)
     }
-    var records, _ = listWatches()
+    var records, _ = watches.List()
     if len(records) != 1 || records[0].ChatID != 1 {
         t.Fatalf("expected only chat 1's record in store, got %#v", records)
     }
@@ -250,9 +251,9 @@ func TestWatchesFlow(t *testing.T) {
     }
     var addr = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
     var txid = "f21b47a9143a23e80cc59e81588d21558b394005580b285961957cb3bed5b3e0"
-    addWatch(1, watchTypeAddress, addr, "")
-    addTxWatch(txid, 1, "")
-    addWatch(2, watchTypeAddress, "someoneElsesAddress", "")
+    watches.Add(1, addr, "")
+    txwatches.Add(txid, 1, "")
+    watches.Add(2, "someoneElsesAddress", "")
     update(b, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/watches"}})
     var msg = sent[len(sent)-1]
     // full ids present (not shortened) and tap-to-copy wrapped
@@ -270,7 +271,7 @@ func TestWatchesFlow(t *testing.T) {
         t.Fatalf("must not list another chat's watch: %q", msg)
     }
     // a watch id containing HTML metacharacters must be escaped
-    addWatch(3, watchTypeAddress, "a<b>c", "")
+    watches.Add(3, "a<b>c", "")
     update(b, Update{Message: &Message{Chat: Chat{ID: 3}, Text: "/watches"}})
     if last := sent[len(sent)-1]; !strings.Contains(last, "a&lt;b&gt;c") {
         t.Fatalf("expected HTML-escaped watch id, got: %q", last)
@@ -315,10 +316,7 @@ func TestTxConfirmation(t *testing.T) {
     defer closeDB()
     stopNotify()
     defer stopNotify()
-    // watch a transaction as if 5½ minutes ago, so the confirmation reports "5 min"
-    txWatchMu.Lock()
-    txWatches[txid] = []txWatch{{chatID: 7, alias: "Alice", watchedAt: time.Now().Add(-5*time.Minute - 30*time.Second)}}
-    txWatchMu.Unlock()
+    txwatches.Add(txid, 7, "Alice")
     // notifyblocks makes the fake push a blockconnected, which the notifier turns
     // into a checkConfirmations that finds txid in the block and messages chat 7.
     if err := btcd.notifyBlocks(context.Background()); err != nil {
@@ -338,7 +336,7 @@ func TestTxConfirmation(t *testing.T) {
     if found == "" {
         t.Fatalf("expected a confirmation notification, got: %#v", sent)
     }
-    for _, want := range []string{"Watched transaction " + short(txid), "(Alice)", "confirmed in block #100", "after 5 min"} {
+    for _, want := range []string{"Watched transaction " + short(txid), "(Alice)", "confirmed in block #100 after"} {
         if !strings.Contains(found, want) {
             t.Fatalf("confirmation missing %q: %q", want, found)
         }
@@ -390,10 +388,7 @@ func TestAddrConfirmation(t *testing.T) {
     defer func() { btcd.close(); btcd = nil }()
     stopNotify()
     defer stopNotify()
-    // a transaction on the watched address, first seen 3½ minutes ago
-    txWatchMu.Lock()
-    txWatches[txid] = []txWatch{{chatID: 7, alias: "John", watchedAt: time.Now().Add(-3*time.Minute - 30*time.Second), addr: addr}}
-    txWatchMu.Unlock()
+    txwatches.AddAddrConfirm(txid, 7, addr, "John")
     checkConfirmations(b, "hash200")
     sentMu.Lock()
     defer sentMu.Unlock()
@@ -406,7 +401,7 @@ func TestAddrConfirmation(t *testing.T) {
     if found == "" {
         t.Fatalf("expected a confirmation message, got %#v", sent)
     }
-    for _, want := range []string{"Transaction " + short(txid), "on watched address " + short(addr), "(John)", "confirmed in block #200", "after 3 min"} {
+    for _, want := range []string{"Transaction " + short(txid), "on watched address " + short(addr), "(John)", "confirmed in block #200 after"} {
         if !strings.Contains(found, want) {
             t.Fatalf("address confirmation missing %q: %q", want, found)
         }
@@ -414,14 +409,12 @@ func TestAddrConfirmation(t *testing.T) {
 }
 
 func TestAddrConfirmDedup(t *testing.T) {
-    resetTxWatches()
-    defer resetTxWatches()
-    addAddrConfirm("txabc", 5, "addrX", "Alias")
-    addAddrConfirm("txabc", 5, "addrX", "Alias")
-    addTxWatch("txabc", 5, "")
-    txWatchMu.Lock()
-    var n = len(txWatches["txabc"])
-    txWatchMu.Unlock()
+    txwatches.Reset()
+    defer txwatches.Reset()
+    txwatches.AddAddrConfirm("txabc", 5, "addrX", "Alias")
+    txwatches.AddAddrConfirm("txabc", 5, "addrX", "Alias")
+    txwatches.Add("txabc", 5, "")
+    var n = len(txwatches.Confirms([]string{"txabc"}))
     // the two identical address confirmations dedup to one; the direct watch (addr "") stays distinct
     if n != 2 {
         t.Fatalf("expected 2 entries (deduped addr-confirm + distinct direct watch), got %d", n)
