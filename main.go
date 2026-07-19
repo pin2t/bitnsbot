@@ -516,6 +516,70 @@ func metric(f float64, decimals int) string {
     return strings.TrimRight(strings.TrimRight(strconv.FormatFloat(f, 'f', decimals, 64), "0"), ".") + unit
 }
 
+// compactBtc renders a BTC amount compactly with a USD approximation at the
+// latest rate: as BTC once it reaches 0.05 BTC ("0.5 BTC"), otherwise in sats
+// ("100 000 sats"), so large and small amounts each read naturally.
+func compactBtc(btc float64) string {
+    if btc >= 0.05 {
+        return btcAmount(btc)
+    }
+    return amountLine(btc, time.Time{}, true)
+}
+
+// timeCompact renders a past time relatively and compactly ("2 m ago", "5 d ago",
+// "3 h ago", "10 min ago") within the last year, or the exact lowercase date for
+// older ("very old") times. "m" is months here; minutes are "min".
+func timeCompact(unix int64) string {
+    var t = time.Unix(unix, 0)
+    var since = time.Since(t)
+    switch {
+    case since < time.Minute:
+        return "just now"
+    case since < time.Hour:
+        return fmt.Sprintf("%d min ago", int(since.Minutes()))
+    case since < 24*time.Hour:
+        return fmt.Sprintf("%d h ago", int(since.Hours()))
+    case since < 30*24*time.Hour:
+        return fmt.Sprintf("%d d ago", int(since.Hours()/24))
+    case since < 365*24*time.Hour:
+        return fmt.Sprintf("%d m ago", int(since.Hours()/24/30))
+    default:
+        return strings.ToLower(t.UTC().Format("2 January 2006"))
+    }
+}
+
+// periodText renders a duration as its two most-significant non-zero units among
+// years / months / days / hours / minutes — "3 y 2 d", "2 m 1 d", "5 h 10 min".
+// Years and months use 365- and 30-day approximations, extracted in order.
+func periodText(d time.Duration) string {
+    var total = int(d.Minutes())
+    var years = total / (365 * 24 * 60)
+    total -= years * 365 * 24 * 60
+    var months = total / (30 * 24 * 60)
+    total -= months * 30 * 24 * 60
+    var days = total / (24 * 60)
+    total -= days * 24 * 60
+    var hours = total / 60
+    var mins = total - hours*60
+    var units = []struct {
+        n int
+        s string
+    }{{years, "y"}, {months, "m"}, {days, "d"}, {hours, "h"}, {mins, "min"}}
+    var parts []string
+    for _, u := range units {
+        if u.n > 0 {
+            parts = append(parts, fmt.Sprintf("%d %s", u.n, u.s))
+        }
+    }
+    if len(parts) == 0 {
+        return "0 min"
+    }
+    if len(parts) > 2 {
+        parts = parts[:2]
+    }
+    return strings.Join(parts, " ")
+}
+
 func start(bot *bot, chatID int64) {
     send(bot, chatID, strings.Join([]string{
         "Hi! I'm bitnsbot — I keep an eye on the Bitcoin network for you.",
@@ -807,6 +871,69 @@ func blockFees(ctx context.Context, txs []btcdBlockTx) (low, avg, high float64, 
     return low, total / float64(count), high, count, nil
 }
 
+var addrTxPageSize = 1000
+var addrTxLimit = 10000
+
+// addressTxs pages through an address's transactions (oldest first), up to
+// addrTxLimit. It returns the transactions and whether the set is complete —
+// false when paging was cut short by the limit or an error (e.g. a timeout), so
+// the caller can present the derived stats as partial. btcd reports both a
+// genuinely empty history and the end of paging as the same "No information"
+// error, treated here as a clean, complete end.
+func addressTxs(ctx context.Context, addr string) ([]btcdAddrTx, bool) {
+    var all []btcdAddrTx
+    for len(all) < addrTxLimit {
+        var page, err = btcd.searchAddressTxs(ctx, addr, len(all), addrTxPageSize)
+        if err != nil {
+            if strings.Contains(err.Error(), "No information available about address") {
+                return all, true
+            }
+            return all, false
+        }
+        all = append(all, page...)
+        if len(page) < addrTxPageSize {
+            return all, true
+        }
+    }
+    return all, false
+}
+
+// addressStats sums an address's on-chain history from its transactions: total
+// received (outputs paying it), total sent (inputs spending from it), fees on its
+// outgoing transactions (Σ inputs − Σ outputs of each tx it sends), and the
+// earliest/latest confirmed transaction times.
+func addressStats(txs []btcdAddrTx, addr string) (received, sent, fees float64, firstT, lastT int64) {
+    for _, tx := range txs {
+        for _, v := range tx.Vout {
+            if v.ScriptPubKey.Address == addr || slices.Contains(v.ScriptPubKey.Addresses, addr) {
+                received += v.Value
+            }
+        }
+        var fromAddr bool
+        for _, in := range tx.Vin {
+            if in.PrevOut != nil && slices.Contains(in.PrevOut.Addresses, addr) {
+                sent += in.PrevOut.Value
+                fromAddr = true
+            }
+        }
+        if fromAddr {
+            var vinSum, voutSum float64
+            var ok = true
+            for _, in := range tx.Vin {
+                if in.Coinbase != "" || in.PrevOut == nil { ok = false; break }
+                vinSum += in.PrevOut.Value
+            }
+            for _, v := range tx.Vout { voutSum += v.Value }
+            if ok { fees += vinSum - voutSum }
+        }
+        if tx.Time > 0 {
+            if firstT == 0 || tx.Time < firstT { firstT = tx.Time }
+            if tx.Time > lastT { lastT = tx.Time }
+        }
+    }
+    return
+}
+
 func address(ctx context.Context, bot *bot, chatID int64, addr string) {
     var addrInfo, err = btcd.validateAddress(ctx, addr)
     if err != nil {
@@ -824,11 +951,41 @@ func address(ctx context.Context, bot *bot, chatID int64, addr string) {
     } else if addrInfo.IsScript {
         addrType = "script hash (P2SH)"
     }
-    var activity = "unavailable (address index not enabled)"
-    if txs, txErr := btcd.searchRawTransactions(ctx, addr, 10); txErr == nil {
-        activity = fmt.Sprintf("%d transaction(s) found", len(txs))
+    var pairs = [][2]string{{"Type", addrType}}
+    var txs, complete = addressTxs(ctx, addr)
+    if !complete && len(txs) == 0 {
+        pairs = append(pairs, [2]string{"Activity", "unavailable (is the address index enabled?)"})
+    } else {
+        var received, sent, fees, firstT, lastT = addressStats(txs, addr)
+        var count = group(int64(len(txs)))
+        if !complete { count += "+" }
+        pairs = append(pairs,
+            [2]string{"Balance", compactBtc(received - sent)},
+            [2]string{"Total received", compactBtc(received)},
+            [2]string{"Total sent", compactBtc(sent)},
+            [2]string{"Total flow", compactBtc(received + sent)},
+            [2]string{"Total fees", compactBtc(fees)},
+            [2]string{"Transactions", count},
+        )
+        if firstT > 0 {
+            pairs = append(pairs, [2]string{"First tx", timeCompact(firstT)})
+        }
+        if lastT > 0 {
+            pairs = append(pairs, [2]string{"Last tx", timeCompact(lastT)})
+        }
+        if firstT > 0 && lastT > firstT {
+            pairs = append(pairs, [2]string{"Activity period", periodText(time.Duration(lastT-firstT) * time.Second)})
+        }
     }
-    send(bot, chatID, fmt.Sprintf("Address %s\n\n<pre>Type:            %s\nRecent activity: %s</pre>", short(addr), addrType, activity))
+    var pad int
+    for _, p := range pairs {
+        if len(p[0])+1 > pad { pad = len(p[0]) + 1 }
+    }
+    var lines []string
+    for _, p := range pairs {
+        lines = append(lines, fmt.Sprintf("%-*s %s", pad, p[0]+":", p[1]))
+    }
+    send(bot, chatID, fmt.Sprintf("Address %s\n\n<pre>%s</pre>", short(addr), strings.Join(lines, "\n")))
 }
 
 var pendingWatchMu sync.Mutex
