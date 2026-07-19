@@ -311,14 +311,32 @@ func (c *btcdClient) validateAddress(ctx context.Context, address string) (*btcd
     return &info, nil
 }
 
-type btcdAddressTx struct {
-    Txid string `json:"txid"`
-    Time int64  `json:"time"`
+type btcdPrevOut struct {
+    Addresses []string `json:"addresses"`
+    Value     float64  `json:"value"`
 }
 
-func (c *btcdClient) searchRawTransactions(ctx context.Context, address string, count int) ([]btcdAddressTx, error) {
-    var txs []btcdAddressTx
-    var err = c.conn.Load().Call(ctx, "searchrawtransactions", []interface{}{address, 1, 0, count, 0, true}, &txs)
+type btcdAddrVin struct {
+    Coinbase string       `json:"coinbase"`
+    PrevOut  *btcdPrevOut `json:"prevOut"`
+}
+
+type btcdAddrTx struct {
+    Txid string        `json:"txid"`
+    Time int64         `json:"time"`
+    Vin  []btcdAddrVin `json:"vin"`
+    Vout []btcdVout    `json:"vout"`
+}
+
+// searchAddressTxs returns a page of the address's transactions (verbose, oldest
+// first), each input carrying its previous-output value and addresses (vinextra),
+// so callers can sum sent amounts and fees. Needs btcd's --addrindex (and
+// --txindex for the prevouts). An address with no history returns an RPC error
+// ("No information available about address"), which is also how paging past the
+// end reports itself.
+func (c *btcdClient) searchAddressTxs(ctx context.Context, address string, skip, count int) ([]btcdAddrTx, error) {
+    var txs []btcdAddrTx
+    var err = c.conn.Load().Call(ctx, "searchrawtransactions", []interface{}{address, 1, skip, count, 1, false}, &txs)
     if err != nil { return nil, err }
     return txs, nil
 }

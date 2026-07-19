@@ -115,9 +115,26 @@ func TestInfoFlow(t *testing.T) {
         case "searchrawtransactions":
             var addr, _ = p[0].(string)
             if addr == "addresswithhistory" {
-                return []map[string]any{{"txid": "abc123", "time": 1700000000}}, nil
+                if skip, _ := p[2].(float64); skip > 0 {
+                    return nil, fmt.Errorf("No information available about address")
+                }
+                return []map[string]any{
+                    { // received 1.0 BTC on 2015-01-01
+                        "txid": "aa", "time": 1420070400,
+                        "vin":  []map[string]any{{"prevOut": map[string]any{"addresses": []string{"other"}, "value": 1.0001}}},
+                        "vout": []map[string]any{{"value": 1.0, "scriptPubKey": map[string]any{"addresses": []string{"addresswithhistory"}}}},
+                    },
+                    { // spent 1.0 on 2016-01-01: 0.9 to dest + 0.0999 change back, fee 0.0001
+                        "txid": "bb", "time": 1451606400,
+                        "vin":  []map[string]any{{"prevOut": map[string]any{"addresses": []string{"addresswithhistory"}, "value": 1.0}}},
+                        "vout": []map[string]any{
+                            {"value": 0.9, "scriptPubKey": map[string]any{"addresses": []string{"dest"}}},
+                            {"value": 0.0999, "scriptPubKey": map[string]any{"addresses": []string{"addresswithhistory"}}},
+                        },
+                    },
+                }, nil
             }
-            return nil, fmt.Errorf("Address index disabled")
+            return nil, fmt.Errorf("Address index must be enabled (--addrindex)")
         }
         return nil, fmt.Errorf("unexpected method %s", method)
     })
@@ -156,13 +173,23 @@ func TestInfoFlow(t *testing.T) {
         }
     }
     update(bot, Update{Message: &Message{Chat: Chat{ID: 7}, Text: "/info 1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"}})
-    var wantAddr = "Address 1A1zP1...DivfNa\n\n<pre>Type:            standard (P2PKH)\nRecent activity: unavailable (address index not enabled)</pre>"
-    if len(sent) != 6 || sent[5] != wantAddr {
-        t.Fatalf("unexpected address (no history) reply: %#v", sent)
+    if len(sent) != 6 || !strings.Contains(sent[5], "Address 1A1zP1...DivfNa") ||
+        !strings.Contains(sent[5], "standard (P2PKH)") || !strings.Contains(sent[5], "Activity: unavailable") {
+        t.Fatalf("unexpected address (index disabled) reply: %#v", sent)
     }
     update(bot, Update{Message: &Message{Chat: Chat{ID: 8}, Text: "/info addresswithhistory"}})
-    if len(sent) != 7 || !strings.Contains(sent[6], "segwit") || !strings.Contains(sent[6], "1 transaction(s) found") {
-        t.Fatalf("unexpected address (with history) reply: %#v", sent)
+    if len(sent) != 7 {
+        t.Fatalf("expected address reply, got %#v", sent)
+    }
+    for _, want := range []string{
+        "segwit (bech32)", "Balance:", "0.0999 BTC", "Total received:", "1.10 BTC",
+        "Total sent:", "1.00 BTC", "Total flow:", "2.10 BTC", "Total fees:", "10 000 sats",
+        "Transactions:", "First tx:", "1 january 2015", "Last tx:", "1 january 2016",
+        "Activity period:", "1 y",
+    } {
+        if !strings.Contains(sent[6], want) {
+            t.Fatalf("address reply missing %q: %q", want, sent[6])
+        }
     }
     update(bot, Update{Message: &Message{Chat: Chat{ID: 9}, Text: "/info invalidaddr"}})
     if len(sent) != 8 || !strings.Contains(sent[7], "doesn't look like a valid Bitcoin address") {
@@ -460,5 +487,46 @@ func TestMempoolFlowRate(t *testing.T) {
     update(b, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/mempool"}})
     if len(sent) != 1 || !strings.Contains(sent[0], "Flow rate:") || !strings.Contains(sent[0], "5.0 tx/sec (+2.0)") {
         t.Fatalf("expected flow rate line in reply: %#v", sent)
+    }
+}
+
+func TestPeriodText(t *testing.T) {
+    var cases = []struct {
+        d    time.Duration
+        want string
+    }{
+        {365 * 24 * time.Hour, "1 y"},
+        {(3*365 + 2) * 24 * time.Hour, "3 y 2 d"},
+        {(2*30 + 1) * 24 * time.Hour, "2 m 1 d"},
+        {5*time.Hour + 10*time.Minute, "5 h 10 min"},
+        {45 * time.Minute, "45 min"},
+        {30 * time.Second, "0 min"},
+    }
+    for _, c := range cases {
+        if got := periodText(c.d); got != c.want {
+            t.Errorf("periodText(%v) = %q, want %q", c.d, got, c.want)
+        }
+    }
+}
+
+func TestTimeCompact(t *testing.T) {
+    var now = time.Now()
+    var cases = []struct {
+        t    time.Time
+        want string
+    }{
+        {now.Add(-30 * time.Second), "just now"},
+        {now.Add(-5 * time.Minute), "5 min ago"},
+        {now.Add(-3 * time.Hour), "3 h ago"},
+        {now.Add(-5 * 24 * time.Hour), "5 d ago"},
+        {now.Add(-70 * 24 * time.Hour), "2 m ago"},
+    }
+    for _, c := range cases {
+        if got := timeCompact(c.t.Unix()); got != c.want {
+            t.Errorf("timeCompact(%v) = %q, want %q", c.t, got, c.want)
+        }
+    }
+    if got := timeCompact(time.Date(2015, 1, 1, 0, 0, 0, 0, time.UTC).Unix()); got != "1 january 2015" {
+        t.Errorf("timeCompact(2015-01-01) = %q, want %q", got, "1 january 2015")
     }
 }
