@@ -8,6 +8,8 @@ import "strings"
 import "testing"
 import "time"
 
+import "go.etcd.io/bbolt"
+
 func TestSubsidy(t *testing.T) {
     var cases = map[int64]float64{0: 50, 209999: 50, 210000: 25, 420000: 12.5, 630000: 6.25, 840000: 3.125}
     for h, want := range cases {
@@ -36,15 +38,15 @@ func TestStoreLoadBlock(t *testing.T) {
 }
 
 func TestComputeBlockInfo(t *testing.T) {
-    poolsMu.Lock()
-    var savedAddr = poolByAddress
-    poolByAddress = map[string]string{"mineraddr": "TestPool"}
-    poolsMu.Unlock()
-    defer func() {
-        poolsMu.Lock()
-        poolByAddress = savedAddr
-        poolsMu.Unlock()
-    }()
+    if err := openDB(filepath.Join(t.TempDir(), "miners.db")); err != nil {
+        t.Fatalf("openDB: %v", err)
+    }
+    defer closeDB()
+    if err := db.Update(func(tx *bbolt.Tx) error {
+        return tx.Bucket([]byte("miners")).Put([]byte("mineraddr"), []byte("TestPool"))
+    }); err != nil {
+        t.Fatalf("seed miners: %v", err)
+    }
     var srv = newFakeBtcdServer(t, func(method string, params json.RawMessage) (interface{}, error) {
         var p []interface{}
         json.Unmarshal(params, &p)
