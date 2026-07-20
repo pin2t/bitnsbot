@@ -9,6 +9,8 @@ import "strings"
 import "testing"
 import "time"
 
+import "go.etcd.io/bbolt"
+
 func TestInfoFlow(t *testing.T) {
     var sent []string
     var lastMode string
@@ -528,5 +530,62 @@ func TestTimeCompact(t *testing.T) {
     }
     if got := timeCompact(time.Date(2015, 1, 1, 0, 0, 0, 0, time.UTC).Unix()); got != "1 january 2015" {
         t.Errorf("timeCompact(2015-01-01) = %q, want %q", got, "1 january 2015")
+    }
+}
+
+func TestMinersFlow(t *testing.T) {
+    var sent []string
+    var server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        var body struct {
+            Text string `json:"text"`
+        }
+        json.NewDecoder(r.Body).Decode(&body)
+        sent = append(sent, body.Text)
+        json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": true})
+    }))
+    defer server.Close()
+    var bot = newBot("TESTTOKEN", server.URL)
+    if err := openDB(filepath.Join(t.TempDir(), "miners.db")); err != nil {
+        t.Fatalf("openDB: %v", err)
+    }
+    defer closeDB()
+    update(bot, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/miners"}})
+    if len(sent) != 1 || !strings.Contains(sent[0], "still collecting") {
+        t.Fatalf("unexpected empty-stats reply: %#v", sent)
+    }
+    // a processed window of blocks 0..9 with three attributed pools; LastWork
+    // 6e23 is a ~10 GW network, so a 60% share draws ~6 GW
+    var pools = []struct {
+        name     string
+        blocks   int
+        reward   float64
+        fees     float64
+        lastWork float64
+    }{
+        {"ViaBTC", 3, 9.75, 0.1, 6.0e23},
+        {"AntPool", 6, 19.5, 0.4, 6.0e23},
+        {"F2Pool", 1, 3.25, 0.02, 5.6e23},
+    }
+    if err := db.Update(func(tx *bbolt.Tx) error {
+        var b = tx.Bucket([]byte("miners-stat"))
+        for _, p := range pools {
+            var rec = fmt.Sprintf(`{"Blocks":%d,"Reward":%g,"Fees":%g,"Work":%g,"LastWork":%g}`,
+                p.blocks, p.reward, p.fees, p.lastWork*float64(p.blocks), p.lastWork)
+            if err := b.Put([]byte(p.name), []byte(rec)); err != nil { return err }
+        }
+        return tx.Bucket([]byte("miners-block")).Put([]byte("cursor"), []byte(`{"Start":0,"Last":9}`))
+    }); err != nil {
+        t.Fatalf("seed stats: %v", err)
+    }
+    update(bot, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/miners"}})
+    if len(sent) != 2 {
+        t.Fatalf("expected a miners reply, got %#v", sent)
+    }
+    var want = "Top miners by blocks mined:\n\n" +
+        "1. AntPool. 6 blocks mined, reward 19.5 BTC, fees 0.4 BTC, consumption 6 GW\n" +
+        "2. ViaBTC. 3 blocks mined, reward 9.75 BTC, fees 0.1 BTC, consumption 3 GW\n" +
+        "3. F2Pool. 1 block mined, reward 3.25 BTC, fees 0.02 BTC, consumption 0.9 GW"
+    if sent[1] != want {
+        t.Fatalf("miners reply:\n%s\nwant:\n%s", sent[1], want)
     }
 }

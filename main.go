@@ -78,6 +78,9 @@ func main() {
     }
     startNotify(bot)
     miners.Start()
+    if btcd != nil {
+        miners.StartStats(minerSource{})
+    }
     startBlockCache()
     startMempoolFlow()
     if btcd != nil {
@@ -173,6 +176,8 @@ func update(bot *bot, update Update) {
         fees(bot, msg.Chat.ID)
     case "/mempool":
         mempoolCmd(bot, msg.Chat.ID)
+    case "/miners":
+        minersCmd(bot, msg.Chat.ID)
     case "":
         pendingInfoMu.Lock()
         var pending = pendingInfoChats[msg.Chat.ID]
@@ -241,6 +246,7 @@ func start(bot *bot, chatID int64) {
         "• <b>/watches</b> — list what you're currently watching",
         "• <b>/fees</b> — show current network fee estimates",
         "• <b>/mempool</b> — show current mempool size and totals",
+        "• <b>/miners</b> — top mining pools by blocks mined",
         "• <b>/start</b> — show this message",
     }, "\n"))
 }
@@ -610,6 +616,25 @@ func mempoolTotals(ctx context.Context) (amount, fee float64, ok bool) {
         return 0, 0, false
     }
     return amount, fee, true
+}
+
+// minersCmd replies with the top 10 mining pools by blocks mined over the window
+// the stats collector has processed, each with its total reward, fees, and an
+// estimated power draw (see the miners package).
+func minersCmd(bot *bot, chatID int64) {
+    var top = miners.Top(10)
+    if len(top) == 0 {
+        send(bot, chatID, "No miner statistics yet — still collecting.")
+        return
+    }
+    var lines []string
+    for i, m := range top {
+        var blocks = fmt.Sprintf("%d blocks", m.Blocks)
+        if m.Blocks == 1 { blocks = "1 block" }
+        lines = append(lines, fmt.Sprintf("%d. %s. %s mined, reward %s BTC, fees %s BTC, consumption %s GW",
+            i+1, m.Name, blocks, trimNum(m.Reward, 2), trimNum(m.Fees, 2), trimNum(m.ConsumptionGW, 1)))
+    }
+    send(bot, chatID, "Top miners by blocks mined:\n\n"+strings.Join(lines, "\n"))
 }
 
 func send(bot *bot, chatID int64, text string) {
