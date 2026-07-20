@@ -247,6 +247,21 @@ func (c *btcdClient) getBlockHash(ctx context.Context, height int64) (string, er
     return hash, err
 }
 
+type btcdBlockHeader struct {
+    Hash   string `json:"hash"`
+    Height int64  `json:"height"`
+}
+
+// getBlockHeader resolves a block hash to its height. It is an O(1) index lookup
+// returning just the header, which is what makes it usable as the "is this a
+// block hash?" probe /info needs — see blockHeight there.
+func (c *btcdClient) getBlockHeader(ctx context.Context, hash string) (*btcdBlockHeader, error) {
+    var header btcdBlockHeader
+    var err = c.conn.Load().Call(ctx, "getblockheader", []interface{}{hash, true}, &header)
+    if err != nil { return nil, err }
+    return &header, nil
+}
+
 type btcdVin struct {
     Txid     string `json:"txid"`
     Vout     uint32 `json:"vout"`
