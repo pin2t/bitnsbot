@@ -37,6 +37,9 @@ var btcdUser        = flag.String("btcd-user", "", "btcd RPC username")
 var btcdPass        = flag.String("btcd-pass", "", "btcd RPC password")
 var btcdCert        = flag.String("btcd-cert", "", "path to btcd's rpc.cert for self-signed TLS trust")
 var btcdInsecureTLS = flag.Bool("btcd-insecure-tls", false, "skip TLS certificate verification for the btcd connection (dev only)")
+var backupPath      = flag.String("backup", "", "path to copy the database to periodically (empty disables backups)")
+var backupInterval  = flag.Duration("backup-interval", 24*time.Hour, "how often to back up the database")
+var backupScript    = flag.String("backup-script", "", "command run after each backup, with the backup's path as $1 and in $BACKUP_FILE (empty runs nothing)")
 
 var btcd *btcdClient
 
@@ -61,6 +64,10 @@ func main() {
         logging.Fatal("open database: %v", err)
     }
     rates.Start()
+    if *backupPath != "" {
+        startBackup(*backupPath, *backupInterval, *backupScript)
+        logging.Status("backing up the database to %s every %s", *backupPath, *backupInterval)
+    }
     if *btcdURL != "" {
         var btcdCtx, btcdCancel = context.WithTimeout(context.Background(), 15*time.Second)
         btcd, err = dialBtcd(btcdCtx, btcdConfig{
