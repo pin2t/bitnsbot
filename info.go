@@ -56,7 +56,7 @@ func transaction(ctx context.Context, bot *bot, chatID int64, txid string) {
     var inputs []string
     var feeOK bool
     if !coinbase {
-        fee, inputs, feeOK = txInputs(ctx, tx)
+        fee, inputs, _, feeOK = txInputs(ctx, tx)
     }
     var pairs [][2]string
     var at = time.Time{}
@@ -102,11 +102,14 @@ func transaction(ctx context.Context, bot *bot, chatID int64, txid string) {
 }
 
 // txInputs fetches each input's prevout transaction to sum the input values (for
-// the fee = inputs − outputs) and collect the spent addresses. btcd's
-// getrawtransaction gives inputs only as txid:vout refs, so the prevouts are
-// fetched concurrently (bounded); any fetch failure yields ok=false so the reply
-// shows the fee/inputs as unavailable rather than wrong.
-func txInputs(ctx context.Context, tx *btcdTransaction) (fee float64, addrs []string, ok bool) {
+// the fee = inputs − outputs) and collect the spent addresses — in input order as
+// addrs (for the /info listing) and summed per address as spent (which is how the
+// watch notifier learns an address is *sending*, the counterpart to the receiving
+// addresses it reads straight off the outputs). btcd's getrawtransaction gives
+// inputs only as txid:vout refs, so the prevouts are fetched concurrently
+// (bounded); any fetch failure yields ok=false so the reply shows the fee/inputs
+// as unavailable rather than wrong.
+func txInputs(ctx context.Context, tx *btcdTransaction) (fee float64, addrs []string, spent map[string]float64, ok bool) {
     var ids = map[string]bool{}
     for _, in := range tx.Vin {
         ids[in.Txid] = true
@@ -134,16 +137,19 @@ func txInputs(ctx context.Context, tx *btcdTransaction) (fee float64, addrs []st
     }
     wg.Wait()
     if fetchErr != nil {
-        return 0, nil, false
+        return 0, nil, nil, false
     }
     var inSum float64
+    spent = make(map[string]float64)
     for _, vin := range tx.Vin {
         var p = prevouts[vin.Txid]
         if p == nil || int(vin.Vout) >= len(p.Vout) {
-            return 0, nil, false
+            return 0, nil, nil, false
         }
         inSum += p.Vout[vin.Vout].Value
-        addrs = append(addrs, addressOf(p.Vout[vin.Vout]))
+        var a = addressOf(p.Vout[vin.Vout])
+        addrs = append(addrs, a)
+        spent[a] += p.Vout[vin.Vout].Value
     }
     var outSum float64
     for _, v := range tx.Vout {
@@ -153,7 +159,7 @@ func txInputs(ctx context.Context, tx *btcdTransaction) (fee float64, addrs []st
     if fee < 0 {
         fee = 0
     }
-    return fee, addrs, true
+    return fee, addrs, spent, true
 }
 
 func outputAddrs(tx *btcdTransaction) []string {

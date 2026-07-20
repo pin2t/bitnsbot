@@ -320,6 +320,8 @@ type btcdPrevOut struct {
 
 type btcdAddrVin struct {
     Coinbase string       `json:"coinbase"`
+    Txid     string       `json:"txid"`
+    Vout     uint32       `json:"vout"`
     PrevOut  *btcdPrevOut `json:"prevOut"`
 }
 

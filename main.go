@@ -290,6 +290,7 @@ func watchCmd(bot *bot, chatID int64, arg string) {
                 logging.Warn("load tx filter: %v", err)
             }
             cancel()
+            seedOutpoints([]string{watchID})
         }
     }
     logging.Info("added %s subscription %s for chat %d (alias %q)", typ, watchID, chatID, alias)
