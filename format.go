@@ -38,12 +38,19 @@ func short(s string) string {
     return s[:6] + "..." + s[len(s)-6:]
 }
 
+// group renders an integer with space-separated thousands. The sign is split off
+// first: grouping "-100010000" as-is would put a space right after the minus
+// ("- 100 010 000"), since the loop counts back from the end of the whole string.
 func group(n int64) string {
+    var sign = ""
+    if n < 0 {
+        sign, n = "-", -n
+    }
     var s = strconv.FormatInt(n, 10)
     for i := len(s) - 3; i > 0; i -= 3 {
         s = s[:i] + " " + s[i:]
     }
-    return s
+    return sign + s
 }
 
 func satoshi(btc float64) string {
@@ -128,17 +135,23 @@ func periodText(d time.Duration) string {
 }
 
 // usd renders btc at the given USD/BTC rate. From $100 up the cents are dropped
-// as noise ("$90,000"); below $100 they're kept, where they matter ("$5.99").
+// as noise ("$90,000"); below $100 they're kept, where they matter ("$5.99"). The
+// sign is pulled out before either decision so a negative amount (the net move of
+// an address that just spent) reads "-$29,450", not "$-29450.00".
 func usd(btc, rate float64) string {
     var value = btc * rate
+    var sign = ""
+    if value < 0 {
+        sign, value = "-", -value
+    }
     if value < 100 {
-        return fmt.Sprintf("$%.2f", value)
+        return fmt.Sprintf("%s$%.2f", sign, value)
     }
     var s = strconv.FormatInt(int64(math.Round(value)), 10)
     for i := len(s) - 3; i > 0; i -= 3 {
         s = s[:i] + "," + s[i:]
     }
-    return "$" + s
+    return sign + "$" + s
 }
 
 // amountLine formats a BTC amount as "<sat> sats (≈ $usd)", appending the USD

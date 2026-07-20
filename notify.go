@@ -23,11 +23,12 @@ const watchTypeAddress watchType = "address"
 
 type notification struct {
     txid         string
-    received     map[string]float64
-    fee          float64 // BTC
-    feeRate      float64 // sat/vB
-    confEstimate string  // "~10-20 min" etc; "" if unavailable
-    feeOK        bool    // whether fee/feeRate are populated
+    received     map[string]float64 // address → value paid to it by this tx's outputs
+    sent         map[string]float64 // address → value spent from it by this tx's inputs
+    fee          float64            // BTC
+    feeRate      float64            // sat/vB
+    confEstimate string             // "~10-20 min" etc; "" if unavailable
+    feeOK        bool               // whether fee/feeRate are populated
 }
 
 type notifyKey struct {
@@ -61,10 +62,24 @@ func startNotifyChat(b *bot, chatID int64, typ watchType, watchID, alias string)
                 return
             case n := <-ch:
                 if typ == watchTypeAddress {
-                    if amount, ok := n.received[watchID]; ok {
-                        var pairs = [][2]string{
-                            {"Tx", short(n.txid)},
-                            {"Amount", amountLine(amount, time.Time{}, true)},
+                    var in, gotIn = n.received[watchID]
+                    var out, gotOut = n.sent[watchID]
+                    if gotIn || gotOut {
+                        var header = "🔔 New transaction on watched address "
+                        var pairs = [][2]string{{"Tx", short(n.txid)}}
+                        if gotOut {
+                            // spending from the address: report what left it, and
+                            // when some came back as change, the net balance move
+                            header = "🔔 Outgoing transaction from watched address "
+                            pairs = append(pairs, [2]string{"Sent", amountLine(out, time.Time{}, true)})
+                            if gotIn {
+                                pairs = append(pairs,
+                                    [2]string{"Change back", amountLine(in, time.Time{}, true)},
+                                    [2]string{"Net", amountLine(in-out, time.Time{}, true)},
+                                )
+                            }
+                        } else {
+                            pairs = append(pairs, [2]string{"Amount", amountLine(in, time.Time{}, true)})
                         }
                         if n.feeOK {
                             pairs = append(pairs,
@@ -83,7 +98,7 @@ func startNotifyChat(b *bot, chatID int64, typ watchType, watchID, alias string)
                         for _, p := range pairs {
                             lines = append(lines, fmt.Sprintf("%-*s %s", pad, p[0]+":", p[1]))
                         }
-                        send(b, chatID, "🔔 New transaction on watched address "+label+"\n\n<pre>"+strings.Join(lines, "\n")+"</pre>")
+                        send(b, chatID, header+label+"\n\n<pre>"+strings.Join(lines, "\n")+"</pre>")
                         txwatches.AddAddrConfirm(n.txid, chatID, watchID, alias)
                     }
                 }
@@ -150,7 +165,7 @@ func broadcast(txHex string) {
         logging.Err("decode notified tx: %v", err)
         return
     }
-    var n = notification{txid: tx.Txid, received: make(map[string]float64)}
+    var n = notification{txid: tx.Txid, received: make(map[string]float64), sent: make(map[string]float64)}
     for _, vout := range tx.Vout {
         var addrs = vout.ScriptPubKey.Addresses
         if a := vout.ScriptPubKey.Address; a != "" && !slices.Contains(addrs, a) {
@@ -160,12 +175,18 @@ func broadcast(txHex string) {
             n.received[addr] += vout.Value
         }
     }
-    if full, ferr := btcd.getRawTransaction(ctx, tx.Txid); ferr == nil && full.Vsize > 0 {
-        if fee, _, ok := txInputs(ctx, full); ok {
-            n.fee = fee
-            n.feeRate = math.Round(fee*1e8) / float64(full.Vsize)
-            n.confEstimate = confEstimate(ctx, n.feeRate)
-            n.feeOK = true
+    // the decoded tx names only the receiving addresses — its inputs are bare
+    // txid:vout refs — so the *sending* addresses need the prevouts, which
+    // txInputs fetches anyway for the fee
+    if full, ferr := btcd.getRawTransaction(ctx, tx.Txid); ferr == nil {
+        if fee, _, spent, ok := txInputs(ctx, full); ok {
+            n.sent = spent
+            if full.Vsize > 0 {
+                n.fee = fee
+                n.feeRate = math.Round(fee*1e8) / float64(full.Vsize)
+                n.confEstimate = confEstimate(ctx, n.feeRate)
+                n.feeOK = true
+            }
         }
     }
     notifyMu.Lock()
@@ -180,6 +201,61 @@ func broadcast(txHex string) {
         case <-time.After(500 * time.Millisecond):
         }
     }
+}
+
+// addressOutpoints computes an address's current unspent outputs by replaying its
+// transaction history oldest-first: every output paying the address adds an
+// outpoint, every input spending one removes it. The bool reports whether the
+// history was complete — paging is oldest-first, so a capped history loses the
+// *newest* transactions, which is exactly where live unspent outputs are.
+func addressOutpoints(ctx context.Context, addr string) ([]btcdOutpoint, bool) {
+    var txs, complete = addressTxs(ctx, addr)
+    var unspent = map[btcdOutpoint]bool{}
+    for _, tx := range txs {
+        for _, in := range tx.Vin {
+            delete(unspent, btcdOutpoint{in.Txid, in.Vout})
+        }
+        for i, v := range tx.Vout {
+            if v.ScriptPubKey.Address == addr || slices.Contains(v.ScriptPubKey.Addresses, addr) {
+                unspent[btcdOutpoint{tx.Txid, uint32(i)}] = true
+            }
+        }
+    }
+    var ops = make([]btcdOutpoint, 0, len(unspent))
+    for op := range unspent {
+        ops = append(ops, op)
+    }
+    return ops, complete
+}
+
+// seedOutpoints loads each address's current unspent outputs into btcd's
+// transaction filter, in the background. This is what makes *outgoing*
+// notifications work at all for coins the bot didn't watch arrive: btcd matches a
+// spend by outpoint, never by address (subscribedClients in its rpcwebsocket.go
+// checks existsUnspentOutPoint against the inputs), and the only outpoints it
+// knows on its own are those it saw paid to a watched address since the filter was
+// loaded. Since the filter is rebuilt from scratch on every startup and reconnect,
+// without this seeding a spend of any pre-existing balance goes unreported.
+// reload=false *adds* to the live filter, so this composes with the address load.
+func seedOutpoints(addrs []string) {
+    if btcd == nil || len(addrs) == 0 { return }
+    go func() {
+        for _, addr := range addrs {
+            var ctx, cancel = context.WithTimeout(context.Background(), 2*time.Minute)
+            var ops, complete = addressOutpoints(ctx, addr)
+            if !complete {
+                logging.Warn("outpoints for %s: history unavailable or too long — spends of its older coins may go unreported", short(addr))
+            }
+            if len(ops) > 0 {
+                if err := btcd.loadTxFilter(ctx, false, nil, ops); err != nil {
+                    logging.Warn("load outpoints for %s: %v", short(addr), err)
+                } else {
+                    logging.Info("watching %d unspent outputs of %s", len(ops), short(addr))
+                }
+            }
+            cancel()
+        }
+    }()
 }
 
 // confEstimate maps a transaction's fee rate (sat/vB) to a rough confirmation
@@ -220,6 +296,7 @@ func startNotify(bot *bot) {
             logging.Warn("load tx filter: %v", err)
         }
         cancel()
+        seedOutpoints(addrs)
     }
 }
 
@@ -238,6 +315,7 @@ func reapplyBtcdState() {
         if err := btcd.loadTxFilter(ctx, true, addrs, nil); err != nil {
             logging.Warn("reload tx filter: %v", err)
         }
+        seedOutpoints(addrs)
     }
 }
 

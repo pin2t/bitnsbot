@@ -60,3 +60,24 @@ func TestAmountLineFallback(t *testing.T) {
         t.Fatalf("expected USD via fallback for an old confirmed tx: %q", s)
     }
 }
+
+// A watched address that spends reports a negative net move, the only place these
+// formatters see a negative — and both used to mangle it ("- 100 010 000",
+// "$-29450.00") because they split the sign off the digits.
+func TestNegativeAmounts(t *testing.T) {
+    if got := group(-100010000); got != "-100 010 000" {
+        t.Fatalf("group(-100010000) = %q", got)
+    }
+    if got := group(-999); got != "-999" {
+        t.Fatalf("group(-999) = %q", got)
+    }
+    if got := satoshi(-1.0001); got != "-100 010 000" {
+        t.Fatalf("satoshi(-1.0001) = %q", got)
+    }
+    if got := usd(-1.0001, 29447.06); got != "-$29,450" {
+        t.Fatalf("usd(-1.0001, 29447.06) = %q", got)
+    }
+    if got := usd(-0.001, 50000); got != "-$50.00" {
+        t.Fatalf("usd(-0.001, 50000) = %q", got)
+    }
+}
