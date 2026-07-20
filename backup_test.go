@@ -98,22 +98,36 @@ func TestBackupScript(t *testing.T) {
 }
 
 // A script that hangs must not wedge the backup goroutine forever, or every later
-// backup silently stops happening.
+// backup silently stops happening. The script here backgrounds a child and waits
+// on it — the case that used to defeat the timeout completely, because killing
+// only the shell leaves that child holding the output pipe and CombinedOutput
+// blocks until every writer to it is gone.
 func TestBackupScriptTimeout(t *testing.T) {
     openBackupDB(t)
     var saved = backupScriptTimeout
     t.Cleanup(func() { backupScriptTimeout = saved })
     backupScriptTimeout = 200 * time.Millisecond
-    var path = filepath.Join(t.TempDir(), "backup.db")
+    var dir = t.TempDir()
+    var path = filepath.Join(dir, "backup.db")
+    var marker = filepath.Join(dir, "survived")
+    var began = time.Now()
     var done = make(chan struct{})
     go func() {
-        backup(path, "sleep 30")
+        backup(path, "(sleep 2; echo yes > "+marker+") & wait")
         close(done)
     }()
     select {
     case <-done:
     case <-time.After(10 * time.Second):
         t.Fatal("backup did not return after the script timeout")
+    }
+    if elapsed := time.Since(began); elapsed > time.Second {
+        t.Fatalf("backup took %s; the timeout should have freed it in ~200ms", elapsed)
+    }
+    // and the child must have been killed along with the shell, not left running
+    time.Sleep(2500 * time.Millisecond)
+    if _, err := os.Stat(marker); !os.IsNotExist(err) {
+        t.Fatalf("the script's background child outlived the timeout: %v", err)
     }
 }
 

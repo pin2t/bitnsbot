@@ -4,6 +4,7 @@ import "context"
 import "os"
 import "os/exec"
 import "strings"
+import "syscall"
 import "time"
 
 import "go.etcd.io/bbolt"
@@ -65,6 +66,20 @@ func backup(path, script string) {
     // either style can find it — as $1, and in the environment as BACKUP_FILE
     var cmd = exec.CommandContext(ctx, "sh", "-c", script, "sh", path)
     cmd.Env = append(os.Environ(), "BACKUP_FILE="+path)
+    // Give the script its own process group and kill the whole group on timeout.
+    // Killing only the shell is not enough: anything it leaves running — a
+    // backgrounded upload, a child that outlives it — inherits the output pipe,
+    // and CombinedOutput blocks until every writer to that pipe is gone. So the
+    // timeout would not actually free this goroutine, which is the one thing it
+    // exists to do. WaitDelay then bounds the wait even if something survives the
+    // signal. (Setpgid is unix-only; this bot targets Linux and macOS.)
+    cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+    cmd.Cancel = func() error {
+        var err = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+        if err == syscall.ESRCH { return os.ErrProcessDone } // exited on its own first
+        return err
+    }
+    cmd.WaitDelay = backupScriptTimeout
     var out, runErr = cmd.CombinedOutput()
     var text = strings.TrimSpace(string(out))
     if runErr != nil {
