@@ -197,3 +197,9 @@ func durationText(d time.Duration) string {
         return fmt.Sprintf("%d h %d min", h, m)
     }
 }
+
+// trimNum formats a float with at most `decimals` places, trailing zeros (and a
+// trailing dot) trimmed — "123", "0.1", "4.5".
+func trimNum(v float64, decimals int) string {
+    return strings.TrimRight(strings.TrimRight(strconv.FormatFloat(v, 'f', decimals, 64), "0"), ".")
+}

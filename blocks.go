@@ -98,10 +98,10 @@ func computeBlockInfo(ctx context.Context, hash string) (*blockInfo, error) {
         if v.ScriptPubKey.Address != "" { addrs = append(addrs, v.ScriptPubKey.Address) }
         addrs = append(addrs, v.ScriptPubKey.Addresses...)
     }
-    var miner = "Unknown"
-    for _, a := range addrs {
-        if name := miners.Name(a); name != "" { miner = name; break }
-    }
+    var script string
+    if len(coinbase.Vin) > 0 { script = coinbase.Vin[0].Coinbase }
+    var miner = miners.Attribute(addrs, script)
+    if miner == "" { miner = "Unknown" }
     return &blockInfo{
         Height: blk.Height, Hash: blk.Hash, Time: blk.Time, Size: blk.Size,
         NumTx: len(blk.Tx), Miner: miner,
@@ -139,9 +139,9 @@ func cacheBlockHash(hash string) {
     logging.Info("cached block %d mined by %s", bi.Height, bi.Miner)
 }
 
-// startBlockCache loads the mining-pool definitions, subscribes to btcd block
-// notifications (so new blocks are cached as they arrive, via notifier.Handle),
-// and backfills the most recent blocks into the cache.
+// startBlockCache subscribes to btcd block notifications (so new blocks are
+// cached as they arrive, via notifier.Handle) and backfills the most recent
+// blocks into the cache.
 func startBlockCache() {
     go func() {
         if btcd == nil { return }
@@ -203,4 +203,43 @@ func formatBlock(bi *blockInfo) string {
         lines = append(lines, fmt.Sprintf("%-*s %s", pad, p[0]+":", p[1]))
     }
     return fmt.Sprintf("Block #%d\n\n<pre>%s</pre>", bi.Height, strings.Join(lines, "\n"))
+}
+
+// minerSource adapts the btcd connection to the miners package's stats collector:
+// per block it fetches the header (verbosity 1 → height + difficulty + txids) and
+// the coinbase transaction, from which it reads every payout address, the coinbase
+// script (which carries the pool tag) and the total output (subsidy + fees); fees
+// are that total minus the height's subsidy. All the coinbase addresses are passed
+// on (not just the first) because the pool's payout isn't always output 0 — the
+// same reason computeBlockInfo collects them all.
+type minerSource struct{}
+
+func (minerSource) Tip(ctx context.Context) (int64, error) {
+    return btcd.getBlockCount(ctx)
+}
+
+func (minerSource) Block(ctx context.Context, height int64) (miners.Block, error) {
+    var hash, err = btcd.getBlockHash(ctx, height)
+    if err != nil { return miners.Block{}, err }
+    var blk, berr = btcd.getBlockTxids(ctx, hash)
+    if berr != nil { return miners.Block{}, berr }
+    if len(blk.Tx) == 0 { return miners.Block{}, fmt.Errorf("block %d has no transactions", height) }
+    var cb, cerr = btcd.getRawTransaction(ctx, blk.Tx[0])
+    if cerr != nil { return miners.Block{}, cerr }
+    var total float64
+    var addrs []string
+    for _, v := range cb.Vout {
+        total += v.Value
+        if v.ScriptPubKey.Address != "" { addrs = append(addrs, v.ScriptPubKey.Address) }
+        addrs = append(addrs, v.ScriptPubKey.Addresses...)
+    }
+    var script string
+    if len(cb.Vin) > 0 { script = cb.Vin[0].Coinbase }
+    return miners.Block{
+        CoinbaseAddresses: addrs,
+        CoinbaseScript:    script,
+        Reward:            total,
+        Fees:              total - subsidy(height),
+        Difficulty:        blk.Difficulty,
+    }, nil
 }

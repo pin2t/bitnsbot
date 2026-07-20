@@ -284,8 +284,9 @@ func (c *btcdClient) getBlockVerbose(ctx context.Context, hash string) (*btcdVer
 }
 
 type btcdBlockTxids struct {
-    Height int64    `json:"height"`
-    Tx     []string `json:"tx"`
+    Height     int64    `json:"height"`
+    Difficulty float64  `json:"difficulty"`
+    Tx         []string `json:"tx"`
 }
 
 // getBlockTxids fetches a block at verbosity 1, where "tx" carries only the

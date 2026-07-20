@@ -1,5 +1,6 @@
 package miners
 
+import "encoding/hex"
 import "net/http"
 import "net/http/httptest"
 import "path/filepath"
@@ -61,5 +62,37 @@ func TestUpdateOnlyAdds(t *testing.T) {
     }
     if got := Name("addrB"); got != "PoolB" {
         t.Fatalf("addrB should be added: %q", got)
+    }
+}
+
+func TestAttribute(t *testing.T) {
+    openTestDB(t)
+    var payload = `[{"name":"AntPool","addresses":["3AntAddr"],"tags":["/AntPool/","Mined by AntPool"]},
+                    {"name":"Foundry USA","addresses":[],"tags":["Foundry USA Pool"]}]`
+    serve(t, &payload)
+    update()
+    // an address hit wins outright, no tag needed
+    if got := Attribute([]string{"3AntAddr"}, ""); got != "AntPool" {
+        t.Fatalf("by address = %q, want AntPool", got)
+    }
+    // the payout address is not always the first coinbase output
+    if got := Attribute([]string{"unrelated", "3AntAddr"}, ""); got != "AntPool" {
+        t.Fatalf("by later address = %q, want AntPool", got)
+    }
+    // a rotated (unlisted) payout address still attributes via the coinbase tag —
+    // the real mainnet case for Foundry, which has no usable address in the list
+    var script = hex.EncodeToString([]byte("\x03abcd/Foundry USA Pool #dropgold/\xfa\x01"))
+    if got := Attribute([]string{"bc1qUnlisted"}, script); got != "Foundry USA" {
+        t.Fatalf("by tag = %q, want Foundry USA", got)
+    }
+    // neither address nor tag → unattributed, and the caller decides what to show
+    if got := Attribute([]string{"bc1qUnlisted"}, hex.EncodeToString([]byte("nothing here"))); got != "" {
+        t.Fatalf("unknown = %q, want empty", got)
+    }
+    if got := Attribute(nil, "not hex"); got != "" {
+        t.Fatalf("bad hex = %q, want empty", got)
+    }
+    if got := Attribute(nil, ""); got != "" {
+        t.Fatalf("no script = %q, want empty", got)
     }
 }
