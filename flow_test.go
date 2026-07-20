@@ -11,6 +11,10 @@ import "time"
 
 import "go.etcd.io/bbolt"
 
+// infoBlockHash is a real mainnet block hash: 64 hex characters, exactly the
+// same shape as a txid.
+const infoBlockHash = "00000000000000000000524afad3a4cc1e4e190e1272de721de6cdb4e889f6aa"
+
 func TestInfoFlow(t *testing.T) {
     var sent []string
     var lastMode string
@@ -27,7 +31,7 @@ func TestInfoFlow(t *testing.T) {
     defer server.Close()
     bot := newBot("TESTTOKEN", server.URL)
     update(bot, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/info"}})
-    if len(sent) != 1 || sent[0] != "Please send Bitcoin address or transaction or block number" {
+    if len(sent) != 1 || sent[0] != "Please send Bitcoin address or transaction or block number or block hash" {
         t.Fatalf("unexpected first reply: %#v", sent)
     }
     if !pendingInfoChats[1] {
@@ -66,10 +70,16 @@ func TestInfoFlow(t *testing.T) {
             var blockTime int64 = 1700000000
             var height = 100
             var difficulty = 1.5
-            if hash == "00000000000000recentblockhash" {
+            switch hash {
+            case "00000000000000recentblockhash":
                 blockTime = recentTime
                 height = 200
                 difficulty = 1e9
+            case "0000000000000000000blockhash", infoBlockHash:
+            default:
+                // a real node errors on a hash it doesn't have — which is exactly
+                // what lets /info tell a 64-hex block hash from a 64-hex txid
+                return nil, fmt.Errorf("Block not found")
             }
             return map[string]any{
                 "hash":          hash,
@@ -174,13 +184,22 @@ func TestInfoFlow(t *testing.T) {
             t.Fatalf("transaction reply missing %q: %q", want, sent[4])
         }
     }
+    // a block hash is the same 64-hex shape as a txid, and must produce exactly
+    // the message its height produces — not "couldn't find transaction"
+    update(bot, Update{Message: &Message{Chat: Chat{ID: 9}, Text: "/info " + infoBlockHash}})
+    if len(sent) != 6 {
+        t.Fatalf("expected a block reply for the block hash, got %#v", sent)
+    }
+    if sent[5] != sent[3] {
+        t.Fatalf("/info <block hash> replied:\n%s\nbut /info <height> replied:\n%s", sent[5], sent[3])
+    }
     update(bot, Update{Message: &Message{Chat: Chat{ID: 7}, Text: "/info 1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"}})
-    if len(sent) != 6 || !strings.Contains(sent[5], "Address 1A1zP1...DivfNa") ||
-        !strings.Contains(sent[5], "standard (P2PKH)") || !strings.Contains(sent[5], "Activity: unavailable") {
+    if len(sent) != 7 || !strings.Contains(sent[6], "Address 1A1zP1...DivfNa") ||
+        !strings.Contains(sent[6], "standard (P2PKH)") || !strings.Contains(sent[6], "Activity: unavailable") {
         t.Fatalf("unexpected address (index disabled) reply: %#v", sent)
     }
     update(bot, Update{Message: &Message{Chat: Chat{ID: 8}, Text: "/info addresswithhistory"}})
-    if len(sent) != 7 {
+    if len(sent) != 8 {
         t.Fatalf("expected address reply, got %#v", sent)
     }
     for _, want := range []string{
@@ -189,24 +208,24 @@ func TestInfoFlow(t *testing.T) {
         "Transactions:", "First tx:", "1 january 2015", "Last tx:", "1 january 2016",
         "Activity period:", "1 y",
     } {
-        if !strings.Contains(sent[6], want) {
-            t.Fatalf("address reply missing %q: %q", want, sent[6])
+        if !strings.Contains(sent[7], want) {
+            t.Fatalf("address reply missing %q: %q", want, sent[7])
         }
     }
-    update(bot, Update{Message: &Message{Chat: Chat{ID: 9}, Text: "/info invalidaddr"}})
-    if len(sent) != 8 || !strings.Contains(sent[7], "doesn't look like a valid Bitcoin address") {
+    update(bot, Update{Message: &Message{Chat: Chat{ID: 12}, Text: "/info invalidaddr"}})
+    if len(sent) != 9 || !strings.Contains(sent[8], "doesn't look like a valid Bitcoin address") {
         t.Fatalf("unexpected invalid address reply: %#v", sent)
     }
     update(bot, Update{Message: &Message{Chat: Chat{ID: 10}, Text: "/info " + recentTxid}})
-    if len(sent) != 9 || !strings.Contains(sent[8], "Confirmed:") || !strings.Contains(sent[8], "2 days ago") {
+    if len(sent) != 10 || !strings.Contains(sent[9], "Confirmed:") || !strings.Contains(sent[9], "2 days ago") {
         t.Fatalf("expected relative confirmation time for recent transaction, got: %#v", sent)
     }
     update(bot, Update{Message: &Message{Chat: Chat{ID: 11}, Text: "/info 200"}})
-    if len(sent) != 10 || !strings.Contains(sent[9], "Block #200") || !strings.Contains(sent[9], "Time:          2 days ago") {
+    if len(sent) != 11 || !strings.Contains(sent[10], "Block #200") || !strings.Contains(sent[10], "Time:          2 days ago") {
         t.Fatalf("expected relative time format for recent block, got: %#v", sent)
     }
-    if !strings.Contains(sent[9], "Difficulty:    1 G") {
-        t.Fatalf("expected human readable difficulty, got: %#v", sent[9])
+    if !strings.Contains(sent[10], "Difficulty:    1 G") {
+        t.Fatalf("expected human readable difficulty, got: %#v", sent[10])
     }
 }
 

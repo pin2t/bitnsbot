@@ -18,7 +18,7 @@ func info(bot *bot, chatID int64, arg string) {
         pendingInfoMu.Lock()
         pendingInfoChats[chatID] = true
         pendingInfoMu.Unlock()
-        send(bot, chatID, "Please send Bitcoin address or transaction or block number")
+        send(bot, chatID, "Please send Bitcoin address or transaction or block number or block hash")
         return
     }
     pendingInfoMu.Lock()
@@ -31,6 +31,15 @@ func info(bot *bot, chatID int64, arg string) {
     var ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
     defer cancel()
     if isTxid(arg) {
+        // a block hash has exactly the same shape as a txid — 64 hex characters —
+        // so only the node can tell them apart. getblockheader is an O(1) index
+        // lookup, so ask it first and fall back to the transaction path; going
+        // through the height keeps the reply identical to /info <height>, cache
+        // and all.
+        if header, err := btcd.getBlockHeader(ctx, arg); err == nil {
+            block(ctx, bot, chatID, header.Height)
+            return
+        }
         transaction(ctx, bot, chatID, arg)
         return
     }
