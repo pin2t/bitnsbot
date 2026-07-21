@@ -236,6 +236,11 @@ Pending state is tracked per command with its own package-level `sync.Mutex` + `
 
 All three are implemented the same way, short handler names (`info`, `watchCmd`, `unwatch`) with no wrapper functions around their pending-state maps: the lock/set-or-delete/unlock logic is inlined directly into `info()`/`watchCmd()`/`unwatch()` (setting pending) and into `update()`'s `case ""` (checking and clearing pending). There was an earlier pass where `/info` kept named helper functions (`setPendingInfo`, `takePendingInfo`, `clearPendingInfo`) while `/watch` was already inlined — that asymmetry was deliberately removed by request, so treat the current inlined-everywhere shape as the pattern to extend, not something to re-wrap in helpers.
 
+## Git conventions
+
+- **Commit messages are a single compact line.** No multi-paragraph bodies, no bullet lists, no explanation of why — the diff and this file carry that. "Accept a block hash in /info, not only a block height" is the shape; a summary line followed by three paragraphs of rationale is not.
+- **No `Co-Authored-By` trailer.**
+
 ## Style conventions specific to this repo
 
 These diverge from typical idiomatic Go on purpose (established through explicit instruction over this repo's history) — don't "clean them up":
