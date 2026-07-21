@@ -99,6 +99,7 @@ Wrapped methods: `getBlockCount`, `getBlockHash`, `getBlockHeader`, `getBlockTxi
 - **`getrawtransaction` verbosity 2 gives `fee` and per-input `prevout` — but only for *confirmed* transactions.** A mempool transaction has no undo data, so Core omits both. `txInputs` therefore has two paths: confirmed transactions read prevouts inline with no extra calls at all, while mempool ones still fetch each input's previous transaction (`fetchInputs`, the old bounded fan-out) and take the fee from `getmempoolentry`.
 - **`validateaddress` returns the address's `scriptPubKey`.** This is what makes local transaction matching possible without the bot ever encoding or decoding an address format — see the ZMQ path below.
 - **`estimatesmartfee` reports "no data" in-band**, as `{"errors":[…],"blocks":0}` with HTTP 200 and no RPC error, so `/fees` treats a missing/zero `feerate` as unavailable rather than waiting for a call to fail. It returns BTC/kvB, converted to sat/vB by ×1e5.
+- **`getblock` verbosity 1 carries a `coinbase_tx` field** holding the coinbase *input* — so a block's miner tag is available without a second call. `minerSource` does not use it yet: it still fetches the coinbase transaction because it needs the payout addresses and total output, which that field does not carry.
 - **Core has no address index at all** — nothing replaces btcd's `searchrawtransactions`. That is why `addrindex/` exists; see Address indexing below.
 - **Core has no server-side transaction filter** — nothing replaces `loadtxfilter`. Matching moved into the bot; see the ZMQ path below.
 
@@ -118,13 +119,24 @@ Matching never decodes an address: a watched address becomes its scriptPubKey on
 
 ### Address indexing
 
-Bitcoin Core has no address index, so `/info <address>`'s history stats needed one built in-repo. `addrindex/` is that index; the package comment carries the full design rationale and CORE-MIGRATION.md the measurements.
+Bitcoin Core has no address index, so `/info <address>`'s history stats needed one built in-repo. `addrindex/` is that index; its package comment carries the layout rationale, and the measurements behind it are below.
+
+Three existing implementations were read for their on-disk design before writing this one, rather than guessed at:
+- **btcd's `addrindex.go`**: a 21-byte address key into a doubling "level" merge scheme (level 0 holds 8 entries, each level twice the last), storing 12-byte `{block ID, offset, length}` pointers into btcd's *own* block files. Compact, but only possible because btcd owns its block storage — we talk to Core over HTTP.
+- **Fulcrum**: RocksDB, scripthash-keyed, measured at **133 GB for mainnet in August 2023**. Bigger than the ratio below because it also caches full UTXO details to serve Electrum clients without round-tripping to Core, which this bot does not need — and ruled out as a dependency anyway, being a second service to run and keep in sync.
+- **electrs' current backend, `bindex-rs`**: the closest reference, by electrs' own author and built for Core 31. One RocksDB row per touch, keyed `scriptHashPrefix(8) + globalTxNum(4)` with an empty value, covering both the funding and spending sides. Reports ~10% of blockchain size.
 
 The short version: it follows electrs/`bindex-rs` — hash each `scriptPubKey`, keep an 8-byte prefix, record one entry per "touch" (an address in an output, or in a spent input) — but **shards** rather than keying per address, because bbolt is a B+tree with per-key page overhead and no compression, where bindex relies on RocksDB's LSM and Zstd. The key is `shard(2 bytes of the hash) + rangeIndex(4)` and the value is the packed run of every touch in that shard and 1000-block range, each `remainder(6) + heightOffset(2) + txIndex(2)` = 10 bytes.
 
 A first attempt keyed by address, expecting per-key overhead to amortize across repeated touches; measured on real mainnet blocks it did not, because **71% of addresses are touched exactly once and 96% at most twice**. That cost ~133 bytes per address and projected to 150–250 GB. Sharding measures **18.15 bytes/touch** over 900 real blocks, projecting to roughly 85–113 GB, and makes writes **append-only** — each shard-range value is written once and never rewritten, which is what let the write-side history cap go away. History is now complete on disk; only `Lookup` stops early (`maxLookup`) to bound a Telegram reply, flagged with the same trailing `+` the btcd path used.
 
 The backfill reads Core's **REST** interface, not RPC: `/rest/block/<hash>.bin` and `/rest/spenttxouts/<hash>.bin` are binary and need no authentication. Measured on mainnet, block + spent outputs is **1.95 MB in 28 ms**, where `getblock` verbosity 3 for the same block is **13.7 MB** of JSON. This is what makes indexing the whole chain tractable at all — roughly 7 hours at the measured rate. It is enabled by `-core-rest` and runs unattended; until it has a cursor, `/info <address>` reports "unavailable (address index is still building)" rather than presenting an empty history as fact.
+
+**Two measurement traps**, both of which produced confidently wrong numbers before being caught — worth knowing before re-measuring:
+- **A small sample is meaningless for a sharded index.** Sharded values only reach their steady-state size once a whole range is in them. Measuring 25-block windows reported *exactly* 16.78 MB for every window regardless of touch count, because the cost was entirely per-key overhead against nearly-empty values.
+- **Merging per block instead of per chunk measures a different design.** Calling `merge` once per block rewrites all ~65k shard keys every block: 30.89 bytes/touch and 113s for 900 blocks. The batched merge the backfill actually performs gave 18.15 bytes/touch and 26s over the same blocks.
+
+`rangeBlocks` (1000) is the tuning lever, trading three things at once: the number of keys, how much a lookup must read, and how much memory a backfill chunk holds before flushing. It was not tuned beyond confirming the result lands inside budget.
 
 ### The /info lookup
 

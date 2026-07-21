@@ -19,9 +19,9 @@ import "bitnsbot/logging"
 // This is also the piece that makes a full-chain backfill tractable at all:
 // /rest/block/<hash>.bin and /rest/spenttxouts/<hash>.bin return raw bytes with
 // none of the JSON serialization cost that makes getblock verbosity 3 ~30×
-// slower than verbosity 0 (confirmed against a real Core v31.1.0 node — see
-// CORE-MIGRATION.md). electrs' current backend (bindex-rs) uses the same two
-// endpoints for the same reason.
+// slower than verbosity 0 (confirmed against a real Core v31.1.0 node; see
+// CLAUDE.md's Address indexing section for the measurements). electrs' current
+// backend (bindex-rs) uses the same two endpoints for the same reason.
 type restSource struct {
     baseURL string
     client  *http.Client
