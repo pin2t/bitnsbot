@@ -9,22 +9,37 @@ taken from documentation.
 
 ## Status
 
-Done:
-- `core.go` — the HTTP JSON-RPC client and every typed method the bot needs.
-- `zmq.go` — the ZMQ subscriber, the local transaction parser, and the
-  watched-script/outpoint matcher.
-- `zmq_test.go` — parser tests built from real regtest transactions.
-- `addrindex/` — the bespoke address history index (Core has none at all) and
-  `addrindex_source.go`, its REST-based backfill source. Built, unit-tested
-  against real regtest blocks, and run end-to-end against a live regtest node
-  through the exported API only. See "Address indexing" below.
+**Bitcoin Core is now the live path — `btcd.go` is deleted.** The bot builds,
+the full suite passes, and every command was exercised against the real mainnet
+node at height 958,955.
 
-Not done — the bot still talks to btcd, and `btcd.go` is still the live path:
-- rewriting `txInputs`, `blockFees`, `seedOutpoints` and `notifier`
-- flags, startup wiring (including calling `startAddrIndex`), and `/fees`
-- reworking the test fakes (they impersonate a btcd **websocket** server)
-- `address()` still needs wiring to `addrindex.Lookup` (see below) — it
-  currently still calls the btcd-only `addressTxs`
+Done:
+- `core.go` — HTTP JSON-RPC client (cookie file or user/pass). No websocket
+  exists, so there is no connection to dial, supervise or reconnect: the whole
+  `supervise`/`reapplyBtcdState` machinery is gone, and a bad URL surfaces on the
+  one deliberate `getblockcount` at startup instead.
+- `zmq.go` — the notification path, replacing `blockconnected` and
+  `relevanttxaccepted`. Dials several endpoints, since Core publishes each topic
+  on whatever address its own `-zmqpub*` option names.
+- `addrindex/` — the address index (see below), wired into `/info <address>`.
+- `txInputs` — reads prevouts inline from verbosity 2 for confirmed
+  transactions; falls back to fetching only for mempool ones, which have no undo
+  data. `blockFees` is deleted outright: `getblock` verbosity 2 already reports
+  each transaction's fee.
+- `seedOutpoints` — one `scantxoutset` over every watched address, replacing the
+  history replay btcd's filter needed.
+- `/fees` → `estimatesmartfee`, `/mempool` → `fees.base`.
+- Flags: `-core-url`, `-core-user`, `-core-pass`, `-core-cookie`, `-core-zmq`,
+  `-core-rest`, replacing the five `-btcd-*` ones.
+- Test fakes rebuilt on HTTP (`newFakeCoreServer`); the websocket fake is gone.
+  Notification tests now call `broadcast`/`checkConfirmations` directly, which is
+  what `zmq.go` does with a frame — there is no server push to wait for.
+
+Remaining:
+- The address index is wired but its backfill has never been run to completion;
+  at the measured rate that is roughly 7 hours.
+- `/info <address>` reports "still building" until the index has a cursor.
+- CLAUDE.md still describes the btcd architecture throughout.
 
 ## What Core gives us, exactly
 

@@ -37,7 +37,7 @@ func TestInfoFlow(t *testing.T) {
     if !pendingInfoChats[1] {
         t.Fatalf("expected chat 1 to be pending")
     }
-    btcd = nil
+    core = nil
     update(bot, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "hello world"}})
     if len(sent) != 2 || sent[1] != "Bitcoin node connection is not configured." {
         t.Fatalf("unexpected second reply: %#v", sent)
@@ -55,9 +55,9 @@ func TestInfoFlow(t *testing.T) {
     }
     var recentTxid = "aaaa47a9143a23e80cc59e81588d21558b394005580b285961957cb3bed5b3e0"
     var recentTime = time.Now().Add(-48 * time.Hour).Unix()
-    var btcdServer = newFakeBtcdServer(t, func(method string, params json.RawMessage) (interface{}, error) {
-        var p []interface{}
-        json.Unmarshal(params, &p)
+    var btcdServer = newFakeCoreServer(t, func(method string, params []interface{}) (interface{}, error) {
+        var p = params
+        _ = p
         switch method {
         case "getblockhash":
             var height, _ = p[0].(float64)
@@ -96,7 +96,7 @@ func TestInfoFlow(t *testing.T) {
             }
             return map[string]any{
                 "hash": reqHash, "height": height, "time": blockTime, "size": 285, "difficulty": difficulty,
-                "rawtx": []map[string]any{
+                "tx": []map[string]any{
                     {"txid": "coinbasetx", "size": 204, "vin": []map[string]any{{"coinbase": "03aabbcc"}}, "vout": []map[string]any{{"value": 50.0}}},
                 },
             }, nil
@@ -151,8 +151,8 @@ func TestInfoFlow(t *testing.T) {
         return nil, fmt.Errorf("unexpected method %s", method)
     })
     defer btcdServer.Close()
-    btcd = dialFakeBtcd(t, btcdServer, &recordingHandler{})
-    defer btcd.close()
+    core = newFakeCoreClient(t, btcdServer)
+    defer func() { core = nil }()
     update(bot, Update{Message: &Message{Chat: Chat{ID: 5}, Text: "/info 100"}})
     if len(sent) != 4 {
         t.Fatalf("expected block reply, got %#v", sent)
@@ -202,12 +202,11 @@ func TestInfoFlow(t *testing.T) {
     if len(sent) != 8 {
         t.Fatalf("expected address reply, got %#v", sent)
     }
-    for _, want := range []string{
-        "segwit (bech32)", "Balance:", "0.0999 BTC", "Total received:", "1.10 BTC",
-        "Total sent:", "1.00 BTC", "Total flow:", "2.10 BTC", "Total fees:", "10 000 sats",
-        "Transactions:", "First tx:", "1 january 2015", "Last tx:", "1 january 2016",
-        "Activity period:", "1 y",
-    } {
+    // The history behind these stats now comes from the bot's own address index
+    // rather than btcd's searchrawtransactions. With nothing indexed the reply
+    // must say so plainly instead of reporting an empty history as fact —
+    // addressStats itself is covered by TestAddressStats.
+    for _, want := range []string{"segwit (bech32)", "Activity:", "still building"} {
         if !strings.Contains(sent[7], want) {
             t.Fatalf("address reply missing %q: %q", want, sent[7])
         }
@@ -303,25 +302,23 @@ func TestFeesFlow(t *testing.T) {
     defer server.Close()
     var bot = newBot("TESTTOKEN", server.URL)
     // not configured → fixed message
-    btcd = nil
+    core = nil
     update(bot, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/fees"}})
     if len(sent) != 1 || sent[0] != "Bitcoin node connection is not configured." {
         t.Fatalf("unexpected not-configured reply: %#v", sent)
     }
-    // configured: BTC/kB values convert to sat/vB by ×1e5 (0.0001 → 10 sat/vB)
+    // configured: BTC/kvB values convert to sat/vB by ×1e5 (0.0001 → 10 sat/vB)
     var rates = map[float64]float64{2: 0.0001, 6: 0.00007, 12: 0.00003}
-    var btcdServer = newFakeBtcdServer(t, func(method string, params json.RawMessage) (interface{}, error) {
-        if method != "estimatefee" {
+    var btcdServer = newFakeCoreServer(t, func(method string, params []interface{}) (interface{}, error) {
+        if method != "estimatesmartfee" {
             return nil, fmt.Errorf("unexpected method %s", method)
         }
-        var p []interface{}
-        json.Unmarshal(params, &p)
-        var blocks, _ = p[0].(float64)
-        return rates[blocks], nil
+        var blocks, _ = params[0].(float64)
+        return map[string]any{"feerate": rates[blocks], "blocks": blocks}, nil
     })
     defer btcdServer.Close()
-    btcd = dialFakeBtcd(t, btcdServer, notifier{})
-    defer func() { btcd.close(); btcd = nil }()
+    core = newFakeCoreClient(t, btcdServer)
+    defer func() { core = nil }()
     update(bot, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/fees"}})
     if len(sent) != 2 {
         t.Fatalf("expected a fees reply, got %#v", sent)
@@ -348,12 +345,12 @@ func TestFeesUnavailable(t *testing.T) {
     }))
     defer server.Close()
     var bot = newBot("TESTTOKEN", server.URL)
-    var btcdServer = newFakeBtcdServer(t, func(method string, params json.RawMessage) (interface{}, error) {
+    var btcdServer = newFakeCoreServer(t, func(method string, params []interface{}) (interface{}, error) {
         return nil, fmt.Errorf("not enough blocks have been observed")
     })
     defer btcdServer.Close()
-    btcd = dialFakeBtcd(t, btcdServer, notifier{})
-    defer func() { btcd.close(); btcd = nil }()
+    core = newFakeCoreClient(t, btcdServer)
+    defer func() { core = nil }()
     update(bot, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/fees"}})
     if len(sent) != 1 || !strings.Contains(sent[0], "aren't available") {
         t.Fatalf("unexpected unavailable reply: %#v", sent)
@@ -387,20 +384,24 @@ func TestMempoolFlow(t *testing.T) {
     }))
     defer server.Close()
     var bot = newBot("TESTTOKEN", server.URL)
-    btcd = nil
+    core = nil
     update(bot, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/mempool"}})
     if len(sent) != 1 || sent[0] != "Bitcoin node connection is not configured." {
         t.Fatalf("unexpected not-configured reply: %#v", sent)
     }
-    var btcdServer = newFakeBtcdServer(t, func(method string, params json.RawMessage) (interface{}, error) {
+    var btcdServer = newFakeCoreServer(t, func(method string, params []interface{}) (interface{}, error) {
+        var p = params
+        _ = p
         switch method {
         case "getmempoolinfo":
             return map[string]any{"size": 6700, "bytes": 3500000}, nil // → "6.7 k" txs, "3.5 M"
         case "getrawmempool":
-            return map[string]any{"tx1": map[string]any{"fee": 0.0001}, "tx2": map[string]any{"fee": 0.0002}}, nil // fees sum 0.0003 = 30000 sats
+            // Core nests the fee under fees.base; btcd used a flat "fee"
+            return map[string]any{
+                "tx1": map[string]any{"fees": map[string]any{"base": 0.0001}},
+                "tx2": map[string]any{"fees": map[string]any{"base": 0.0002}},
+            }, nil // fees sum 0.0003 = 30000 sats
         case "getrawtransaction":
-            var p []interface{}
-            json.Unmarshal(params, &p)
             switch id, _ := p[0].(string); id {
             case "tx1":
                 return map[string]any{"vout": []map[string]any{{"value": 1.0}}}, nil
@@ -412,8 +413,8 @@ func TestMempoolFlow(t *testing.T) {
         return nil, fmt.Errorf("unexpected method %s", method)
     })
     defer btcdServer.Close()
-    btcd = dialFakeBtcd(t, btcdServer, &recordingHandler{})
-    defer func() { btcd.close(); btcd = nil }()
+    core = newFakeCoreClient(t, btcdServer)
+    defer func() { core = nil }()
     update(bot, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/mempool"}})
     if len(sent) != 2 {
         t.Fatalf("expected a mempool reply, got %#v", sent)
@@ -496,15 +497,15 @@ func TestMempoolFlowRate(t *testing.T) {
     }))
     defer tg.Close()
     var b = newBot("TESTTOKEN", tg.URL)
-    var srv = newFakeBtcdServer(t, func(method string, params json.RawMessage) (interface{}, error) {
+    var srv = newFakeCoreServer(t, func(method string, params []interface{}) (interface{}, error) {
         if method == "getmempoolinfo" {
             return map[string]any{"size": 5000, "bytes": 2000000}, nil
         }
         return nil, fmt.Errorf("unexpected method %s", method)
     })
     defer srv.Close()
-    btcd = dialFakeBtcd(t, srv, &recordingHandler{})
-    defer func() { btcd.close(); btcd = nil }()
+    core = newFakeCoreClient(t, srv)
+    defer func() { core = nil }()
     update(b, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/mempool"}})
     if len(sent) != 1 || !strings.Contains(sent[0], "Flow rate:") || !strings.Contains(sent[0], "5.0 tx/sec (+2.0)") {
         t.Fatalf("expected flow rate line in reply: %#v", sent)

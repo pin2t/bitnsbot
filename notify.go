@@ -1,17 +1,15 @@
 package main
 
 import "context"
-import "encoding/json"
 import "fmt"
 import "html"
 import "math"
-import "slices"
 import "strconv"
+import "slices"
 import "strings"
 import "sync"
 import "time"
 
-import "github.com/sourcegraph/jsonrpc2"
 import "bitnsbot/logging"
 import "bitnsbot/txwatches"
 import "bitnsbot/watches"
@@ -129,64 +127,39 @@ func notifyAddresses() (res []string) {
     return res
 }
 
-// notifier handles btcd's push notifications. Rather than wrapping it in
-// jsonrpc2.AsyncHandler, Handle spawns the work itself: broadcast, cacheBlockHash
-// and checkConfirmations all call back into btcd, which would deadlock the
-// connection's single read loop if run inside a synchronous Handle. It holds the
-// bot so checkConfirmations can message chats about their confirmed transactions.
-type notifier struct{ bot *bot }
-
-func (n notifier) Handle(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) {
-    if req.Params == nil { return }
-    switch req.Method {
-    case "relevanttxaccepted":
-        var params []string
-        if err := json.Unmarshal(*req.Params, &params); err == nil && len(params) > 0 {
-            go broadcast(params[0])
-        }
-    case "blockconnected":
-        var params []json.RawMessage
-        if err := json.Unmarshal(*req.Params, &params); err == nil && len(params) > 0 {
-            var hash string
-            if json.Unmarshal(params[0], &hash) == nil {
-                go cacheBlockHash(hash)
-                go checkConfirmations(n.bot, hash)
-            }
-        }
-    }
-}
-
 func broadcast(txHex string) {
-    if btcd == nil { return }
+    if core == nil { return }
     var ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
     defer cancel()
-    var tx, err = btcd.decodeRawTransaction(ctx, txHex)
+    var tx, err = core.decodeRawTransaction(ctx, txHex)
     if err != nil {
         logging.Err("decode notified tx: %v", err)
         return
     }
     var n = notification{txid: tx.Txid, received: make(map[string]float64), sent: make(map[string]float64)}
     for _, vout := range tx.Vout {
-        var addrs = vout.ScriptPubKey.Addresses
-        if a := vout.ScriptPubKey.Address; a != "" && !slices.Contains(addrs, a) {
-            addrs = append(addrs, a)
-        }
-        for _, addr := range addrs {
-            n.received[addr] += vout.Value
+        if a := vout.ScriptPubKey.Address; a != "" {
+            n.received[a] += vout.Value
         }
     }
-    // the decoded tx names only the receiving addresses — its inputs are bare
-    // txid:vout refs — so the *sending* addresses need the prevouts, which
-    // txInputs fetches anyway for the fee
-    if full, ferr := btcd.getRawTransaction(ctx, tx.Txid); ferr == nil {
-        if fee, _, spent, ok := txInputs(ctx, full); ok {
+    // record the outpoints this transaction creates for watched addresses, so a
+    // later spend of them is recognised — the bookkeeping btcd used to do inside
+    // its own filter
+    recordOutpoints(tx.Txid, tx.Vout)
+    // the decoded transaction names only the receiving addresses — its inputs are
+    // bare txid:vout refs — so the *sending* addresses need the prevouts, which
+    // txInputs gathers. The fee comes from getmempoolentry rather than from the
+    // transaction: this is a mempool transaction, so it has no undo data and Core
+    // reports neither fee nor prevout for it at verbosity 2.
+    if full, ferr := core.getRawTransaction(ctx, tx.Txid); ferr == nil {
+        if _, _, spent, ok := txInputs(ctx, full); ok {
             n.sent = spent
-            if full.Vsize > 0 {
-                n.fee = fee
-                n.feeRate = math.Round(fee*1e8) / float64(full.Vsize)
-                n.confEstimate = confEstimate(ctx, n.feeRate)
-                n.feeOK = true
-            }
+        }
+        if entry, eerr := core.getMempoolEntry(ctx, tx.Txid); eerr == nil && entry.Vsize > 0 {
+            n.fee = entry.Fees.Base
+            n.feeRate = math.Round(entry.Fees.Base*1e8) / float64(entry.Vsize)
+            n.confEstimate = confEstimate(ctx, n.feeRate)
+            n.feeOK = true
         }
     }
     notifyMu.Lock()
@@ -203,67 +176,60 @@ func broadcast(txHex string) {
     }
 }
 
-// addressOutpoints computes an address's current unspent outputs by replaying its
-// transaction history oldest-first: every output paying the address adds an
-// outpoint, every input spending one removes it. The bool reports whether the
-// history was complete — paging is oldest-first, so a capped history loses the
-// *newest* transactions, which is exactly where live unspent outputs are.
-func addressOutpoints(ctx context.Context, addr string) ([]btcdOutpoint, bool) {
-    var txs, complete = addressTxs(ctx, addr)
-    var unspent = map[btcdOutpoint]bool{}
-    for _, tx := range txs {
-        for _, in := range tx.Vin {
-            delete(unspent, btcdOutpoint{in.Txid, in.Vout})
-        }
-        for i, v := range tx.Vout {
-            if v.ScriptPubKey.Address == addr || slices.Contains(v.ScriptPubKey.Addresses, addr) {
-                unspent[btcdOutpoint{tx.Txid, uint32(i)}] = true
-            }
-        }
-    }
-    var ops = make([]btcdOutpoint, 0, len(unspent))
-    for op := range unspent {
-        ops = append(ops, op)
-    }
-    return ops, complete
-}
-
-// seedOutpoints loads each address's current unspent outputs into btcd's
-// transaction filter, in the background. This is what makes *outgoing*
-// notifications work at all for coins the bot didn't watch arrive: btcd matches a
-// spend by outpoint, never by address (subscribedClients in its rpcwebsocket.go
-// checks existsUnspentOutPoint against the inputs), and the only outpoints it
-// knows on its own are those it saw paid to a watched address since the filter was
-// loaded. Since the filter is rebuilt from scratch on every startup and reconnect,
-// without this seeding a spend of any pre-existing balance goes unreported.
-// reload=false *adds* to the live filter, so this composes with the address load.
+// seedOutpoints loads each watched address's current unspent outputs into the
+// bot's own outpoint set, in the background. This is what makes *outgoing*
+// notifications work for coins the bot did not watch arrive: a spend names only
+// the outpoint it consumes, never the address, so recognising one means already
+// knowing which outpoints the address owns.
+//
+// Under btcd this seeding fed btcd's own connection-wide filter and had to
+// replay the whole address history to derive the unspent set. Core has no such
+// filter — the set lives here (see zmq.go) — and it answers the question
+// directly with scantxoutset, which takes every address at once and returns the
+// live UTXOs. That is both a smaller job and an exact one: no history paging, so
+// none of the old "a capped history loses the newest transactions" caveat.
+//
+// The scan walks the whole UTXO set and takes minutes on mainnet, which is why
+// it runs in the background and covers every address in a single pass.
 func seedOutpoints(addrs []string) {
-    if btcd == nil || len(addrs) == 0 { return }
+    if core == nil || len(addrs) == 0 { return }
     go func() {
+        var ctx, cancel = context.WithTimeout(context.Background(), 30*time.Minute)
+        defer cancel()
+        // map each address's scriptPubKey so a scan hit can be attributed back
+        var owner = map[string]string{}
         for _, addr := range addrs {
-            var ctx, cancel = context.WithTimeout(context.Background(), 2*time.Minute)
-            var ops, complete = addressOutpoints(ctx, addr)
-            if !complete {
-                logging.Warn("outpoints for %s: history unavailable or too long — spends of its older coins may go unreported", short(addr))
+            var info, err = core.validateAddress(ctx, addr)
+            if err != nil || !info.IsValid {
+                logging.Warn("seed outpoints: validate %s: %v", short(addr), err)
+                continue
             }
-            if len(ops) > 0 {
-                if err := btcd.loadTxFilter(ctx, false, nil, ops); err != nil {
-                    logging.Warn("load outpoints for %s: %v", short(addr), err)
-                } else {
-                    logging.Info("watching %d unspent outputs of %s", len(ops), short(addr))
-                }
-            }
-            cancel()
+            owner[info.ScriptPubKey] = addr
+            watchScript(info.ScriptPubKey, addr)
         }
+        if len(owner) == 0 { return }
+        var result, err = core.scanTxOutSet(ctx, addrs)
+        if err != nil {
+            logging.Warn("scan UTXO set for %d address(es): %v — spends of existing balances may go unreported", len(addrs), err)
+            return
+        }
+        var seeded int
+        for _, u := range result.Unspents {
+            if addr, ok := owner[u.ScriptPubKey]; ok {
+                watchOutpoint(outpoint{u.Txid, u.Vout}, addr)
+                seeded++
+            }
+        }
+        logging.Info("watching %d unspent output(s) across %d address(es)", seeded, len(owner))
     }()
 }
 
 // confEstimate maps a transaction's fee rate (sat/vB) to a rough confirmation
-// window by comparing it to btcd's fee estimates (BTC/kB → sat/vB via ×1e5) for
+// window by comparing it to core's fee estimates (BTC/kvB → sat/vB via ×1e5) for
 // the 2- and 6-block targets. Returns "" if the estimator has no data yet.
 func confEstimate(ctx context.Context, feeRate float64) string {
-    var fast, ferr = btcd.estimateFee(ctx, 2)
-    var medium, merr = btcd.estimateFee(ctx, 6)
+    var fast, ferr = core.estimateSmartFee(ctx, 2)
+    var medium, merr = core.estimateSmartFee(ctx, 6)
     if ferr != nil || merr != nil || fast <= 0 || medium <= 0 {
         return ""
     }
@@ -278,7 +244,7 @@ func confEstimate(ctx context.Context, feeRate float64) string {
 }
 
 // startNotify turns every persisted watchCmd back into a live watcher goroutine
-// on startup and, if btcd is connected, loads the watched addresses into btcd's
+// on startup and, if core is connected, loads the watched addresses into core's
 // transaction filter so notifications resume across restarts.
 func startNotify(bot *bot) {
     var records, err = watches.List()
@@ -290,31 +256,7 @@ func startNotify(bot *bot) {
         startNotifyChat(bot, w.ChatID, watchTypeAddress, w.Address, w.Alias)
     }
     var addrs = notifyAddresses()
-    if btcd != nil && len(addrs) > 0 {
-        var ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
-        if err := btcd.loadTxFilter(ctx, true, addrs, nil); err != nil {
-            logging.Warn("load tx filter: %v", err)
-        }
-        cancel()
-        seedOutpoints(addrs)
-    }
-}
-
-// reapplyBtcdState re-establishes btcd's stateful subscriptions after a
-// reconnect — the block-notification subscription and the transaction filter for
-// every watched address. Passed to btcd.supervise as its reconnect callback.
-func reapplyBtcdState() {
-    if btcd == nil { return }
-    var ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
-    defer cancel()
-    if err := btcd.notifyBlocks(ctx); err != nil {
-        logging.Warn("resubscribe to blocks: %v", err)
-    }
-    var addrs = notifyAddresses()
-    if len(addrs) > 0 {
-        if err := btcd.loadTxFilter(ctx, true, addrs, nil); err != nil {
-            logging.Warn("reload tx filter: %v", err)
-        }
+    if core != nil && len(addrs) > 0 {
         seedOutpoints(addrs)
     }
 }
@@ -332,14 +274,14 @@ func stopNotify() {
 // checkConfirmations notifies and drops every transaction watch whose transaction
 // appears in the just-connected block. The block's txids come from a light
 // getblock (verbosity 1); the fetch is skipped entirely when nothing is watched,
-// so an idle bot pays nothing per block. Runs off btcd's read-loop goroutine
-// (spawned by notifier.Handle) since it calls back into btcd.
+// so an idle bot pays nothing per block. Runs off core's read-loop goroutine
+// (spawned by notifier.Handle) since it calls back into core.
 func checkConfirmations(b *bot, hash string) {
-    if b == nil || btcd == nil { return }
+    if b == nil || core == nil { return }
     if !txwatches.Any() { return }
     var ctx, cancel = context.WithTimeout(context.Background(), 30*time.Second)
     defer cancel()
-    var blk, err = btcd.getBlockTxids(ctx, hash)
+    var blk, err = core.getBlockTxids(ctx, hash)
     if err != nil {
         logging.Warn("check confirmations for block %s: %v", short(hash), err)
         return

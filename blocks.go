@@ -72,14 +72,14 @@ func subsidy(height int64) float64 {
     return float64(int64(5000000000)>>uint(halvings)) / 1e8
 }
 
-// computeBlockInfo builds the cached record from btcd: general fields from
+// computeBlockInfo builds the cached record from core: general fields from
 // getblock (verbosity 2), per-tx fee stats from blockFees (which fetches
 // prevouts), the transaction-size distribution, the block reward from the
 // halving schedule, and the miner attributed from the coinbase. Reward and total
 // (reward + fees = coinbase output) are always available; the fee min/avg/max
 // need the prevout fetches, so FeesOK records whether they succeeded.
 func computeBlockInfo(ctx context.Context, hash string) (*blockInfo, error) {
-    var blk, err = btcd.getBlockVerbose(ctx, hash)
+    var blk, err = core.getBlockVerbose(ctx, hash)
     if err != nil { return nil, err }
     if len(blk.Tx) == 0 { return nil, fmt.Errorf("block %s has no transactions", short(hash)) }
     var szMin, szMax = blk.Tx[0].Size, blk.Tx[0].Size
@@ -89,14 +89,13 @@ func computeBlockInfo(ctx context.Context, hash string) (*blockInfo, error) {
         if t.Size > szMax { szMax = t.Size }
         szSum += int64(t.Size)
     }
-    var low, avg, high, _, feeErr = blockFees(ctx, blk.Tx)
+    var low, avg, high, _ = blockFeeStats(blk.Tx)
     var coinbase = blk.Tx[0]
     var coinbaseOut float64
     var addrs []string
     for _, v := range coinbase.Vout {
         coinbaseOut += v.Value
         if v.ScriptPubKey.Address != "" { addrs = append(addrs, v.ScriptPubKey.Address) }
-        addrs = append(addrs, v.ScriptPubKey.Addresses...)
     }
     var script string
     if len(coinbase.Vin) > 0 { script = coinbase.Vin[0].Coinbase }
@@ -105,7 +104,7 @@ func computeBlockInfo(ctx context.Context, hash string) (*blockInfo, error) {
     return &blockInfo{
         Height: blk.Height, Hash: blk.Hash, Time: blk.Time, Size: blk.Size,
         NumTx: len(blk.Tx), Miner: miner,
-        FeesOK: feeErr == nil, FeeMin: low, FeeAvg: avg, FeeMax: high,
+        FeesOK: true, FeeMin: low, FeeAvg: avg, FeeMax: high,
         TxSizeMin: szMin, TxSizeAvg: int32(szSum / int64(len(blk.Tx))), TxSizeMax: szMax,
         Reward: subsidy(blk.Height), Total: coinbaseOut, Difficulty: blk.Difficulty,
     }, nil
@@ -113,7 +112,7 @@ func computeBlockInfo(ctx context.Context, hash string) (*blockInfo, error) {
 
 // cacheBlockHeight computes and stores a block by height (backfill / on-demand).
 func cacheBlockHeight(ctx context.Context, height int64) error {
-    var hash, err = btcd.getBlockHash(ctx, height)
+    var hash, err = core.getBlockHash(ctx, height)
     if err != nil { return err }
     var bi, ciErr = computeBlockInfo(ctx, hash)
     if ciErr != nil { return ciErr }
@@ -121,10 +120,10 @@ func cacheBlockHeight(ctx context.Context, height int64) error {
 }
 
 // cacheBlockHash computes and stores a block by hash — used by the blockconnected
-// notification, which carries the new tip's hash. Runs off btcd's read-loop
-// goroutine (spawned by the handler) since computeBlockInfo calls back into btcd.
+// notification, which carries the new tip's hash. Runs off core's read-loop
+// goroutine (spawned by the handler) since computeBlockInfo calls back into core.
 func cacheBlockHash(hash string) {
-    if btcd == nil { return }
+    if core == nil { return }
     var ctx, cancel = context.WithTimeout(context.Background(), 60*time.Second)
     defer cancel()
     var bi, err = computeBlockInfo(ctx, hash)
@@ -139,17 +138,14 @@ func cacheBlockHash(hash string) {
     logging.Info("cached block %d mined by %s", bi.Height, bi.Miner)
 }
 
-// startBlockCache subscribes to btcd block notifications (so new blocks are
-// cached as they arrive, via notifier.Handle) and backfills the most recent
-// blocks into the cache.
+// startBlockCache backfills the most recent blocks into the cache. New blocks
+// arrive over ZMQ (see zmq.go) rather than through a per-connection
+// subscription, so unlike the btcd path there is nothing to subscribe to here.
 func startBlockCache() {
     go func() {
-        if btcd == nil { return }
-        var nctx, ncancel = context.WithTimeout(context.Background(), 15*time.Second)
-        if err := btcd.notifyBlocks(nctx); err != nil { logging.Warn("subscribe to blocks: %v", err) }
-        ncancel()
+        if core == nil { return }
         var tctx, tcancel = context.WithTimeout(context.Background(), 15*time.Second)
-        var tip, err = btcd.getBlockCount(tctx)
+        var tip, err = core.getBlockCount(tctx)
         tcancel()
         if err != nil { logging.Warn("block cache: get tip: %v", err); return }
         for h := tip; h > tip-blockBackfillDepth && h >= 0; h-- {
@@ -205,7 +201,7 @@ func formatBlock(bi *blockInfo) string {
     return fmt.Sprintf("Block #%d\n\n<pre>%s</pre>", bi.Height, strings.Join(lines, "\n"))
 }
 
-// minerSource adapts the btcd connection to the miners package's stats collector:
+// minerSource adapts the core connection to the miners package's stats collector:
 // per block it fetches the header (verbosity 1 → height + difficulty + txids) and
 // the coinbase transaction, from which it reads every payout address, the coinbase
 // script (which carries the pool tag) and the total output (subsidy + fees); fees
@@ -215,23 +211,22 @@ func formatBlock(bi *blockInfo) string {
 type minerSource struct{}
 
 func (minerSource) Tip(ctx context.Context) (int64, error) {
-    return btcd.getBlockCount(ctx)
+    return core.getBlockCount(ctx)
 }
 
 func (minerSource) Block(ctx context.Context, height int64) (miners.Block, error) {
-    var hash, err = btcd.getBlockHash(ctx, height)
+    var hash, err = core.getBlockHash(ctx, height)
     if err != nil { return miners.Block{}, err }
-    var blk, berr = btcd.getBlockTxids(ctx, hash)
+    var blk, berr = core.getBlockTxids(ctx, hash)
     if berr != nil { return miners.Block{}, berr }
     if len(blk.Tx) == 0 { return miners.Block{}, fmt.Errorf("block %d has no transactions", height) }
-    var cb, cerr = btcd.getRawTransaction(ctx, blk.Tx[0])
+    var cb, cerr = core.getRawTransaction(ctx, blk.Tx[0])
     if cerr != nil { return miners.Block{}, cerr }
     var total float64
     var addrs []string
     for _, v := range cb.Vout {
         total += v.Value
         if v.ScriptPubKey.Address != "" { addrs = append(addrs, v.ScriptPubKey.Address) }
-        addrs = append(addrs, v.ScriptPubKey.Addresses...)
     }
     var script string
     if len(cb.Vin) > 0 { script = cb.Vin[0].Coinbase }

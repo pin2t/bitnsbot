@@ -1,18 +1,14 @@
 package main
 
-import "context"
 import "encoding/json"
-import "fmt"
 import "net/http"
 import "net/http/httptest"
 import "path/filepath"
-import "reflect"
 import "strings"
 import "sync"
 import "testing"
 import "time"
 
-import "github.com/gorilla/websocket"
 
 import "bitnsbot/txwatches"
 import "bitnsbot/watches"
@@ -37,11 +33,10 @@ func watcherChats(watchID string) []int64 {
     return ids
 }
 
-// TestWatchNotification drives the full address-watch notification path: a
-// /watch on an address loads it into btcd's filter, btcd pushes a
-// relevanttxaccepted notification, and the bot decodes the tx and messages the
-// watching chat. The fake btcd server pushes the notification right after the
-// loadtxfilter it receives.
+// TestWatchNotification drives the full address-watch notification path. Under
+// Core there is no server-side filter and no server push: ZMQ delivers every
+// mempool transaction and the bot matches locally, so the test hands the raw
+// transaction to broadcast exactly as zmq.go does on a rawtx frame.
 func TestWatchNotification(t *testing.T) {
     var sentMu sync.Mutex
     var sent []string
@@ -59,73 +54,47 @@ func TestWatchNotification(t *testing.T) {
     var b = newBot("TESTTOKEN", tg.URL)
     var watchedAddr = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
     var txid = "f21b47a9143a23e80cc59e81588d21558b394005580b285961957cb3bed5b3e0"
-    var upgrader websocket.Upgrader
-    var btcdSrv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-        var conn, err = upgrader.Upgrade(w, r, nil)
-        if err != nil { return }
-        defer conn.Close()
-        for {
-            var req struct {
-                ID     json.RawMessage `json:"id"`
-                Method string          `json:"method"`
-                Params json.RawMessage `json:"params"`
+    var btcdSrv = newFakeCoreServer(t, func(method string, params []interface{}) (interface{}, error) {
+        switch method {
+        case "validateaddress":
+            return map[string]any{"isvalid": true, "address": watchedAddr, "scriptPubKey": "76a914aa88ac"}, nil
+        case "scantxoutset":
+            return map[string]any{"success": true, "unspents": []map[string]any{}}, nil
+        case "decoderawtransaction":
+            return map[string]any{
+                "txid": txid,
+                "vout": []map[string]any{{"value": 2.5, "n": 0, "scriptPubKey": map[string]any{"address": watchedAddr, "hex": "76a914aa88ac"}}},
+            }, nil
+        case "getrawtransaction":
+            if reqTxid, _ := params[0].(string); reqTxid == "prevtx" {
+                return map[string]any{"vout": []map[string]any{{"value": 2.5001, "n": 0, "scriptPubKey": map[string]any{"address": "1InputAddr"}}}}, nil
             }
-            if err := conn.ReadJSON(&req); err != nil { return }
-            switch req.Method {
-            case "loadtxfilter":
-                conn.WriteJSON(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": nil})
-                conn.WriteJSON(map[string]any{
-                    "jsonrpc": "2.0",
-                    "method":  "relevanttxaccepted",
-                    "params":  []string{"deadbeefrawtxhex"},
-                })
-            case "decoderawtransaction":
-                conn.WriteJSON(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": map[string]any{
-                    "txid": txid,
-                    "vout": []map[string]any{
-                        {"value": 2.5, "scriptPubKey": map[string]any{"addresses": []string{watchedAddr}}},
-                    },
-                }})
-            case "getrawtransaction":
-                var p []interface{}
-                json.Unmarshal(req.Params, &p)
-                if reqTxid, _ := p[0].(string); reqTxid == "prevtx" { // prevout: value 2.5001 → fee 0.0001 BTC = 10000 sat
-                    conn.WriteJSON(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": map[string]any{
-                        "vout": []map[string]any{{"value": 2.5001, "scriptPubKey": map[string]any{"address": "1InputAddr"}}},
-                    }})
-                } else {
-                    conn.WriteJSON(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": map[string]any{
-                        "txid": txid, "confirmations": 0, "size": 110, "vsize": 100,
-                        "vin":  []map[string]any{{"txid": "prevtx", "vout": 0}},
-                        "vout": []map[string]any{{"value": 2.5, "scriptPubKey": map[string]any{"addresses": []string{watchedAddr}}}},
-                    }})
-                }
-            case "estimatefee":
-                var p []interface{}
-                json.Unmarshal(req.Params, &p)
-                var rate = 0.0002 // 6-block target → 20 sat/vB
-                if blocks, _ := p[0].(float64); blocks == 2 {
-                    rate = 0.0005 // 2-block target → 50 sat/vB
-                }
-                conn.WriteJSON(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": rate})
-            default:
-                conn.WriteJSON(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": nil})
+            return map[string]any{
+                "txid": txid, "confirmations": 0, "size": 110, "vsize": 100,
+                "vin":  []map[string]any{{"txid": "prevtx", "vout": 0}},
+                "vout": []map[string]any{{"value": 2.5, "n": 0, "scriptPubKey": map[string]any{"address": watchedAddr, "hex": "76a914aa88ac"}}},
+            }, nil
+        case "getmempoolentry":
+            // fee 0.0001 BTC = 10000 sat over 100 vB = 100 sat/vB
+            return map[string]any{"vsize": 100, "fees": map[string]any{"base": 0.0001}}, nil
+        case "estimatesmartfee":
+            var rate = 0.0002 // 6-block target → 20 sat/vB
+            if blocks, _ := params[0].(float64); blocks == 2 {
+                rate = 0.0005 // 2-block target → 50 sat/vB
             }
+            return map[string]any{"feerate": rate, "blocks": params[0]}, nil
         }
-    }))
-    defer btcdSrv.Close()
-    var url = "ws://" + strings.TrimPrefix(btcdSrv.URL, "http://") + "/ws"
-    var dialErr error
-    btcd, dialErr = dialBtcd(context.Background(), btcdConfig{url: url, user: "u", pass: "p"}, notifier{})
-    if dialErr != nil {
-        t.Fatalf("dialBtcd: %v", dialErr)
-    }
-    defer func() { btcd.close(); btcd = nil }()
+        return nil, nil
+    })
+    core = newFakeCoreClient(t, btcdSrv)
+    defer func() { core = nil }()
     openDB(filepath.Join(t.TempDir(), "watches.db"))
     defer closeDB()
     stopNotify()
+    resetWatched()
     defer stopNotify()
     watchCmd(b, 42, watchedAddr+" John") // alias "John"
+    broadcast("deadbeefrawtxhex")
     var deadline = time.Now().Add(3 * time.Second)
     for time.Now().Before(deadline) {
         sentMu.Lock()
@@ -185,7 +154,7 @@ func TestUnwatchFlow(t *testing.T) {
     }))
     defer server.Close()
     var b = newBot("TESTTOKEN", server.URL)
-    btcd = nil
+    core = nil
     stopNotify()
     defer stopNotify()
     openDB(filepath.Join(t.TempDir(), "watches.db"))
@@ -296,34 +265,32 @@ func TestTxConfirmation(t *testing.T) {
     defer tg.Close()
     var b = newBot("TESTTOKEN", tg.URL)
     var txid = "f21b47a9143a23e80cc59e81588d21558b394005580b285961957cb3bed5b3e0"
-    var srv = newFakeBtcdServer(t, func(method string, params json.RawMessage) (interface{}, error) {
+    var srv = newFakeCoreServer(t, func(method string, params []interface{}) (interface{}, error) {
+        var p = params
+        _ = p
         switch method {
         case "notifyblocks":
             return nil, nil
         case "getblock":
-            var p []interface{}
-            json.Unmarshal(params, &p)
             if len(p) > 1 && p[1].(float64) == 1 {
                 return map[string]any{"height": 100, "tx": []string{txid}}, nil
             }
             return map[string]any{"hash": "0000000000000000abc", "height": 100, "time": 1700000000, "size": 300,
-                "rawtx": []map[string]any{{"txid": "cb", "size": 100, "vin": []map[string]any{{"coinbase": "03"}}, "vout": []map[string]any{{"value": 50.0}}}}}, nil
+                "tx": []map[string]any{{"txid": "cb", "size": 100, "vin": []map[string]any{{"coinbase": "03"}}, "vout": []map[string]any{{"value": 50.0}}}}}, nil
         }
         return nil, nil
     })
     defer srv.Close()
-    btcd = dialFakeBtcd(t, srv, notifier{bot: b})
-    defer func() { btcd.close(); btcd = nil }()
+    core = newFakeCoreClient(t, srv)
+    defer func() { core = nil }()
     openDB(filepath.Join(t.TempDir(), "watches.db"))
     defer closeDB()
     stopNotify()
     defer stopNotify()
     txwatches.Add(txid, 7, "Alice")
-    // notifyblocks makes the fake push a blockconnected, which the notifier turns
-    // into a checkConfirmations that finds txid in the block and messages chat 7.
-    if err := btcd.notifyBlocks(context.Background()); err != nil {
-        t.Fatalf("notifyBlocks: %v", err)
-    }
+    // a hashblock frame is what zmq.go turns into a checkConfirmations that finds
+    // txid in the new block and messages chat 7
+    go checkConfirmations(b, "0000000000000000abc")
     var found string
     var deadline = time.Now().Add(3 * time.Second)
     for time.Now().Before(deadline) {
@@ -379,15 +346,15 @@ func TestAddrConfirmation(t *testing.T) {
     var b = newBot("TESTTOKEN", tg.URL)
     var addr = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
     var txid = "f21b47a9143a23e80cc59e81588d21558b394005580b285961957cb3bed5b3e0"
-    var srv = newFakeBtcdServer(t, func(method string, params json.RawMessage) (interface{}, error) {
+    var srv = newFakeCoreServer(t, func(method string, params []interface{}) (interface{}, error) {
         if method == "getblock" {
             return map[string]any{"height": 200, "tx": []string{txid}}, nil
         }
         return nil, nil
     })
     defer srv.Close()
-    btcd = dialFakeBtcd(t, srv, &recordingHandler{})
-    defer func() { btcd.close(); btcd = nil }()
+    core = newFakeCoreClient(t, srv)
+    defer func() { core = nil }()
     stopNotify()
     defer stopNotify()
     txwatches.AddAddrConfirm(txid, 7, addr, "John")
@@ -423,74 +390,49 @@ func TestAddrConfirmDedup(t *testing.T) {
     }
 }
 
-// spendBtcdServer fakes a btcd that pushes a relevanttxaccepted for a transaction
-// *spending* watchedAddr: the decoded transaction pays a stranger (plus change
-// back to watchedAddr when change is true), and the prevout its input references
-// belongs to watchedAddr — which is the only way the sending side is visible,
-// since a decoded transaction names receiving addresses only.
-func spendBtcdServer(t *testing.T, watchedAddr, txid string, change bool) *httptest.Server {
+// spendCoreServer fakes Core for a transaction *spending* watchedAddr: the
+// decoded transaction pays a stranger (plus change back to watchedAddr when
+// change is true), and the prevout its input references belongs to watchedAddr —
+// which is the only way the sending side is visible, since a decoded transaction
+// names receiving addresses only.
+func spendCoreServer(t *testing.T, watchedAddr, txid string, change bool) *httptest.Server {
     var inValue = 1.0001
     var outs = []map[string]any{
-        {"value": 1.0, "scriptPubKey": map[string]any{"addresses": []string{"1RecipientAddr"}}},
+        {"value": 1.0, "n": 0, "scriptPubKey": map[string]any{"address": "1RecipientAddr", "hex": "76a914bb88ac"}},
     }
     if change {
         inValue = 2.5
-        outs = append(outs, map[string]any{"value": 1.4999, "scriptPubKey": map[string]any{"address": watchedAddr}})
+        outs = append(outs, map[string]any{"value": 1.4999, "n": 1, "scriptPubKey": map[string]any{"address": watchedAddr, "hex": "76a914aa88ac"}})
     }
-    var upgrader websocket.Upgrader
-    return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-        var conn, err = upgrader.Upgrade(w, r, nil)
-        if err != nil { return }
-        defer conn.Close()
-        for {
-            var req struct {
-                ID     json.RawMessage `json:"id"`
-                Method string          `json:"method"`
-                Params json.RawMessage `json:"params"`
+    return newFakeCoreServer(t, func(method string, params []interface{}) (interface{}, error) {
+        switch method {
+        case "validateaddress":
+            return map[string]any{"isvalid": true, "address": watchedAddr, "scriptPubKey": "76a914aa88ac"}, nil
+        case "scantxoutset":
+            return map[string]any{"success": true, "unspents": []map[string]any{}}, nil
+        case "decoderawtransaction":
+            return map[string]any{"txid": txid, "vout": outs}, nil
+        case "getrawtransaction":
+            if reqTxid, _ := params[0].(string); reqTxid == "prevtx" {
+                return map[string]any{"vout": []map[string]any{{"value": inValue, "n": 0, "scriptPubKey": map[string]any{"address": watchedAddr, "hex": "76a914aa88ac"}}}}, nil
             }
-            if err := conn.ReadJSON(&req); err != nil { return }
-            switch req.Method {
-            case "loadtxfilter":
-                conn.WriteJSON(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": nil})
-                conn.WriteJSON(map[string]any{
-                    "jsonrpc": "2.0",
-                    "method":  "relevanttxaccepted",
-                    "params":  []string{"deadbeefrawtxhex"},
-                })
-            case "decoderawtransaction":
-                conn.WriteJSON(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": map[string]any{
-                    "txid": txid, "vout": outs,
-                }})
-            case "getrawtransaction":
-                var p []interface{}
-                json.Unmarshal(req.Params, &p)
-                if reqTxid, _ := p[0].(string); reqTxid == "prevtx" {
-                    conn.WriteJSON(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": map[string]any{
-                        "vout": []map[string]any{{"value": inValue, "scriptPubKey": map[string]any{"address": watchedAddr}}},
-                    }})
-                } else {
-                    conn.WriteJSON(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": map[string]any{
-                        "txid": txid, "confirmations": 0, "size": 110, "vsize": 100,
-                        "vin":  []map[string]any{{"txid": "prevtx", "vout": 0}},
-                        "vout": outs,
-                    }})
-                }
-            case "searchrawtransactions":
-                conn.WriteJSON(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": []map[string]any{}})
-            case "estimatefee":
-                var p []interface{}
-                json.Unmarshal(req.Params, &p)
-                var rate = 0.0002
-                if blocks, _ := p[0].(float64); blocks == 2 { rate = 0.0005 }
-                conn.WriteJSON(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": rate})
-            default:
-                conn.WriteJSON(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": nil})
-            }
+            return map[string]any{
+                "txid": txid, "confirmations": 0, "size": 110, "vsize": 100,
+                "vin":  []map[string]any{{"txid": "prevtx", "vout": 0}},
+                "vout": outs,
+            }, nil
+        case "getmempoolentry":
+            return map[string]any{"vsize": 100, "fees": map[string]any{"base": 0.0001}}, nil
+        case "estimatesmartfee":
+            var rate = 0.0002
+            if blocks, _ := params[0].(float64); blocks == 2 { rate = 0.0005 }
+            return map[string]any{"feerate": rate, "blocks": params[0]}, nil
         }
-    }))
+        return nil, nil
+    })
 }
 
-// awaitNotification drives a watch on watchedAddr against the given fake btcd and
+// awaitNotification drives a watch on watchedAddr against the given fake core and
 // returns the address notification the chat received.
 func awaitNotification(t *testing.T, btcdSrv *httptest.Server, watchedAddr string) string {
     var sentMu sync.Mutex
@@ -506,19 +448,20 @@ func awaitNotification(t *testing.T, btcdSrv *httptest.Server, watchedAddr strin
         json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": true})
     }))
     var b = newBot("TESTTOKEN", tg.URL)
-    var url = "ws://" + strings.TrimPrefix(btcdSrv.URL, "http://") + "/ws"
-    var dialErr error
-    btcd, dialErr = dialBtcd(context.Background(), btcdConfig{url: url, user: "u", pass: "p"}, notifier{})
-    if dialErr != nil { t.Fatalf("dialBtcd: %v", dialErr) }
+    core = newFakeCoreClient(t, btcdSrv)
     openDB(filepath.Join(t.TempDir(), "watches.db"))
     stopNotify()
+    resetWatched()
     // cleanup runs after the caller's assertions, so stopNotify (which resets the
     // confirmation map) can't erase what the test is about to check
     t.Cleanup(tg.Close)
-    t.Cleanup(func() { btcd.close(); btcd = nil })
+    t.Cleanup(func() { core = nil })
     t.Cleanup(func() { closeDB() })
     t.Cleanup(stopNotify)
+    t.Cleanup(resetWatched)
     watchCmd(b, 42, watchedAddr+" John")
+    // ZMQ delivers the raw transaction; this is what zmq.go does with a rawtx frame
+    broadcast("deadbeefrawtxhex")
     var deadline = time.Now().Add(3 * time.Second)
     for time.Now().Before(deadline) {
         sentMu.Lock()
@@ -541,7 +484,7 @@ func awaitNotification(t *testing.T, btcdSrv *httptest.Server, watchedAddr strin
 func TestSpendNotification(t *testing.T) {
     var watchedAddr = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
     var txid = "f21b47a9143a23e80cc59e81588d21558b394005580b285961957cb3bed5b3e0"
-    var srv = spendBtcdServer(t, watchedAddr, txid, false)
+    var srv = spendCoreServer(t, watchedAddr, txid, false)
     defer srv.Close()
     var got = awaitNotification(t, srv, watchedAddr)
     if !strings.Contains(got, "Outgoing transaction from watched address "+short(watchedAddr)+" (John)") {
@@ -579,7 +522,7 @@ func TestSpendNotification(t *testing.T) {
 func TestSpendWithChangeNotification(t *testing.T) {
     var watchedAddr = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
     var txid = "f21b47a9143a23e80cc59e81588d21558b394005580b285961957cb3bed5b3e0"
-    var srv = spendBtcdServer(t, watchedAddr, txid, true)
+    var srv = spendCoreServer(t, watchedAddr, txid, true)
     defer srv.Close()
     var got = awaitNotification(t, srv, watchedAddr)
     if !strings.Contains(got, "Outgoing transaction from watched address") {
@@ -593,69 +536,56 @@ func TestSpendWithChangeNotification(t *testing.T) {
     }
 }
 
-// btcd matches a spend by outpoint, so the watched address's current unspent
-// outputs have to be computed from its history and loaded into the filter.
-func TestAddressOutpoints(t *testing.T) {
+// Spend detection needs to know which outpoints a watched address owns, because
+// a spend names the outpoint and never the address. Core answers that directly
+// with scantxoutset — no history replay, unlike the btcd path — and seeding runs
+// in the background, so this waits for it.
+func TestSeedOutpoints(t *testing.T) {
     var addr = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
-    var history = []map[string]any{
-        // received: tx1 output 0 (output 1 pays someone else)
-        {"txid": "tx1", "vout": []map[string]any{
-            {"value": 1.0, "scriptPubKey": map[string]any{"address": addr}},
-            {"value": 0.2, "scriptPubKey": map[string]any{"address": "1Other"}},
-        }},
-        // received: tx2 output 0
-        {"txid": "tx2", "vout": []map[string]any{
-            {"value": 2.0, "scriptPubKey": map[string]any{"addresses": []string{addr}}},
-        }},
-        // spent tx1:0 again, paying a stranger — so tx1:0 is no longer unspent
-        {"txid": "tx3",
-            "vin":  []map[string]any{{"txid": "tx1", "vout": 0, "prevOut": map[string]any{"value": 1.0, "addresses": []string{addr}}}},
-            "vout": []map[string]any{{"value": 0.9, "scriptPubKey": map[string]any{"address": "1Other"}}}},
-        // received again, this time at output index 1
-        {"txid": "tx4", "vout": []map[string]any{
-            {"value": 0.1, "scriptPubKey": map[string]any{"address": "1Other"}},
-            {"value": 0.5, "scriptPubKey": map[string]any{"address": addr}},
-        }},
-    }
-    var srv = newFakeBtcdServer(t, func(method string, params json.RawMessage) (interface{}, error) {
-        if method != "searchrawtransactions" {
-            t.Fatalf("unexpected method %s", method)
+    var script = "76a914aabbccddeeff88ac"
+    var srv = newFakeCoreServer(t, func(method string, params []interface{}) (interface{}, error) {
+        switch method {
+        case "validateaddress":
+            return map[string]any{"isvalid": true, "address": addr, "scriptPubKey": script}, nil
+        case "scantxoutset":
+            // the scan must be asked for every address in one pass
+            if action, _ := params[0].(string); action != "start" {
+                t.Fatalf("scantxoutset action = %v, want start", params[0])
+            }
+            return map[string]any{"success": true, "unspents": []map[string]any{
+                {"txid": "tx2", "vout": 0, "scriptPubKey": script, "amount": 1.0, "height": 100},
+                {"txid": "tx4", "vout": 1, "scriptPubKey": script, "amount": 0.5, "height": 200},
+                {"txid": "other", "vout": 0, "scriptPubKey": "76a914ffff88ac", "amount": 9.0, "height": 300},
+            }}, nil
         }
-        var p []interface{}
-        json.Unmarshal(params, &p)
-        if skip, _ := p[2].(float64); skip > 0 {
-            return []map[string]any{}, nil
-        }
-        return history, nil
+        return nil, nil
     })
-    defer srv.Close()
-    btcd = dialFakeBtcd(t, srv, notifier{})
-    defer func() { btcd.close(); btcd = nil }()
-    var ops, complete = addressOutpoints(context.Background(), addr)
-    if !complete {
-        t.Fatal("expected a complete history")
+    core = newFakeCoreClient(t, srv)
+    resetWatched()
+    t.Cleanup(func() { core = nil; resetWatched() })
+    seedOutpoints([]string{addr})
+    var deadline = time.Now().Add(5 * time.Second)
+    for time.Now().Before(deadline) {
+        watchedMu.Lock()
+        var n = len(watchedOutpoints)
+        watchedMu.Unlock()
+        if n >= 2 { break }
+        time.Sleep(10 * time.Millisecond)
     }
-    var got = map[btcdOutpoint]bool{}
-    for _, op := range ops {
-        got[op] = true
+    watchedMu.Lock()
+    defer watchedMu.Unlock()
+    if watchedScripts[script] != addr {
+        t.Fatalf("the address's scriptPubKey was not registered for matching: %v", watchedScripts)
     }
-    var want = map[btcdOutpoint]bool{{"tx2", 0}: true, {"tx4", 1}: true}
-    if !reflect.DeepEqual(got, want) {
-        t.Fatalf("unspent outputs = %v, want %v", got, want)
+    var want = map[outpoint]string{{"tx2", 0}: addr, {"tx4", 1}: addr}
+    for op, owner := range want {
+        if watchedOutpoints[op] != owner {
+            t.Fatalf("outpoint %v not seeded (got %q): %v", op, watchedOutpoints[op], watchedOutpoints)
+        }
+    }
+    // an unspent belonging to a different script must not be attributed to us
+    if _, ok := watchedOutpoints[outpoint{"other", 0}]; ok {
+        t.Fatal("an unrelated address's outpoint was seeded")
     }
 }
 
-// An address whose history can't be read (no --addrindex) reports incomplete, so
-// the caller can warn that spends of its older coins may go unreported.
-func TestAddressOutpointsIncomplete(t *testing.T) {
-    var srv = newFakeBtcdServer(t, func(method string, params json.RawMessage) (interface{}, error) {
-        return nil, fmt.Errorf("addrindex is disabled")
-    })
-    defer srv.Close()
-    btcd = dialFakeBtcd(t, srv, notifier{})
-    defer func() { btcd.close(); btcd = nil }()
-    var ops, complete = addressOutpoints(context.Background(), "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa")
-    if complete || len(ops) != 0 {
-        t.Fatalf("ops = %v complete = %v, want none and incomplete", ops, complete)
-    }
-}
