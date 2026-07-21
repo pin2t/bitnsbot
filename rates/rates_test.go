@@ -130,3 +130,50 @@ func TestUpdateRatesAverages(t *testing.T) {
         t.Fatalf("expected only coingecko averaged, got %v", r)
     }
 }
+
+// The market snapshot is the one figure set with no local source: capitalisation
+// and volume can only be fetched. Parsed from CoinGecko's real response shape.
+func TestParseMarket(t *testing.T) {
+    var body = []byte(`{"bitcoin":{"usd":66202,"usd_market_cap":1327983664334.4749,"usd_24h_vol":31914279096.507484}}`)
+    var m, err = parseMarket(body)
+    if err != nil {
+        t.Fatalf("parseMarket: %v", err)
+    }
+    if m.Price != 66202 {
+        t.Errorf("price = %v", m.Price)
+    }
+    if m.MarketCap != 1327983664334.4749 {
+        t.Errorf("market cap = %v", m.MarketCap)
+    }
+    if m.Volume24h != 31914279096.507484 {
+        t.Errorf("volume = %v", m.Volume24h)
+    }
+    // a response without a price is not a usable snapshot
+    if _, err := parseMarket([]byte(`{"bitcoin":{}}`)); err == nil {
+        t.Error("expected an error for a response carrying no price")
+    }
+}
+
+// A failed fetch must report not-ok rather than a zeroed snapshot, so /market
+// can say "unavailable" instead of quoting a $0 market cap.
+func TestSnapshotDegrades(t *testing.T) {
+    var saved = marketURL
+    t.Cleanup(func() { marketURL = saved })
+    var srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        http.Error(w, "rate limited", http.StatusTooManyRequests)
+    }))
+    defer srv.Close()
+    marketURL = srv.URL
+    if _, ok := Snapshot(); ok {
+        t.Fatal("expected not-ok when the market API refuses")
+    }
+    var good = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        w.Write([]byte(`{"bitcoin":{"usd":66202,"usd_market_cap":1.3e12,"usd_24h_vol":3.1e10}}`))
+    }))
+    defer good.Close()
+    marketURL = good.URL
+    var m, ok = Snapshot()
+    if !ok || m.Price != 66202 {
+        t.Fatalf("snapshot = %+v ok=%v", m, ok)
+    }
+}
