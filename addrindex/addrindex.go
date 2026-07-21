@@ -48,6 +48,7 @@ import "bytes"
 import "crypto/sha256"
 import "encoding/binary"
 import "encoding/hex"
+import "errors"
 
 import "go.etcd.io/bbolt"
 
@@ -142,7 +143,10 @@ func encodeEntry(prefix []byte, t Touch) []byte {
 // is written exactly once and never rewritten; appending only happens where a
 // resumed backfill picks up mid-range.
 func merge(touches map[string][]Touch, cursor Cursor) error {
-    if db == nil { return nil }
+    // Not a silent no-op: a write path that reports success while discarding
+    // everything is how a missing Init went unnoticed through a whole chain
+    // backfill. Reads may degrade quietly; writes must not.
+    if db == nil { return errors.New("addrindex: not initialised (addrindex.Init was never called)") }
     var grouped = make(map[string][]byte)
     for prefix, list := range touches {
         for _, t := range list {

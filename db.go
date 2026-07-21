@@ -3,6 +3,7 @@ package main
 import "encoding/binary"
 
 import "go.etcd.io/bbolt"
+import "bitnsbot/addrindex"
 import "bitnsbot/logging"
 import "bitnsbot/miners"
 import "bitnsbot/rates"
@@ -11,8 +12,14 @@ import "bitnsbot/watches"
 var db *bbolt.DB
 
 // openDB opens the shared bbolt file, creates the block-cache bucket, and hands
-// the same handle to the rates, watches, and miners packages (which own their
-// own buckets). One file, one handle, four buckets.
+// the same handle to the rates, watches, miners and addrindex packages (which
+// own their own buckets). One file, one handle, nine buckets.
+//
+// Every package that owns buckets must be Init'd here. Forgetting one is not a
+// loud failure: those packages guard their operations on a nil handle, so the
+// package silently does nothing — which is exactly how the address index came to
+// fetch and parse the whole chain while storing none of it. TestOpenDBBuckets
+// pins the full set.
 func openDB(path string) error {
     logging.Db("open %s", path)
     var opened, err = bbolt.Open(path, 0600, nil)
@@ -31,6 +38,7 @@ func openDB(path string) error {
     if err := rates.Init(db); err != nil { return err }
     if err := watches.Init(db); err != nil { return err }
     if err := miners.Init(db); err != nil { return err }
+    if err := addrindex.Init(db); err != nil { return err }
     return nil
 }
 
