@@ -1,7 +1,6 @@
 package main
 
 import "context"
-import "encoding/json"
 import "fmt"
 import "path/filepath"
 import "strings"
@@ -47,19 +46,19 @@ func TestComputeBlockInfo(t *testing.T) {
     }); err != nil {
         t.Fatalf("seed miners: %v", err)
     }
-    var srv = newFakeBtcdServer(t, func(method string, params json.RawMessage) (interface{}, error) {
-        var p []interface{}
-        json.Unmarshal(params, &p)
+    var srv = newFakeCoreServer(t, func(method string, params []interface{}) (interface{}, error) {
+        var p = params
+        _ = p
         switch method {
         case "getblock":
             // coinbase (out 50.0015 = reward 50 + fees 0.0015) + two fee-paying txs
             return map[string]any{
                 "hash": "hash500", "height": 500, "time": 1700000000, "size": 550, "difficulty": 2.0,
-                "rawtx": []map[string]any{
+                "tx": []map[string]any{
                     {"txid": "cb", "size": 100, "vin": []map[string]any{{"coinbase": "03abcd"}},
                         "vout": []map[string]any{{"value": 50.0015, "scriptPubKey": map[string]any{"address": "mineraddr"}}}},
-                    {"txid": "txa", "size": 200, "vin": []map[string]any{{"txid": "preva", "vout": 0}}, "vout": []map[string]any{{"value": 1.0}}},
-                    {"txid": "txb", "size": 250, "vin": []map[string]any{{"txid": "prevb", "vout": 1}}, "vout": []map[string]any{{"value": 2.0}}},
+                    {"txid": "txa", "size": 200, "fee": 0.0005, "vin": []map[string]any{{"txid": "preva", "vout": 0}}, "vout": []map[string]any{{"value": 1.0}}},
+                    {"txid": "txb", "size": 250, "fee": 0.001, "vin": []map[string]any{{"txid": "prevb", "vout": 1}}, "vout": []map[string]any{{"value": 2.0}}},
                 },
             }, nil
         case "getrawtransaction":
@@ -74,8 +73,8 @@ func TestComputeBlockInfo(t *testing.T) {
         return nil, fmt.Errorf("unexpected method %s", method)
     })
     defer srv.Close()
-    btcd = dialFakeBtcd(t, srv, &recordingHandler{})
-    defer func() { btcd.close(); btcd = nil }()
+    core = newFakeCoreClient(t, srv)
+    defer func() { core = nil }()
     var bi, err = computeBlockInfo(context.Background(), "hash500")
     if err != nil {
         t.Fatalf("computeBlockInfo: %v", err)
@@ -86,6 +85,7 @@ func TestComputeBlockInfo(t *testing.T) {
     if bi.Miner != "TestPool" {
         t.Fatalf("miner = %q, want TestPool", bi.Miner)
     }
+    // Core supplies each fee directly, so no prevout fetching happens at all
     if !bi.FeesOK || satoshi(bi.FeeMin) != "50 000" || satoshi(bi.FeeAvg) != "75 000" || satoshi(bi.FeeMax) != "100 000" {
         t.Fatalf("fees: ok=%v min=%v avg=%v max=%v", bi.FeesOK, bi.FeeMin, bi.FeeAvg, bi.FeeMax)
     }
@@ -129,24 +129,22 @@ func TestBlockNotification(t *testing.T) {
         t.Fatalf("openDB: %v", err)
     }
     defer closeDB()
-    var srv = newFakeBtcdServer(t, func(method string, params json.RawMessage) (interface{}, error) {
+    var srv = newFakeCoreServer(t, func(method string, params []interface{}) (interface{}, error) {
+        var p = params
+        _ = p
         switch method {
-        case "notifyblocks":
-            return nil, nil
         case "getblock":
             return map[string]any{"hash": "0000000000000000abc", "height": 100, "time": 1700000000, "size": 300,
-                "rawtx": []map[string]any{{"txid": "cb", "size": 100, "vin": []map[string]any{{"coinbase": "03"}}, "vout": []map[string]any{{"value": 50.0}}}}}, nil
+                "tx": []map[string]any{{"txid": "cb", "size": 100, "vin": []map[string]any{{"coinbase": "03"}}, "vout": []map[string]any{{"value": 50.0}}}}}, nil
         }
         return nil, fmt.Errorf("unexpected method %s", method)
     })
     defer srv.Close()
-    btcd = dialFakeBtcd(t, srv, notifier{})
-    defer func() { btcd.close(); btcd = nil }()
-    // notifyblocks makes the fake push a blockconnected notification, which
-    // notifier.Handle turns into a cacheBlockHash of the new tip.
-    if err := btcd.notifyBlocks(context.Background()); err != nil {
-        t.Fatalf("notifyBlocks: %v", err)
-    }
+    core = newFakeCoreClient(t, srv)
+    defer func() { core = nil }()
+    // Core pushes new tips over ZMQ rather than through an RPC subscription, so
+    // this is what zmq.go does on a hashblock frame.
+    go cacheBlockHash("0000000000000000abc")
     var ok bool
     for i := 0; i < 40 && !ok; i++ {
         _, ok = loadBlock(100)

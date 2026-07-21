@@ -32,16 +32,17 @@ var apiBaseURL      = flag.String("api-base-url", "http://localhost:8081", "base
 var secretToken     = flag.String("secret-token", "", "optional secret checked against the X-Telegram-Bot-Api-Secret-Token header")
 var registerHook    = flag.Bool("register-webhook", true, "call setWebhook on startup")
 var dbPath          = flag.String("db", "watches.db", "path to the bbolt watches database")
-var btcdURL         = flag.String("btcd-url", "", "btcd RPC websocket URL, e.g. wss://localhost:8334/ws (leave empty to skip connecting to btcd)")
-var btcdUser        = flag.String("btcd-user", "", "btcd RPC username")
-var btcdPass        = flag.String("btcd-pass", "", "btcd RPC password")
-var btcdCert        = flag.String("btcd-cert", "", "path to btcd's rpc.cert for self-signed TLS trust")
-var btcdInsecureTLS = flag.Bool("btcd-insecure-tls", false, "skip TLS certificate verification for the btcd connection (dev only)")
+var coreURL         = flag.String("core-url", "", "Bitcoin Core JSON-RPC URL, e.g. http://127.0.0.1:8332 (leave empty to skip connecting to the node)")
+var coreUser        = flag.String("core-user", "", "Bitcoin Core RPC username (or use -core-cookie)")
+var corePass        = flag.String("core-pass", "", "Bitcoin Core RPC password (or use -core-cookie)")
+var coreCookie      = flag.String("core-cookie", "", "path to Bitcoin Core's .cookie file, an alternative to -core-user/-core-pass")
+var coreZMQ         = flag.String("core-zmq", "", "comma-separated ZMQ endpoints publishing hashblock and rawtx, e.g. tcp://127.0.0.1:28332,tcp://127.0.0.1:28333")
+var coreREST        = flag.String("core-rest", "", "base URL of Bitcoin Core's REST interface for building the address index (empty disables indexing)")
 var backupPath      = flag.String("backup", "", "path to copy the database to periodically (empty disables backups)")
 var backupInterval  = flag.Duration("backup-interval", 24*time.Hour, "how often to back up the database")
 var backupScript    = flag.String("backup-script", "", "command run after each backup, with the backup's path as $1 and in $BACKUP_FILE (empty runs nothing)")
 
-var btcd *btcdClient
+var core *coreClient
 
 func main() {
     flag.Usage = func() {
@@ -68,30 +69,42 @@ func main() {
         startBackup(*backupPath, *backupInterval, *backupScript)
         logging.Status("backing up the database to %s every %s", *backupPath, *backupInterval)
     }
-    if *btcdURL != "" {
-        var btcdCtx, btcdCancel = context.WithTimeout(context.Background(), 15*time.Second)
-        btcd, err = dialBtcd(btcdCtx, btcdConfig{
-            url:         *btcdURL,
-            user:        *btcdUser,
-            pass:        *btcdPass,
-            certFile:    *btcdCert,
-            insecureTLS: *btcdInsecureTLS,
-        }, notifier{bot: bot})
-        btcdCancel()
+    if *coreURL != "" {
+        core, err = newCoreClient(coreConfig{
+            url:        *coreURL,
+            user:       *coreUser,
+            pass:       *corePass,
+            cookieFile: *coreCookie,
+        })
         if err != nil {
-            logging.Fatal("dial btcd: %v", err)
+            logging.Fatal("Bitcoin Core client: %v", err)
         }
-        logging.Status("connected to btcd at %s", *btcdURL)
+        // unlike btcd's websocket there is no connection to establish or
+        // supervise — every call is its own HTTP request — so a bad URL or
+        // credentials surface on the first real call instead of at startup.
+        // Check once here so that failure is loud and immediate.
+        var ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
+        var height, herr = core.getBlockCount(ctx)
+        cancel()
+        if herr != nil {
+            logging.Fatal("Bitcoin Core at %s: %v", *coreURL, herr)
+        }
+        logging.Status("connected to Bitcoin Core at %s (height %d)", *coreURL, height)
     }
     startNotify(bot)
     miners.Start()
-    if btcd != nil {
+    if core != nil {
         miners.StartStats(minerSource{})
     }
     startBlockCache()
     startMempoolFlow()
-    if btcd != nil {
-        btcd.supervise(reapplyBtcdState)
+    if core != nil && *coreZMQ != "" {
+        if err := startZMQ(context.Background(), strings.Split(*coreZMQ, ","), bot); err != nil {
+            logging.Fatal("subscribe to Bitcoin Core ZMQ: %v", err)
+        }
+    }
+    if core != nil && *coreREST != "" {
+        startAddrIndex(*coreREST)
     }
     if *registerHook {
         if *webhookURL == "" {
@@ -126,11 +139,6 @@ func shutdown(srv *http.Server) {
     defer cancel()
     if err := srv.Shutdown(ctx); err != nil {
         logging.Err("webhook server shutdown: %v", err)
-    }
-    if btcd != nil {
-        if err := btcd.close(); err != nil {
-            logging.Err("close btcd: %v", err)
-        }
     }
     stopNotify()
     if err := closeDB(); err != nil {
@@ -291,12 +299,9 @@ func watchCmd(bot *bot, chatID int64, arg string) {
             return
         }
         startNotifyChat(bot, chatID, typ, watchID, alias)
-        if btcd != nil {
-            var ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
-            if err := btcd.loadTxFilter(ctx, false, []string{watchID}, nil); err != nil {
-                logging.Warn("load tx filter: %v", err)
-            }
-            cancel()
+        if core != nil {
+            // seedOutpoints registers the address's scriptPubKey and its current
+            // UTXOs with the local matcher; there is no node-side filter to load
             seedOutpoints([]string{watchID})
         }
     }
@@ -344,13 +349,7 @@ func unwatch(bot *bot, chatID int64, arg string) {
     stopNotifyChat(chatID, watchTypeAddress, arg)
     txwatches.RemoveAddrConfirms(arg, chatID)
     logging.Info("removed subscription %s for chat %d", arg, chatID)
-    if btcd != nil {
-        var ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
-        if err := btcd.loadTxFilter(ctx, true, notifyAddresses(), nil); err != nil {
-            logging.Warn("load tx filter: %v", err)
-        }
-        cancel()
-    }
+    unwatchScripts(arg)
     send(bot, chatID, "Stopped watching "+html.EscapeString(arg)+".")
 }
 
@@ -396,13 +395,13 @@ func watchesCmd(bot *bot, chatID int64) {
 }
 
 // fees replies with current network fee estimates for three confirmation
-// speeds. btcd's estimatefee returns BTC/kB, converted to sat/vB (×1e5); a tier
-// btcd can't estimate yet shows "n/a", and if none are available the whole
+// speeds. core's estimatefee returns BTC/kB, converted to sat/vB (×1e5); a tier
+// core can't estimate yet shows "n/a", and if none are available the whole
 // reply degrades to a short "not available yet" note. The three per-tier calls
 // run concurrently (jsonrpc2 multiplexes them over the one connection) so the
 // reply waits on the slowest rather than the sum.
 func fees(bot *bot, chatID int64) {
-    if btcd == nil {
+    if core == nil {
         send(bot, chatID, "Bitcoin node connection is not configured.")
         return
     }
@@ -417,7 +416,7 @@ func fees(bot *bot, chatID int64) {
         {"Slow (2h+):", 12},
     }
     var results = make([]struct {
-        btcPerKB float64
+        btcPerKvB float64
         err      error
     }, len(tiers))
     var wg sync.WaitGroup
@@ -425,7 +424,7 @@ func fees(bot *bot, chatID int64) {
         wg.Add(1)
         go func(i, blocks int) {
             defer wg.Done()
-            results[i].btcPerKB, results[i].err = btcd.estimateFee(ctx, blocks)
+            results[i].btcPerKvB, results[i].err = core.estimateSmartFee(ctx, int64(blocks))
         }(i, t.blocks)
     }
     wg.Wait()
@@ -438,12 +437,12 @@ func fees(bot *bot, chatID int64) {
     var lines []string
     var available bool
     for i, t := range tiers {
-        if results[i].err != nil || results[i].btcPerKB <= 0 {
+        if results[i].err != nil || results[i].btcPerKvB <= 0 {
             lines = append(lines, fmt.Sprintf("%-*s  n/a", pad, t.label))
             continue
         }
         available = true
-        var rate = strings.TrimSuffix(strconv.FormatFloat(results[i].btcPerKB*1e5, 'f', 1, 64), ".0")
+        var rate = strings.TrimSuffix(strconv.FormatFloat(results[i].btcPerKvB*1e5, 'f', 1, 64), ".0")
         lines = append(lines, fmt.Sprintf("%-*s  %s sat/vB", pad, t.label, rate))
     }
     if !available {
@@ -497,13 +496,13 @@ func updateFlow(count int64) {
 // to updateFlow, so /mempool can show a live flow rate. The goroutine isn't
 // stopped on shutdown — like the rates updater, the process exits right after.
 func startMempoolFlow() {
-    if btcd == nil {
+    if core == nil {
         return
     }
     go func() {
         var sample = func() {
             var ctx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
-            var info, err = btcd.getMempoolInfo(ctx)
+            var info, err = core.getMempoolInfo(ctx)
             cancel()
             if err != nil {
                 logging.Warn("mempool flow: %v", err)
@@ -530,13 +529,13 @@ var mempoolSummaryLimit int64 = 20000
 // when the mempool is small enough to total up in reasonable time — the summed
 // output amount and summed fees of every mempool transaction, in sats and USD.
 func mempoolCmd(bot *bot, chatID int64) {
-    if btcd == nil {
+    if core == nil {
         send(bot, chatID, "Bitcoin node connection is not configured.")
         return
     }
     var ctx, cancel = context.WithTimeout(context.Background(), 30*time.Second)
     defer cancel()
-    var info, err = btcd.getMempoolInfo(ctx)
+    var info, err = core.getMempoolInfo(ctx)
     if err != nil {
         logging.Err("get mempool info: %v", err)
         send(bot, chatID, "Sorry, something went wrong reading the mempool.")
@@ -588,13 +587,13 @@ func mempoolCmd(bot *bot, chatID int64) {
 // passes — is tolerated (its outputs are just skipped); a context timeout means
 // the mempool was too large and returns ok=false so the reply shows "unavailable".
 func mempoolTotals(ctx context.Context) (amount, fee float64, ok bool) {
-    var mp, err = btcd.rawMempoolVerbose(ctx)
+    var mp, err = core.rawMempoolVerbose(ctx)
     if err != nil {
         return 0, 0, false
     }
     var txids = make([]string, 0, len(mp))
     for id, e := range mp {
-        fee += e.Fee
+        fee += e.Fees.Base
         txids = append(txids, id)
     }
     var mu sync.Mutex
@@ -606,7 +605,7 @@ func mempoolTotals(ctx context.Context) (amount, fee float64, ok bool) {
         go func(id string) {
             defer wg.Done()
             defer func() { <-sem }()
-            var tx, e = btcd.getRawTransaction(ctx, id)
+            var tx, e = core.getRawTransaction(ctx, id)
             if e != nil {
                 return
             }

@@ -18,7 +18,7 @@ func TestShutdownDrainsHandlersBeforeClosingStore(t *testing.T) {
     if err != nil {
         t.Fatalf("openDB: %v", err)
     }
-    btcd = nil
+    core = nil
     var started = make(chan struct{})
     var finished = make(chan error, 1)
     var mux = http.NewServeMux()
