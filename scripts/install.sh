@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # install.sh — build + test bitnsbot from this checkout, install it under
-# /opt/bitnsbot as a systemd service (ordered after btcd), and schedule the
+# /opt/bitnsbot as a systemd service (ordered after bitcoind), and schedule the
 # auto-update cron job.
 #
 #   Run from the repo:  sudo ./scripts/install.sh
@@ -93,11 +93,28 @@ webhook-url=http://localhost:8080/bot
 #listen=:8080
 #secret-token=
 
-# btcd RPC (leave btcd-url empty to run without a node).
-btcd-url=wss://localhost:8334/ws
-btcd-user=btcd
-btcd-pass=btcd
-btcd-cert=/home/pi/.btcd/rpc.cert
+# Bitcoin Core JSON-RPC (leave core-url empty to run without a node).
+core-url=http://127.0.0.1:8332
+# Authenticate with either the cookie file Core writes into its data directory
+# (simplest — it needs no configuration on Core's side and is rotated on every
+# restart), or an explicit rpcuser/rpcpassword pair. Set one, not both.
+core-cookie=/home/pi/.bitcoin/.cookie
+#core-user=
+#core-pass=
+
+# ZeroMQ endpoints for block and mempool notifications. Core publishes each
+# topic on whatever address its own -zmqpub* option names, so this is a
+# comma-separated list; the bot needs hashblock and rawtx. The matching
+# bitcoin.conf side is:
+#     zmqpubhashblock=tcp://127.0.0.1:28332
+#     zmqpubrawtx=tcp://127.0.0.1:28333
+# Without this the bot still answers commands but never sends notifications.
+core-zmq=tcp://127.0.0.1:28332,tcp://127.0.0.1:28333
+
+# Core's REST interface, which the address index is built from. Needs
+# rest=1 in bitcoin.conf. Leaving this empty disables indexing, and
+# /info <address> then reports its history as unavailable.
+core-rest=http://127.0.0.1:8332
 
 #verbose=1
 CFG
@@ -119,7 +136,7 @@ echo ">> writing systemd unit $UNIT"
 cat > "$UNIT" <<UNITEOF
 [Unit]
 Description=bitnsbot — Bitcoin network events Telegram bot
-After=network-online.target btcd.service
+After=network-online.target bitcoind.service
 Wants=network-online.target
 
 [Service]
@@ -148,7 +165,7 @@ systemctl enable "$SERVICE" >/dev/null
 
 if [ "$NEEDS_CONFIG" -eq 1 ]; then
     echo
-    echo "!! Service enabled but NOT started — edit $CONFIG (bot-token, btcd, ...), then:"
+    echo "!! Service enabled but NOT started — edit $CONFIG (bot-token, core-url, ...), then:"
     echo "!!     sudo systemctl start $SERVICE"
 else
     echo ">> starting $SERVICE"

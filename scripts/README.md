@@ -22,10 +22,22 @@ scripts build there, as the checkout's owner, and only copy the binary into
   `/home/pi/bitnsbot`, owned by `pi`).
 - `origin` reachable for `git fetch`. The public GitHub repo works over HTTPS
   with no credentials; for a private remote, give `pi` a read-only deploy key.
-- A btcd systemd unit named `btcd.service` (the bot's unit is ordered
-  `After=btcd.service`). If yours has a different name, edit that `After=` line
-  in `/etc/systemd/system/bitnsbot.service` — an unknown unit name there is
-  simply ignored.
+- A Bitcoin Core systemd unit named `bitcoind.service` (the bot's unit is
+  ordered `After=bitcoind.service`). If yours has a different name, edit that
+  `After=` line in `/etc/systemd/system/bitnsbot.service` — an unknown unit name
+  there is simply ignored, so a wrong name costs ordering, not startup.
+- Bitcoin Core itself needs three things set in `bitcoin.conf` for the bot to
+  use everything it can:
+
+  ```
+  txindex=1                                # /info on any transaction
+  rest=1                                   # the address index is built over REST
+  zmqpubhashblock=tcp://127.0.0.1:28332    # new-block notifications
+  zmqpubrawtx=tcp://127.0.0.1:28333        # mempool notifications for watches
+  ```
+
+  None are strictly required to start: without ZMQ the bot answers commands but
+  never notifies, and without `rest=1` address history stays unavailable.
 
 ## Usage
 
