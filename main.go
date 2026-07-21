@@ -212,6 +212,8 @@ func update(bot *bot, update Update) {
         mempoolCmd(bot, msg.Chat.ID)
     case "/miners":
         minersCmd(bot, msg.Chat.ID)
+    case "/market":
+        marketCmd(bot, msg.Chat.ID)
     case "":
         pendingInfoMu.Lock()
         var pending = pendingInfoChats[msg.Chat.ID]
@@ -281,6 +283,7 @@ func start(bot *bot, chatID int64) {
         "• <b>/fees</b> — show current network fee estimates",
         "• <b>/mempool</b> — show current mempool size and totals",
         "• <b>/miners</b> — top mining pools by blocks mined",
+        "• <b>/market</b> — price, market cap, volume and recent changes",
         "• <b>/start</b> — show this message",
     }, "\n"))
 }
@@ -663,6 +666,78 @@ func minersCmd(bot *bot, chatID int64) {
             i+1, m.Name, blocks, trimNum(m.Reward, 2), trimNum(m.Fees, 2), trimNum(m.ConsumptionGW, 1)))
     }
     send(bot, chatID, "Top miners by blocks mined:\n\n"+strings.Join(lines, "\n"))
+}
+
+// marketCmd reports the current price, market capitalisation and 24h volume,
+// plus how the price has moved over several periods.
+//
+// Everything is read from the database: the price and its history from the rate
+// series, capitalisation and volume from the market snapshot the rates updater
+// stores on its 5-minute tick. Nothing here calls a third-party API, so the
+// command answers at storage speed and an API that is down or rate-limiting
+// costs a slightly stale figure rather than a failed reply.
+//
+// The changes are computed from the bot's own history — a daily series back to
+// 2009 plus live 5-minute samples — so any period can be answered without
+// another dependency, and the figures stay consistent with the USD values shown
+// elsewhere.
+func marketCmd(bot *bot, chatID int64) {
+    var now, haveNow = rates.Last()
+    var snapshot, haveSnapshot = rates.LastMarket()
+    if haveSnapshot && snapshot.Price > 0 {
+        now, haveNow = snapshot.Price, true
+    }
+    if !haveNow {
+        send(bot, chatID, "No price data yet — still fetching.")
+        return
+    }
+    var pairs = [][2]string{{"Price", price(now)}}
+    if haveSnapshot && snapshot.MarketCap > 0 {
+        pairs = append(pairs, [2]string{"Market cap", money(snapshot.MarketCap)})
+    } else {
+        pairs = append(pairs, [2]string{"Market cap", "unavailable"})
+    }
+    if haveSnapshot && snapshot.Volume24h > 0 {
+        pairs = append(pairs, [2]string{"Volume 24h", money(snapshot.Volume24h)})
+    } else {
+        pairs = append(pairs, [2]string{"Volume 24h", "unavailable"})
+    }
+    var periods = []struct {
+        label string
+        back  time.Duration
+    }{
+        {"24h", 24 * time.Hour},
+        {"1w", 7 * 24 * time.Hour},
+        {"1m", 30 * 24 * time.Hour},
+        {"3m", 90 * 24 * time.Hour},
+        {"1y", 365 * 24 * time.Hour},
+        {"5y", 5 * 365 * 24 * time.Hour},
+    }
+    var changes [][2]string
+    for _, p := range periods {
+        if then, ok := rates.At(time.Now().Add(-p.back)); ok && then > 0 {
+            changes = append(changes, [2]string{p.label, change(now, then)})
+        }
+    }
+    var pad int
+    for _, p := range pairs {
+        if len(p[0])+1 > pad { pad = len(p[0]) + 1 }
+    }
+    var lines []string
+    for _, p := range pairs {
+        lines = append(lines, fmt.Sprintf("%-*s %s", pad, p[0]+":", p[1]))
+    }
+    if len(changes) > 0 {
+        var cpad int
+        for _, c := range changes {
+            if len(c[0])+1 > cpad { cpad = len(c[0]) + 1 }
+        }
+        lines = append(lines, "", "Changes")
+        for _, c := range changes {
+            lines = append(lines, fmt.Sprintf("%-*s %s", cpad, c[0]+":", c[1]))
+        }
+    }
+    send(bot, chatID, "Bitcoin market\n\n<pre>"+strings.Join(lines, "\n")+"</pre>")
 }
 
 func send(bot *bot, chatID int64, text string) {

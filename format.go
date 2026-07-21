@@ -216,3 +216,56 @@ func durationText(d time.Duration) string {
 func trimNum(v float64, decimals int) string {
     return strings.TrimRight(strings.TrimRight(strconv.FormatFloat(v, 'f', decimals, 64), "0"), ".")
 }
+
+// money renders a large dollar figure the way markets quote them —
+// "$1.33 T", "$31.9 B". Deliberately not `metric`, which is SI and so says "G"
+// where finance says "B"; market capitalisation reported in gigadollars would
+// read as a units error.
+func money(usd float64) string {
+    var sign = ""
+    if usd < 0 { sign, usd = "-", -usd }
+    var units = []struct {
+        scale  float64
+        suffix string
+    }{{1e12, " T"}, {1e9, " B"}, {1e6, " M"}, {1e3, " K"}}
+    for _, u := range units {
+        if usd >= u.scale {
+            return sign + "$" + trimNum(usd/u.scale, 2) + u.suffix
+        }
+    }
+    return sign + "$" + trimNum(usd, 2)
+}
+
+// price renders an exact dollar amount with cents and comma-grouped thousands:
+// "$66,202.00". `usd` drops cents from $100 up, which is right for transaction
+// amounts where they are noise, but wrong on a price quote where they are the
+// point.
+func price(usd float64) string {
+    var sign = ""
+    if usd < 0 { sign, usd = "-", -usd }
+    var whole = int64(usd)
+    var cents = int64(math.Round((usd - float64(whole)) * 100))
+    if cents == 100 { whole, cents = whole+1, 0 }
+    return fmt.Sprintf("%s$%s.%02d", sign, comma(whole), cents)
+}
+
+func comma(n int64) string {
+    var s = strconv.FormatInt(n, 10)
+    for i := len(s) - 3; i > 0; i -= 3 {
+        s = s[:i] + "," + s[i:]
+    }
+    return s
+}
+
+// change renders a move against an earlier price as both an absolute amount and
+// a percentage, always signed so a glance shows direction: "+$1,608.42 (+2.49%)".
+func change(now, then float64) string {
+    var delta = now - then
+    var sign = "+"
+    if delta < 0 { sign = "" } // price() carries the minus itself
+    var pct = ""
+    if then > 0 {
+        pct = fmt.Sprintf(" (%s%s%%)", sign, trimNum(delta/then*100, 2))
+    }
+    return sign + price(delta) + pct
+}

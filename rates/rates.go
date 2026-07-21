@@ -14,6 +14,7 @@ import "bitnsbot/logging"
 
 var db *bbolt.DB
 var bucket = []byte("rates")
+var marketBucket = []byte("market")
 
 // a rate whose nearest stored sample is more than this far from the wanted time
 // is treated as unavailable. It spans more than a day so the daily-granularity
@@ -38,8 +39,10 @@ type rateRecord struct {
 func Init(handle *bbolt.DB) error {
     db = handle
     return db.Update(func(tx *bbolt.Tx) error {
-        var _, err = tx.CreateBucketIfNotExists(bucket)
-        return err
+        for _, name := range [][]byte{bucket, marketBucket} {
+            if _, err := tx.CreateBucketIfNotExists(name); err != nil { return err }
+        }
+        return nil
     })
 }
 
@@ -291,6 +294,21 @@ func update() {
         return
     }
     logging.Info("updated BTC rate: $%.2f (avg of %s)", avg, strings.Join(names, ", "))
+    updateMarket()
+}
+
+// updateMarket refreshes the stored capitalisation and volume. It runs on the
+// price updater's tick rather than per /market command so the command reads the
+// database like every other one, and so a rate-limited or down API costs a stale
+// figure rather than a failed reply.
+func updateMarket() {
+    var m, ok = Snapshot()
+    if !ok { return }
+    if err := storeMarket(m); err != nil {
+        logging.Err("store market: %v", err)
+        return
+    }
+    logging.Info("updated market: cap $%.0f, 24h volume $%.0f", m.MarketCap, m.Volume24h)
 }
 
 // Start backfills the historical daily rates once, fetches an initial current
@@ -305,4 +323,100 @@ func Start() {
             update()
         }
     }()
+}
+
+// marketURL is CoinGecko's one-call snapshot of price, market capitalisation and
+// 24h volume — free and no-auth, like the price sources. A package var so tests
+// point it at a local server.
+var marketURL = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd&include_market_cap=true&include_24hr_vol=true"
+
+// Market is the snapshot behind /market. Price also comes from the stored rate
+// history (Last), but capitalisation and volume have no other source, so they
+// are fetched live and reported as unavailable when the fetch fails rather than
+// failing the whole command.
+type Market struct {
+    Price     float64
+    MarketCap float64
+    Volume24h float64
+}
+
+func parseMarket(body []byte) (Market, error) {
+    var v struct {
+        Bitcoin struct {
+            USD       float64 `json:"usd"`
+            MarketCap float64 `json:"usd_market_cap"`
+            Volume    float64 `json:"usd_24h_vol"`
+        } `json:"bitcoin"`
+    }
+    if err := json.Unmarshal(body, &v); err != nil { return Market{}, err }
+    if v.Bitcoin.USD <= 0 { return Market{}, fmt.Errorf("no price in response") }
+    return Market{Price: v.Bitcoin.USD, MarketCap: v.Bitcoin.MarketCap, Volume24h: v.Bitcoin.Volume}, nil
+}
+
+// Snapshot fetches the current market figures. Unlike the price updater it is
+// called per command rather than on a timer, so it makes no attempt to average
+// across sources — only CoinGecko publishes capitalisation and volume for free.
+func Snapshot() (Market, bool) {
+    logging.Net("rates → GET %s", marketURL)
+    var resp, err = httpClient.Get(marketURL)
+    if err != nil {
+        logging.Warn("market snapshot: %v", err)
+        return Market{}, false
+    }
+    defer resp.Body.Close()
+    var body, readErr = io.ReadAll(resp.Body)
+    if readErr != nil {
+        logging.Warn("market snapshot: %v", readErr)
+        return Market{}, false
+    }
+    logging.Net("rates ← market %s", body)
+    if resp.StatusCode != http.StatusOK {
+        logging.Warn("market snapshot: status %d", resp.StatusCode)
+        return Market{}, false
+    }
+    var m, parseErr = parseMarket(body)
+    if parseErr != nil {
+        logging.Warn("market snapshot: %v", parseErr)
+        return Market{}, false
+    }
+    return m, true
+}
+
+// marketRecord is one stored market snapshot, keyed by time like the rate
+// records so the newest is the last key in the bucket.
+type marketRecord struct {
+    Time      time.Time
+    Price     float64
+    MarketCap float64
+    Volume24h float64
+}
+
+func storeMarket(m Market) error {
+    if db == nil { return nil }
+    var rec = marketRecord{Time: time.Now(), Price: m.Price, MarketCap: m.MarketCap, Volume24h: m.Volume24h}
+    logging.Db("store market cap %.0f volume %.0f", m.MarketCap, m.Volume24h)
+    var data, err = json.Marshal(rec)
+    if err != nil { return err }
+    return db.Update(func(tx *bbolt.Tx) error {
+        return tx.Bucket(marketBucket).Put(itob(uint64(rec.Time.Unix())), data)
+    })
+}
+
+// LastMarket returns the most recently stored snapshot. /market reads this
+// rather than fetching, so the command never depends on a third-party API being
+// reachable at the moment someone types it.
+func LastMarket() (Market, bool) {
+    if db == nil { return Market{}, false }
+    logging.Db("last market")
+    var m Market
+    var found bool
+    db.View(func(tx *bbolt.Tx) error {
+        var k, v = tx.Bucket(marketBucket).Cursor().Last()
+        if k == nil { return nil }
+        var rec marketRecord
+        if json.Unmarshal(v, &rec) != nil { return nil }
+        m, found = Market{Price: rec.Price, MarketCap: rec.MarketCap, Volume24h: rec.Volume24h}, true
+        return nil
+    })
+    return m, found
 }
