@@ -110,81 +110,100 @@ Three existing implementations were read for their on-disk design before writing
 ours, not guessed from memory:
 
 - **btcd's `addrindex.go`** (read locally): a 21-byte address key → a doubling
-  "level" merge scheme (level 0 holds 8 entries, each level double the last)
-  storing 12-byte `{block ID, offset, length}` pointers into btcd's *own* raw
-  block files. Compact, but only works because btcd owns its block storage — we
-  don't, we talk to Core over HTTP.
-- **Fulcrum**: RocksDB, scripthash-keyed. Its real measured footprint was
-  **133 GB for BTC mainnet in August 2023** (chain was ~490 GB then) — bigger
-  than the ratio below because it also caches full UTXO details to serve
-  Electrum clients without round-tripping to Core, which we don't need.
-- **electrs' current backend, `bindex-rs`** (cloned and read — actively
-  maintained by electrs' own author, built specifically for Core 31, i.e. what's
-  running here): the best reference. `bindex-lib/src/index/scripthash.rs` hashes
-  each `scriptPubKey` (not the address string — no per-type discrimination
-  needed, since whole-script hashes don't collide across script types the way a
-  bare hash160 payload can) with SHA-256, truncates to an **8-byte prefix**,
-  pairs it with a **4-byte global tx number**, and stores that 12-byte blob as a
-  RocksDB **key with an empty value** — one row per touch, for both funding
-  (output) and spending (input, via the prevout's script) sides. Reports
-  **~10% of blockchain size** in practice (42 GB / 336 GB, Aug 2023).
+  "level" merge scheme storing 12-byte `{block ID, offset, length}` pointers into
+  btcd's *own* raw block files. Compact, but only works because btcd owns its
+  block storage — we don't, we talk to Core over HTTP.
+- **Fulcrum**: RocksDB, scripthash-keyed, measured at **133 GB for BTC mainnet
+  in August 2023**. Ruled out as a dependency anyway (a second service to run).
+- **electrs' current backend, `bindex-rs`** (cloned and read — by electrs' own
+  author, built for Core 31): the best reference. It hashes each `scriptPubKey`,
+  truncates to an **8-byte prefix**, pairs it with a 4-byte global tx number, and
+  stores that 12-byte blob as a RocksDB **key with an empty value** — one row per
+  touch, for both the funding (output) and spending (prevout) sides. Reports
+  ~10% of blockchain size.
 
 **The load-bearing discovery**: `bindex` doesn't fetch the spending side through
-`getrawtransaction`/`getblock` verbosity 3 (the ~30×-slower JSON path). It calls
-Core's REST endpoint `/rest/spenttxouts/<hash>.bin` — binary, no JSON, no
-authentication (Core's REST interface is independent of RPC credentials; the
-only gate is whether `-rest=1` is set at all). Verified directly against a live
-Core v31.1.0 node: a 34-byte response that decoded byte-for-byte identical to
-what `getblock` verbosity 3 reports for the same input's `prevout`. Combined with
-`/rest/block/<hash>.bin` for the block itself, a full historical build needs no
-JSON encoding at all — this is what makes a genesis-to-tip build tractable in
-wall-clock time, not just in disk space.
+the JSON RPC. It calls Core's REST endpoint `/rest/spenttxouts/<hash>.bin` —
+binary, no JSON. Measured against the live mainnet node: raw block + spent
+outputs is **1.95 MB in 28 ms**, where `getblock` verbosity 3 for the same block
+is **13.7 MB** of JSON. This is what makes a full historical backfill tractable.
 
-**Why the on-disk layout isn't a straight port of `bindex`'s.** RocksDB is an
-LSM tree: it compacts, and it compresses (Zstd here), so billions of tiny
-12-byte keys are cheap. bbolt is a B+tree: no compaction, no compression, and
-every key pays a page-slot overhead regardless of how small its value is. A
-literal port — one bbolt key per touch — would pay that per-key overhead
-hundreds of millions of times over, for no benefit bbolt can turn into disk
-savings the way RocksDB does. So the layout is inverted: **one bbolt key per
-address**, whose value is an **append-only list of that address's touches**.
-This amortizes the per-key overhead across every touch of an address instead of
-paying it per touch — the same insight behind btcd's own leveled scheme, just
-implemented as a single unbounded append instead of a doubling merge, because
-bbolt (unlike btcd's custom ffldb) natively supports values larger than a page.
+### The layout, and the one that failed first
 
-A touch is `height(4) + txIndex(2)` = 6 bytes — not `bindex`'s 4-byte global tx
-number — because that removes the need for a second txNum→txid table entirely:
-resolving a touch to a real txid is one `getblock(height, 1)` call, made lazily,
-only when a human actually reads an address's history (rare), and cached the
-same way block lookups already are. The tradeoff is explicit: `bindex` pays a
-fixed cost once per transaction to avoid ever re-deriving a txid; this indexer
-pays nothing at build time and a cheap, cacheable RPC call at read time.
+bbolt is a B+tree: no compaction, no compression, no prefix sharing across keys,
+and a per-element page cost. bindex's row-per-touch scheme relies on all three of
+those RocksDB properties, so it cannot be ported directly.
 
-Per-address history is capped (`maxTouches`, 10000, mirroring the old
-`addrTxLimit`) so one exchange-hot address can't force unbounded rewrites of its
-own growing value.
+**First attempt — one key per address, value = append-only list of its touches**,
+on the theory that per-key overhead would amortize across repeated touches.
+Measured against real mainnet blocks, it did not. From 25-block windows:
 
-**What's still unverified**: the real bbolt disk footprint for a genesis-to-tip
-build. bbolt's page-fill and free-list behavior under this access pattern has
-enough moving parts that a paper estimate wouldn't be trustworthy to better than
-roughly 2×. `bindex`'s own ~10% ratio, applied to today's ~753 GB chain, would
-land around 75 GB — inside the 100 GB budget — but that's RocksDB's number, not
-bbolt's. The plan is to measure, not guess: run the backfill against a real,
-bounded slice of mainnet through the Pi node once it's available, get an actual
-bytes-per-block figure, and extrapolate before recommending a full unattended
-build.
+| window | touches | file | bytes/touch |
+|---|---|---|---|
+| 958800 | 348,724 | 16.8 MB | 48 |
+| 800000 | 320,593 | 34.1 MB | 107 |
+| 500000 | 272,887 | 33.7 MB | 123 |
 
-Verified end-to-end against a live regtest node (through `addrindex.StartBackfill`
-and `addrindex.Lookup` only — the same API a real deployment would use): 104
-blocks backfilled via REST in 200ms, and a known address's history came back
-exactly right — funded at height 102, spent at height 103. `addrindex_test.go`
-also covers chunk-boundary flushing and fetch-failure retry (same reasoning as
-the miners collector: a failed block must not advance the cursor past it, or
-it's dropped from the index for good) with a fake `Source`; `build_test.go`
-pins the block/spent-outputs parsers against real regtest blocks — one with a
-single spend, one with two chained off it — checked byte-for-byte against what
-Core's own `getblock` verbosity 3 reports.
+Solving `cost = addresses×a + touches×6` gave **~133 bytes per distinct address**
+against 30 bytes of content, projecting to **150-250 GB**. The premise was simply
+false — measured over 25 recent blocks:
+
+```
+addresses touched once:      71.0%
+addresses touched twice:     25.2%
+addresses touched 3+ times:   3.8%
+```
+
+96% of addresses are touched at most twice, so there is nothing to amortize.
+
+**Shipped layout — sharded.** The key is `shard(2 bytes of the script hash) +
+rangeIndex(4)`; the value is the packed run of every touch in that shard and
+block range, each `remainder(6) + heightOffset(2) + txIndex(2)` = 10 bytes.
+`rangeBlocks` is 1000, which keeps the height offset inside a uint16 and matches
+the backfill chunk size. Shard-first key ordering puts all of one shard's ranges
+together, so a lookup is one contiguous cursor scan.
+
+This buys two things the first layout could not have:
+- **Writes are append-only.** Each (shard, range) value is written once, when
+  that chunk is indexed, and never rewritten. The first layout rewrote an
+  address's entire value on every touch, which is why it needed a write-side
+  history cap to avoid quadratic rewrites on exchange-hot addresses. That cap is
+  gone — history is complete on disk, and only `Lookup` stops early (maxLookup),
+  which is what flags the "10000+" case to the user.
+- **Per-key overhead stops mattering**: ~65k keys per range instead of one per
+  address.
+
+### Measured result
+
+900 real mainnet blocks (958000-958900), batched into one merge exactly as the
+backfill does:
+
+```
+12,313,387 touches   file 223.48 MB   18.15 bytes/touch   26s
+```
+
+Projecting to the chain's ~1.4 billion transactions at the measured (already
+deduplicated) 3.34 touches/tx gives **roughly 85 GB**; using the raw
+outputs+inputs count of 6.2e9 touches as a pessimistic bound gives 113 GB.
+Either way it is inside budget.
+
+Two measurement traps worth recording, since both produced confidently wrong
+numbers before being caught:
+- **A 25-block sample is meaningless here.** Sharded values only reach their
+  steady-state size once a whole range is in them; at 25 blocks every window
+  reported *exactly* 16.78 MB regardless of touch count, because the cost was
+  entirely per-key overhead against nearly-empty values.
+- **Merging per block instead of per chunk measures the wrong design.** Calling
+  `merge` once per block rewrites all 65k keys every block and gave 30.89
+  bytes/touch (192 GB) and 113s; the batched merge the backfill actually performs
+  gave 18.15 bytes/touch and 26s.
+
+### Tuning lever
+
+`rangeBlocks` trades index size against lookup cost and backfill memory: larger
+ranges mean fewer, bigger values (less per-key overhead, better page fill) but
+more memory held per chunk and more data read per lookup. 1000 was not tuned
+beyond confirming it lands in budget.
 
 ## Remaining work, in order
 

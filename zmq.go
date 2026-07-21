@@ -3,6 +3,8 @@ package main
 import "context"
 import "encoding/binary"
 import "encoding/hex"
+import "fmt"
+import "strings"
 import "sync"
 
 import "github.com/go-zeromq/zmq4"
@@ -205,9 +207,16 @@ func (r *reader) varInt() (uint64, bool) {
 // startZMQ subscribes to Core's block and mempool notifications. Losing messages
 // while the bot is down is accepted: the block cache backfills on startup and
 // pending confirmation watches were never persisted anyway.
-func startZMQ(ctx context.Context, endpoint string, b *bot) error {
+func startZMQ(ctx context.Context, endpoints []string, b *bot) error {
+    if len(endpoints) == 0 { return fmt.Errorf("no ZMQ endpoints configured") }
     var sub = zmq4.NewSub(ctx)
-    if err := sub.Dial(endpoint); err != nil { return err }
+    // Core publishes each topic on whatever address its own -zmqpub* option
+    // names, so the topics we want may live on one port or on several. A SUB
+    // socket can dial every publisher and receive from all of them, and
+    // subscribing to a topic an endpoint never publishes simply yields nothing.
+    for _, endpoint := range endpoints {
+        if err := sub.Dial(endpoint); err != nil { return fmt.Errorf("dial %s: %w", endpoint, err) }
+    }
     for _, topic := range []string{"hashblock", "rawtx"} {
         if err := sub.SetOption(zmq4.OptionSubscribe, topic); err != nil { return err }
     }
@@ -231,7 +240,7 @@ func startZMQ(ctx context.Context, endpoint string, b *bot) error {
             }
         }
     }()
-    logging.Status("subscribed to Bitcoin Core notifications at %s", endpoint)
+    logging.Status("subscribed to Bitcoin Core notifications at %s", strings.Join(endpoints, ", "))
     return nil
 }
 

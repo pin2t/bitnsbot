@@ -4,6 +4,7 @@ import "bytes"
 import "context"
 import "encoding/hex"
 import "errors"
+import "fmt"
 import "path/filepath"
 import "testing"
 
@@ -39,11 +40,15 @@ func TestMergeAndLookup(t *testing.T) {
     }
 }
 
+// The cap is now a *read* limit, not a write limit: everything is stored, and
+// only the lookup stops early. This is the visible payoff of the sharded,
+// append-only layout — the previous key-per-address scheme had to cap what it
+// wrote, because appending rewrote the address's whole value every time.
 func TestLookupCaps(t *testing.T) {
     openTestDB(t)
-    var saved = maxTouches
-    t.Cleanup(func() { maxTouches = saved })
-    maxTouches = 3
+    var saved = maxLookup
+    t.Cleanup(func() { maxLookup = saved })
+    maxLookup = 3
     var script = []byte("hotaddress")
     var prefix = string(Prefix(script))
     for h := uint32(0); h < 5; h++ {
@@ -53,13 +58,72 @@ func TestLookupCaps(t *testing.T) {
     }
     var got, capped = Lookup(script)
     if !capped {
-        t.Fatal("expected capped after exceeding maxTouches")
+        t.Fatal("expected capped once the read hit maxLookup")
     }
     if len(got) != 3 {
-        t.Fatalf("touches = %d, want exactly maxTouches (3)", len(got))
+        t.Fatalf("touches = %d, want exactly maxLookup (3)", len(got))
     }
     if got[0].Height != 0 || got[2].Height != 2 {
-        t.Fatalf("expected the OLDEST 3 touches kept (0,1,2), got %v", got)
+        t.Fatalf("expected the oldest 3 touches, got %v", got)
+    }
+    // raising the cap must reveal the rest: nothing was ever dropped on disk
+    maxLookup = 100
+    var all, stillCapped = Lookup(script)
+    if stillCapped || len(all) != 5 {
+        t.Fatalf("full history = %d touches (capped=%v), want all 5 stored", len(all), stillCapped)
+    }
+}
+
+// Sharding puts every address whose hash starts with the same two bytes in one
+// key, so a lookup must filter by the rest of the prefix. This is the failure
+// mode the layout introduces, so pin it with two scripts that genuinely collide
+// on their shard.
+func TestSharedShardIsolation(t *testing.T) {
+    openTestDB(t)
+    var a, b []byte
+    for i := 0; i < 1000000 && b == nil; i++ {
+        var candidate = []byte(fmt.Sprintf("script-%d", i))
+        if a == nil {
+            a = candidate
+            continue
+        }
+        var pa, pc = Prefix(a), Prefix(candidate)
+        if bytes.Equal(pa[:shardLen], pc[:shardLen]) && !bytes.Equal(pa, pc) {
+            b = candidate
+        }
+    }
+    if b == nil { t.Fatal("could not find two scripts sharing a shard") }
+    t.Logf("shard %x shared by %q and %q", Prefix(a)[:shardLen], a, b)
+    merge(map[string][]Touch{string(Prefix(a)): {{Height: 10, TxIndex: 1}}}, Cursor{Height: 10})
+    merge(map[string][]Touch{string(Prefix(b)): {{Height: 20, TxIndex: 2}}}, Cursor{Height: 20})
+    var ta, _ = Lookup(a)
+    if len(ta) != 1 || ta[0].Height != 10 || ta[0].TxIndex != 1 {
+        t.Fatalf("script A got %v, want only its own touch at height 10", ta)
+    }
+    var tb, _ = Lookup(b)
+    if len(tb) != 1 || tb[0].Height != 20 || tb[0].TxIndex != 2 {
+        t.Fatalf("script B got %v, want only its own touch at height 20", tb)
+    }
+}
+
+// Touches must come back in chronological order across range boundaries, since
+// each range is a separate key and the reply lists history oldest-first.
+func TestLookupSpansRanges(t *testing.T) {
+    openTestDB(t)
+    var script = []byte("spansranges")
+    var prefix = string(Prefix(script))
+    var heights = []uint32{5, rangeBlocks + 7, 3*rangeBlocks + 1}
+    for _, h := range heights {
+        merge(map[string][]Touch{prefix: {{Height: h, TxIndex: 0}}}, Cursor{Height: int64(h)})
+    }
+    var got, _ = Lookup(script)
+    if len(got) != len(heights) {
+        t.Fatalf("touches = %d, want %d across %d ranges", len(got), len(heights), len(heights))
+    }
+    for i, h := range heights {
+        if got[i].Height != h {
+            t.Fatalf("touch %d height = %d, want %d (order must be chronological)", i, got[i].Height, h)
+        }
     }
 }
 
