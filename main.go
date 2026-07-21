@@ -671,15 +671,19 @@ func minersCmd(bot *bot, chatID int64) {
 // marketCmd reports the current price, market capitalisation and 24h volume,
 // plus how the price has moved over several periods.
 //
-// The changes come from the bot's *own* stored rate history rather than from a
-// market API: it already keeps a daily series back to 2009 plus live 5-minute
-// samples, so any period can be answered without another dependency, and the
-// figures stay consistent with the USD values shown elsewhere. Capitalisation
-// and volume have no such local source and are fetched live — when that fails
-// the command still reports everything it can rather than failing outright.
+// Everything is read from the database: the price and its history from the rate
+// series, capitalisation and volume from the market snapshot the rates updater
+// stores on its 5-minute tick. Nothing here calls a third-party API, so the
+// command answers at storage speed and an API that is down or rate-limiting
+// costs a slightly stale figure rather than a failed reply.
+//
+// The changes are computed from the bot's own history — a daily series back to
+// 2009 plus live 5-minute samples — so any period can be answered without
+// another dependency, and the figures stay consistent with the USD values shown
+// elsewhere.
 func marketCmd(bot *bot, chatID int64) {
     var now, haveNow = rates.Last()
-    var snapshot, haveSnapshot = rates.Snapshot()
+    var snapshot, haveSnapshot = rates.LastMarket()
     if haveSnapshot && snapshot.Price > 0 {
         now, haveNow = snapshot.Price, true
     }
@@ -705,7 +709,9 @@ func marketCmd(bot *bot, chatID int64) {
         {"24h", 24 * time.Hour},
         {"1w", 7 * 24 * time.Hour},
         {"1m", 30 * 24 * time.Hour},
+        {"3m", 90 * 24 * time.Hour},
         {"1y", 365 * 24 * time.Hour},
+        {"5y", 5 * 365 * 24 * time.Hour},
     }
     var changes [][2]string
     for _, p := range periods {

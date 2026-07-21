@@ -177,3 +177,31 @@ func TestSnapshotDegrades(t *testing.T) {
         t.Fatalf("snapshot = %+v ok=%v", m, ok)
     }
 }
+
+// The snapshot is stored on the updater's tick and read back by /market, so the
+// round trip through bbolt is what matters — not the fetch.
+func TestMarketStorage(t *testing.T) {
+    openTestDB(t)
+    if _, ok := LastMarket(); ok {
+        t.Fatal("expected no snapshot before one is stored")
+    }
+    if err := storeMarket(Market{Price: 66202, MarketCap: 1.3e12, Volume24h: 3.1e10}); err != nil {
+        t.Fatalf("storeMarket: %v", err)
+    }
+    var m, ok = LastMarket()
+    if !ok {
+        t.Fatal("stored snapshot did not come back")
+    }
+    if m.Price != 66202 || m.MarketCap != 1.3e12 || m.Volume24h != 3.1e10 {
+        t.Fatalf("round trip = %+v", m)
+    }
+    // a later snapshot supersedes the earlier one
+    time.Sleep(1100 * time.Millisecond) // records are keyed by unix second
+    if err := storeMarket(Market{Price: 70000, MarketCap: 1.4e12, Volume24h: 4e10}); err != nil {
+        t.Fatalf("storeMarket: %v", err)
+    }
+    m, _ = LastMarket()
+    if m.Price != 70000 {
+        t.Fatalf("LastMarket returned %v, want the newest snapshot", m.Price)
+    }
+}

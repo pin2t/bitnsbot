@@ -14,6 +14,7 @@ import "bitnsbot/logging"
 
 var db *bbolt.DB
 var bucket = []byte("rates")
+var marketBucket = []byte("market")
 
 // a rate whose nearest stored sample is more than this far from the wanted time
 // is treated as unavailable. It spans more than a day so the daily-granularity
@@ -38,8 +39,10 @@ type rateRecord struct {
 func Init(handle *bbolt.DB) error {
     db = handle
     return db.Update(func(tx *bbolt.Tx) error {
-        var _, err = tx.CreateBucketIfNotExists(bucket)
-        return err
+        for _, name := range [][]byte{bucket, marketBucket} {
+            if _, err := tx.CreateBucketIfNotExists(name); err != nil { return err }
+        }
+        return nil
     })
 }
 
@@ -291,6 +294,21 @@ func update() {
         return
     }
     logging.Info("updated BTC rate: $%.2f (avg of %s)", avg, strings.Join(names, ", "))
+    updateMarket()
+}
+
+// updateMarket refreshes the stored capitalisation and volume. It runs on the
+// price updater's tick rather than per /market command so the command reads the
+// database like every other one, and so a rate-limited or down API costs a stale
+// figure rather than a failed reply.
+func updateMarket() {
+    var m, ok = Snapshot()
+    if !ok { return }
+    if err := storeMarket(m); err != nil {
+        logging.Err("store market: %v", err)
+        return
+    }
+    logging.Info("updated market: cap $%.0f, 24h volume $%.0f", m.MarketCap, m.Volume24h)
 }
 
 // Start backfills the historical daily rates once, fetches an initial current
@@ -362,4 +380,43 @@ func Snapshot() (Market, bool) {
         return Market{}, false
     }
     return m, true
+}
+
+// marketRecord is one stored market snapshot, keyed by time like the rate
+// records so the newest is the last key in the bucket.
+type marketRecord struct {
+    Time      time.Time
+    Price     float64
+    MarketCap float64
+    Volume24h float64
+}
+
+func storeMarket(m Market) error {
+    if db == nil { return nil }
+    var rec = marketRecord{Time: time.Now(), Price: m.Price, MarketCap: m.MarketCap, Volume24h: m.Volume24h}
+    logging.Db("store market cap %.0f volume %.0f", m.MarketCap, m.Volume24h)
+    var data, err = json.Marshal(rec)
+    if err != nil { return err }
+    return db.Update(func(tx *bbolt.Tx) error {
+        return tx.Bucket(marketBucket).Put(itob(uint64(rec.Time.Unix())), data)
+    })
+}
+
+// LastMarket returns the most recently stored snapshot. /market reads this
+// rather than fetching, so the command never depends on a third-party API being
+// reachable at the moment someone types it.
+func LastMarket() (Market, bool) {
+    if db == nil { return Market{}, false }
+    logging.Db("last market")
+    var m Market
+    var found bool
+    db.View(func(tx *bbolt.Tx) error {
+        var k, v = tx.Bucket(marketBucket).Cursor().Last()
+        if k == nil { return nil }
+        var rec marketRecord
+        if json.Unmarshal(v, &rec) != nil { return nil }
+        m, found = Market{Price: rec.Price, MarketCap: rec.MarketCap, Volume24h: rec.Volume24h}, true
+        return nil
+    })
+    return m, found
 }

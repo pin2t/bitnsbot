@@ -48,7 +48,7 @@ The bot lives in `package main` in the repo root; five supporting packages sit i
 
 Root (`package main`):
 - `telegram.go` — the Bot API client: the unexported `bot` type, `newBot`, and `call`/`send`/`setWebhook` methods, plus the wire types (`Update`, `Message`, `User`, `Chat`) decoded from incoming webhook JSON.
-- `db.go` — the bbolt connection: the package-level `var db *bbolt.DB`, `openDB(path)`/`closeDB()`, and the shared `itob` big-endian key helper. `openDB` opens the one file, creates the `blocks` bucket, and hands the same handle to `rates.Init`/`watches.Init`/`miners.Init`/`addrindex.Init` (which own their own buckets) — one file, one handle, nine buckets (`blocks`, `rates`, `watches`, the miners package's `miners`/`miners-tag`/`miners-stat`/`miners-block`, and the addrindex package's `addrindex`/`addrindex-cursor`).
+- `db.go` — the bbolt connection: the package-level `var db *bbolt.DB`, `openDB(path)`/`closeDB()`, and the shared `itob` big-endian key helper. `openDB` opens the one file, creates the `blocks` bucket, and hands the same handle to `rates.Init`/`watches.Init`/`miners.Init`/`addrindex.Init` (which own their own buckets) — one file, one handle, ten buckets (`blocks`, `rates`, `watches`, the rates package's `market`, the miners package's `miners`/`miners-tag`/`miners-stat`/`miners-block`, and the addrindex package's `addrindex`/`addrindex-cursor`).
 - `core.go` — a `coreClient` for talking to Bitcoin Core's HTTP JSON-RPC API (see below).
 - `zmq.go` — the ZMQ subscriber, the local transaction parser, and the watched-script/outpoint matcher that replaces btcd's server-side filter (see below).
 - `blocks.go` — the `blocks` bucket: cached per-block info records (`blockInfo`), `computeBlockInfo` (builds a record from Core), the startup backfill goroutine, and `formatBlock` (the `/info` block reply). See Block info cache below.
@@ -216,11 +216,11 @@ Verified against the real mainnet node over 100 blocks (throwaway probe, not in 
 
 ### The /market command
 
-`/market` (`marketCmd` in `main.go`) reports the current price, market capitalisation and 24h volume, then how the price has moved over 24h, 1w, 1m and 1y.
+`/market` (`marketCmd` in `main.go`) reports the current price, market capitalisation and 24h volume, then how the price has moved over 24h, 1w, 1m, 3m, 1y and 5y.
 
 **The changes come from the bot's own rate history, not from a market API.** The `rates` package already holds a daily series back to 2009 plus live 5-minute samples, so `rates.At(now − period)` answers any period without a second dependency, and the figures stay consistent with the USD values shown everywhere else. A period whose baseline falls outside `rates`' tolerance is simply omitted rather than shown as zero — on a fresh install the older rows appear once the backfill lands.
 
-Capitalisation and volume have no local source, so `rates.Snapshot()` fetches them from CoinGecko's free no-auth endpoint (`marketURL`, a package var for tests), which returns price, cap and volume in one call. A failed or rate-limited fetch degrades those two fields to `unavailable` while the rest of the reply still renders — and the price falls back to the stored `rates.Last()`.
+Capitalisation and volume have no local source, so the rates updater fetches them from CoinGecko's free no-auth endpoint (`marketURL`, a package var for tests — one call returns price, cap and volume) **on its existing 5-minute tick** and stores them in the `market` bucket. `/market` reads `rates.LastMarket()`, so like every other command it answers from the database: no third-party call sits between the user and their reply, and an API that is down or rate-limiting costs a slightly stale figure rather than a failed command. Records are keyed by timestamp like the rate series, so the newest is simply the bucket's last key. Until the first snapshot lands those two fields read `unavailable` and the price falls back to `rates.Last()`.
 
 Two formatters exist for this command specifically, both in `format.go`:
 - `money` renders large dollar figures as markets quote them — `$1.33 T`, `$31.91 B`. Deliberately **not** `metric`, which is SI and says `G` where finance says `B`; a market cap in gigadollars reads as a units error.
