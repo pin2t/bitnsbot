@@ -25,8 +25,18 @@ func newBot(token, baseURL string) *bot {
 }
 
 type Update struct {
-    UpdateID int64    `json:"update_id"`
-    Message  *Message `json:"message"`
+    UpdateID      int64          `json:"update_id"`
+    Message       *Message       `json:"message"`
+    CallbackQuery *CallbackQuery `json:"callback_query"`
+}
+
+// CallbackQuery arrives when a user taps an inline-keyboard button. Data carries
+// whatever was put in the button's callback_data — here, the full id to look up.
+type CallbackQuery struct {
+    ID      string   `json:"id"`
+    From    *User    `json:"from"`
+    Message *Message `json:"message"`
+    Data    string   `json:"data"`
 }
 
 type Message struct {
@@ -84,7 +94,57 @@ func (b *bot) call(ctx context.Context, method string, payload any) (json.RawMes
 }
 
 func (b *bot) send(ctx context.Context, chatID int64, text string) error {
-    var _, err = b.call(ctx, "sendMessage", map[string]any{"chat_id": chatID, "text": text, "parse_mode": "HTML"})
+    return b.sendWithButtons(ctx, chatID, text, nil)
+}
+
+// sendWithButtons sends a message with one inline-keyboard button per id, each
+// labelled with the shortened id as it appears in the text and carrying the full
+// id as its callback_data.
+//
+// Buttons rather than links in the text, because Telegram does not parse
+// entities inside <pre> — and the aligned field blocks every reply uses are
+// <pre>. A button sits outside the text entirely, so the alignment survives.
+// Telegram caps callback_data at 64 bytes, which a txid hits exactly, so the id
+// travels bare: no type prefix, and the handler simply passes it to /info, which
+// classifies it anyway.
+func (b *bot) sendWithButtons(ctx context.Context, chatID int64, text string, ids []string) error {
+    var payload = map[string]any{"chat_id": chatID, "text": text, "parse_mode": "HTML"}
+    if rows := buttonRows(ids); len(rows) > 0 {
+        payload["reply_markup"] = map[string]any{"inline_keyboard": rows}
+    }
+    var _, err = b.call(ctx, "sendMessage", payload)
+    return err
+}
+
+// maxButtons bounds how many buttons one message carries, so an /info on a
+// transaction with many addresses doesn't bury the message under a keyboard.
+const maxButtons = 8
+
+// buttonRows turns ids into rows of two buttons, dropping duplicates, empties,
+// the "(non-standard)" placeholder outputs use, and anything too long for
+// callback_data.
+func buttonRows(ids []string) [][]map[string]string {
+    var seen = map[string]bool{}
+    var buttons []map[string]string
+    for _, id := range ids {
+        if id == "" || id == "(non-standard)" || seen[id] || len(id) > 64 { continue }
+        seen[id] = true
+        buttons = append(buttons, map[string]string{"text": short(id), "callback_data": id})
+        if len(buttons) == maxButtons { break }
+    }
+    var rows [][]map[string]string
+    for i := 0; i < len(buttons); i += 2 {
+        var end = i + 2
+        if end > len(buttons) { end = len(buttons) }
+        rows = append(rows, buttons[i:end])
+    }
+    return rows
+}
+
+// answerCallback acknowledges a tapped button. Telegram shows a loading state on
+// the button until this is called, so it must happen even when the lookup fails.
+func (b *bot) answerCallback(ctx context.Context, id string) error {
+    var _, err = b.call(ctx, "answerCallbackQuery", map[string]any{"callback_query_id": id})
     return err
 }
 

@@ -96,7 +96,7 @@ func startNotifyChat(b *bot, chatID int64, typ watchType, watchID, alias string)
                         for _, p := range pairs {
                             lines = append(lines, fmt.Sprintf("%-*s %s", pad, p[0]+":", p[1]))
                         }
-                        send(b, chatID, header+label+"\n\n<pre>"+strings.Join(lines, "\n")+"</pre>")
+                        sendLinked(b, chatID, header+label+"\n\n<pre>"+strings.Join(lines, "\n")+"</pre>", []string{n.txid, watchID})
                         txwatches.AddAddrConfirm(n.txid, chatID, watchID, alias)
                     }
                 }
@@ -298,7 +298,9 @@ func checkConfirmations(b *bot, hash string) {
             if c.Alias != "" { label += " (" + html.EscapeString(c.Alias) + ")" }
             msg = fmt.Sprintf("🔔 Watched transaction %s was confirmed in block #%d after %s", label, blk.Height, elapsed)
         }
-        send(b, c.ChatID, msg)
+        var ids = []string{c.Txid}
+        if c.Addr != "" { ids = append(ids, c.Addr) }
+        sendLinked(b, c.ChatID, msg, ids)
         logging.Info("confirmed watch %s for chat %d in block %d", short(c.Txid), c.ChatID, blk.Height)
     }
 }

@@ -109,7 +109,14 @@ func transaction(ctx context.Context, bot *bot, chatID int64, txid string) {
     for _, p := range pairs {
         lines = append(lines, fmt.Sprintf("%-*s %s", pad, p[0]+":", p[1]))
     }
-    send(bot, chatID, fmt.Sprintf("Transaction %s\n\n<pre>%s</pre>", short(tx.Txid), strings.Join(lines, "\n")))
+    // only the ids the text actually shows get buttons — compactAddrs truncates
+    // to shownAddrs with a trailing "...", and a button for something the reader
+    // cannot see in the message would be a puzzle rather than a shortcut
+    var ids []string
+    if tx.BlockHash != "" { ids = append(ids, tx.BlockHash) }
+    ids = append(ids, firstN(inputs, shownAddrs)...)
+    ids = append(ids, firstN(outputAddrs(tx), shownAddrs)...)
+    sendLinked(bot, chatID, fmt.Sprintf("Transaction %s\n\n<pre>%s</pre>", short(tx.Txid), strings.Join(lines, "\n")), ids)
 }
 
 // txInputs reports a transaction's fee and the addresses it spends from — in
@@ -199,6 +206,11 @@ func inputsMinusOutputs(inSum float64, tx *coreTransaction) float64 {
     return 0
 }
 
+func firstN(s []string, n int) []string {
+    if len(s) > n { return s[:n] }
+    return s
+}
+
 func outputAddrs(tx *coreTransaction) []string {
     var addrs []string
     for _, v := range tx.Vout {
@@ -219,13 +231,18 @@ func addressOfScript(s coreScriptPubKey) string {
 
 // compactAddrs joins shortened addresses, showing at most the first three with a
 // trailing "..." when there are more.
+// shownAddrs is how many of a transaction's input/output addresses a reply
+// lists. The buttons use it too, so every id with a button is an id the reader
+// can actually see in the text.
+const shownAddrs = 3
+
 func compactAddrs(addrs []string) string {
     if len(addrs) == 0 {
         return "none"
     }
     var show, more = addrs, false
-    if len(addrs) > 3 {
-        show, more = addrs[:3], true
+    if len(addrs) > shownAddrs {
+        show, more = addrs[:shownAddrs], true
     }
     var parts []string
     for _, a := range show {

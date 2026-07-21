@@ -146,6 +146,21 @@ func shutdown(srv *http.Server) {
     }
 }
 
+// callback handles a tapped inline-keyboard button. The button's data is the
+// full id, so the lookup is just /info on it. Telegram leaves the button
+// spinning until the query is answered, so that happens first and regardless of
+// what the lookup does.
+func callback(bot *bot, q *CallbackQuery) {
+    var ctx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
+    if err := bot.answerCallback(ctx, q.ID); err != nil {
+        logging.Warn("answer callback: %v", err)
+    }
+    cancel()
+    if q.Message == nil || q.Data == "" { return }
+    logging.Info("callback %q from chat %d", short(q.Data), q.Message.Chat.ID)
+    info(bot, q.Message.Chat.ID, q.Data)
+}
+
 func webhookHandler(bot *bot) http.HandlerFunc {
     return func(w http.ResponseWriter, r *http.Request) {
         if r.Method != http.MethodPost {
@@ -172,6 +187,10 @@ func webhookHandler(bot *bot) http.HandlerFunc {
 }
 
 func update(bot *bot, update Update) {
+    if q := update.CallbackQuery; q != nil {
+        callback(bot, q)
+        return
+    }
     var msg = update.Message
     if msg == nil { return }
     logMessage(msg)
@@ -360,11 +379,12 @@ func watchesCmd(bot *bot, chatID int64) {
         send(bot, chatID, "Sorry, something went wrong listing your watches.")
         return
     }
-    var addresses, transactions []string
+    var addresses, transactions, ids []string
     for _, r := range records {
         if r.ChatID != chatID {
             continue
         }
+        ids = append(ids, r.Address)
         var line = "<code>" + html.EscapeString(r.Address) + "</code>"
         if r.Alias != "" {
             line += " (" + html.EscapeString(r.Alias) + ")"
@@ -372,6 +392,7 @@ func watchesCmd(bot *bot, chatID int64) {
         addresses = append(addresses, line)
     }
     for _, e := range txwatches.For(chatID) {
+        ids = append(ids, e.Txid)
         var line = "<code>" + html.EscapeString(e.Txid) + "</code>"
         if e.Alias != "" {
             line += " (" + html.EscapeString(e.Alias) + ")"
@@ -391,7 +412,7 @@ func watchesCmd(bot *bot, chatID int64) {
         lines = append(lines, "", "Transactions:")
         lines = append(lines, transactions...)
     }
-    send(bot, chatID, strings.Join(lines, "\n"))
+    sendLinked(bot, chatID, strings.Join(lines, "\n"), ids)
 }
 
 // fees replies with current network fee estimates for three confirmation
@@ -645,9 +666,15 @@ func minersCmd(bot *bot, chatID int64) {
 }
 
 func send(bot *bot, chatID int64, text string) {
+    sendLinked(bot, chatID, text, nil)
+}
+
+// sendLinked sends a message that carries a button per id, so every shortened id
+// in the text is one tap away from its own /info lookup.
+func sendLinked(bot *bot, chatID int64, text string, ids []string) {
     var ctx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
     defer cancel()
-    if err := bot.send(ctx, chatID, text); err != nil {
+    if err := bot.sendWithButtons(ctx, chatID, text, ids); err != nil {
         logging.Err("send message: %v", err)
         return
     }
