@@ -434,7 +434,21 @@ func spendCoreServer(t *testing.T, watchedAddr, txid string, change bool) *httpt
 
 // awaitNotification drives a watch on watchedAddr against the given fake core and
 // returns the address notification the chat received.
+// capturedMu/captured hold what the fake Telegram server received, so a test can
+// assert on messages sent after awaitNotification returns.
+var capturedMu sync.Mutex
+var captured []string
+
+func sentMessages(t *testing.T) []string {
+    capturedMu.Lock()
+    defer capturedMu.Unlock()
+    return append([]string(nil), captured...)
+}
+
 func awaitNotification(t *testing.T, btcdSrv *httptest.Server, watchedAddr string) string {
+    capturedMu.Lock()
+    captured = nil
+    capturedMu.Unlock()
     var sentMu sync.Mutex
     var sent []string
     var tg = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -445,6 +459,9 @@ func awaitNotification(t *testing.T, btcdSrv *httptest.Server, watchedAddr strin
         sentMu.Lock()
         sent = append(sent, body.Text)
         sentMu.Unlock()
+        capturedMu.Lock()
+        captured = append(captured, body.Text)
+        capturedMu.Unlock()
         json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": true})
     }))
     var b = newBot("TESTTOKEN", tg.URL)
@@ -589,3 +606,107 @@ func TestSeedOutpoints(t *testing.T) {
     }
 }
 
+
+// Core publishes a transaction on rawtx twice — when it enters the mempool and
+// again when it is mined — so broadcasting the same transaction twice must
+// produce exactly one message. Before this was fixed a watched payment produced
+// three messages: the mempool one, the confirmation, and a second "New
+// transaction" from the mined republish.
+func TestBroadcastDedups(t *testing.T) {
+    var watchedAddr = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
+    var txid = "f21b47a9143a23e80cc59e81588d21558b394005580b285961957cb3bed5b3e0"
+    var srv = spendCoreServer(t, watchedAddr, txid, false)
+    defer srv.Close()
+    var got = awaitNotification(t, srv, watchedAddr)
+    if !strings.Contains(got, "watched address") {
+        t.Fatalf("expected a first notification, got %q", got)
+    }
+    // the mined republish of the very same transaction
+    var before = len(sentMessages(t))
+    broadcast("deadbeefrawtxhex")
+    time.Sleep(300 * time.Millisecond)
+    if after := len(sentMessages(t)); after != before {
+        t.Fatalf("a repeat broadcast sent %d extra message(s); it must send none", after-before)
+    }
+    // a *different* transaction on the same address still notifies
+    if alreadyNotified("some-other-txid") {
+        t.Fatal("an unseen txid must not be reported as already notified")
+    }
+}
+
+// A transaction first seen already mined — a coinbase paying a watched address,
+// or one that arrived while the bot was down — has no earlier sighting to dedup
+// against, so it must still notify.
+func TestBroadcastNotifiesFirstSeenMined(t *testing.T) {
+    stopNotify()
+    defer stopNotify()
+    if alreadyNotified("mined-first-sighting") {
+        t.Fatal("a transaction never seen before must notify, even when already confirmed")
+    }
+    if !alreadyNotified("mined-first-sighting") {
+        t.Fatal("the second sighting of the same transaction must be suppressed")
+    }
+}
+
+// The confirmation message names the block it was mined in, so that block should
+// be one tap away like the txid and address are.
+func TestConfirmationLinksBlock(t *testing.T) {
+    var txid = "f21b47a9143a23e80cc59e81588d21558b394005580b285961957cb3bed5b3e0"
+    var addr = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
+    var markupMu sync.Mutex
+    var markups []map[string]any
+    var tg = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        var body map[string]any
+        json.NewDecoder(r.Body).Decode(&body)
+        markupMu.Lock()
+        markups = append(markups, body)
+        markupMu.Unlock()
+        json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": true})
+    }))
+    defer tg.Close()
+    var b = newBot("TESTTOKEN", tg.URL)
+    var srv = newFakeCoreServer(t, func(method string, params []interface{}) (interface{}, error) {
+        if method == "getblock" {
+            return map[string]any{"height": 959126, "tx": []string{txid}}, nil
+        }
+        return nil, nil
+    })
+    core = newFakeCoreClient(t, srv)
+    stopNotify()
+    t.Cleanup(func() { core = nil })
+    t.Cleanup(stopNotify)
+    txwatches.AddAddrConfirm(txid, 42, addr, "")
+    checkConfirmations(b, "0000000000000000abc")
+    var deadline = time.Now().Add(3 * time.Second)
+    for time.Now().Before(deadline) {
+        markupMu.Lock()
+        var n = len(markups)
+        markupMu.Unlock()
+        if n > 0 { break }
+        time.Sleep(10 * time.Millisecond)
+    }
+    markupMu.Lock()
+    defer markupMu.Unlock()
+    if len(markups) == 0 { t.Fatal("no confirmation message was sent") }
+    var body = markups[len(markups)-1]
+    if text, _ := body["text"].(string); !strings.Contains(text, "block #959126") {
+        t.Fatalf("confirmation text = %q", body["text"])
+    }
+    var markup, ok = body["reply_markup"].(map[string]any)
+    if !ok { t.Fatal("the confirmation message carries no buttons") }
+    var found []string
+    for _, row := range markup["inline_keyboard"].([]any) {
+        for _, btn := range row.([]any) {
+            found = append(found, btn.(map[string]any)["callback_data"].(string))
+        }
+    }
+    var want = map[string]bool{txid: false, addr: false, "959126": false}
+    for _, data := range found {
+        if _, expected := want[data]; expected { want[data] = true }
+    }
+    for id, seen := range want {
+        if !seen {
+            t.Errorf("no button for %q — buttons were %v", id, found)
+        }
+    }
+}

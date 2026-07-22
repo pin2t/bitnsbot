@@ -127,6 +127,40 @@ func notifyAddresses() (res []string) {
     return res
 }
 
+// notified remembers which transactions have already been announced, keyed by
+// txid. Core publishes a transaction on the `rawtx` topic **twice** — once when
+// it enters the mempool and again when it is mined — so without this a watched
+// transaction produces two "New transaction" messages, the second one lacking
+// the fee and confirmation estimate because the transaction has left the mempool
+// by then. Verified against a real node: sighting #1 reports confirmations=0 and
+// is in the mempool, sighting #2 reports confirmations=1 and is not.
+//
+// Deduplicating on the txid rather than skipping confirmed transactions keeps
+// the case where a transaction is first seen *already mined* — a coinbase paying
+// a watched address, or any transaction that arrived while the bot was down —
+// which should still notify. It also collapses rebroadcasts. Only transactions
+// that matched a watch get this far, so the map stays small.
+var notifiedMu sync.Mutex
+var notified = make(map[string]time.Time)
+
+// notifiedTTL is how long a txid is remembered. It only has to outlive the gap
+// between a transaction entering the mempool and being mined.
+const notifiedTTL = 48 * time.Hour
+
+func alreadyNotified(txid string) bool {
+    notifiedMu.Lock()
+    defer notifiedMu.Unlock()
+    var _, seen = notified[txid]
+    if !seen {
+        var cutoff = time.Now().Add(-notifiedTTL)
+        for id, at := range notified {
+            if at.Before(cutoff) { delete(notified, id) }
+        }
+        notified[txid] = time.Now()
+    }
+    return seen
+}
+
 func broadcast(txHex string) {
     if core == nil { return }
     var ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
@@ -134,6 +168,10 @@ func broadcast(txHex string) {
     var tx, err = core.decodeRawTransaction(ctx, txHex)
     if err != nil {
         logging.Err("decode notified tx: %v", err)
+        return
+    }
+    if alreadyNotified(tx.Txid) {
+        logging.Info("skipping already-notified transaction %s", short(tx.Txid))
         return
     }
     var n = notification{txid: tx.Txid, received: make(map[string]float64), sent: make(map[string]float64)}
@@ -268,6 +306,9 @@ func stopNotify() {
     }
     notifies = make(map[notifyKey]notifyChans)
     notifyMu.Unlock()
+    notifiedMu.Lock()
+    notified = make(map[string]time.Time)
+    notifiedMu.Unlock()
     txwatches.Reset()
 }
 
@@ -300,6 +341,7 @@ func checkConfirmations(b *bot, hash string) {
         }
         var ids = []string{c.Txid}
         if c.Addr != "" { ids = append(ids, c.Addr) }
+        ids = append(ids, strconv.FormatInt(blk.Height, 10))
         sendLinked(b, c.ChatID, msg, ids)
         logging.Info("confirmed watch %s for chat %d in block %d", short(c.Txid), c.ChatID, blk.Height)
     }
