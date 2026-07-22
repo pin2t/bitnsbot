@@ -53,6 +53,7 @@ Root (`package main`):
 - `zmq.go` — the ZMQ subscriber, the local transaction parser, and the watched-script/outpoint matcher that replaces btcd's server-side filter (see below).
 - `blocks.go` — the `blocks` bucket: cached per-block info records (`blockInfo`), `computeBlockInfo` (builds a record from Core), the startup backfill goroutine, and `formatBlock` (the `/info` block reply). See Block info cache below.
 - `backup.go` — the periodic database backup goroutine (`startBackup`/`backup`). See Database backups below.
+- `dbui/` — the localhost database admin web UI (`Start`, plus the list/get/put HTTP handlers and one embedded HTML page). See The database UI below.
 - `config.go` — `applyConfig`, a tiny `name=value` properties-file parser that sets flags from a `-config` file (see below).
 - `main.go` — flags, the HTTP webhook server, command dispatch (`update`), the `/watch`/`/unwatch`/`/watches` (`watchesCmd`)/`/fees`/`/mempool`/`/miners` handlers, and the mempool flow-rate tracker.
 - `notify.go` — the address-watch notification infrastructure (`notification`/`notifyKey`/`notifyChans`, the `notifies` fan-out map, `startNotifyChat`/`stopNotifyChat`/`notifyAddresses`, `broadcast`, `confEstimate`, `startNotify`/`stopNotify`), plus the `watchType` type and `checkConfirmations` (which formats+sends the transaction-confirmation messages using the `txwatches` package). See Watch notifications below.
@@ -278,6 +279,14 @@ All three are implemented the same way, short handler names (`info`, `watchCmd`,
 
 - **Commit messages are a single compact line.** No multi-paragraph bodies, no bullet lists, no explanation of why — the diff and this file carry that. "Accept a block hash in /info, not only a block height" is the shape; a summary line followed by three paragraphs of rationale is not.
 - **No `Co-Authored-By` trailer.**
+
+### The database UI
+
+`dbui/` is a small web interface for inspecting and hand-editing the bbolt file, off by default and started only when `-dbui-listen` is set (e.g. `127.0.0.1:8090`). **It can write any bucket, so it must bind to localhost** — the flag help says so. `main()` calls `dbui.Start(db, addr)` right after `openDB` (it needs the handle) and holds the returned `*http.Server` so `shutdown` can drain it **before** `closeDB`, the same ordering the webhook server uses — a request mid-flight against a closed handle would otherwise error.
+
+The page (embedded via `//go:embed index.html`, so the binary stays self-contained) is four controls above two centred tabs: a bucket dropdown, **View**, a key field and **Get**. View loads a paginated key/value table into the **Data** tab; Get loads one key's value into an editable textarea in the **Value** tab, and **Put** writes it back. Clicking a Data row fills the key field and the Value textarea and jumps to the Value tab, which is the edit-in-place flow. Four JSON endpoints back it: `/api/buckets`, `/api/view`, `/api/get`, `/api/put`.
+
+The one non-obvious piece is binary handling. Most buckets hold JSON or text (miner names, tags) and display directly, but keys and values are also binary in places — big-endian heights in `blocks`/`rates`/`market`, the packed `addrindex`. `encodeField`/`decodeField` render those behind a `hex:` marker and decode a `hex:`-prefixed input back to bytes, so a Put round-trips binary rather than corrupting it (the marker can't collide — no bucket stores a text value beginning `hex:`). Pagination is offset-based (`page*size` skipped on the cursor), which is fine for the small buckets and acceptable for deep pages of `addrindex` that nobody scrolls to. `dbui_test.go` covers the round trips, pagination, the 404s, and the binary encoding; the UI itself was driven in a real browser against a seeded database (View, row-click, edit, Put — confirmed persisted — plus the `hex:` display and dark mode).
 
 ## Style conventions specific to this repo
 

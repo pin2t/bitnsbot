@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>bitnsbot database</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #fff; --line: #d9dce1; --text: #1a1c20;
+    --muted: #6b7280; --accent: #2563eb; --accent-text: #fff; --hover: #eef1f6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14161a; --panel: #1c1f25; --line: #2c313a; --text: #e5e7eb;
+      --muted: #9aa2ad; --accent: #3b82f6; --accent-text: #fff; --hover: #232833;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  .wrap { max-width: 900px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 18px; font-weight: 600; margin: 0 0 16px; text-align: center; }
+  .controls {
+    display: flex; flex-wrap: wrap; gap: 8px; justify-content: center;
+    align-items: center; margin-bottom: 16px;
+  }
+  select, input, button, textarea {
+    font: inherit; color: var(--text); background: var(--panel);
+    border: 1px solid var(--line); border-radius: 6px; padding: 7px 10px;
+  }
+  input { min-width: 220px; }
+  button { cursor: pointer; }
+  button.primary { background: var(--accent); color: var(--accent-text); border-color: transparent; }
+  button:hover { background: var(--hover); }
+  button.primary:hover { filter: brightness(1.08); }
+  .tabs { display: flex; justify-content: center; gap: 4px; margin-bottom: -1px; }
+  .tab {
+    background: transparent; border: 1px solid transparent; border-bottom: none;
+    border-radius: 6px 6px 0 0; padding: 8px 20px; color: var(--muted);
+  }
+  .tab.active {
+    background: var(--panel); border-color: var(--line); color: var(--text);
+  }
+  .panel {
+    display: none; background: var(--panel); border: 1px solid var(--line);
+    border-radius: 0 8px 8px 8px; padding: 16px; min-height: 260px;
+  }
+  .panel.active { display: block; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td {
+    text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px;
+    max-width: 420px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  th { color: var(--muted); font-weight: 600; font-family: inherit; font-size: 12px; }
+  tbody tr { cursor: pointer; }
+  tbody tr:hover { background: var(--hover); }
+  .pager { display: flex; align-items: center; justify-content: center; gap: 12px; margin-top: 14px; color: var(--muted); }
+  textarea {
+    width: 100%; min-height: 300px; resize: vertical;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px;
+  }
+  .valbar { display: flex; justify-content: space-between; align-items: center; margin-top: 10px; }
+  #status { text-align: center; min-height: 20px; margin-top: 12px; font-size: 13px; }
+  #status.err { color: #dc2626; }
+  #status.ok { color: #16a34a; }
+  .empty { color: var(--muted); text-align: center; padding: 40px 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>bitnsbot database</h1>
+
+  <div class="controls">
+    <select id="bucket" title="bucket"></select>
+    <button id="view">View</button>
+    <input id="key" placeholder="key" autocomplete="off">
+    <button id="get">Get</button>
+  </div>
+
+  <div class="tabs">
+    <button class="tab active" data-panel="data">Data</button>
+    <button class="tab" data-panel="value">Value</button>
+  </div>
+
+  <div id="data" class="panel active">
+    <table>
+      <thead><tr><th style="width:40%">Key</th><th>Value</th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <div id="empty" class="empty" hidden>Press <b>View</b> to load a bucket.</div>
+    <div class="pager">
+      <button id="prev">Prev</button>
+      <span id="pageLabel">—</span>
+      <button id="next">Next</button>
+    </div>
+  </div>
+
+  <div id="value" class="panel">
+    <textarea id="valbox" placeholder="value" spellcheck="false"></textarea>
+    <div class="valbar">
+      <span id="valFor"></span>
+      <button id="put" class="primary">Put</button>
+    </div>
+  </div>
+
+  <div id="status"></div>
+</div>
+
+<script>
+  var page = 0;
+  var $ = function(id) { return document.getElementById(id); };
+
+  function status(msg, kind) {
+    var el = $("status");
+    el.textContent = msg || "";
+    el.className = kind || "";
+  }
+
+  function showTab(name) {
+    document.querySelectorAll(".tab").forEach(function(t) {
+      t.classList.toggle("active", t.dataset.panel === name);
+    });
+    document.querySelectorAll(".panel").forEach(function(p) {
+      p.classList.toggle("active", p.id === name);
+    });
+  }
+  document.querySelectorAll(".tab").forEach(function(t) {
+    t.addEventListener("click", function() { showTab(t.dataset.panel); });
+  });
+
+  function loadBuckets() {
+    fetch("api/buckets").then(function(r) { return r.json(); }).then(function(d) {
+      var sel = $("bucket");
+      sel.innerHTML = "";
+      (d.buckets || []).forEach(function(name) {
+        var o = document.createElement("option");
+        o.value = name; o.textContent = name;
+        sel.appendChild(o);
+      });
+    }).catch(function(e) { status("could not load buckets: " + e, "err"); });
+  }
+
+  function loadView() {
+    var bucket = $("bucket").value;
+    if (!bucket) { status("no bucket selected", "err"); return; }
+    fetch("api/view?bucket=" + encodeURIComponent(bucket) + "&page=" + page)
+      .then(function(r) { if (!r.ok) throw new Error(r.status); return r.json(); })
+      .then(function(d) {
+        var body = $("rows");
+        body.innerHTML = "";
+        (d.rows || []).forEach(function(row) {
+          var tr = document.createElement("tr");
+          var tdk = document.createElement("td");
+          var tdv = document.createElement("td");
+          tdk.textContent = row.key;
+          tdv.textContent = row.value;
+          tdk.title = row.key; tdv.title = row.value;
+          tr.appendChild(tdk); tr.appendChild(tdv);
+          tr.addEventListener("click", function() {
+            $("key").value = row.key;
+            $("valbox").value = row.value;
+            $("valFor").textContent = bucket + " / " + row.key;
+            showTab("value");
+          });
+          body.appendChild(tr);
+        });
+        $("empty").hidden = (d.rows && d.rows.length > 0);
+        $("pageLabel").textContent = "page " + (d.page + 1);
+        $("prev").disabled = d.page === 0;
+        $("next").disabled = !d.hasNext;
+        showTab("data");
+        status("");
+      })
+      .catch(function(e) { status("view failed: " + e, "err"); });
+  }
+
+  function loadValue() {
+    var bucket = $("bucket").value;
+    var key = $("key").value;
+    if (!bucket || !key) { status("bucket and key are required", "err"); return; }
+    fetch("api/get?bucket=" + encodeURIComponent(bucket) + "&key=" + encodeURIComponent(key))
+      .then(function(r) {
+        if (r.status === 404) throw new Error("key not found");
+        if (!r.ok) throw new Error(r.status);
+        return r.json();
+      })
+      .then(function(d) {
+        $("valbox").value = d.value;
+        $("valFor").textContent = bucket + " / " + key;
+        showTab("value");
+        status("");
+      })
+      .catch(function(e) { status("get failed: " + e, "err"); });
+  }
+
+  function putValue() {
+    var bucket = $("bucket").value;
+    var key = $("key").value;
+    if (!bucket || !key) { status("bucket and key are required", "err"); return; }
+    fetch("api/put", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ bucket: bucket, key: key, value: $("valbox").value })
+    })
+      .then(function(r) {
+        if (!r.ok) return r.text().then(function(t) { throw new Error(t.trim() || r.status); });
+        return r.json();
+      })
+      .then(function() { status("saved " + bucket + " / " + key, "ok"); })
+      .catch(function(e) { status("put failed: " + e, "err"); });
+  }
+
+  $("view").addEventListener("click", function() { page = 0; loadView(); });
+  $("get").addEventListener("click", loadValue);
+  $("put").addEventListener("click", putValue);
+  $("prev").addEventListener("click", function() { if (page > 0) { page--; loadView(); } });
+  $("next").addEventListener("click", function() { page++; loadView(); });
+  $("empty").hidden = false;
+  loadBuckets();
+</script>
+</body>
+</html>

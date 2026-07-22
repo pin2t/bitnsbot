@@ -16,6 +16,7 @@ import "sync"
 import "syscall"
 import "time"
 
+import "bitnsbot/dbui"
 import "bitnsbot/logging"
 import "bitnsbot/miners"
 import "bitnsbot/rates"
@@ -41,8 +42,10 @@ var coreREST        = flag.String("core-rest", "", "base URL of Bitcoin Core's R
 var backupPath      = flag.String("backup", "", "path to copy the database to periodically (empty disables backups)")
 var backupInterval  = flag.Duration("backup-interval", 24*time.Hour, "how often to back up the database")
 var backupScript    = flag.String("backup-script", "", "command run after each backup, with the backup's path as $1 and in $BACKUP_FILE (empty runs nothing)")
+var dbuiListen      = flag.String("dbui-listen", "", "address for the database admin web UI, e.g. 127.0.0.1:8090 (empty disables it; bind to localhost only — it can write any bucket)")
 
 var core *coreClient
+var dbuiSrv *http.Server
 
 func main() {
     flag.Usage = func() {
@@ -65,6 +68,9 @@ func main() {
         logging.Fatal("open database: %v", err)
     }
     rates.Start()
+    if *dbuiListen != "" {
+        dbuiSrv = dbui.Start(db, *dbuiListen)
+    }
     if *backupPath != "" {
         startBackup(*backupPath, *backupInterval, *backupScript)
         logging.Status("backing up the database to %s every %s", *backupPath, *backupInterval)
@@ -139,6 +145,11 @@ func shutdown(srv *http.Server) {
     defer cancel()
     if err := srv.Shutdown(ctx); err != nil {
         logging.Err("webhook server shutdown: %v", err)
+    }
+    if dbuiSrv != nil {
+        if err := dbuiSrv.Shutdown(ctx); err != nil {
+            logging.Err("database UI shutdown: %v", err)
+        }
     }
     stopNotify()
     if err := closeDB(); err != nil {
