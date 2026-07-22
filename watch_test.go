@@ -357,7 +357,7 @@ func TestAddrConfirmation(t *testing.T) {
     defer func() { core = nil }()
     stopNotify()
     defer stopNotify()
-    txwatches.AddAddrConfirm(txid, 7, addr, "John")
+    txwatches.AddAddrConfirm(txid, 7, addr, "John", txwatches.Summary{})
     checkConfirmations(b, "hash200")
     sentMu.Lock()
     defer sentMu.Unlock()
@@ -380,8 +380,8 @@ func TestAddrConfirmation(t *testing.T) {
 func TestAddrConfirmDedup(t *testing.T) {
     txwatches.Reset()
     defer txwatches.Reset()
-    txwatches.AddAddrConfirm("txabc", 5, "addrX", "Alias")
-    txwatches.AddAddrConfirm("txabc", 5, "addrX", "Alias")
+    txwatches.AddAddrConfirm("txabc", 5, "addrX", "Alias", txwatches.Summary{})
+    txwatches.AddAddrConfirm("txabc", 5, "addrX", "Alias", txwatches.Summary{})
     txwatches.Add("txabc", 5, "")
     var n = len(txwatches.Confirms([]string{"txabc"}))
     // the two identical address confirmations dedup to one; the direct watch (addr "") stays distinct
@@ -675,7 +675,7 @@ func TestConfirmationLinksBlock(t *testing.T) {
     stopNotify()
     t.Cleanup(func() { core = nil })
     t.Cleanup(stopNotify)
-    txwatches.AddAddrConfirm(txid, 42, addr, "")
+    txwatches.AddAddrConfirm(txid, 42, addr, "", txwatches.Summary{})
     checkConfirmations(b, "0000000000000000abc")
     var deadline = time.Now().Add(3 * time.Second)
     for time.Now().Before(deadline) {

@@ -16,6 +16,16 @@ type watch struct {
     alias     string
     watchedAt time.Time
     addr      string // "" for a direct txid watch; the watched address otherwise
+    summary   Summary
+}
+
+// Summary carries what the mempool notification reported about a transaction, so
+// the confirmation message can restate it ("10 000 sats sent to …") without
+// refetching and re-deriving the transaction when the block arrives.
+type Summary struct {
+    Amount     float64  // BTC — received, or for a spend what left for other addresses
+    Recipients []string // where a spend went; empty for an incoming payment
+    Outgoing   bool
 }
 
 var mu sync.Mutex
@@ -29,8 +39,8 @@ func Add(txid string, chatID int64, alias string) {
 // AddAddrConfirm registers a one-shot confirmation watch for a transaction just
 // seen paying a watched address, so the chat gets a second message — with how
 // long it took — once that transaction is mined. watchedAt is now (first-seen).
-func AddAddrConfirm(txid string, chatID int64, addr, alias string) {
-    addEntry(txid, watch{chatID: chatID, alias: alias, watchedAt: time.Now(), addr: addr})
+func AddAddrConfirm(txid string, chatID int64, addr, alias string, summary Summary) {
+    addEntry(txid, watch{chatID: chatID, alias: alias, watchedAt: time.Now(), addr: addr, summary: summary})
 }
 
 // addEntry appends a watch, skipping an exact (chat, addr) duplicate so a
@@ -102,6 +112,7 @@ type Confirmed struct {
     Alias     string
     Addr      string // "" for a direct watch; the watched address otherwise
     WatchedAt time.Time
+    Summary   Summary // what the mempool notification reported; zero for a direct watch
 }
 
 // Any reports whether anything is being watched — a cheap early-out so an idle
@@ -122,7 +133,7 @@ func Confirms(txids []string) (res []Confirmed) {
         ws, ok := pending[txid]
         if !ok { continue }
         for _, w := range ws {
-            res = append(res, Confirmed{Txid: txid, ChatID: w.chatID, Alias: w.alias, Addr: w.addr, WatchedAt: w.watchedAt})
+            res = append(res, Confirmed{Txid: txid, ChatID: w.chatID, Alias: w.alias, Addr: w.addr, WatchedAt: w.watchedAt, Summary: w.summary})
         }
         delete(pending, txid)
     }
