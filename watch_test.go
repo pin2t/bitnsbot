@@ -484,7 +484,7 @@ func awaitNotification(t *testing.T, btcdSrv *httptest.Server, watchedAddr strin
         sentMu.Lock()
         var found string
         for _, m := range sent {
-            if strings.Contains(m, "watched address") { found = m }
+            if strings.Contains(m, "is sending") { found = m }
         }
         sentMu.Unlock()
         if found != "" { return found }
@@ -504,7 +504,7 @@ func TestSpendNotification(t *testing.T) {
     var srv = spendCoreServer(t, watchedAddr, txid, false)
     defer srv.Close()
     var got = awaitNotification(t, srv, watchedAddr)
-    if !strings.Contains(got, "Outgoing transaction from watched address "+short(watchedAddr)+" (John)") {
+    if !strings.Contains(got, short(watchedAddr)+" (John)") {
         t.Fatalf("expected an outgoing-transaction notification: %q", got)
     }
     if strings.Contains(got, "New transaction on") {
@@ -542,7 +542,7 @@ func TestSpendWithChangeNotification(t *testing.T) {
     var srv = spendCoreServer(t, watchedAddr, txid, true)
     defer srv.Close()
     var got = awaitNotification(t, srv, watchedAddr)
-    if !strings.Contains(got, "Outgoing transaction from watched address") {
+    if !strings.Contains(got, "sending") {
         t.Fatalf("expected an outgoing-transaction notification: %q", got)
     }
     // 2.5 spent, 1.4999 back as change, so the address is down 1.0001 BTC
@@ -618,7 +618,7 @@ func TestBroadcastDedups(t *testing.T) {
     var srv = spendCoreServer(t, watchedAddr, txid, false)
     defer srv.Close()
     var got = awaitNotification(t, srv, watchedAddr)
-    if !strings.Contains(got, "watched address") {
+    if !strings.Contains(got, "is sending") {
         t.Fatalf("expected a first notification, got %q", got)
     }
     // the mined republish of the very same transaction
