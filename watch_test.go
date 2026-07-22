@@ -54,7 +54,7 @@ func TestWatchNotification(t *testing.T) {
     var b = newBot("TESTTOKEN", tg.URL)
     var watchedAddr = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
     var txid = "f21b47a9143a23e80cc59e81588d21558b394005580b285961957cb3bed5b3e0"
-    var btcdSrv = newFakeCoreServer(t, func(method string, params []interface{}) (interface{}, error) {
+    var srv = newFakeCoreServer(t, func(method string, params []interface{}) (interface{}, error) {
         switch method {
         case "validateaddress":
             return map[string]any{"isvalid": true, "address": watchedAddr, "scriptPubKey": "76a914aa88ac"}, nil
@@ -86,7 +86,7 @@ func TestWatchNotification(t *testing.T) {
         }
         return nil, nil
     })
-    core = newFakeCoreClient(t, btcdSrv)
+    core = newFakeCoreClient(t, srv)
     defer func() { core = nil }()
     openDB(filepath.Join(t.TempDir(), "watches.db"))
     defer closeDB()
@@ -107,17 +107,17 @@ func TestWatchNotification(t *testing.T) {
     defer sentMu.Unlock()
     var found string
     for _, m := range sent {
-        if strings.Contains(m, "New transaction on watched address") {
+        if strings.Contains(m, "sending") || strings.Contains(m, "sent") {
             found = m
         }
     }
     if found == "" {
         t.Fatalf("expected a watch notification, got: %#v", sent)
     }
-    if !strings.Contains(found, short(watchedAddr)) || !strings.Contains(found, short(txid)) {
+    if !strings.Contains(found, short(watchedAddr)) || !strings.Contains(found, txid) {
         t.Fatalf("notification missing address/txid: %q", found)
     }
-    if !strings.Contains(found, "watched address "+short(watchedAddr)+" (John)") {
+    if !strings.Contains(found, short(watchedAddr)+" (John)") {
         t.Fatalf("notification missing alias: %q", found)
     }
     if !strings.Contains(found, "250 000 000 sats") {
@@ -363,14 +363,14 @@ func TestAddrConfirmation(t *testing.T) {
     defer sentMu.Unlock()
     var found string
     for _, m := range sent {
-        if strings.Contains(m, "was confirmed") {
+        if strings.Contains(m, "Confirmed") {
             found = m
         }
     }
     if found == "" {
         t.Fatalf("expected a confirmation message, got %#v", sent)
     }
-    for _, want := range []string{"Transaction " + short(txid), "on watched address " + short(addr), "(John)", "confirmed in block #200 after"} {
+    for _, want := range []string{txid, short(addr), "(John)", "Confirmed in block #200 after"} {
         if !strings.Contains(found, want) {
             t.Fatalf("address confirmation missing %q: %q", want, found)
         }
