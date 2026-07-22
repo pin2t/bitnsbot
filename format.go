@@ -269,3 +269,18 @@ func change(now, then float64) string {
     }
     return sign + price(delta) + pct
 }
+
+// notifyBTCThreshold is where a notification headline switches from satoshi to
+// BTC. From five million sats up the satoshi figure stops being readable at a
+// glance — "5 000 000 sats" versus "0.05 BTC", which is the same amount.
+const notifyBTCThreshold = 5_000_000
+
+// amountText renders an amount for a notification headline: satoshi up to
+// notifyBTCThreshold, BTC above it, trailing zeros trimmed either way.
+func amountText(btc float64) string {
+    var sats = int64(math.Round(btc * 1e8))
+    if sats >= notifyBTCThreshold || sats <= -notifyBTCThreshold {
+        return trimNum(btc, 8) + " BTC"
+    }
+    return group(sats) + " sats"
+}

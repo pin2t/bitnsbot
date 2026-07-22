@@ -54,7 +54,7 @@ func TestWatchNotification(t *testing.T) {
     var b = newBot("TESTTOKEN", tg.URL)
     var watchedAddr = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
     var txid = "f21b47a9143a23e80cc59e81588d21558b394005580b285961957cb3bed5b3e0"
-    var btcdSrv = newFakeCoreServer(t, func(method string, params []interface{}) (interface{}, error) {
+    var srv = newFakeCoreServer(t, func(method string, params []interface{}) (interface{}, error) {
         switch method {
         case "validateaddress":
             return map[string]any{"isvalid": true, "address": watchedAddr, "scriptPubKey": "76a914aa88ac"}, nil
@@ -86,7 +86,7 @@ func TestWatchNotification(t *testing.T) {
         }
         return nil, nil
     })
-    core = newFakeCoreClient(t, btcdSrv)
+    core = newFakeCoreClient(t, srv)
     defer func() { core = nil }()
     openDB(filepath.Join(t.TempDir(), "watches.db"))
     defer closeDB()
@@ -107,17 +107,17 @@ func TestWatchNotification(t *testing.T) {
     defer sentMu.Unlock()
     var found string
     for _, m := range sent {
-        if strings.Contains(m, "New transaction on watched address") {
+        if strings.Contains(m, "sending") || strings.Contains(m, "sent") {
             found = m
         }
     }
     if found == "" {
         t.Fatalf("expected a watch notification, got: %#v", sent)
     }
-    if !strings.Contains(found, short(watchedAddr)) || !strings.Contains(found, short(txid)) {
+    if !strings.Contains(found, short(watchedAddr)) || !strings.Contains(found, txid) {
         t.Fatalf("notification missing address/txid: %q", found)
     }
-    if !strings.Contains(found, "watched address "+short(watchedAddr)+" (John)") {
+    if !strings.Contains(found, short(watchedAddr)+" (John)") {
         t.Fatalf("notification missing alias: %q", found)
     }
     if !strings.Contains(found, "250 000 000 sats") {
@@ -357,20 +357,20 @@ func TestAddrConfirmation(t *testing.T) {
     defer func() { core = nil }()
     stopNotify()
     defer stopNotify()
-    txwatches.AddAddrConfirm(txid, 7, addr, "John")
+    txwatches.AddAddrConfirm(txid, 7, addr, "John", txwatches.Summary{})
     checkConfirmations(b, "hash200")
     sentMu.Lock()
     defer sentMu.Unlock()
     var found string
     for _, m := range sent {
-        if strings.Contains(m, "was confirmed") {
+        if strings.Contains(m, "Confirmed") {
             found = m
         }
     }
     if found == "" {
         t.Fatalf("expected a confirmation message, got %#v", sent)
     }
-    for _, want := range []string{"Transaction " + short(txid), "on watched address " + short(addr), "(John)", "confirmed in block #200 after"} {
+    for _, want := range []string{txid, short(addr), "(John)", "Confirmed in block #200 after"} {
         if !strings.Contains(found, want) {
             t.Fatalf("address confirmation missing %q: %q", want, found)
         }
@@ -380,8 +380,8 @@ func TestAddrConfirmation(t *testing.T) {
 func TestAddrConfirmDedup(t *testing.T) {
     txwatches.Reset()
     defer txwatches.Reset()
-    txwatches.AddAddrConfirm("txabc", 5, "addrX", "Alias")
-    txwatches.AddAddrConfirm("txabc", 5, "addrX", "Alias")
+    txwatches.AddAddrConfirm("txabc", 5, "addrX", "Alias", txwatches.Summary{})
+    txwatches.AddAddrConfirm("txabc", 5, "addrX", "Alias", txwatches.Summary{})
     txwatches.Add("txabc", 5, "")
     var n = len(txwatches.Confirms([]string{"txabc"}))
     // the two identical address confirmations dedup to one; the direct watch (addr "") stays distinct
@@ -484,7 +484,7 @@ func awaitNotification(t *testing.T, btcdSrv *httptest.Server, watchedAddr strin
         sentMu.Lock()
         var found string
         for _, m := range sent {
-            if strings.Contains(m, "watched address") { found = m }
+            if strings.Contains(m, "is sending") { found = m }
         }
         sentMu.Unlock()
         if found != "" { return found }
@@ -504,7 +504,7 @@ func TestSpendNotification(t *testing.T) {
     var srv = spendCoreServer(t, watchedAddr, txid, false)
     defer srv.Close()
     var got = awaitNotification(t, srv, watchedAddr)
-    if !strings.Contains(got, "Outgoing transaction from watched address "+short(watchedAddr)+" (John)") {
+    if !strings.Contains(got, short(watchedAddr)+" (John)") {
         t.Fatalf("expected an outgoing-transaction notification: %q", got)
     }
     if strings.Contains(got, "New transaction on") {
@@ -542,7 +542,7 @@ func TestSpendWithChangeNotification(t *testing.T) {
     var srv = spendCoreServer(t, watchedAddr, txid, true)
     defer srv.Close()
     var got = awaitNotification(t, srv, watchedAddr)
-    if !strings.Contains(got, "Outgoing transaction from watched address") {
+    if !strings.Contains(got, "sending") {
         t.Fatalf("expected an outgoing-transaction notification: %q", got)
     }
     // 2.5 spent, 1.4999 back as change, so the address is down 1.0001 BTC
@@ -618,7 +618,7 @@ func TestBroadcastDedups(t *testing.T) {
     var srv = spendCoreServer(t, watchedAddr, txid, false)
     defer srv.Close()
     var got = awaitNotification(t, srv, watchedAddr)
-    if !strings.Contains(got, "watched address") {
+    if !strings.Contains(got, "is sending") {
         t.Fatalf("expected a first notification, got %q", got)
     }
     // the mined republish of the very same transaction
@@ -675,7 +675,7 @@ func TestConfirmationLinksBlock(t *testing.T) {
     stopNotify()
     t.Cleanup(func() { core = nil })
     t.Cleanup(stopNotify)
-    txwatches.AddAddrConfirm(txid, 42, addr, "")
+    txwatches.AddAddrConfirm(txid, 42, addr, "", txwatches.Summary{})
     checkConfirmations(b, "0000000000000000abc")
     var deadline = time.Now().Add(3 * time.Second)
     for time.Now().Before(deadline) {
