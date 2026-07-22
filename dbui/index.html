@@ -162,20 +162,28 @@
 
   function loadView() {
     var bucket = $("bucket").value;
-    if (!bucket) { status("no bucket selected", "err"); return; }
-    fetch("api/view?bucket=" + encodeURIComponent(bucket) + "&page=" + page)
+    if (!bucket) { status("no bucket selected", "err"); return Promise.resolve(); }
+    return fetch("api/view?bucket=" + encodeURIComponent(bucket) + "&page=" + page)
       .then(function(r) { if (!r.ok) throw new Error(r.status); return r.json(); })
       .then(function(d) {
         var body = $("rows");
         body.innerHTML = "";
         (d.rows || []).forEach(function(row) {
           var tr = document.createElement("tr");
+          var tdd = document.createElement("td");
           var tdk = document.createElement("td");
           var tdv = document.createElement("td");
+          tdd.className = "del";
+          var trash = $("trashTemplate").content.firstElementChild.cloneNode(true);
+          trash.addEventListener("click", function(e) {
+            e.stopPropagation(); // the row itself opens the editor; the icon deletes
+            deleteKey(bucket, row.key);
+          });
+          tdd.appendChild(trash);
           tdk.textContent = row.key;
           tdv.textContent = row.value;
           tdk.title = row.key; tdv.title = row.value;
-          tr.appendChild(tdk); tr.appendChild(tdv);
+          tr.appendChild(tdd); tr.appendChild(tdk); tr.appendChild(tdv);
           tr.addEventListener("click", function() {
             $("key").value = row.key;
             $("valbox").value = row.value;
@@ -211,6 +219,26 @@
         status("");
       })
       .catch(function(e) { status("get failed: " + e, "err"); });
+  }
+
+  // Deletes without asking: this is a local admin tool, and a confirm dialog on
+  // every row would make clearing a bucket unusable. The row is dropped from the
+  // table immediately rather than reloading the page, so the position and the
+  // rest of the listing stay put.
+  function deleteKey(bucket, key) {
+    fetch("api/delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ bucket: bucket, key: key })
+    })
+      .then(function(r) {
+        if (!r.ok) return r.text().then(function(t) { throw new Error(t.trim() || r.status); });
+        return r.json();
+      })
+      // reload first, then report — loadView clears the status line on success
+      .then(function() { return loadView(); })
+      .then(function() { status("deleted " + bucket + " / " + key, "ok"); })
+      .catch(function(e) { status("delete failed: " + e, "err"); });
   }
 
   function putValue() {

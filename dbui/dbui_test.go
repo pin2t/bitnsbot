@@ -195,3 +195,68 @@ func TestPutRejectsWrongMethod(t *testing.T) {
         t.Fatalf("GET /api/put returned %d, want 405", resp.StatusCode)
     }
 }
+
+func TestDelete(t *testing.T) {
+    var db = testDB(t)
+    var srv = httptest.NewServer(handler(db))
+    defer srv.Close()
+    var body = `{"bucket":"miners","key":"addrA"}`
+    var resp, _ = http.Post(srv.URL+"/api/delete", "application/json", strings.NewReader(body))
+    if resp.StatusCode != http.StatusOK {
+        t.Fatalf("delete returned %d", resp.StatusCode)
+    }
+    var gone, kept bool
+    db.View(func(tx *bbolt.Tx) error {
+        var b = tx.Bucket([]byte("miners"))
+        gone = b.Get([]byte("addrA")) == nil
+        kept = b.Get([]byte("addrB")) != nil
+        return nil
+    })
+    if !gone {
+        t.Fatal("addrA is still in the bucket after delete")
+    }
+    if !kept {
+        t.Fatal("delete removed a key it was not asked to")
+    }
+    // bbolt treats deleting a missing key as success, and so does the UI — the
+    // row is gone either way, which is all the caller wanted
+    var again, _ = http.Post(srv.URL+"/api/delete", "application/json", strings.NewReader(body))
+    if again.StatusCode != http.StatusOK {
+        t.Fatalf("deleting an absent key returned %d, want 200", again.StatusCode)
+    }
+    var missing = `{"bucket":"nope","key":"addrA"}`
+    var badBucket, _ = http.Post(srv.URL+"/api/delete", "application/json", strings.NewReader(missing))
+    if badBucket.StatusCode != http.StatusNotFound {
+        t.Fatalf("delete on an unknown bucket returned %d, want 404", badBucket.StatusCode)
+    }
+}
+
+// A binary key must be deletable by the same "hex:" form the table displays,
+// otherwise the trash icon would silently fail on the packed address index.
+func TestDeleteBinaryKey(t *testing.T) {
+    var db = testDB(t)
+    var srv = httptest.NewServer(handler(db))
+    defer srv.Close()
+    var body = `{"bucket":"addrindex","key":"hex:000100000000"}`
+    var resp, _ = http.Post(srv.URL+"/api/delete", "application/json", strings.NewReader(body))
+    if resp.StatusCode != http.StatusOK {
+        t.Fatalf("delete returned %d", resp.StatusCode)
+    }
+    var gone bool
+    db.View(func(tx *bbolt.Tx) error {
+        gone = tx.Bucket([]byte("addrindex")).Get([]byte{0, 1, 0, 0, 0, 0}) == nil
+        return nil
+    })
+    if !gone {
+        t.Fatal("the binary key survived a hex-encoded delete")
+    }
+}
+
+func TestDeleteRejectsWrongMethod(t *testing.T) {
+    var srv = httptest.NewServer(handler(testDB(t)))
+    defer srv.Close()
+    var resp, _ = http.Get(srv.URL + "/api/delete")
+    if resp.StatusCode != http.StatusMethodNotAllowed {
+        t.Fatalf("GET /api/delete returned %d, want 405", resp.StatusCode)
+    }
+}
