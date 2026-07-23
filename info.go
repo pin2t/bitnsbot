@@ -87,7 +87,7 @@ func transaction(ctx context.Context, bot *bot, chatID int64, txid string) {
     case coinbase:
         pairs = append(pairs, [2]string{"Fee", "none (coinbase)"})
     case feeOK:
-        pairs = append(pairs, [2]string{"Fee", satoshi(fee) + " sats"})
+        pairs = append(pairs, [2]string{"Fee", sats(fee) + " sats"})
     default:
         pairs = append(pairs, [2]string{"Fee", "unavailable"})
     }

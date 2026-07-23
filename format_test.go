@@ -39,7 +39,7 @@ func TestAmountLineUSD(t *testing.T) {
     }
     rates.Add(60000)
     var s = amountLine(1.5, time.Time{}, true)
-    if !strings.Contains(s, "150 000 000 sats") || !strings.Contains(s, "$90,000") {
+    if !strings.Contains(s, "1.5 BTC") || !strings.Contains(s, "$90,000") {
         t.Fatalf("amountLine = %q", s)
     }
 }
@@ -71,7 +71,7 @@ func TestNegativeAmounts(t *testing.T) {
     if got := group(-999); got != "-999" {
         t.Fatalf("group(-999) = %q", got)
     }
-    if got := satoshi(-1.0001); got != "-100 010 000" {
+    if got := sats(-1.0001); got != "-100 010 000" {
         t.Fatalf("satoshi(-1.0001) = %q", got)
     }
     if got := usd(-1.0001, 29447.06); got != "-$29,450" {

@@ -105,19 +105,14 @@ func addressNotification(n notification, watchID, alias string) (string, []strin
             )
         }
     } else {
-        header = amountText(in) + " is sending to " + label
+        header = label + " receiving " + amountText(in)
         summary = txwatches.Summary{Amount: in}
         pairs = append(pairs, [2]string{"Amount", amountLine(in, time.Time{}, true)})
     }
     header += ". Transaction <code>" + n.txid + "</code>"
     if n.feeOK {
-        pairs = append(pairs,
-            [2]string{"Fee", satoshi(n.fee) + " sats"},
-            [2]string{"Fee rate", strings.TrimSuffix(strconv.FormatFloat(n.feeRate, 'f', 1, 64), ".0") + " sat/vB"},
-        )
-        if n.confEstimate != "" {
-            pairs = append(pairs, [2]string{"Confirms", n.confEstimate})
-        }
+        pairs = append(pairs, [2]string{"Fee", sats(n.fee) + " sats (" + strings.TrimSuffix(strconv.FormatFloat(n.feeRate, 'f', 1, 64), ".0") + " sat/vB)"})
+        if n.confEstimate != "" { pairs = append(pairs, [2]string{"Confirms", n.confEstimate}) }
     }
     return "🔔 " + header + fields(pairs), ids, summary, true
 }
@@ -326,12 +321,9 @@ func confEstimate(ctx context.Context, feeRate float64) string {
         return ""
     }
     switch {
-    case feeRate >= fast*1e5:
-        return "~10-20 min"
-    case feeRate >= medium*1e5:
-        return "~1h"
-    default:
-        return "2h+"
+    case feeRate >= fast*1e5:   return "~10-20 min"
+    case feeRate >= medium*1e5: return "~1h"
+    default:                    return "2h+"
     }
 }
 
@@ -380,17 +372,17 @@ func confirmationMessage(c txwatches.Confirmed, height int64) (string, []string)
         var label = short(c.Txid)
         if c.Alias != "" { label += " (" + html.EscapeString(c.Alias) + ")" }
         ids = append(ids, strconv.FormatInt(height, 10))
-        return fmt.Sprintf("🔔 Watched transaction %s was confirmed in block #%d after %s", label, height, elapsed), ids
+        return fmt.Sprintf("🔔 Transaction %s was confirmed in block #%d after %s", label, height, elapsed), ids
     }
     var label = short(c.Addr)
     if c.Alias != "" { label += " (" + html.EscapeString(c.Alias) + ")" }
     ids = append(ids, c.Addr)
     var msg string
     if c.Summary.Outgoing {
-        msg = label + " is sending " + amountText(c.Summary.Amount) + " to " + compactAddrs(c.Summary.Recipients) + ". " + landed
+        msg = label + " sent " + amountText(c.Summary.Amount) + " to " + compactAddrs(c.Summary.Recipients) + ". " + landed
         ids = append(ids, firstN(c.Summary.Recipients, shownAddrs)...)
     } else {
-        msg = amountText(c.Summary.Amount) + " sent to " + label + ". " + landed
+        msg = label + " received " + amountText(c.Summary.Amount) + ". " + landed
     }
     ids = append(ids, strconv.FormatInt(height, 10))
     return "🔔 " + msg, ids
