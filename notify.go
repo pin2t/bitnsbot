@@ -105,19 +105,14 @@ func addressNotification(n notification, watchID, alias string) (string, []strin
             )
         }
     } else {
-        header = amountText(in) + " is sending to " + label
+        header = label + " receiving " + amountText(in)
         summary = txwatches.Summary{Amount: in}
         pairs = append(pairs, [2]string{"Amount", amountLine(in, time.Time{}, true)})
     }
     header += ". Transaction <code>" + n.txid + "</code>"
     if n.feeOK {
-        pairs = append(pairs,
-            [2]string{"Fee", satoshi(n.fee) + " sats"},
-            [2]string{"Fee rate", strings.TrimSuffix(strconv.FormatFloat(n.feeRate, 'f', 1, 64), ".0") + " sat/vB"},
-        )
-        if n.confEstimate != "" {
-            pairs = append(pairs, [2]string{"Confirms", n.confEstimate})
-        }
+        pairs = append(pairs, [2]string{"Fee", sats(n.fee) + " sats (" + strings.TrimSuffix(strconv.FormatFloat(n.feeRate, 'f', 1, 64), ".0") + " sat/vB)"})
+        if n.confEstimate != "" { pairs = append(pairs, [2]string{"Confirms", n.confEstimate}) }
     }
     return "🔔 " + header + fields(pairs), ids, summary, true
 }
@@ -387,7 +382,7 @@ func confirmationMessage(c txwatches.Confirmed, height int64) (string, []string)
         msg = label + " sent " + amountText(c.Summary.Amount) + " to " + compactAddrs(c.Summary.Recipients) + ". " + landed
         ids = append(ids, firstN(c.Summary.Recipients, shownAddrs)...)
     } else {
-        msg = amountText(c.Summary.Amount) + " sent to " + label + ". " + landed
+        msg = label + " received " + amountText(c.Summary.Amount) + ". " + landed
     }
     ids = append(ids, strconv.FormatInt(height, 10))
     return "🔔 " + msg, ids

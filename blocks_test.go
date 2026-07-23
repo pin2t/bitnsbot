@@ -86,13 +86,13 @@ func TestComputeBlockInfo(t *testing.T) {
         t.Fatalf("miner = %q, want TestPool", bi.Miner)
     }
     // Core supplies each fee directly, so no prevout fetching happens at all
-    if !bi.FeesOK || satoshi(bi.FeeMin) != "50 000" || satoshi(bi.FeeAvg) != "75 000" || satoshi(bi.FeeMax) != "100 000" {
+    if !bi.FeesOK || sats(bi.FeeMin) != "50 000" || sats(bi.FeeAvg) != "75 000" || sats(bi.FeeMax) != "100 000" {
         t.Fatalf("fees: ok=%v min=%v avg=%v max=%v", bi.FeesOK, bi.FeeMin, bi.FeeAvg, bi.FeeMax)
     }
     if bi.TxSizeMin != 100 || bi.TxSizeAvg != 183 || bi.TxSizeMax != 250 { // (100+200+250)/3 = 183
         t.Fatalf("tx sizes: min=%d avg=%d max=%d", bi.TxSizeMin, bi.TxSizeAvg, bi.TxSizeMax)
     }
-    if satoshi(bi.Reward) != "5 000 000 000" || satoshi(bi.Total) != "5 000 150 000" { // 50 BTC and 50.0015 BTC
+    if sats(bi.Reward) != "5 000 000 000" || sats(bi.Total) != "5 000 150 000" { // 50 BTC and 50.0015 BTC
         t.Fatalf("reward=%v total=%v", bi.Reward, bi.Total)
     }
 }

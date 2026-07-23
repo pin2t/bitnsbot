@@ -10,6 +10,7 @@ import "time"
 import "go.etcd.io/bbolt"
 import "bitnsbot/logging"
 import "bitnsbot/miners"
+import "math"
 
 var blocksBucket = []byte("blocks")
 
@@ -166,7 +167,7 @@ func formatBlock(bi *blockInfo) string {
     var pairs = [][2]string{
         {"Hash", short(bi.Hash)},
         {"Time", when(bi.Time)},
-        {"Size", group(int64(bi.Size)) + " bytes"},
+        {"Size", metric(float64(bi.Size), 2)},
         {"Transactions", strconv.Itoa(bi.NumTx)},
         {"Miner", bi.Miner},
         {"Difficulty", difficulty},
@@ -177,18 +178,23 @@ func formatBlock(bi *blockInfo) string {
     case bi.NumTx <= 1:
         pairs = append(pairs, [2]string{"Fees", "none (coinbase only)"})
     default:
+        var feeLine = func (fee float64, sz int32) string {
+            return sats(fee) + " sats (" + strings.TrimSuffix(strconv.FormatFloat(math.Round(fee*1e8) / float64(sz), 'f', 1, 64), ".0") + " sat/vB)"
+        }
         pairs = append(pairs,
-            [2]string{"Lowest fee", satoshi(bi.FeeMin) + " sats"},
-            [2]string{"Average fee", satoshi(bi.FeeAvg) + " sats"},
-            [2]string{"Highest fee", satoshi(bi.FeeMax) + " sats"},
+            [2]string{"Fees", ""},
+            [2]string{"lowest", feeLine(bi.FeeMin, bi.TxSizeMin)},
+            [2]string{"average", feeLine(bi.FeeAvg, bi.TxSizeAvg)},
+            [2]string{"highest", feeLine(bi.FeeMax, bi.TxSizeMax)},
         )
     }
     pairs = append(pairs,
-        [2]string{"Tx size min", group(int64(bi.TxSizeMin)) + " bytes"},
-        [2]string{"Tx size avg", group(int64(bi.TxSizeAvg)) + " bytes"},
-        [2]string{"Tx size max", group(int64(bi.TxSizeMax)) + " bytes"},
-        [2]string{"Reward", satoshi(bi.Reward) + " sats"},
-        [2]string{"Reward + fees", satoshi(bi.Total) + " sats"},
+        [2]string{"Tx sizes", ""},
+        [2]string{"minimum", group(int64(bi.TxSizeMin)) + " bytes"},
+        [2]string{"average", group(int64(bi.TxSizeAvg)) + " bytes"},
+        [2]string{"maximum", group(int64(bi.TxSizeMax)) + " bytes"},
+        [2]string{"Reward", amountLine(bi.Reward, time.Unix(bi.Time, 0), false)},
+        [2]string{"Reward + fees", amountLine(bi.Reward, time.Unix(bi.Time, 0), false)},
     )
     var pad int
     for _, p := range pairs {

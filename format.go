@@ -53,7 +53,7 @@ func group(n int64) string {
     return sign + s
 }
 
-func satoshi(btc float64) string {
+func sats(btc float64) string {
     return group(int64(math.Round(btc * 1e8)))
 }
 
@@ -161,7 +161,7 @@ func usd(btc, rate float64) string {
 // stored rate for confirmed times that predate our rate history, so an old
 // transaction still shows its value at today's rate rather than nothing.
 func amountLine(btc float64, at time.Time, current bool) string {
-    var s = satoshi(btc) + " sats"
+    var s = amountText(btc)
     var rate float64
     var ok bool
     if current {
@@ -180,7 +180,7 @@ func amountLine(btc float64, at time.Time, current bool) string {
 
 // btcAmount renders a BTC value as "<btc> BTC (≈ $usd)" at the latest rate —
 // used for the large /mempool totals, where sats would be unwieldy. Values ≥ 1
-// BTC show two decimals ("9449.72 BTC"); smaller ones keep satoshi precision
+// BTC show two decimals ("9449.72 BTC"); smaller ones keep sats precision
 // (trailing zeros trimmed) so a fraction of a BTC doesn't round away to nothing.
 func btcAmount(btc float64) string {
     var num string
@@ -270,12 +270,12 @@ func change(now, then float64) string {
     return sign + price(delta) + pct
 }
 
-// notifyBTCThreshold is where a notification headline switches from satoshi to
-// BTC. From five million sats up the satoshi figure stops being readable at a
+// notifyBTCThreshold is where a notification headline switches from sats to
+// BTC. From five million sats up the sats figure stops being readable at a
 // glance — "5 000 000 sats" versus "0.05 BTC", which is the same amount.
 const notifyBTCThreshold = 5_000_000
 
-// amountText renders an amount for a notification headline: satoshi up to
+// amountText renders an amount for a notification headline: sats up to
 // notifyBTCThreshold, BTC above it, trailing zeros trimmed either way.
 func amountText(btc float64) string {
     var sats = int64(math.Round(btc * 1e8))

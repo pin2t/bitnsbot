@@ -71,7 +71,7 @@ func TestNegativeAmounts(t *testing.T) {
     if got := group(-999); got != "-999" {
         t.Fatalf("group(-999) = %q", got)
     }
-    if got := satoshi(-1.0001); got != "-100 010 000" {
+    if got := sats(-1.0001); got != "-100 010 000" {
         t.Fatalf("satoshi(-1.0001) = %q", got)
     }
     if got := usd(-1.0001, 29447.06); got != "-$29,450" {
