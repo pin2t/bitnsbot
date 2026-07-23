@@ -15,7 +15,7 @@ import "strings"
 import "sync"
 import "syscall"
 import "time"
-
+import "runtime/debug"
 import "bitnsbot/dbui"
 import "bitnsbot/logging"
 import "bitnsbot/miners"
@@ -46,6 +46,7 @@ var dbuiListen      = flag.String("dbui-listen", "", "address for the database a
 
 var core *coreClient
 var dbuiSrv *http.Server
+var ver = "1.0"
 
 func main() {
     flag.Usage = func() {
@@ -284,8 +285,15 @@ func parseCommand(text string) (command, arg string) {
 }
 
 func start(bot *bot, chatID int64) {
+    var b, _ = debug.ReadBuildInfo()
+    var commit = ""
+    if b != nil {
+        for _, s := range b.Settings {
+            if s.Key == "vcs.revision" { commit = "Build " + s.Value[:6] }
+        }
+    }
     send(bot, chatID, strings.Join([]string{
-        "Hi! I'm bitnsbot — I keep an eye on the Bitcoin network for you.",
+        "Bitnsbot. I keep an eye on the Bitcoin network for you.",
         "",
         "• <b>/info</b> — look up a transaction, block, or address",
         "• <b>/watch</b> — get notified when an address receives a payment, or when a transaction confirms",
@@ -296,6 +304,9 @@ func start(bot *bot, chatID int64) {
         "• <b>/miners</b> — top mining pools by blocks mined",
         "• <b>/market</b> — price, market cap, volume and recent changes",
         "• <b>/start</b> — show this message",
+        "",
+        "Version " + ver + ". " + commit + ". Source code on <a href=\"https://github.com/pin2t/bitnsbot\">Github</a>. " +
+        "Don't forget to give me a ⭐",
     }, "\n"))
 }
 
@@ -307,7 +318,7 @@ func watchCmd(bot *bot, chatID int64, arg string) {
         pendingWatchMu.Lock()
         pendingWatchChats[chatID] = true
         pendingWatchMu.Unlock()
-        send(bot, chatID, "Please send the address or transaction to watch, optionally followed by an alias — all in one message, e.g. bc1q… John")
+        send(bot, chatID, "Send an address or transaction to watch, optionally followed by an alias — all in one message, e.g. bc1q… John")
         return
     }
     pendingWatchMu.Lock()
@@ -354,7 +365,7 @@ func unwatch(bot *bot, chatID int64, arg string) {
         pendingUnwatchMu.Lock()
         pendingUnwatchChats[chatID] = true
         pendingUnwatchMu.Unlock()
-        send(bot, chatID, "Please send the watch you'd like to stop in a separate message.")
+        send(bot, chatID, "Send the watch you'd like to stop in a separate message.")
         return
     }
     pendingUnwatchMu.Lock()
