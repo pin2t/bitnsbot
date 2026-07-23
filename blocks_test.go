@@ -107,16 +107,16 @@ func TestFormatBlock(t *testing.T) {
     }
     var s = formatBlock(bi)
     for _, want := range []string{
-        "Block #800000\n\n<pre>",
-        "Size:          1 523 456 bytes",
+        "Block #800000",
+        "Size:          1.52 M",
         "Transactions:  2",
         "Miner:         Foundry USA",
         "Difficulty:    79 T",
-        "Lowest fee:    130 sats",
-        "Highest fee:   2 500 000 sats",
-        "Tx size max:   98 000 bytes",
-        "Reward:        312 500 000 sats",
-        "Reward + fees: 375 500 000 sats</pre>",
+        "lowest:        130 sats (1.2 sat/vB)",
+        "average:       18 500 sats (41.6 sat/vB)",
+        "highest:       2 500 000 sats (25.5 sat/vB)",
+        "Reward:        3.125 BTC",
+        "Reward + fees: 3.125 BTC</pre>",
     } {
         if !strings.Contains(s, want) {
             t.Fatalf("formatBlock missing %q in:\n%s", want, s)
