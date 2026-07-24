@@ -173,6 +173,72 @@ func TestAnnounce(t *testing.T) {
     }
 }
 
+// peers.dat stores the addrman key (32 bytes), the new/tried entry counts as
+// uint32 LE, then each address entry as a 34-byte record: a version int32, a
+// timestamp uint32, services uint64, 16-byte IPv4-mapped-IPv6 address and the
+// port in network byte order. Pure IPv6 and .onion addresses are skipped.
+func TestCorePeers(t *testing.T) {
+    var path = filepath.Join(t.TempDir(), "peers.dat")
+    var buf = make([]byte, 0, 40+3*34)
+    // 32-byte key (all zeros is fine for a test)
+    buf = append(buf, make([]byte, 32)...)
+    // nNew = 2, nTried = 1 (uint32 LE)
+    buf = binary.LittleEndian.AppendUint32(buf, 2) // nNew
+    buf = binary.LittleEndian.AppendUint32(buf, 1) // nTried
+    // helper to append one address entry
+    appendEntry := func(ip net.IP, port uint16) {
+        buf = binary.LittleEndian.AppendUint32(buf, 1)       // version
+        buf = binary.LittleEndian.AppendUint32(buf, 0)       // time
+        buf = binary.LittleEndian.AppendUint64(buf, 0)       // services
+        buf = append(buf, ip.To16()...)                      // IP (16 bytes)
+        buf = binary.BigEndian.AppendUint16(buf, port)       // port (BE)
+    }
+    // entry 1: IPv4 1.2.3.4:8333
+    appendEntry(net.ParseIP("1.2.3.4"), 8333)
+    // entry 2: pure IPv6 — must be skipped
+    appendEntry(net.ParseIP("2600::1"), 1234)
+    // entry 3 (tried): IPv4 5.6.7.8:9333
+    appendEntry(net.ParseIP("5.6.7.8"), 9333)
+
+    if err := os.WriteFile(path, buf, 0600); err != nil {
+        t.Fatalf("write: %v", err)
+    }
+    var got, err = corePeers(path)
+    if err != nil {
+        t.Fatalf("corePeers: %v", err)
+    }
+    var want = []string{"1.2.3.4:8333", "5.6.7.8:9333"}
+    if !reflect.DeepEqual(got, want) {
+        t.Fatalf("peers = %v, want %v", got, want)
+    }
+}
+
+// A file smaller than 40 bytes (key+counts) is rejected.
+func TestCorePeersTooShort(t *testing.T) {
+    var path = filepath.Join(t.TempDir(), "peers.dat")
+    if err := os.WriteFile(path, make([]byte, 20), 0600); err != nil {
+        t.Fatalf("write: %v", err)
+    }
+    if _, err := corePeers(path); err == nil {
+        t.Fatal("expected error for a 20-byte file")
+    }
+}
+
+// A peers.dat with zero entries returns an empty list without error.
+func TestCorePeersEmpty(t *testing.T) {
+    var path = filepath.Join(t.TempDir(), "peers.dat")
+    var buf = make([]byte, 40) // key + nNew=0 + nTried=0
+    if err := os.WriteFile(path, buf, 0600); err != nil {
+        t.Fatalf("write: %v", err)
+    }
+    var got, err = corePeers(path)
+    if err != nil {
+        t.Fatalf("corePeers: %v", err)
+    }
+    if len(got) != 0 {
+        t.Fatalf("peers = %v, want empty", got)
+    }
+}
 // A peer that never finishes the handshake must not hang the worker.
 func TestAnnounceTimesOut(t *testing.T) {
     var ln, err = net.Listen("tcp", "127.0.0.1:0")

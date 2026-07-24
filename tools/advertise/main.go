@@ -26,8 +26,9 @@ import "time"
 
 import "bitnsbot/logging"
 
-var peersPath = flag.String("peers", "peers.json", "path to btcd's peers.json")
-var advertised = flag.String("advertise", "178.46.128.227:8333", "the address to advertise to every peer")
+var peersPath = flag.String("peers", "", "path to btcd's peers.json (optional)")
+var corePeersPath = flag.String("corepeers", "", "path to Bitcoin Core's peers.dat (optional)")
+var advertised = flag.String("advertise", "5.181.105.56:8333", "the address to advertise to every peer")
 var workers = flag.Int("workers", 64, "how many peers to contact concurrently")
 var timeout = flag.Duration("timeout", 10*time.Second, "dial and I/O timeout per peer")
 var limit = flag.Int("limit", 0, "contact at most this many peers (0 = all of them)")
@@ -184,6 +185,41 @@ func ipv4Peers(path string, liveOnly bool) ([]string, error) {
     return peers, nil
 }
 
+// corePeers reads Bitcoin Core's peers.dat and returns the IPv4 peer addresses in
+// it. peers.dat is a flat binary file: a 32-byte addrman key, followed by the
+// counts of new and tried entries (uint32 LE), then each entry as a 34-byte
+// record — version (int32), time (uint32), services (uint64), the 16-byte
+// IPv4-mapped IPv6 address, and the port in network byte order. Tried entries
+// may carry extra bookkeeping after the address, but those bytes are never
+// needed to extract the IP:port.
+func corePeers(path string) ([]string, error) {
+    var data, err = os.ReadFile(path)
+    if err != nil {
+        return nil, err
+    }
+    if len(data) < 40 { // key (32) + nNew (4) + nTried (4)
+        return nil, fmt.Errorf("%s: too small for a peers.dat (%d bytes)", path, len(data))
+    }
+    var nNew = binary.LittleEndian.Uint32(data[32:36])
+    var nTried = binary.LittleEndian.Uint32(data[36:40])
+    var total = int(nNew + nTried)
+    const entrySize = 34
+    var off = 40
+    var peers []string
+    for i := 0; i < total; i++ {
+        if off+entrySize > len(data) {
+            break
+        }
+        var ip = net.IP(data[off+16 : off+32])
+        var port = binary.BigEndian.Uint16(data[off+32 : off+34])
+        off += entrySize
+        if ip4 := ip.To4(); ip4 != nil {
+            peers = append(peers, net.JoinHostPort(ip4.String(), strconv.Itoa(int(port))))
+        }
+    }
+    return peers, nil
+}
+
 func splitAddr(addr string) (net.IP, uint16, error) {
     var host, portText, err = net.SplitHostPort(addr)
     if err != nil { return nil, 0, err }
@@ -201,14 +237,40 @@ func main() {
     if err != nil {
         logging.Fatal("-advertise %q: %v", *advertised, err)
     }
-    var peers, perr = ipv4Peers(*peersPath, *liveOnly)
-    if perr != nil {
-        logging.Fatal("read %s: %v", *peersPath, perr)
+    if *peersPath == "" && *corePeersPath == "" {
+        logging.Fatal("at least one of -peers or -corepeers is required")
+    }
+    var peers []string
+    var from []string
+    if *peersPath != "" {
+        var p, err = ipv4Peers(*peersPath, *liveOnly)
+        if err != nil {
+            logging.Fatal("read %s: %v", *peersPath, err)
+        }
+        peers = p
+        from = append(from, *peersPath)
+    }
+    if *corePeersPath != "" {
+        var dps, derr = corePeers(*corePeersPath)
+        if derr != nil {
+            logging.Fatal("read %s: %v", *corePeersPath, derr)
+        }
+        var seen = make(map[string]bool, len(peers)+len(dps))
+        for _, p := range peers {
+            seen[p] = true
+        }
+        for _, p := range dps {
+            if !seen[p] {
+                seen[p] = true
+                peers = append(peers, p)
+            }
+        }
+        from = append(from, *corePeersPath)
     }
     if *limit > 0 && len(peers) > *limit {
         peers = peers[:*limit]
     }
-    logging.Status("advertising %s to %d IPv4 peers from %s", *advertised, len(peers), *peersPath)
+    logging.Status("advertising %s to %d IPv4 peers from %s", *advertised, len(peers), strings.Join(from, ", "))
     var announced, failed atomic.Int64
     var began = time.Now()
     var wg sync.WaitGroup
