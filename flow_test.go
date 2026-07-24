@@ -176,7 +176,8 @@ func TestInfoFlow(t *testing.T) {
         t.Fatalf("expected transaction reply, got %#v", sent)
     }
     for _, want := range []string{
-        "Transaction f21b47...d5b3e0", "confirmed (6 confirmations)", "Confirmed:", "14 november 2023 22:13",
+        "Transaction <code>f21b47a9143a23e80cc59e81588d21558b394005580b285961957cb3bed5b3e0</code>",
+        "confirmed (6 confirmations)", "Confirmed:", "14 november 2023 22:13",
         "Amount:", "1.5 BTC", "Fee:", "150 000 sats", "Size:", "225 bytes",
         "Inputs:", "1A1zP1...DivfNa", "Outputs:", "bc1qw5...v8f3t4",
     } {

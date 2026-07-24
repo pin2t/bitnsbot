@@ -15,53 +15,46 @@ import "bitnsbot/logging"
 var pendingInfoMu sync.Mutex
 var pendingInfoChats = make(map[int64]bool)
 
-func info(bot *bot, chatID int64, arg string) {
+func info(bot *bot, chat int64, arg string) {
     if arg == "" {
         pendingInfoMu.Lock()
-        pendingInfoChats[chatID] = true
+        pendingInfoChats[chat] = true
         pendingInfoMu.Unlock()
-        send(bot, chatID, "Please send Bitcoin address or transaction or block number or block hash")
+        send(bot, chat, "Please send Bitcoin address or transaction or block number or block hash")
         return
     }
     pendingInfoMu.Lock()
-    delete(pendingInfoChats, chatID)
+    delete(pendingInfoChats, chat)
     pendingInfoMu.Unlock()
     if core == nil {
-        send(bot, chatID, "Bitcoin node connection is not configured.")
+        send(bot, chat, "Bitcoin node connection is not configured.")
         return
     }
     var ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
     defer cancel()
     if isTxid(arg) {
-        // a block hash has exactly the same shape as a txid — 64 hex characters —
-        // so only the node can tell them apart. getblockheader is an O(1) index
-        // lookup, so ask it first and fall back to the transaction path; going
-        // through the height keeps the reply identical to /info <height>, cache
-        // and all.
         if header, err := core.getBlockHeader(ctx, arg); err == nil {
-            block(ctx, bot, chatID, header.Height)
+            block(ctx, bot, chat, header.Height)
             return
         }
-        transaction(ctx, bot, chatID, arg)
+        transaction(ctx, bot, chat, arg)
         return
     }
     if height, err := strconv.ParseInt(arg, 10, 64); err == nil && height >= 0 {
-        block(ctx, bot, chatID, height)
+        block(ctx, bot, chat, height)
         return
     }
-    address(ctx, bot, chatID, arg)
+    address(ctx, bot, chat, arg)
 }
 
-func transaction(ctx context.Context, bot *bot, chatID int64, txid string) {
+func transaction(ctx context.Context, bot *bot, chat int64, txid string) {
     var tx, err = core.getRawTransaction(ctx, txid)
     if err != nil {
-        send(bot, chatID, "Couldn't find transaction "+short(txid)+".")
+        send(bot, chat, "Couldn't find transaction "+short(txid)+".")
         return
     }
     var total float64
-    for _, vout := range tx.Vout {
-        total += vout.Value
-    }
+    for _, vout := range tx.Vout { total += vout.Value }
     var coinbase = len(tx.Vin) > 0 && tx.Vin[0].Coinbase != ""
     var fee float64
     var inputs []string
@@ -116,7 +109,7 @@ func transaction(ctx context.Context, bot *bot, chatID int64, txid string) {
     if tx.BlockHash != "" { ids = append(ids, tx.BlockHash) }
     ids = append(ids, firstN(inputs, shownAddrs)...)
     ids = append(ids, firstN(outputAddrs(tx), shownAddrs)...)
-    sendLinked(bot, chatID, fmt.Sprintf("Transaction %s\n\n<pre>%s</pre>", short(tx.Txid), strings.Join(lines, "\n")), ids)
+    sendLinked(bot, chat, fmt.Sprintf("Transaction <code>%s</code>\n\n<pre>%s</pre>", tx.Txid, strings.Join(lines, "\n")), ids)
 }
 
 // txInputs reports a transaction's fee and the addresses it spends from — in
@@ -255,32 +248,32 @@ func compactAddrs(addrs []string) string {
     return s
 }
 
-func block(ctx context.Context, bot *bot, chatID int64, height int64) {
+func block(ctx context.Context, bot *bot, chat int64, height int64) {
     if bi, ok := loadBlock(height); ok {
-        send(bot, chatID, formatBlock(bi))
+        send(bot, chat, formatBlock(bi))
         return
     }
     var hash, err = core.getBlockHash(ctx, height)
     if err != nil {
-        send(bot, chatID, fmt.Sprintf("Couldn't find block %d.", height))
+        send(bot, chat, fmt.Sprintf("Couldn't find block %d.", height))
         return
     }
     var bi, ciErr = computeBlockInfo(ctx, hash)
     if ciErr != nil {
         logging.Err("compute block %d: %v", height, ciErr)
-        send(bot, chatID, "Sorry, something went wrong fetching that block.")
+        send(bot, chat, "Sorry, something went wrong fetching that block.")
         return
     }
     storeBlock(bi)
-    send(bot, chatID, formatBlock(bi))
+    send(bot, chat, formatBlock(bi))
 }
 
-// blockFeeStats summarises a block's fee distribution. Core reports each
+// feeStats summarises a block's fee distribution. Core reports each
 // transaction's fee directly in getblock verbosity 2, so unlike the btcd path
 // this needs no prevout fetching at all — the bounded 16-way fan-out that used
 // to be here existed only because btcd made callers compute fees themselves.
 // The coinbase has no fee and is skipped.
-func blockFeeStats(txs []coreTransaction) (low, avg, high float64, count int) {
+func feeStats(txs []coreTransaction) (low, avg, high float64, count int) {
     var total float64
     for i, t := range txs {
         if i == 0 { continue } // coinbase

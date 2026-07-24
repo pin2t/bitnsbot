@@ -90,7 +90,7 @@ func computeBlockInfo(ctx context.Context, hash string) (*blockInfo, error) {
         if t.Size > szMax { szMax = t.Size }
         szSum += int64(t.Size)
     }
-    var low, avg, high, _ = blockFeeStats(blk.Tx)
+    var low, avg, high, _ = feeStats(blk.Tx)
     var coinbase = blk.Tx[0]
     var coinbaseOut float64
     var addrs []string
