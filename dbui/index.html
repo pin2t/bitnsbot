@@ -30,6 +30,7 @@
     font: inherit; color: var(--text); background: var(--panel);
     border: 1px solid var(--line); border-radius: 6px; padding: 7px 10px;
   }
+  select { height: 37px; }
   input { min-width: 220px; }
   button { cursor: pointer; }
   button.primary { background: var(--accent); color: var(--accent-text); border-color: transparent; }
@@ -94,7 +95,7 @@
 
   <div id="data" class="panel active">
     <table>
-      <thead><tr><th></th><th style="width:40%">Key</th><th>Value</th></tr></thead>
+      <thead><tr><th></th><th style="width:40%"><button id="clearBucket" class="trash" title="Clear bucket" style="margin-right:4px"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 4h11"/><path d="M6.5 4V2.7c0-.4.3-.7.7-.7h1.6c.4 0 .7.3.7.7V4"/><path d="M3.5 4l.6 8.5c0 .5.5 1 1 1h5.8c.5 0 1-.5 1-1L13.5 4"/><path d="M6.5 6.5v5M9.5 6.5v5"/></svg></button>Key</th><th>Value</th></tr></thead>
       <tbody id="rows"></tbody>
     </table>
     <template id="trashTemplate">
@@ -258,11 +259,30 @@
       .catch(function(e) { status("put failed: " + e, "err"); });
   }
 
+  function clearBucket() {
+    var bucket = $("bucket").value;
+    if (!bucket) { status("no bucket selected", "err"); return; }
+    if (!confirm("Are you sure you want to clear bucket " + bucket + "?")) return;
+    fetch("api/clearbucket", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ bucket: bucket })
+    })
+      .then(function(r) {
+        if (!r.ok) return r.text().then(function(t) { throw new Error(t.trim() || r.status); });
+        return r.json();
+      })
+      .then(function(d) { status("cleared bucket " + bucket + " (" + d.deleted + " keys)", "ok"); })
+      .then(function() { page = 0; return loadView(); })
+      .catch(function(e) { status("clear failed: " + e, "err"); });
+  }
+
   $("view").addEventListener("click", function() { page = 0; loadView(); });
   $("get").addEventListener("click", loadValue);
   $("put").addEventListener("click", putValue);
   $("prev").addEventListener("click", function() { if (page > 0) { page--; loadView(); } });
   $("next").addEventListener("click", function() { page++; loadView(); });
+  $("clearBucket").addEventListener("click", clearBucket);
   $("empty").hidden = false;
   loadBuckets();
 </script>

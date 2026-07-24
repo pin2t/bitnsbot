@@ -260,3 +260,51 @@ func TestDeleteRejectsWrongMethod(t *testing.T) {
         t.Fatalf("GET /api/delete returned %d, want 405", resp.StatusCode)
     }
 }
+
+func TestClearBucket(t *testing.T) {
+    var db = testDB(t)
+    var srv = httptest.NewServer(handler(db))
+    defer srv.Close()
+    var body = `{"bucket":"miners"}`
+    var resp, _ = http.Post(srv.URL+"/api/clearbucket", "application/json", strings.NewReader(body))
+    if resp.StatusCode != http.StatusOK {
+        t.Fatalf("clear bucket returned %d", resp.StatusCode)
+    }
+    var out struct {
+        OK      bool
+        Deleted int
+    }
+    json.NewDecoder(resp.Body).Decode(&out)
+    if !out.OK || out.Deleted != 2 {
+        t.Fatalf("clear bucket response = %+v, want ok with 2 deleted", out)
+    }
+    // verify the bucket still exists but is empty
+    var exists, empty bool
+    db.View(func(tx *bbolt.Tx) error {
+        var b = tx.Bucket([]byte("miners"))
+        exists = b != nil
+        if exists {
+            var c = b.Cursor()
+            _, v := c.First()
+            empty = v == nil
+        }
+        return nil
+    })
+    if !exists {
+        t.Fatal("bucket should still exist after clear")
+    }
+    if !empty {
+        t.Fatal("bucket should be empty after clear")
+    }
+    // unknown bucket is 404
+    var missing = `{"bucket":"nope"}`
+    var bad, _ = http.Post(srv.URL+"/api/clearbucket", "application/json", strings.NewReader(missing))
+    if bad.StatusCode != http.StatusNotFound {
+        t.Fatalf("clear on unknown bucket returned %d, want 404", bad.StatusCode)
+    }
+    // GET is rejected
+    var getResp, _ = http.Get(srv.URL + "/api/clearbucket")
+    if getResp.StatusCode != http.StatusMethodNotAllowed {
+        t.Fatalf("GET /api/clearbucket returned %d, want 405", getResp.StatusCode)
+    }
+}

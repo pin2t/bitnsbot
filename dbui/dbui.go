@@ -55,6 +55,7 @@ func handler(db *bbolt.DB) http.Handler {
     mux.HandleFunc("/api/get", func(w http.ResponseWriter, r *http.Request) { get(db, w, r) })
     mux.HandleFunc("/api/put", func(w http.ResponseWriter, r *http.Request) { put(db, w, r) })
     mux.HandleFunc("/api/delete", func(w http.ResponseWriter, r *http.Request) { del(db, w, r) })
+    mux.HandleFunc("/api/clearbucket", func(w http.ResponseWriter, r *http.Request) { clearBucket(db, w, r) })
     return mux
 }
 
@@ -204,6 +205,43 @@ func del(db *bbolt.DB, w http.ResponseWriter, r *http.Request) {
     }
     logging.Info("database UI: deleted %s/%s", body.Bucket, encodeField(key))
     writeJSON(w, map[string]any{"ok": true})
+}
+
+func clearBucket(db *bbolt.DB, w http.ResponseWriter, r *http.Request) {
+    if r.Method != http.MethodPost {
+        http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+        return
+    }
+    var body struct {
+        Bucket string `json:"bucket"`
+    }
+    if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+        http.Error(w, "bad request", http.StatusBadRequest)
+        return
+    }
+    if body.Bucket == "" {
+        http.Error(w, "bucket is required", http.StatusBadRequest)
+        return
+    }
+    var count int
+    var err = db.Update(func(tx *bbolt.Tx) error {
+        var b = tx.Bucket([]byte(body.Bucket))
+        if b == nil { return errNoBucket }
+        var c = b.Cursor()
+        for k, _ := c.First(); k != nil; k, _ = c.Next() {
+            if err := b.Delete(k); err != nil { return err }
+            count++
+        }
+        return nil
+    })
+    if err != nil {
+        var code = http.StatusBadRequest
+        if err == errNoBucket { code = http.StatusNotFound }
+        http.Error(w, err.Error(), code)
+        return
+    }
+    logging.Info("database UI: cleared bucket %s (%d keys)", body.Bucket, count)
+    writeJSON(w, map[string]any{"ok": true, "deleted": count})
 }
 
 func writeJSON(w http.ResponseWriter, v any) {
