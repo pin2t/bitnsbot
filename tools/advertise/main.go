@@ -26,9 +26,9 @@ import "time"
 
 import "bitnsbot/logging"
 
-var peersPath = flag.String("peers", "peers.json", "path to btcd's peers.json")
-var corePeersPath = flag.String("corepeers", "", "path to Bitcoin Core's peers.dat (optional; combined with -peers when both given)")
-var advertised = flag.String("advertise", "178.46.128.227:8333", "the address to advertise to every peer")
+var peersPath = flag.String("peers", "", "path to btcd's peers.json (optional)")
+var corePeersPath = flag.String("corepeers", "", "path to Bitcoin Core's peers.dat (optional)")
+var advertised = flag.String("advertise", "5.181.105.56:8333", "the address to advertise to every peer")
 var workers = flag.Int("workers", 64, "how many peers to contact concurrently")
 var timeout = flag.Duration("timeout", 10*time.Second, "dial and I/O timeout per peer")
 var limit = flag.Int("limit", 0, "contact at most this many peers (0 = all of them)")
@@ -237,11 +237,19 @@ func main() {
     if err != nil {
         logging.Fatal("-advertise %q: %v", *advertised, err)
     }
-    var peers, perr = ipv4Peers(*peersPath, *liveOnly)
-    if perr != nil {
-        logging.Fatal("read %s: %v", *peersPath, perr)
+    if *peersPath == "" && *corePeersPath == "" {
+        logging.Fatal("at least one of -peers or -corepeers is required")
     }
-    var from = []string{*peersPath}
+    var peers []string
+    var from []string
+    if *peersPath != "" {
+        var p, err = ipv4Peers(*peersPath, *liveOnly)
+        if err != nil {
+            logging.Fatal("read %s: %v", *peersPath, err)
+        }
+        peers = p
+        from = append(from, *peersPath)
+    }
     if *corePeersPath != "" {
         var dps, derr = corePeers(*corePeersPath)
         if derr != nil {
