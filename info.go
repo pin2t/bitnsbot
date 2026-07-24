@@ -109,7 +109,7 @@ func transaction(ctx context.Context, bot *bot, chat int64, txid string) {
     if tx.BlockHash != "" { ids = append(ids, tx.BlockHash) }
     ids = append(ids, firstN(inputs, shownAddrs)...)
     ids = append(ids, firstN(outputAddrs(tx), shownAddrs)...)
-    sendLinked(bot, chat, fmt.Sprintf("Transaction <code>%s<code>\n\n<pre>%s</pre>", tx.Txid, strings.Join(lines, "\n")), ids)
+    sendLinked(bot, chat, fmt.Sprintf("Transaction <code>%s</code>\n\n<pre>%s</pre>", tx.Txid, strings.Join(lines, "\n")), ids)
 }
 
 // txInputs reports a transaction's fee and the addresses it spends from — in
