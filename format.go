@@ -301,3 +301,10 @@ func amountText(btc float64) string {
     }
     return group(sats) + " sats"
 }
+
+func amountTextSats(sats int) string {
+    if sats >= notifyBTCThreshold || sats <= -notifyBTCThreshold {
+        return trimNum(float64(sats * 1.) / 1e8 , 8) + " BTC"
+    }
+    return group(int64(sats)) + " sats"
+}
