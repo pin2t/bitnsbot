@@ -416,25 +416,29 @@ func TestMempoolFlow(t *testing.T) {
     defer btcdServer.Close()
     core = newFakeCoreClient(t, btcdServer)
     defer func() { core = nil }()
+    // set cached totals so /mempool can read them (background goroutine not running)
+    summaryMu.Lock()
+    summaryAmount, summaryFee, summaryOK = 3.5, 0.0003, true
+    summaryMu.Unlock()
     update(bot, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/mempool"}})
     if len(sent) != 2 {
         t.Fatalf("expected a mempool reply, got %#v", sent)
     }
     for _, want := range []string{
         "Mempool", "Size:", "3.5 M", "Transactions: 6.7 k",
-        "Total amount:", "3.50 BTC", "Total fees:", "0.0003 BTC", // amounts 3.5 BTC, fees 0.0003 BTC
+        "Total flow:", "≈3.50 BTC", "Total fees:", "≈0.0003 BTC",
     } {
         if !strings.Contains(sent[1], want) {
             t.Fatalf("mempool reply missing %q: %q", want, sent[1])
         }
     }
-    // a mempool over the limit degrades to size + count only
-    var saved = mempoolSummaryLimit
-    mempoolSummaryLimit = 1
-    defer func() { mempoolSummaryLimit = saved }()
+    // when no cached summary is available the totals are absent
+    summaryMu.Lock()
+    summaryOK = false
+    summaryMu.Unlock()
     update(bot, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/mempool"}})
-    if !strings.Contains(sent[2], "Totals:") || strings.Contains(sent[2], "Total amount") {
-        t.Fatalf("expected totals skipped for oversized mempool: %q", sent[2])
+    if strings.Contains(sent[2], "Total flow") || strings.Contains(sent[2], "Total fees") {
+        t.Fatalf("expected no totals with empty cache: %q", sent[2])
     }
 }
 
