@@ -197,6 +197,22 @@ func btcAmount(btc float64) string {
     return s
 }
 
+// cachedBtc is like btcAmount but marks the value as precomputed with an
+// ≈ prefix on both the BTC and USD parts: ≈1000 BTC (≈$123,456).
+func cachedBtc(btc float64) string {
+    var num string
+    if btc >= 1 || btc <= -1 {
+        num = strconv.FormatFloat(btc, 'f', 2, 64)
+    } else {
+        num = strings.TrimRight(strings.TrimRight(strconv.FormatFloat(btc, 'f', 8, 64), "0"), ".")
+    }
+    var s = "≈" + num + " BTC"
+    if rate, ok := rates.Last(); ok {
+        s += " (≈" + usd(btc, rate) + ")"
+    }
+    return s
+}
+
 // durationText renders elapsed time compactly: "45 sec", "12 min", "2 h 5 min".
 func durationText(d time.Duration) string {
     switch {

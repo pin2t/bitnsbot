@@ -105,6 +105,7 @@ func main() {
     }
     startBlockCache()
     startMempoolFlow()
+    startMempoolSummary()
     if core != nil && *coreZMQ != "" {
         if err := startZMQ(context.Background(), strings.Split(*coreZMQ, ","), bot); err != nil {
             logging.Fatal("subscribe to Bitcoin Core ZMQ: %v", err)
@@ -513,6 +514,14 @@ var flowChangeOK bool   // a change has been computed (≥ 2 rates)
 var flowPrevCount int64
 var flowHaveCount bool
 
+// mempool summary values — total output amount and total fees across the whole
+// mempool, recomputed every 10 minutes in the background and printed by /mempool
+// with a tilde prefix to mark them as cached, not fresh.
+var summaryMu sync.Mutex
+var summaryAmount float64
+var summaryFee float64
+var summaryOK bool
+
 // updateFlow folds one mempool tx-count sample into the flow-rate state: the rate
 // is Δcount over flowInterval, and the change is Δrate (flowRate still holds the
 // previous rate when this runs). The first sample only sets the baseline. A
@@ -565,6 +574,31 @@ func startMempoolFlow() {
     }()
 }
 
+// startMempoolSummary recomputes the mempool totals (output amount + fees) every
+// 10 minutes in the background and stores them so /mempool can reply instantly
+// with a ~-prefixed cached value instead of summing on every request.
+func startMempoolSummary() {
+    if core == nil {
+        return
+    }
+    go func() {
+        var calc = func() {
+            var ctx, cancel = context.WithTimeout(context.Background(), 60*time.Second)
+            defer cancel()
+            var amount, fee, ok = mempoolTotals(ctx)
+            summaryMu.Lock()
+            summaryAmount, summaryFee, summaryOK = amount, fee, ok
+            summaryMu.Unlock()
+        }
+        calc()
+        var t = time.NewTicker(10 * time.Minute)
+        defer t.Stop()
+        for range t.C {
+            calc()
+        }
+    }()
+}
+
 // mempoolSummaryLimit caps how many transactions /mempool will total up — above
 // it, the totals (which need the whole verbose mempool plus a fetch per tx) would
 // take too long, so the reply degrades to just size and count. A package var so
@@ -604,16 +638,15 @@ func mempoolCmd(bot *bot, chatID int64) {
     switch {
     case info.Size == 0:
         // nothing to total
-    case info.Size > mempoolSummaryLimit:
-        pairs = append(pairs, [2]string{"Totals", "skipped (mempool too large)"})
     default:
-        if amount, fee, ok := mempoolTotals(ctx); ok {
+        summaryMu.Lock()
+        var amount, fee, ok = summaryAmount, summaryFee, summaryOK
+        summaryMu.Unlock()
+        if ok {
             pairs = append(pairs,
-                [2]string{"Total amount", btcAmount(amount)},
-                [2]string{"Total fees", btcAmount(fee)},
+                [2]string{"Total flow", cachedBtc(amount)},
+                [2]string{"Total fees", cachedBtc(fee)},
             )
-        } else {
-            pairs = append(pairs, [2]string{"Totals", "unavailable"})
         }
     }
     var pad int
