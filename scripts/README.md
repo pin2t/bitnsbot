@@ -7,7 +7,7 @@ systemd Linux host). The runtime package is **self-contained** under
 | Path                        | What                                             |
 |-----------------------------|--------------------------------------------------|
 | `/opt/bitnsbot/bitnsbot`    | the binary                                        |
-| `/opt/bitnsbot/bitnsbot.cfg`| config (`name=value`; `chmod 600` — holds secrets)|
+| `/opt/bitnsbot/bitnsbot.conf`| config (`name=value`; `chmod 600` — holds secrets)|
 | `/opt/bitnsbot/bitnsbot.db` | bbolt database (created on first run)             |
 | `/opt/bitnsbot/update.sh`   | copy of the auto-update script (run by cron)      |
 | `/opt/bitnsbot/deploy.env`  | records `REPO_DIR` / `BUILD_USER` for updates     |
@@ -48,7 +48,7 @@ sudo ./scripts/uninstall.sh --purge   # also delete /opt/bitnsbot and the log
 ```
 
 `install.sh` builds and tests first and **installs nothing if either fails**. On
-the first run it drops a config **template** at `/opt/bitnsbot/bitnsbot.cfg` and
+the first run it drops a config **template** at `/opt/bitnsbot/bitnsbot.conf` and
 does *not* start the service — edit that file (at least `bot-token`), then:
 
 ```sh
