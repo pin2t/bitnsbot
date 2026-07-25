@@ -1,6 +1,6 @@
 # bitnsbot
 
-[@bitnsbot](t.me/bitnsbot)
+[@bitnsbot](https://telegram.me/bitnsbot)
 
 Bitcoin network events notification bot. It can send notifications on watched addresses and transactions. It also sends various information and statistics on Bitcoin network
 
