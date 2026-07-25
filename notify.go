@@ -139,27 +139,6 @@ func addressNotification(n notification, watchID, alias string) (string, []strin
     return "🔔 " + header + fields(pairs), ids, summary, true
 }
 
-// spendRecipients names where a spend went — every output address that is not
-// the watched address itself, so change is excluded — and how much they got
-// between them. Sorted by amount so the real payment leads and dust trails,
-// which also makes the message deterministic (map iteration is not).
-func spendRecipients(n notification, watchID string) ([]string, float64) {
-    var recipients []string
-    var total float64
-    for addr, value := range n.received {
-        if addr == watchID { continue }
-        recipients = append(recipients, addr)
-        total += value
-    }
-    sort.Slice(recipients, func(i, j int) bool {
-        if n.received[recipients[i]] != n.received[recipients[j]] {
-            return n.received[recipients[i]] > n.received[recipients[j]]
-        }
-        return recipients[i] < recipients[j]
-    })
-    return recipients, total
-}
-
 // fields renders the aligned <pre> block a message hangs beneath, or nothing at
 // all when there is nothing to show — a coinbase or a transaction first seen
 // already mined has no fee or confirmation estimate to report.
