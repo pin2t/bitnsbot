@@ -91,11 +91,31 @@ func addressNotification(n notification, watchID, alias string) (string, []strin
     var header string
     var summary txwatches.Summary
     if gotOut {
-        var recipients, toOthers = spendRecipients(n, watchID)
-        header = label + " is sending " + amountText(toOthers) + " to " + compactAddrs(recipients)
-        summary = txwatches.Summary{Amount: toOthers, Recipients: recipients, Outgoing: true}
-        ids = append(ids, firstN(recipients, shownAddrs)...)
-        pairs = append(pairs, [2]string{"Sent", amountLine(out, time.Time{}, true)})
+        type pair struct {a string; b int}
+        var recipients []pair
+        var total int
+        var addrs = make([]string, 0)
+        for addr, value := range n.received {
+            if addr == watchID { continue }
+            recipients = append(recipients, pair{addr, int(value * 1e8)})
+            addrs = append(addrs, addr)
+            total += int(value * 1e8)
+        }
+        sort.Slice(recipients, func(i, j int) bool {
+            if n.received[recipients[i].a] != n.received[recipients[j].a] {
+                return n.received[recipients[i].a] > n.received[recipients[j].a]
+            }
+            return recipients[i].b < recipients[j].b
+        })
+        summary = txwatches.Summary{Amount: out, Recipients: addrs, Outgoing: true}
+        header = label + " is sending " + amountLine(out, time.Time{}, true) + " to\n"
+        if len(recipients) == 0 { header += "none\n" }
+        for i := 0; i < min(len(recipients), shownAddrs); i++ {
+            header += short(recipients[i].a) + ": " + amountLine(float64(recipients[i].b) / 1e8, time.Now(), true) + "\n"
+            ids = append(ids, recipients[i].a)
+        }
+        if len(recipients) > shownAddrs { header += "...\n" }
+        pairs = append(pairs, [2]string{"Sending", amountLine(out, time.Time{}, true)})
         if gotIn {
             // part of the spend came back as change, so the address is only down
             // by the difference
@@ -106,16 +126,16 @@ func addressNotification(n notification, watchID, alias string) (string, []strin
         }
         if n.feeOK {
             pairs = append(pairs, [2]string{"Fee", sats(n.fee) + " sats (" + strings.TrimSuffix(strconv.FormatFloat(n.feeRate, 'f', 1, 64), ".0") + " sat/vB)"})
-            if n.confEstimate != "" { pairs = append(pairs, [2]string{"Confirms", n.confEstimate}) }
+            if n.confEstimate != "" { pairs = append(pairs, [2]string{"ETA", n.confEstimate}) }
         }
     } else {
         var msg = "🔔 " + label + " receiving " + amountLine(in, time.Time{}, true)
         summary = txwatches.Summary{Amount: in}
         msg += ". Transaction <code>" + n.txid + "</code>"
-        if n.confEstimate != "" { msg += "\n" + "Confirms " + n.confEstimate }
+        if n.confEstimate != "" { msg += "\n" + "ETA " + n.confEstimate }
         return msg, ids, summary, true
     }
-    header += ". Transaction <code>" + n.txid + "</code>"
+    header += "Transaction <code>" + n.txid + "</code>"
     return "🔔 " + header + fields(pairs), ids, summary, true
 }
 
