@@ -124,7 +124,7 @@ func TestWatchNotification(t *testing.T) {
         t.Fatalf("expected 2.5 BTC in notification, got: %q", found)
     }
     // fee 0.0001 BTC = 10000 sat over 100 vB = 100 sat/vB; 100 >= 50 (2-block) → ~10-20 min
-    for _, want := range []string{"Confirms ~10-20 min"} {
+    for _, want := range []string{"ETA ~10-20 min"} {
         if !strings.Contains(found, want) {
             t.Fatalf("notification missing %q: %q", want, found)
         }
@@ -511,7 +511,7 @@ func TestSpendNotification(t *testing.T) {
         t.Fatalf("a spend must not be reported as an incoming transaction: %q", got)
     }
     // the whole 1.0001 BTC input left the address
-    if !strings.Contains(got, "Sent:") || !strings.Contains(got, "1 BTC") {
+    if !strings.Contains(got, "Sending:") || !strings.Contains(got, "1 BTC") {
         t.Fatalf("expected the sent amount: %q", got)
     }
     for _, unwanted := range []string{"Change back:", "Net:", "Amount:"} {
@@ -519,7 +519,7 @@ func TestSpendNotification(t *testing.T) {
             t.Fatalf("unexpected %q with no change output: %q", unwanted, got)
         }
     }
-    for _, want := range []string{"Fee:", "10 000 sats (100 sat/vB)", "Confirms:", "~10-20 min"} {
+    for _, want := range []string{"Fee:", "10 000 sats (100 sat/vB)", "ETA:", "~10-20 min"} {
         if !strings.Contains(got, want) {
             t.Fatalf("notification missing %q: %q", want, got)
         }
@@ -546,7 +546,7 @@ func TestSpendWithChangeNotification(t *testing.T) {
         t.Fatalf("expected an outgoing-transaction notification: %q", got)
     }
     // 2.5 spent, 1.4999 back as change, so the address is down 1.0001 BTC
-    for _, want := range []string{"Sent:", "2.5 BTC", "Change back:", "1.4999 BTC", "Net:", "-1.0001 BTC"} {
+    for _, want := range []string{"Sending:", "2.5 BTC", "Change back:", "1.4999 BTC", "Net:", "-1.0001 BTC"} {
         if !strings.Contains(got, want) {
             t.Fatalf("notification missing %q: %q", want, got)
         }
