@@ -104,16 +104,18 @@ func addressNotification(n notification, watchID, alias string) (string, []strin
                 [2]string{"Net", amountLine(in-out, time.Time{}, true)},
             )
         }
+        if n.feeOK {
+            pairs = append(pairs, [2]string{"Fee", sats(n.fee) + " sats (" + strings.TrimSuffix(strconv.FormatFloat(n.feeRate, 'f', 1, 64), ".0") + " sat/vB)"})
+            if n.confEstimate != "" { pairs = append(pairs, [2]string{"Confirms", n.confEstimate}) }
+        }
     } else {
-        header = label + " receiving " + amountText(in)
+        var msg = "🔔 " + label + " receiving " + amountLine(in, time.Time{}, true)
         summary = txwatches.Summary{Amount: in}
-        pairs = append(pairs, [2]string{"Amount", amountLine(in, time.Time{}, true)})
+        msg += ". Transaction <code>" + n.txid + "</code>"
+        if n.confEstimate != "" { msg += "\n" + "Confirms " + n.confEstimate }
+        return msg, ids, summary, true
     }
     header += ". Transaction <code>" + n.txid + "</code>"
-    if n.feeOK {
-        pairs = append(pairs, [2]string{"Fee", sats(n.fee) + " sats (" + strings.TrimSuffix(strconv.FormatFloat(n.feeRate, 'f', 1, 64), ".0") + " sat/vB)"})
-        if n.confEstimate != "" { pairs = append(pairs, [2]string{"Confirms", n.confEstimate}) }
-    }
     return "🔔 " + header + fields(pairs), ids, summary, true
 }
 
@@ -379,10 +381,10 @@ func confirmationMessage(c txwatches.Confirmed, height int64) (string, []string)
     ids = append(ids, c.Addr)
     var msg string
     if c.Summary.Outgoing {
-        msg = label + " sent " + amountText(c.Summary.Amount) + " to " + compactAddrs(c.Summary.Recipients) + ". " + landed
+        msg = label + " sent " + amountLine(c.Summary.Amount, time.Time{}, true) + " to " + compactAddrs(c.Summary.Recipients) + ". " + landed
         ids = append(ids, firstN(c.Summary.Recipients, shownAddrs)...)
     } else {
-        msg = label + " received " + amountText(c.Summary.Amount) + ". " + landed
+        msg = label + " received " + amountLine(c.Summary.Amount, time.Time{}, true) + ". " + landed
     }
     ids = append(ids, strconv.FormatInt(height, 10))
     return "🔔 " + msg, ids

@@ -124,7 +124,7 @@ func TestWatchNotification(t *testing.T) {
         t.Fatalf("expected 2.5 BTC in notification, got: %q", found)
     }
     // fee 0.0001 BTC = 10000 sat over 100 vB = 100 sat/vB; 100 >= 50 (2-block) → ~10-20 min
-    for _, want := range []string{"Fee:", "10 000 sats (100 sat/vB)", "Confirms:", "~10-20 min"} {
+    for _, want := range []string{"Confirms ~10-20 min"} {
         if !strings.Contains(found, want) {
             t.Fatalf("notification missing %q: %q", want, found)
         }
