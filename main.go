@@ -10,7 +10,6 @@ import "html"
 import "net/http"
 import "os"
 import "os/signal"
-import "strconv"
 import "strings"
 import "sync"
 import "syscall"
@@ -452,56 +451,61 @@ func watchesCmd(bot *bot, chatID int64) {
 // reply degrades to a short "not available yet" note. The three per-tier calls
 // run concurrently (jsonrpc2 multiplexes them over the one connection) so the
 // reply waits on the slowest rather than the sum.
+// typicalTxVsize is the size the USD column prices: a 1-input, 2-output P2WPKH
+// spend, which is what an ordinary wallet payment looks like. The rates
+// themselves are per-vByte and size-independent; this only turns them into a
+// number a human can act on.
+const typicalTxVsize = 140
+
 func fees(bot *bot, chatID int64) {
     if core == nil {
         send(bot, chatID, "Bitcoin node connection is not configured.")
         return
     }
-    var ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
+    var ctx, cancel = context.WithTimeout(context.Background(), 60*time.Second)
     defer cancel()
-    var tiers = []struct {
-        label  string
-        blocks int
-    }{
-        {"Fast (10-20 min):", 2},
-        {"Medium (~1h):", 6},
-        {"Slow (2h+):", 12},
-    }
-    var results = make([]struct {
-        btcPerKvB float64
-        err      error
-    }, len(tiers))
-    var wg sync.WaitGroup
-    for i, t := range tiers {
-        wg.Add(1)
-        go func(i, blocks int) {
-            defer wg.Done()
-            results[i].btcPerKvB, results[i].err = core.estimateSmartFee(ctx, int64(blocks))
-        }(i, t.blocks)
-    }
-    wg.Wait()
-    var pad int
-    for _, t := range tiers {
-        if len(t.label) > pad {
-            pad = len(t.label)
-        }
-    }
-    var lines []string
-    var available bool
-    for i, t := range tiers {
-        if results[i].err != nil || results[i].btcPerKvB <= 0 {
-            lines = append(lines, fmt.Sprintf("%-*s  n/a", pad, t.label))
-            continue
-        }
-        available = true
-        var rate = strings.TrimSuffix(strconv.FormatFloat(results[i].btcPerKvB*1e5, 'f', 1, 64), ".0")
-        lines = append(lines, fmt.Sprintf("%-*s  %s sat/vB", pad, t.label, rate))
-    }
-    if !available {
-        send(bot, chatID, "Fee estimates aren't available yet — the node hasn't observed enough network activity.")
+    // one pass over the mempool feeds the projection; getmempoolinfo supplies the
+    // node's own purge threshold, which floors every recommendation
+    var entries, err = core.rawMempoolVerbose(ctx)
+    if err != nil {
+        logging.Warn("fees: read mempool: %v", err)
+        send(bot, chatID, "Fee estimates aren't available right now — couldn't read the mempool.")
         return
     }
-    send(bot, chatID, "Estimated network fees\n\n<pre>"+strings.Join(lines, "\n")+"</pre>")
+    var minFee float64
+    if info, ierr := core.getMempoolInfo(ctx); ierr == nil {
+        minFee = info.MempoolMinFee
+    }
+    var rec = calculateRecommendedFee(buildProjectedBlocks(entries), minFee)
+    var tiers = []struct {
+        label string
+        rate  float64
+    }{
+        {"Fastest (10-20 min):", rec.fastest},
+        {"Half hour:", rec.halfHour},
+        {"Hour:", rec.hour},
+        {"Economy:", rec.economy},
+        {"Minimum:", rec.minimum},
+    }
+    var pad int
+    for _, t := range tiers {
+        if len(t.label) > pad { pad = len(t.label) }
+    }
+    var price, havePrice = rates.Last()
+    var lines []string
+    for _, t := range tiers {
+        var cell = trimNum(t.rate, 2) + " sat/vB"
+        if havePrice {
+            // rate × a typical transaction's size × the BTC price
+            cell += "  (≈ " + usd(t.rate*typicalTxVsize/1e8, price) + ")"
+        }
+        lines = append(lines, fmt.Sprintf("%-*s %s", pad, t.label, cell))
+    }
+    var note = "projected from " + group(int64(len(entries))) + " mempool transactions"
+    if havePrice {
+        note += fmt.Sprintf("\nUSD for a typical %d vB transaction", typicalTxVsize)
+    }
+    send(bot, chatID, "Estimated network fees\n\n<pre>"+strings.Join(lines, "\n")+"</pre>\n"+note)
 }
 
 // flowInterval is how often startMempoolFlow polls the mempool tx count. A
