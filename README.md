@@ -4,9 +4,7 @@
 
 Bitcoin network events notification bot. It can send notifications on watched addresses and transactions. It also sends various information and statistics on Bitcoin network
 
-<img src="./img/1.png" alt="Address notification" width="300"><img src="./img/2.png" alt="address notification" width="300">
-
-<img src="./img/3.png" alt="Address notification" width="300">
+<img src="./img/2.png" alt="address notification" width="300"><img src="./img/3.png" alt="Address notification" width="300">
 
 <img src="./img/4.png" alt="Info" width="300"><img src="./img/5.png" alt="Info" width="300">
 
