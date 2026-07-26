@@ -16,6 +16,7 @@ import "sync"
 import "syscall"
 import "time"
 import "runtime/debug"
+import "github.com/pin2t/flagex"
 import "bitnsbot/dbui"
 import "bitnsbot/logging"
 import "bitnsbot/miners"
@@ -56,7 +57,7 @@ func main() {
     }
     flag.Parse()
     if *configPath != "" {
-        if err := applyConfig(*configPath); err != nil {
+        if err := flagex.ParseFile(*configPath); err != nil {
             logging.Fatal("apply config: %v", err)
         }
     }
