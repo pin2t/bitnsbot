@@ -4,10 +4,17 @@
 
 Bitcoin network events notification bot. It can send notifications on watched addresses and transactions. It also sends various information and statistics on Bitcoin network
 
+<img src="./img/1.png" alt="Address notification" width="300"><img src="./img/2.png" alt="address notification" width="300">
+
+<img src="./img/3.png" alt="Address notification" width="300">
+
+<img src="./img/4.png" alt="Info" width="300"><img src="./img/5.png" alt="Info" width="300">
+
 ### How to run
 
 Prerequites: Bitcoin Core node running with RPC, REST, ZMQ notification and transactions index  enabled. Fully synced and **not** pruned
-
+      
+Run from command line:
 ```bash
 go test ./... && go build .
 ./bitnsbot -bot-token=... -webhook-url=http://127.0.0.1:8082/bot -listen=127.0.0.1:8082 -db=bitnsbot.db -core-url=http://127.0.0.1:8332 -core-cookie=cookie -core-rest=http://127.0.0.1:8332 -core-zmq=tcp://127.0.0.1:28332 -verbose 1
