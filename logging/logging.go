@@ -8,6 +8,8 @@ var verbosity int
 
 func SetVerbosity(v int) { verbosity = v }
 
+func DisableTimestamp() { log.SetFlags(0) }
+
 func Err(format string, args ...any)    { log.Printf("[ERR] "+format, args...) }
 func Warn(format string, args ...any)   { log.Printf("[WARN] "+format, args...) }
 func Status(format string, args ...any) { log.Printf(format, args...) }
