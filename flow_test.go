@@ -308,14 +308,26 @@ func TestFeesFlow(t *testing.T) {
     if len(sent) != 1 || sent[0] != "Bitcoin node connection is not configured." {
         t.Fatalf("unexpected not-configured reply: %#v", sent)
     }
-    // configured: BTC/kvB values convert to sat/vB by ×1e5 (0.0001 → 10 sat/vB)
-    var rates = map[float64]float64{2: 0.0001, 6: 0.00007, 12: 0.00003}
-    var btcdServer = newFakeCoreServer(t, func(method string, params []interface{}) (interface{}, error) {
-        if method != "estimatesmartfee" {
-            return nil, fmt.Errorf("unexpected method %s", method)
+    // configured: the estimate is now projected from the mempool itself rather
+    // than asked of estimatesmartfee, so the fake serves a mempool. 8000
+    // transactions of 1000 weight fill two blocks; rates ascend so block 0 holds
+    // the dear half and its median lands near 6000 sat/vB.
+    var mempool = map[string]any{}
+    for i := 0; i < 8000; i++ {
+        mempool[fmt.Sprintf("tx%04d", i)] = map[string]any{
+            "vsize": 250, "weight": 1000,
+            "ancestorsize": 250,
+            "fees": map[string]any{"base": float64(i+1) * 250 / 1e8, "ancestor": float64(i+1) * 250 / 1e8},
         }
-        var blocks, _ = params[0].(float64)
-        return map[string]any{"feerate": rates[blocks], "blocks": blocks}, nil
+    }
+    var btcdServer = newFakeCoreServer(t, func(method string, params []interface{}) (interface{}, error) {
+        switch method {
+        case "getrawmempool":
+            return mempool, nil
+        case "getmempoolinfo":
+            return map[string]any{"size": len(mempool), "bytes": 2000000, "mempoolminfee": 0.00001}, nil
+        }
+        return nil, fmt.Errorf("unexpected method %s", method)
     })
     defer btcdServer.Close()
     core = newFakeCoreClient(t, btcdServer)
@@ -324,10 +336,19 @@ func TestFeesFlow(t *testing.T) {
     if len(sent) != 2 {
         t.Fatalf("expected a fees reply, got %#v", sent)
     }
-    for _, want := range []string{"Estimated network fees", "<pre>", "Fast (10-20 min):", "10 sat/vB", "Medium (~1h):", "7 sat/vB", "Slow (2h+):", "3 sat/vB"} {
+    for _, want := range []string{
+        "Estimated network fees", "<pre>",
+        "Fastest (10-20 min):", "Half hour:", "Hour:", "Economy:", "Minimum:",
+        "sat/vB", "projected from 8 000 mempool transactions",
+    } {
         if !strings.Contains(sent[1], want) {
             t.Fatalf("fees reply missing %q: %q", want, sent[1])
         }
+    }
+    // the dear half of the mempool is in block 0, so the fastest tier must be far
+    // above the 1 sat/vB floor — a plain floor would mean the projection did nothing
+    if strings.Contains(sent[1], "Fastest (10-20 min): 1 sat/vB") {
+        t.Fatalf("fastest tier fell back to the floor despite a full block: %q", sent[1])
     }
     if lastMode != "HTML" {
         t.Fatalf("expected HTML parse mode, got %q", lastMode)

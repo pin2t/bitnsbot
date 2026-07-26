@@ -251,6 +251,10 @@ func (c *coreClient) validateAddress(ctx context.Context, address string) (*core
 type coreMempoolInfo struct {
     Size  int64 `json:"size"`
     Bytes int64 `json:"bytes"`
+    // MempoolMinFee is the node's purge threshold in BTC/kvB — the rate below
+    // which it will not even keep a transaction, so no recommendation may sit
+    // under it.
+    MempoolMinFee float64 `json:"mempoolminfee"`
 }
 
 func (c *coreClient) getMempoolInfo(ctx context.Context) (*coreMempoolInfo, error) {
@@ -262,8 +266,17 @@ func (c *coreClient) getMempoolInfo(ctx context.Context) (*coreMempoolInfo, erro
 
 type coreMempoolEntry struct {
     Vsize int32 `json:"vsize"`
-    Fees  struct {
-        Base float64 `json:"base"`
+    // Weight is what projected blocks are packed by — a block's limit is 4M
+    // weight units, and vsize is only weight/4 rounded up.
+    Weight int64 `json:"weight"`
+    // AncestorSize/Fees.Ancestor cover the whole unconfirmed package, which is
+    // what a miner actually maximises: a low-fee parent rides in on a high-fee
+    // child (CPFP). For the common case of a transaction with no unconfirmed
+    // parents these equal Vsize and Fees.Base.
+    AncestorSize int64 `json:"ancestorsize"`
+    Fees         struct {
+        Base     float64 `json:"base"`
+        Ancestor float64 `json:"ancestor"`
     } `json:"fees"`
 }
 
