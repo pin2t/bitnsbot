@@ -11,9 +11,8 @@ import "bitnsbot/watches"
 
 var db *bbolt.DB
 
-// openDB opens the shared bbolt file, creates the block-cache bucket, and hands
-// the same handle to the rates, watches, miners and addrindex packages (which
-// own their own buckets). One file, one handle, nine buckets.
+// openDB opens the shared bbolt file and hands it to every package that owns
+// buckets. One file, one handle.
 //
 // Every package that owns buckets must be Init'd here. Forgetting one is not a
 // loud failure: those packages guard their operations on a nil handle, so the
@@ -24,17 +23,8 @@ func openDB(path string) error {
     logging.Db("open %s", path)
     var opened, err = bbolt.Open(path, 0600, nil)
     if err != nil { return err }
-    err = opened.Update(func(tx *bbolt.Tx) error {
-        for _, name := range [][]byte{blocksBucket} {
-            if _, err := tx.CreateBucketIfNotExists(name); err != nil { return err }
-        }
-        return nil
-    })
-    if err != nil {
-        opened.Close()
-        return err
-    }
     db = opened
+    if err := blockInit(db); err != nil { return err }
     if err := rates.Init(db); err != nil { return err }
     if err := watches.Init(db); err != nil { return err }
     if err := miners.Init(db); err != nil { return err }

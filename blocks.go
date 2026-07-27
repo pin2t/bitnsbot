@@ -12,13 +12,12 @@ import "bitnsbot/logging"
 import "bitnsbot/miners"
 import "math"
 
-var blocksBucket = []byte("blocks")
+var blocksBucket = []byte("blocks-stat")
+var blocksBlockBucket = []byte("blocks-block")
 
-// blockBackfillDepth is how many recent blocks the startup goroutine caches
-// (skipping any already cached). Newer blocks arrive via the blockconnected
-// notification. A package var so tests/verification can shrink it — each block
-// costs a getblock plus one prevout fetch per input, so it bounds startup load.
-var blockBackfillDepth int64 = 50
+// blockCacheInterval is how often the collector catches up from the last
+// processed block to the chain tip. A package var so tests can shrink it.
+var blockCacheInterval = 10 * time.Minute
 
 type blockInfo struct {
     Height     int64
@@ -37,6 +36,17 @@ type blockInfo struct {
     Reward     float64
     Total      float64
     Difficulty float64
+}
+
+// blockInit creates the blocks-stat and blocks-block buckets inside the shared
+// bbolt file. Called once by openDB before any goroutine reads or writes them.
+func blockInit(handle *bbolt.DB) error {
+    return handle.Update(func(tx *bbolt.Tx) error {
+        for _, name := range [][]byte{blocksBucket, blocksBlockBucket} {
+            if _, err := tx.CreateBucketIfNotExists(name); err != nil { return err }
+        }
+        return nil
+    })
 }
 
 func storeBlock(bi *blockInfo) error {
@@ -139,26 +149,72 @@ func cacheBlockHash(hash string) {
     logging.Info("cached block %d mined by %s", bi.Height, bi.Miner)
 }
 
-// startBlockCache backfills the most recent blocks into the cache. New blocks
-// arrive over ZMQ (see zmq.go) rather than through a per-connection
-// subscription, so unlike the btcd path there is nothing to subscribe to here.
+// startBlockCache runs a goroutine that catches up from the last processed block
+// to the current tip every blockCacheInterval, storing each block's stats in the
+// blocks-stat bucket. New blocks also arrive over ZMQ (see zmq.go), so the
+// interval is only a safety net — the typical case is a no-op.
 func startBlockCache() {
     go func() {
-        if core == nil { return }
-        var tctx, tcancel = context.WithTimeout(context.Background(), 15*time.Second)
-        var tip, err = core.getBlockCount(tctx)
-        tcancel()
-        if err != nil { logging.Warn("block cache: get tip: %v", err); return }
-        for h := tip; h > tip-blockBackfillDepth && h >= 0; h-- {
-            if _, ok := loadBlock(h); ok { continue }
-            var bctx, bcancel = context.WithTimeout(context.Background(), 60*time.Second)
-            if err := cacheBlockHeight(bctx, h); err != nil {
-                logging.Warn("backfill block %d: %v", h, err)
-            }
-            bcancel()
+        collectBlocks()
+        var t = time.NewTicker(blockCacheInterval)
+        defer t.Stop()
+        for range t.C {
+            collectBlocks()
         }
-        logging.Info("block cache backfill complete (%d blocks deep)", blockBackfillDepth)
     }()
+}
+
+func collectBlocks() {
+    if core == nil { return }
+    var ctx, cancel = context.WithTimeout(context.Background(), 10*time.Minute)
+    defer cancel()
+    var tip, err = core.getBlockCount(ctx)
+    if err != nil {
+        logging.Warn("block cache: tip: %v", err)
+        return
+    }
+    // read the last processed height from the blocks-block bucket
+    var cursor int64
+    var haveCursor bool
+    if db != nil {
+        db.View(func(tx *bbolt.Tx) error {
+            if v := tx.Bucket(blocksBlockBucket).Get([]byte("cursor")); v != nil {
+                var e error
+                cursor, e = strconv.ParseInt(string(v), 10, 64)
+                if e == nil { haveCursor = true }
+            }
+            return nil
+        })
+    }
+    var from int64
+    if !haveCursor {
+        // No cursor yet: start from the current tip without backfilling.
+        from = tip
+    } else {
+        from = cursor + 1
+    }
+    var began = from - 1
+    for from <= tip {
+        var bctx, bcancel = context.WithTimeout(context.Background(), 60*time.Second)
+        if err := cacheBlockHeight(bctx, from); err != nil {
+            logging.Warn("block cache: block %d: %v — retrying next run", from, err)
+            bcancel()
+            return
+        }
+        bcancel()
+        // advance the cursor after each cached block
+        if err := db.Update(func(tx *bbolt.Tx) error {
+            return tx.Bucket(blocksBlockBucket).Put(
+                []byte("cursor"), []byte(strconv.FormatInt(from, 10)))
+        }); err != nil {
+            logging.Err("block cache: save cursor: %v", err)
+            return
+        }
+        from++
+    }
+    if from-1 > began {
+        logging.Info("block cache: processed %d blocks, up to %d", from-1-began, from-1)
+    }
 }
 
 // formatBlock renders a cached block record as the /info block reply.
