@@ -17,7 +17,7 @@ func TestOpenDBBuckets(t *testing.T) {
     }
     defer closeDB()
     var want = []string{
-        "blocks",                                          // db.go
+        "blocks-stat", "blocks-block",                       // blocks cache
         "rates", "market",                                 // rates
         "watches",                                         // watches
         "miners", "miners-tag", "miners-stat", "miners-block", // miners
