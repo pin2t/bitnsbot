@@ -108,7 +108,8 @@ func (b *bot) send(ctx context.Context, chatID int64, text string) error {
 // travels bare: no type prefix, and the handler simply passes it to /info, which
 // classifies it anyway.
 func (b *bot) sendWithButtons(ctx context.Context, chatID int64, text string, ids []string) error {
-    var payload = map[string]any{"chat_id": chatID, "text": text, "parse_mode": "HTML"}
+    var payload = map[string]any{"chat_id": chatID, "text": text, "parse_mode": "HTML",
+        "link_preview_options": map[string]any{"is_disabled": true}}
     if rows := buttonRows(ids); len(rows) > 0 {
         payload["reply_markup"] = map[string]any{"inline_keyboard": rows}
     }
