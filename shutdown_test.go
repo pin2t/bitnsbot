@@ -37,7 +37,7 @@ func TestShutdownDrainsHandlersBeforeClosingStore(t *testing.T) {
     go srv.Serve(ln)
     go http.Get("http://" + ln.Addr().String() + "/slow")
     <-started
-    shutdown(srv) // must wait for the in-flight handler, then close the store
+    shutdown(nil, srv) // must wait for the in-flight handler, then close the store
     if handlerErr := <-finished; handlerErr != nil {
         t.Fatalf("store was closed while a handler was still running: %v", handlerErr)
     }

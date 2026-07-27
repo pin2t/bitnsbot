@@ -142,10 +142,10 @@ func main() {
     }()
     <-ctx.Done()
     stop()
-    shutdown(srv)
+    shutdown(bot, srv)
 }
 
-func shutdown(srv *http.Server) {
+func shutdown(bot *bot, srv *http.Server) {
     logging.Status("shutting down")
     var ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
     defer cancel()
@@ -160,6 +160,17 @@ func shutdown(srv *http.Server) {
     stopNotify()
     if err := closeDB(); err != nil {
         logging.Err("close watches database: %v", err)
+    }
+    if bot != nil {
+        if err := bot.deleteWebhook(ctx, true); err != nil {
+            logging.Err("delete webhook: %v", err)
+        }
+        if err := bot.close(ctx); err != nil {
+            logging.Err("close bot: %v", err)
+        }
+        if err := bot.logOut(ctx); err != nil {
+            logging.Err("log out bot: %v", err)
+        }
     }
 }
 
