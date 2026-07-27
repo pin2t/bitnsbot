@@ -188,8 +188,8 @@ func collectBlocks() {
     }
     var from int64
     if !haveCursor {
-        // No cursor yet: start from the current tip without backfilling.
-        from = tip
+        // No cursor yet: rescan from genesis.
+        from = 0
     } else {
         from = cursor + 1
     }
