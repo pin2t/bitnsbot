@@ -42,7 +42,7 @@ var coreREST        = flag.String("core-rest", "", "base URL of Bitcoin Core's R
 var backupPath      = flag.String("backup", "", "path to copy the database to periodically (empty disables backups)")
 var backupInterval  = flag.Duration("backup-interval", 24*time.Hour, "how often to back up the database")
 var backupScript    = flag.String("backup-script", "", "command run after each backup, with the backup's path as $1 and in $BACKUP_FILE (empty runs nothing)")
-var logNoTs = flag.Bool("log-no-ts", false, "omit the date and time prefix from each log line")
+var logNoTs         = flag.Bool("log-no-ts", false, "omit the date and time prefix from each log line")
 var dbuiListen      = flag.String("dbui-listen", "", "address for the database admin web UI, e.g. 127.0.0.1:8090 (empty disables it; bind to localhost only — it can write any bucket)")
 
 var core *coreClient
@@ -310,7 +310,7 @@ func start(bot *bot, chatID int64) {
         "• <b>/market</b> — price, market cap, volume and recent changes",
         "• <b>/start</b> — show this message",
         "",
-        "Version " + ver + ". " + commit + ". Source code on <a href=\"https://github.com/pin2t/bitnsbot\">Github</a>. " +
+        "Version " + ver + ". " + commit + ". Source code https://github.com/pin2t/bitnsbot. " +
         "Don't forget to give me a ⭐",
     }, "\n"))
 }
