@@ -63,7 +63,7 @@ func startNotifyChat(b *bot, chatID int64, typ watchType, watchID, alias string)
                 if typ != watchTypeAddress { continue }
                 var msg, ids, summary, ok = addressNotification(n, watchID, alias)
                 if !ok { continue }
-                sendLinked(b, chatID, msg, ids)
+                send(b, chatID, msg, ids)
                 txwatches.AddAddrConfirm(n.txid, chatID, watchID, alias, summary)
             }
         }
@@ -406,7 +406,7 @@ func checkConfirmations(b *bot, hash string) {
     }
     for _, c := range txwatches.Confirms(blk.Tx) {
         var msg, ids = confirmationMessage(c, blk.Height)
-        sendLinked(b, c.ChatID, msg, ids)
+        send(b, c.ChatID, msg, ids)
         logging.Info("confirmed watch %s for chat %d in block %d", short(c.Txid), c.ChatID, blk.Height)
     }
 }
