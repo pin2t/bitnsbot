@@ -155,3 +155,27 @@ func (b *bot) setWebhook(ctx context.Context, url, token string) error {
     var _, err = b.call(ctx, "setWebhook", payload)
     return err
 }
+
+// deleteWebhook removes the webhook integration, optionally dropping pending
+// updates. Call before logOut or close so the Bot API server stops delivering
+// updates to a machine that is about to go down.
+func (b *bot) deleteWebhook(ctx context.Context, dropPending bool) error {
+    var payload = map[string]any{"drop_pending_updates": dropPending}
+    var _, err = b.call(ctx, "deleteWebhook", payload)
+    return err
+}
+
+// close shuts down the bot instance on the local Bot API server. The bot can be
+// restarted on another machine after this. deleteWebhook should be called first.
+func (b *bot) close(ctx context.Context) error {
+    var _, err = b.call(ctx, "close", nil)
+    return err
+}
+
+// logOut logs the bot out of the cloud Bot API server so it can be launched
+// locally. After a successful logOut, the bot cannot return to the cloud server
+// for 10 minutes.
+func (b *bot) logOut(ctx context.Context) error {
+    var _, err = b.call(ctx, "logOut", nil)
+    return err
+}
