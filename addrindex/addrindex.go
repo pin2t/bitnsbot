@@ -164,7 +164,7 @@ func merge(touches map[string][]Touch, cursor Cursor) error {
             buf = append(buf, entries...)
             if err := b.Put([]byte(k), buf); err != nil { return err }
         }
-        return saveCursor(tx, cursor)
+        return updateCursor(tx, cursor)
     })
 }
 
@@ -205,7 +205,7 @@ type Cursor struct {
     Height int64
 }
 
-func saveCursor(tx *bbolt.Tx, c Cursor) error {
+func updateCursor(tx *bbolt.Tx, c Cursor) error {
     return tx.Bucket(cursorBucket).Put([]byte("cursor"), []byte(strconv.FormatInt(c.Height, 10)))
 }
 

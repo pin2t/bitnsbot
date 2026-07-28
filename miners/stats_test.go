@@ -105,7 +105,7 @@ func TestCollectStats(t *testing.T) {
     equal(t, "PoolB last work", b.LastWork, 1.0e14*workPerDifficulty)
     // the unknown miner's block is not attributed to anyone
     if s := statOf(t, "Unknown"); s.Blocks != 0 { t.Fatalf("unknown miner was stored: %+v", s) }
-    var last, ok = loadCursor()
+    var last, ok = cursor()
     if !ok || last != 4 { t.Fatalf("cursor = (%d, %v), want (4, true)", last, ok) }
 }
 
@@ -150,7 +150,7 @@ func TestCollectChunks(t *testing.T) {
         t.Fatalf("fetched %v, want 0..4 in order", src.fetched)
     }
     if a := statOf(t, "PoolA"); a.Blocks != 3 { t.Fatalf("PoolA blocks = %d, want 3", a.Blocks) }
-    var last, _ = loadCursor()
+    var last, _ = cursor()
     if last != 4 { t.Fatalf("cursor last = %d, want 4", last) }
 }
 
@@ -173,7 +173,7 @@ func TestCollectResumes(t *testing.T) {
     if b.Blocks != 3 { t.Fatalf("PoolB blocks = %d, want 3", b.Blocks) }
     equal(t, "PoolB reward", b.Reward, 6.4+6.1+6.2)
     equal(t, "PoolB fees", b.Fees, 0.15+0.20+0.10)
-    var last, _ = loadCursor()
+    var last, _ = cursor()
     if last != 6 { t.Fatalf("cursor = %d, want 6", last) }
     // the window is over the total attributed blocks now (pool A 3 + pool B 3 = 6)
     var top = Top(10)
@@ -197,7 +197,7 @@ func TestCollectWaitsForAddresses(t *testing.T) {
     var src = chainFixture()
     collect(src)
     if len(src.fetched) != 0 { t.Fatalf("fetched %v with no pool addresses loaded", src.fetched) }
-    if _, ok := loadCursor(); ok { t.Fatal("cursor was stored with no pool addresses loaded") }
+    if _, ok := cursor(); ok { t.Fatal("cursor was stored with no pool addresses loaded") }
 }
 
 func TestTopEmpty(t *testing.T) {
@@ -214,13 +214,13 @@ func TestCollectRetriesOnError(t *testing.T) {
     var src = chainFixture()
     src.err = map[int64]bool{3: true}
     collect(src)
-    if _, ok := loadCursor(); ok { t.Fatal("cursor advanced despite a failed block") }
+    if _, ok := cursor(); ok { t.Fatal("cursor advanced despite a failed block") }
     if a := statOf(t, "PoolA"); a.Blocks != 0 { t.Fatalf("partial chunk was flushed: %+v", a) }
     // once the block is fetchable the next run picks up the whole range
     src.err = nil
     src.fetched = nil
     collect(src)
     if a := statOf(t, "PoolA"); a.Blocks != 3 { t.Fatalf("PoolA blocks = %d, want 3 after retry", a.Blocks) }
-    var last, _ = loadCursor()
+    var last, _ = cursor()
     if last != 4 { t.Fatalf("cursor last = %d, want 4", last) }
 }

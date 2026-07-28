@@ -82,7 +82,7 @@ func collect(src Source) {
         logging.Warn("miners stats: tip: %v", err)
         return
     }
-    var last, ok = loadCursor()
+    var last, ok = cursor()
     var from int64
     if !ok {
         from = tip - initialWindow + 1
@@ -156,7 +156,7 @@ func flush(deltas map[string]*stat, last int64) error {
     })
 }
 
-func loadCursor() (last int64, ok bool) {
+func cursor() (last int64, ok bool) {
     if db == nil { return 0, false }
     db.View(func(tx *bbolt.Tx) error {
         if v := tx.Bucket(cursorBucket).Get([]byte("cursor")); v != nil {
