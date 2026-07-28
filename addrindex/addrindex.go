@@ -47,7 +47,6 @@ package addrindex
 import "bytes"
 import "crypto/sha256"
 import "encoding/binary"
-import "encoding/hex"
 import "errors"
 import "strconv"
 
@@ -111,14 +110,6 @@ func Prefix(script []byte) []byte {
     return sum[:prefixLen]
 }
 
-// PrefixHex is Prefix over a hex-encoded scriptPubKey (what validateaddress and
-// the block parser hand back), returning nil for malformed hex.
-func PrefixHex(scriptHex string) []byte {
-    var raw, err = hex.DecodeString(scriptHex)
-    if err != nil { return nil }
-    return Prefix(raw)
-}
-
 // key is the storage key for a shard and block range: shard first so every range
 // of one shard sorts together and a lookup is a single contiguous scan.
 func key(prefix []byte, rangeIndex uint32) []byte {
@@ -143,7 +134,7 @@ func encodeEntry(prefix []byte, t Touch) []byte {
 // chunk covers whole ranges — which the backfill's chunking arranges — each key
 // is written exactly once and never rewritten; appending only happens where a
 // resumed backfill picks up mid-range.
-func merge(touches map[string][]Touch, cursor Cursor) error {
+func merge(touches map[string][]Touch, height int) error {
     // Not a silent no-op: a write path that reports success while discarding
     // everything is how a missing Init went unnoticed through a whole chain
     // backfill. Reads may degrade quietly; writes must not.
@@ -164,7 +155,7 @@ func merge(touches map[string][]Touch, cursor Cursor) error {
             buf = append(buf, entries...)
             if err := b.Put([]byte(k), buf); err != nil { return err }
         }
-        return updateCursor(tx, cursor)
+        return updateCursor(tx, height)
     })
 }
 
@@ -198,28 +189,19 @@ func Lookup(script []byte) (touches []Touch, capped bool) {
     return touches, capped
 }
 
-// Cursor records how far the index has been built: the last indexed height. Like
-// the miners package's collector, a block reorged out after being indexed stays
-// indexed — not worth correcting in a best-effort browsing aid.
-type Cursor struct {
-    Height int64
-}
-
-func updateCursor(tx *bbolt.Tx, c Cursor) error {
-    return tx.Bucket(cursorBucket).Put([]byte("cursor"), []byte(strconv.FormatInt(c.Height, 10)))
+func updateCursor(tx *bbolt.Tx, height int) error {
+    return tx.Bucket(cursorBucket).Put([]byte("cursor"), []byte(strconv.FormatInt(int64(height), 10)))
 }
 
 // LoadCursor returns the built-to position, or ok=false on a fresh index.
-func LoadCursor() (Cursor, bool) {
-    if db == nil { return Cursor{}, false }
-    var c Cursor
-    var ok bool
+func LoadCursor() (h int, ok bool) {
+    if db == nil { return 0, false }
     db.View(func(tx *bbolt.Tx) error {
         if v := tx.Bucket(cursorBucket).Get([]byte("cursor")); v != nil {
-            var h, err = strconv.ParseInt(string(v), 10, 64)
-            if err == nil { c.Height, ok = h, true }
+            var hh, err = strconv.ParseInt(string(v), 10, 64)
+            if err == nil { h, ok = int(hh), true }
         }
         return nil
     })
-    return c, ok
+    return
 }

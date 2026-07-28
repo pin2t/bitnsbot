@@ -43,17 +43,17 @@ func (s *restSource) get(ctx context.Context, path string) ([]byte, error) {
     return io.ReadAll(resp.Body)
 }
 
-func (s *restSource) Tip(ctx context.Context) (int64, error) {
+func (s *restSource) Tip(ctx context.Context) (int, error) {
     var body, err = s.get(ctx, "/rest/chaininfo.json")
     if err != nil { return 0, err }
     var info struct {
-        Blocks int64 `json:"blocks"`
+        Blocks int `json:"blocks"`
     }
     if err := json.Unmarshal(body, &info); err != nil { return 0, err }
     return info.Blocks, nil
 }
 
-func (s *restSource) BlockAt(ctx context.Context, height int64) (addrindex.Block, error) {
+func (s *restSource) BlockAt(ctx context.Context, height int) (addrindex.Block, error) {
     var hashBytes, herr = s.get(ctx, fmt.Sprintf("/rest/blockhashbyheight/%d.bin", height))
     if herr != nil { return addrindex.Block{}, herr }
     if len(hashBytes) != 32 {

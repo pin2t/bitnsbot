@@ -21,10 +21,10 @@ func TestMergeAndLookup(t *testing.T) {
     openTestDB(t)
     var script = []byte("0014deadbeef")
     var prefix = string(Prefix(script))
-    if err := merge(map[string][]Touch{prefix: {{Height: 10, TxIndex: 0}}}, Cursor{Height: 10}); err != nil {
+    if err := merge(map[string][]Touch{prefix: {{Height: 10, TxIndex: 0}}}, 10); err != nil {
         t.Fatalf("merge: %v", err)
     }
-    if err := merge(map[string][]Touch{prefix: {{Height: 12, TxIndex: 3}}}, Cursor{Height: 12}); err != nil {
+    if err := merge(map[string][]Touch{prefix: {{Height: 12, TxIndex: 3}}}, 12); err != nil {
         t.Fatalf("merge: %v", err)
     }
     var got, capped = Lookup(script)
@@ -52,7 +52,7 @@ func TestLookupCaps(t *testing.T) {
     var script = []byte("hotaddress")
     var prefix = string(Prefix(script))
     for h := uint32(0); h < 5; h++ {
-        if err := merge(map[string][]Touch{prefix: {{Height: h, TxIndex: 0}}}, Cursor{Height: int64(h)}); err != nil {
+        if err := merge(map[string][]Touch{prefix: {{Height: h, TxIndex: 0}}}, int(h)); err != nil {
             t.Fatalf("merge at height %d: %v", h, err)
         }
     }
@@ -94,8 +94,8 @@ func TestSharedShardIsolation(t *testing.T) {
     }
     if b == nil { t.Fatal("could not find two scripts sharing a shard") }
     t.Logf("shard %x shared by %q and %q", Prefix(a)[:shardLen], a, b)
-    merge(map[string][]Touch{string(Prefix(a)): {{Height: 10, TxIndex: 1}}}, Cursor{Height: 10})
-    merge(map[string][]Touch{string(Prefix(b)): {{Height: 20, TxIndex: 2}}}, Cursor{Height: 20})
+    merge(map[string][]Touch{string(Prefix(a)): {{Height: 10, TxIndex: 1}}}, 10)
+    merge(map[string][]Touch{string(Prefix(b)): {{Height: 20, TxIndex: 2}}}, 20)
     var ta, _ = Lookup(a)
     if len(ta) != 1 || ta[0].Height != 10 || ta[0].TxIndex != 1 {
         t.Fatalf("script A got %v, want only its own touch at height 10", ta)
@@ -114,7 +114,7 @@ func TestLookupSpansRanges(t *testing.T) {
     var prefix = string(Prefix(script))
     var heights = []uint32{5, rangeBlocks + 7, 3*rangeBlocks + 1}
     for _, h := range heights {
-        merge(map[string][]Touch{prefix: {{Height: h, TxIndex: 0}}}, Cursor{Height: int64(h)})
+        merge(map[string][]Touch{prefix: {{Height: h, TxIndex: 0}}}, int(h))
     }
     var got, _ = Lookup(script)
     if len(got) != len(heights) {
@@ -132,12 +132,12 @@ func TestCursor(t *testing.T) {
     if _, ok := LoadCursor(); ok {
         t.Fatal("expected no cursor on a fresh index")
     }
-    if err := merge(nil, Cursor{Height: 500}); err != nil {
+    if err := merge(nil, 500); err != nil {
         t.Fatalf("merge: %v", err)
     }
-    var c, ok = LoadCursor()
-    if !ok || c.Height != 500 {
-        t.Fatalf("cursor = %+v ok=%v, want Height=500", c, ok)
+    var h, ok = LoadCursor()
+    if !ok || h != 500 {
+        t.Fatalf("cursor = %+v ok=%v, want Height=500", h, ok)
     }
 }
 
@@ -153,8 +153,8 @@ func TestDistinctScriptsDistinctKeys(t *testing.T) {
     if string(Prefix(a)) == string(Prefix(b)) {
         t.Fatal("test scripts collide by chance, pick different ones")
     }
-    merge(map[string][]Touch{string(Prefix(a)): {{Height: 1, TxIndex: 0}}}, Cursor{Height: 1})
-    merge(map[string][]Touch{string(Prefix(b)): {{Height: 2, TxIndex: 0}}}, Cursor{Height: 2})
+    merge(map[string][]Touch{string(Prefix(a)): {{Height: 1, TxIndex: 0}}}, 1)
+    merge(map[string][]Touch{string(Prefix(b)): {{Height: 2, TxIndex: 0}}}, 2)
     var ta, _ = Lookup(a)
     var tb, _ = Lookup(b)
     if len(ta) != 1 || ta[0].Height != 1 {
@@ -166,15 +166,15 @@ func TestDistinctScriptsDistinctKeys(t *testing.T) {
 }
 
 type fakeSource struct {
-    tip     int64
-    blocks  map[int64]Block
-    fetched []int64
-    err     map[int64]bool
+    tip     int
+    blocks  map[int]Block
+    fetched []int
+    err     map[int]bool
 }
 
-func (f *fakeSource) Tip(ctx context.Context) (int64, error) { return f.tip, nil }
+func (f *fakeSource) Tip(ctx context.Context) (int, error) { return f.tip, nil }
 
-func (f *fakeSource) BlockAt(ctx context.Context, height int64) (Block, error) {
+func (f *fakeSource) BlockAt(ctx context.Context, height int) (Block, error) {
     f.fetched = append(f.fetched, height)
     if f.err[height] { return Block{}, errors.New("fetch failed") }
     return f.blocks[height], nil
@@ -225,7 +225,7 @@ func TestCatchUp(t *testing.T) {
     t.Cleanup(func() { chunkSize = saved })
     chunkSize = 1000
     var scriptA, scriptB = "0014aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "0014bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-    var src = &fakeSource{tip: 2, blocks: map[int64]Block{
+    var src = &fakeSource{tip: 2, blocks: map[int]Block{
         0: syntheticBlock(t, []string{scriptA}, nil),
         1: syntheticBlock(t, []string{scriptB}, []string{scriptA}),
         2: syntheticBlock(t, nil, nil),
@@ -241,9 +241,9 @@ func TestCatchUp(t *testing.T) {
     if len(touchesB) != 1 || touchesB[0].Height != 1 {
         t.Fatalf("scriptB touches = %v, want [height 1]", touchesB)
     }
-    var cursor, ok = LoadCursor()
-    if !ok || cursor.Height != 2 {
-        t.Fatalf("cursor = %+v ok=%v, want Height=2", cursor, ok)
+    var height, ok = LoadCursor()
+    if !ok || height != 2 {
+        t.Fatalf("cursor = %+v ok=%v, want Height=2", height, ok)
     }
     // a second pass with nothing new fetches nothing
     src.fetched = nil
@@ -263,11 +263,11 @@ func TestCatchUpChunksAndRetries(t *testing.T) {
     t.Cleanup(func() { chunkSize = savedChunk })
     chunkSize = 2
     var script = "0014cccccccccccccccccccccccccccccccccccccccc"
-    var blocks = map[int64]Block{}
-    for h := int64(0); h < 5; h++ {
+    var blocks = map[int]Block{}
+    for h := 0; h < 5; h++ {
         blocks[h] = syntheticBlock(t, []string{script}, nil)
     }
-    var src = &fakeSource{tip: 4, blocks: blocks, err: map[int64]bool{3: true}}
+    var src = &fakeSource{tip: 4, blocks: blocks, err: map[int]bool{3: true}}
     if err := catchUp(src); err == nil {
         t.Fatal("expected an error from the failing block")
     }
@@ -277,15 +277,15 @@ func TestCatchUpChunksAndRetries(t *testing.T) {
     if len(touches) != 2 {
         t.Fatalf("touches after partial catch-up = %d, want 2 (the first chunk only)", len(touches))
     }
-    var cursor, _ = LoadCursor()
-    if cursor.Height != 1 {
-        t.Fatalf("cursor = %d, want 1 (stuck before the failed block)", cursor.Height)
+    var height, _ = LoadCursor()
+    if height != 1 {
+        t.Fatalf("cursor = %d, want 1 (stuck before the failed block)", height)
     }
     // fixing the block and retrying picks up from where it stopped
     src.err = nil
     src.fetched = nil
     if err := catchUp(src); err != nil { t.Fatalf("retry: %v", err) }
-    var deepFetched = append([]int64{}, src.fetched...)
+    var deepFetched = append([]int{}, src.fetched...)
     if len(deepFetched) != 3 || deepFetched[0] != 2 {
         t.Fatalf("retry fetched %v, want [2 3 4]", deepFetched)
     }

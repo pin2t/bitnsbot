@@ -6,7 +6,7 @@ import "time"
 
 import "bitnsbot/logging"
 
-// Block is the raw material Source hands over for one height: the serialized
+// Block is the raw material Blockchain hands over for one height: the serialized
 // block (as Core's REST /rest/block/<hash>.bin returns it) and the serialized
 // spent-outputs data (/rest/spenttxouts/<hash>.bin) — the prevout of every real
 // input in the block, aligned to the block's own transaction order. Together
@@ -20,12 +20,12 @@ type Block struct {
     Spent []byte
 }
 
-// Source supplies chain data to the backfill; the caller (package main) owns the
+// Blockchain supplies chain data to the backfill; the caller (package main) owns the
 // HTTP/REST specifics, mirroring how the miners package takes its chain data
-// through a Source interface because it can't reach btcd/Core directly either.
-type Source interface {
-    Tip(ctx context.Context) (int64, error)
-    BlockAt(ctx context.Context, height int64) (Block, error)
+// through a Blockchain interface because it can't reach btcd/Core directly either.
+type Blockchain interface {
+    Tip(ctx context.Context) (int, error)
+    BlockAt(ctx context.Context, height int) (Block, error)
 }
 
 // chunkSize bounds how many blocks are merged into the index per bbolt
@@ -33,7 +33,7 @@ type Source interface {
 // of thousands of blocks must not build one giant transaction, and a crash
 // mid-catch-up should resume from the last flushed chunk, not the beginning. A
 // package var so tests shrink it.
-var chunkSize int64 = 1000
+var chunkSize int = 1000
 
 // backfillInterval is the pause between catch-up passes once the index is at the
 // tip, so new blocks are picked up without a dedicated subscription.
@@ -43,7 +43,7 @@ var backfillInterval = 2 * time.Minute
 // and keeps polling for new blocks afterward. It is meant to run for as long as
 // the bot does; building genesis-to-tip on a fresh index is a multi-hour, one-
 // time cost paid the same way the miners collector pays its own catch-up.
-func StartBackfill(src Source) {
+func StartBackfill(src Blockchain) {
     go func() {
         for {
             if err := catchUp(src); err != nil {
@@ -54,14 +54,14 @@ func StartBackfill(src Source) {
     }()
 }
 
-func catchUp(src Source) error {
+func catchUp(src Blockchain) error {
     var ctx, cancel = context.WithTimeout(context.Background(), 6*time.Hour)
     defer cancel()
     var tip, err = src.Tip(ctx)
     if err != nil { return err }
-    var cursor, ok = LoadCursor()
-    var from int64
-    if ok { from = cursor.Height + 1 }
+    var height, ok = LoadCursor()
+    var from int
+    if ok { from = height + 1 }
     for from <= tip {
         var to = from + chunkSize - 1
         if to > tip { to = tip }
@@ -77,7 +77,7 @@ func catchUp(src Source) error {
             }
             indexBlock(touches, uint32(h), blk)
         }
-        if err := merge(touches, Cursor{Height: to}); err != nil { return err }
+        if err := merge(touches, to); err != nil { return err }
         logging.Info("addrindex: built blocks %d..%d (tip %d)", from, to, tip)
         from = to + 1
     }
