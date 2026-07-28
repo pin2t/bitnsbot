@@ -3,13 +3,14 @@ package miners
 import "context"
 import "encoding/json"
 import "sort"
+import "strconv"
 import "time"
 
 import "go.etcd.io/bbolt"
 import "bitnsbot/logging"
 
 var statBucket = []byte("miners-stat")
-var blockBucket = []byte("miners-block")
+var cursorBucket = []byte("miners-cursor")
 
 // statInterval is how often the collector processes new blocks. A package var so
 // tests can shrink it.
@@ -58,14 +59,6 @@ type stat struct {
     LastWork float64 // work of this miner's most recent block
 }
 
-// cursor is the collector's position, stored in miners-block. Start is fixed at
-// the first tracked height (the window used for the power estimate); Last is the
-// last processed height.
-type cursor struct {
-    Start int64
-    Last  int64
-}
-
 // StartStats runs the by-miner statistics collector: it catches up from the last
 // processed block to the current tip, then again every statInterval. src supplies
 // the chain data (it owns the btcd connection).
@@ -89,12 +82,11 @@ func collect(src Source) {
         logging.Warn("miners stats: tip: %v", err)
         return
     }
-    var start, last, ok = loadCursor()
+    var last, ok = loadCursor()
     var from int64
     if !ok {
         from = tip - initialWindow + 1
         if from < 0 { from = 0 }
-        start = from
         last = from - 1
     } else {
         from = last + 1
@@ -128,7 +120,7 @@ func collect(src Source) {
             d.Work += w
             d.LastWork = w
         }
-        if err := flush(deltas, start, to); err != nil {
+        if err := flush(deltas, to); err != nil {
             logging.Err("miners stats: flush: %v", err)
             return
         }
@@ -144,7 +136,7 @@ func collect(src Source) {
 // cursor, in one transaction. Blocks/Reward/Fees/Work accumulate; LastWork is
 // overwritten with the most recent (chunks run oldest-first, so the last write
 // wins).
-func flush(deltas map[string]*stat, start, last int64) error {
+func flush(deltas map[string]*stat, last int64) error {
     return db.Update(func(tx *bbolt.Tx) error {
         var sb = tx.Bucket(statBucket)
         for name, d := range deltas {
@@ -159,18 +151,18 @@ func flush(deltas map[string]*stat, start, last int64) error {
             if err != nil { return err }
             if err := sb.Put([]byte(name), data); err != nil { return err }
         }
-        var cdata, err = json.Marshal(cursor{Start: start, Last: last})
-        if err != nil { return err }
-        return tx.Bucket(blockBucket).Put([]byte("cursor"), cdata)
+        return tx.Bucket(cursorBucket).Put(
+            []byte("cursor"), []byte(strconv.FormatInt(last, 10)))
     })
 }
 
-func loadCursor() (start, last int64, ok bool) {
-    if db == nil { return 0, 0, false }
+func loadCursor() (last int64, ok bool) {
+    if db == nil { return 0, false }
     db.View(func(tx *bbolt.Tx) error {
-        if v := tx.Bucket(blockBucket).Get([]byte("cursor")); v != nil {
-            var c cursor
-            if json.Unmarshal(v, &c) == nil { start, last, ok = c.Start, c.Last, true }
+        if v := tx.Bucket(cursorBucket).Get([]byte("cursor")); v != nil {
+            var err error
+            last, err = strconv.ParseInt(string(v), 10, 64)
+            if err == nil { ok = true }
         }
         return nil
     })
@@ -184,31 +176,35 @@ type Stat struct {
     Reward        float64 // BTC (subsidy + fees)
     Fees          float64 // BTC
     ConsumptionGW float64 // estimated power draw, gigawatts
+    lastWork      float64 // work of this miner's most recent block
 }
 
 // Top returns the n miners with the most blocks mined, sorted descending. The
-// consumption estimate is the miner's current hashrate — its share of the blocks
-// in the tracked window times the current network hashrate (LastWork, the work of
-// its most recent block, over the 10-minute block target) — at joulesPerHash.
-// LastWork is what makes it *current*: it carries the difficulty in force now,
-// where the accumulated Work would average in every past difficulty epoch.
+// consumption estimate is the miner's current hashrate — its share of the total
+// blocks mined across all tracked miners times the current network hashrate
+// (LastWork, the work of its most recent block, over the 10-minute block target)
+// — at joulesPerHash. LastWork is what makes it *current*: it carries the
+// difficulty in force now, where the accumulated Work would average in every
+// past difficulty epoch.
 func Top(n int) []Stat {
     if db == nil { return nil }
-    var start, last, _ = loadCursor()
-    var windowBlocks = float64(last - start + 1)
     var out []Stat
+    var totalBlocks int64
     db.View(func(tx *bbolt.Tx) error {
         return tx.Bucket(statBucket).ForEach(func(k, v []byte) error {
             var s stat
             if json.Unmarshal(v, &s) != nil { return nil }
-            var gw float64
-            if windowBlocks > 0 {
-                gw = (float64(s.Blocks) / windowBlocks) * (s.LastWork / secondsPerBlock) * joulesPerHash / 1e9
-            }
-            out = append(out, Stat{Name: string(k), Blocks: s.Blocks, Reward: s.Reward, Fees: s.Fees, ConsumptionGW: gw})
+            totalBlocks += s.Blocks
+            out = append(out, Stat{Name: string(k), Blocks: s.Blocks, Reward: s.Reward, Fees: s.Fees, lastWork: s.LastWork})
             return nil
         })
     })
+    var windowBlocks = float64(totalBlocks)
+    for i := range out {
+        if windowBlocks > 0 {
+            out[i].ConsumptionGW = (float64(out[i].Blocks) / windowBlocks) * (out[i].lastWork / secondsPerBlock) * joulesPerHash / 1e9
+        }
+    }
     sort.Slice(out, func(i, j int) bool {
         if out[i].Blocks != out[j].Blocks { return out[i].Blocks > out[j].Blocks }
         return out[i].Name < out[j].Name

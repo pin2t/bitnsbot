@@ -619,7 +619,7 @@ func TestMinersFlow(t *testing.T) {
                 p.blocks, p.reward, p.fees, p.lastWork*float64(p.blocks), p.lastWork)
             if err := b.Put([]byte(p.name), []byte(rec)); err != nil { return err }
         }
-        return tx.Bucket([]byte("miners-block")).Put([]byte("cursor"), []byte(`{"Start":0,"Last":9}`))
+        return tx.Bucket([]byte("miners-cursor")).Put([]byte("cursor"), []byte("9"))
     }); err != nil {
         t.Fatalf("seed stats: %v", err)
     }

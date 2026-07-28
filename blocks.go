@@ -13,7 +13,7 @@ import "bitnsbot/miners"
 import "math"
 
 var blocksBucket = []byte("blocks-stat")
-var blocksBlockBucket = []byte("blocks-block")
+var blocksCursorBucket = []byte("blocks-cursor")
 
 // blockCacheInterval is how often the collector catches up from the last
 // processed block to the chain tip. A package var so tests can shrink it.
@@ -38,11 +38,11 @@ type blockInfo struct {
     Difficulty float64
 }
 
-// blockInit creates the blocks-stat and blocks-block buckets inside the shared
+// blockInit creates the blocks-stat and blocks-cursor buckets inside the shared
 // bbolt file. Called once by openDB before any goroutine reads or writes them.
 func blockInit(handle *bbolt.DB) error {
     return handle.Update(func(tx *bbolt.Tx) error {
-        for _, name := range [][]byte{blocksBucket, blocksBlockBucket} {
+        for _, name := range [][]byte{blocksBucket, blocksCursorBucket} {
             if _, err := tx.CreateBucketIfNotExists(name); err != nil { return err }
         }
         return nil
@@ -173,12 +173,12 @@ func collectBlocks() {
         logging.Warn("block cache: tip: %v", err)
         return
     }
-    // read the last processed height from the blocks-block bucket
+    // read the last processed height from the blocks-cursor bucket
     var cursor int64
     var haveCursor bool
     if db != nil {
         db.View(func(tx *bbolt.Tx) error {
-            if v := tx.Bucket(blocksBlockBucket).Get([]byte("cursor")); v != nil {
+            if v := tx.Bucket(blocksCursorBucket).Get([]byte("cursor")); v != nil {
                 var e error
                 cursor, e = strconv.ParseInt(string(v), 10, 64)
                 if e == nil { haveCursor = true }
@@ -204,7 +204,7 @@ func collectBlocks() {
         bcancel()
         // advance the cursor after each cached block
         if err := db.Update(func(tx *bbolt.Tx) error {
-            return tx.Bucket(blocksBlockBucket).Put(
+            return tx.Bucket(blocksCursorBucket).Put(
                 []byte("cursor"), []byte(strconv.FormatInt(from, 10)))
         }); err != nil {
             logging.Err("block cache: save cursor: %v", err)

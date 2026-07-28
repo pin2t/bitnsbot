@@ -49,6 +49,7 @@ import "crypto/sha256"
 import "encoding/binary"
 import "encoding/hex"
 import "errors"
+import "strconv"
 
 import "go.etcd.io/bbolt"
 
@@ -205,7 +206,7 @@ type Cursor struct {
 }
 
 func saveCursor(tx *bbolt.Tx, c Cursor) error {
-    return tx.Bucket(cursorBucket).Put([]byte("cursor"), itob(c.Height))
+    return tx.Bucket(cursorBucket).Put([]byte("cursor"), []byte(strconv.FormatInt(c.Height, 10)))
 }
 
 // LoadCursor returns the built-to position, or ok=false on a fresh index.
@@ -214,17 +215,11 @@ func LoadCursor() (Cursor, bool) {
     var c Cursor
     var ok bool
     db.View(func(tx *bbolt.Tx) error {
-        if v := tx.Bucket(cursorBucket).Get([]byte("cursor")); len(v) == 8 {
-            c.Height = int64(binary.BigEndian.Uint64(v))
-            ok = true
+        if v := tx.Bucket(cursorBucket).Get([]byte("cursor")); v != nil {
+            var h, err = strconv.ParseInt(string(v), 10, 64)
+            if err == nil { c.Height, ok = h, true }
         }
         return nil
     })
     return c, ok
-}
-
-func itob(v int64) []byte {
-    var b = make([]byte, 8)
-    binary.BigEndian.PutUint64(b, uint64(v))
-    return b
 }

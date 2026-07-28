@@ -17,10 +17,10 @@ func TestOpenDBBuckets(t *testing.T) {
     }
     defer closeDB()
     var want = []string{
-        "blocks-stat", "blocks-block",                       // blocks cache
+        "blocks-stat", "blocks-cursor",                       // blocks cache
         "rates", "market",                                 // rates
         "watches",                                         // watches
-        "miners", "miners-tag", "miners-stat", "miners-block", // miners
+        "miners", "miners-tag", "miners-stat", "miners-cursor", // miners
         "addrindex", "addrindex-cursor",                   // addrindex
     }
     var got = map[string]bool{}
