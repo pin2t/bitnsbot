@@ -105,8 +105,8 @@ func TestCollectStats(t *testing.T) {
     equal(t, "PoolB last work", b.LastWork, 1.0e14*workPerDifficulty)
     // the unknown miner's block is not attributed to anyone
     if s := statOf(t, "Unknown"); s.Blocks != 0 { t.Fatalf("unknown miner was stored: %+v", s) }
-    var start, last, ok = loadCursor()
-    if !ok || start != 0 || last != 4 { t.Fatalf("cursor = (%d, %d, %v), want (0, 4, true)", start, last, ok) }
+    var last, ok = cursor()
+    if !ok || last != 4 { t.Fatalf("cursor = (%d, %v), want (4, true)", last, ok) }
 }
 
 func TestTopConsumption(t *testing.T) {
@@ -119,13 +119,13 @@ func TestTopConsumption(t *testing.T) {
         t.Fatalf("top order = %q, %q; want PoolA, PoolB", top[0].Name, top[1].Name)
     }
     if top[0].Blocks != 3 { t.Fatalf("PoolA blocks = %d, want 3", top[0].Blocks) }
-    // share of the 5-block window × the *current* network hashrate (last block's
-    // difficulty × 2^32 ÷ 600s) × 1e-11 J/hash, in GW. Using accumulated work
-    // instead would give 4.87 GW for PoolA, so this pins the LastWork formula.
-    equal(t, "PoolA GW", top[0].ConsumptionGW, (3.0/5.0)*(1.4e14*workPerDifficulty/secondsPerBlock)*joulesPerHash/1e9)
-    equal(t, "PoolB GW", top[1].ConsumptionGW, (1.0/5.0)*(1.0e14*workPerDifficulty/secondsPerBlock)*joulesPerHash/1e9)
-    if top[0].ConsumptionGW < 5.9 || top[0].ConsumptionGW > 6.1 {
-        t.Fatalf("PoolA GW = %g, want ≈6.01 (a 60%% share of a ~1000 EH/s network)", top[0].ConsumptionGW)
+    // share of the 4 attributed blocks × the *current* network hashrate (last
+    // block's difficulty × 2^32 ÷ 600s) × 1e-11 J/hash, in GW. Using accumulated
+    // work instead would give 4.87 GW for PoolA, so this pins the LastWork formula.
+    equal(t, "PoolA GW", top[0].ConsumptionGW, (3.0/4.0)*(1.4e14*workPerDifficulty/secondsPerBlock)*joulesPerHash/1e9)
+    equal(t, "PoolB GW", top[1].ConsumptionGW, (1.0/4.0)*(1.0e14*workPerDifficulty/secondsPerBlock)*joulesPerHash/1e9)
+    if top[0].ConsumptionGW < 7.4 || top[0].ConsumptionGW > 7.6 {
+        t.Fatalf("PoolA GW = %g, want ≈7.51 (a 75%% share of a ~1000 EH/s network)", top[0].ConsumptionGW)
     }
     if got := Top(1); len(got) != 1 || got[0].Name != "PoolA" {
         t.Fatalf("Top(1) = %+v, want just PoolA", got)
@@ -150,7 +150,7 @@ func TestCollectChunks(t *testing.T) {
         t.Fatalf("fetched %v, want 0..4 in order", src.fetched)
     }
     if a := statOf(t, "PoolA"); a.Blocks != 3 { t.Fatalf("PoolA blocks = %d, want 3", a.Blocks) }
-    var _, last, _ = loadCursor()
+    var last, _ = cursor()
     if last != 4 { t.Fatalf("cursor last = %d, want 4", last) }
 }
 
@@ -173,16 +173,16 @@ func TestCollectResumes(t *testing.T) {
     if b.Blocks != 3 { t.Fatalf("PoolB blocks = %d, want 3", b.Blocks) }
     equal(t, "PoolB reward", b.Reward, 6.4+6.1+6.2)
     equal(t, "PoolB fees", b.Fees, 0.15+0.20+0.10)
-    var start, last, _ = loadCursor()
-    if start != 0 || last != 6 { t.Fatalf("cursor = (%d, %d), want (0, 6)", start, last) }
-    // the window grew with the chain, so shares are over 7 blocks now
+    var last, _ = cursor()
+    if last != 6 { t.Fatalf("cursor = %d, want 6", last) }
+    // the window is over the total attributed blocks now (pool A 3 + pool B 3 = 6)
     var top = Top(10)
     var pb Stat
     for _, s := range top {
         if s.Name == "PoolB" { pb = s }
     }
     if pb.Blocks != 3 { t.Fatalf("PoolB in top = %+v, want 3 blocks", pb) }
-    equal(t, "PoolB GW", pb.ConsumptionGW, (3.0/7.0)*(1.4e14*workPerDifficulty/secondsPerBlock)*joulesPerHash/1e9)
+    equal(t, "PoolB GW", pb.ConsumptionGW, (3.0/6.0)*(1.4e14*workPerDifficulty/secondsPerBlock)*joulesPerHash/1e9)
     // equal block counts tie-break by name, so the list is stable across calls
     if top[0].Name != "PoolA" || top[1].Name != "PoolB" {
         t.Fatalf("tied order = %q, %q; want PoolA, PoolB", top[0].Name, top[1].Name)
@@ -197,7 +197,7 @@ func TestCollectWaitsForAddresses(t *testing.T) {
     var src = chainFixture()
     collect(src)
     if len(src.fetched) != 0 { t.Fatalf("fetched %v with no pool addresses loaded", src.fetched) }
-    if _, _, ok := loadCursor(); ok { t.Fatal("cursor was stored with no pool addresses loaded") }
+    if _, ok := cursor(); ok { t.Fatal("cursor was stored with no pool addresses loaded") }
 }
 
 func TestTopEmpty(t *testing.T) {
@@ -214,13 +214,13 @@ func TestCollectRetriesOnError(t *testing.T) {
     var src = chainFixture()
     src.err = map[int64]bool{3: true}
     collect(src)
-    if _, _, ok := loadCursor(); ok { t.Fatal("cursor advanced despite a failed block") }
+    if _, ok := cursor(); ok { t.Fatal("cursor advanced despite a failed block") }
     if a := statOf(t, "PoolA"); a.Blocks != 0 { t.Fatalf("partial chunk was flushed: %+v", a) }
     // once the block is fetchable the next run picks up the whole range
     src.err = nil
     src.fetched = nil
     collect(src)
     if a := statOf(t, "PoolA"); a.Blocks != 3 { t.Fatalf("PoolA blocks = %d, want 3 after retry", a.Blocks) }
-    var _, last, _ = loadCursor()
+    var last, _ = cursor()
     if last != 4 { t.Fatalf("cursor last = %d, want 4", last) }
 }

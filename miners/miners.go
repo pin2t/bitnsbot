@@ -36,11 +36,11 @@ type poolDef struct {
 
 // Init stores the shared bbolt handle and ensures the buckets exist: `miners`
 // (address → pool name), `miners-tag` (coinbase tag → pool name), `miners-stat`
-// (pool name → aggregated stats), and `miners-block` (the collector's cursor).
+// (pool name → aggregated stats), and `miners-cursor` (the collector's cursor).
 func Init(handle *bbolt.DB) error {
     db = handle
     return db.Update(func(tx *bbolt.Tx) error {
-        for _, name := range [][]byte{bucket, tagBucket, statBucket, blockBucket} {
+        for _, name := range [][]byte{bucket, tagBucket, statBucket, cursorBucket} {
             if _, err := tx.CreateBucketIfNotExists(name); err != nil { return err }
         }
         return nil
