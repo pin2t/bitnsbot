@@ -7,4 +7,4 @@
 bitnsbot.cfg
 bitnsbot.conf
 .DS_Store
-addrindex-scan
+/addrindex-scan
