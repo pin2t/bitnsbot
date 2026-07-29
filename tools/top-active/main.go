@@ -31,6 +31,7 @@ var coreUser = flag.String("core-user", "", "Bitcoin Core RPC username")
 var corePass = flag.String("core-pass", "", "Bitcoin Core RPC password")
 var coreCookie = flag.String("core-cookie", "", "path to Bitcoin Core .cookie file")
 var topN = flag.Int("top", 100, "number of top addresses to print")
+var webStatus = flag.String("web-status", "", "address for live web status page (e.g. 127.0.0.1:8084)")
 
 type rpcClient struct {
 	url    string
@@ -167,11 +168,78 @@ func main() {
 	if tipErr != nil {
 		logging.Fatal("get tip: %v", tipErr)
 	}
+
 	var counts = make(map[string]int) // address → tx count (cached)
 	var countsMu sync.Mutex
 	var began = time.Now()
 	const numWorkers = 16
 	var processed atomic.Int64
+
+	// web status page
+	if *webStatus != "" {
+		http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			var h = processed.Load()
+			var pct float64
+			if tip > 0 {
+				pct = float64(h) / float64(tip) * 100
+			}
+			var elapsed = time.Since(began).Round(time.Second)
+
+			countsMu.Lock()
+			var list []addrCount
+			for addr, cnt := range counts {
+				list = append(list, addrCount{addr: addr, count: cnt})
+			}
+			countsMu.Unlock()
+
+			sort.Slice(list, func(i, j int) bool {
+				return list[i].count > list[j].count
+			})
+
+			fmt.Fprintf(w, `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="refresh" content="3">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>top-active</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#0d1117;color:#c9d1d9;display:flex;justify-content:center;padding:40px 20px}
+.container{max-width:900px;width:100%%}
+.status{text-align:center;font-size:2rem;font-weight:600;color:#58a6ff;margin-bottom:8px}
+.elapsed{text-align:center;font-size:0.875rem;color:#8b949e;margin-bottom:32px}
+table{width:100%%;border-collapse:collapse}
+th{text-align:left;padding:10px 16px;font-size:0.75rem;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:#8b949e;border-bottom:1px solid #21262d}
+td{padding:10px 16px;border-bottom:1px solid #21262d}
+.rank{width:48px;text-align:right;color:#8b949e}
+.address{font-family:"SF Mono","Fira Code",monospace;font-size:0.875rem}
+.count{text-align:right;font-variant-numeric:tabular-nums}
+tr:hover td{background:#161b22}
+</style>
+</head>
+<body>
+<div class="container">
+<div class="status">%d / %d (%.0f%%)</div>
+<div class="elapsed">elapsed %s</div>
+<table>
+<tr><th class="rank">#</th><th>Address</th><th class="count">Transactions</th></tr>`, h, tip, pct, elapsed)
+			for i, a := range list {
+				fmt.Fprintf(w, `<tr><td class="rank">%d</td><td class="address">%s</td><td class="count">%d</td></tr>`+"\n", i+1, a.addr, a.count)
+			}
+			fmt.Fprint(w, `</table>
+</div>
+</body>
+</html>`)
+		})
+		go func() {
+			fmt.Fprintf(os.Stderr, "web status listening on http://%s\n", *webStatus)
+			if err := http.ListenAndServe(*webStatus, nil); err != nil {
+				fmt.Fprintf(os.Stderr, "web status: %v\n", err)
+			}
+		}()
+	}
 	// progress reporter: prints every 5 seconds until progressDone is closed
 	var progressDone = make(chan struct{})
 	go func() {
