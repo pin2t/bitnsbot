@@ -1,5 +1,6 @@
-// Command top-active scans the addrindex and prints the addresses most often
-// touched on chain, sorted by transaction count descending.
+// Command top-active scans the blockchain from genesis to tip, collects every
+// address, looks up its transaction count in the addrindex, and prints the top N
+// addresses sorted by transaction count descending.
 //
 // Usage:
 //
@@ -8,7 +9,6 @@ package main
 
 import "bytes"
 import "context"
-import "encoding/binary"
 import "encoding/hex"
 import "encoding/json"
 import "flag"
@@ -29,12 +29,6 @@ var coreUser = flag.String("core-user", "", "Bitcoin Core RPC username")
 var corePass = flag.String("core-pass", "", "Bitcoin Core RPC password")
 var coreCookie = flag.String("core-cookie", "", "path to Bitcoin Core .cookie file")
 var topN = flag.Int("top", 100, "number of top addresses to print")
-
-// addrindex layout constants (must match addrindex package)
-const shardLen = 2
-const remainderLen = 6
-const entryLen = remainderLen + 2 + 2 // remainder + heightOffset + txIndex
-const rangeBlocks = 1000
 
 type rpcClient struct {
 	url    string
@@ -93,6 +87,48 @@ func (c *rpcClient) getBlockCount(ctx context.Context) (int64, error) {
 	return count, err
 }
 
+func (c *rpcClient) getBlockHash(ctx context.Context, height int64) (string, error) {
+	var hash string
+	var err = c.call(ctx, "getblockhash", []interface{}{height}, &hash)
+	return hash, err
+}
+
+func (c *rpcClient) getBlockVerbose(ctx context.Context, hash string) (*blockData, error) {
+	var blk blockData
+	var err = c.call(ctx, "getblock", []interface{}{hash, 2}, &blk)
+	if err != nil { return nil, err }
+	return &blk, nil
+}
+
+type blockData struct {
+	Height int64  `json:"height"`
+	Time   int64  `json:"time"`
+	Tx     []txData `json:"tx"`
+}
+
+type txData struct {
+	Vin  []vinData  `json:"vin"`
+	Vout []voutData `json:"vout"`
+}
+
+type vinData struct {
+	Coinbase string       `json:"coinbase"`
+	PrevOut  *prevOutData `json:"prevout"`
+}
+
+type prevOutData struct {
+	ScriptPubKey spkData `json:"scriptPubKey"`
+}
+
+type voutData struct {
+	ScriptPubKey spkData `json:"scriptPubKey"`
+}
+
+type spkData struct {
+	Address string `json:"address"`
+	Hex     string `json:"hex"`
+}
+
 type addrCount struct {
 	addr  string
 	count int
@@ -110,64 +146,80 @@ func main() {
 		logging.Fatal("init addrindex: %v", err)
 	}
 
-	var rpc *rpcClient
-	var tip int64
-	if *coreURL != "" {
-		rpc, err = newRPCClient(*coreURL, *coreUser, *corePass, *coreCookie)
-		if err != nil {
-			logging.Fatal("RPC client: %v", err)
-		}
-		var ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
-		tip, err = rpc.getBlockCount(ctx)
-		cancel()
-		if err != nil {
-			logging.Fatal("get tip: %v", err)
-		}
-	} else {
-		logging.Fatal("Bitcoin Core RPC (-core-url) is required to get the tip height")
+	if *coreURL == "" {
+		logging.Fatal("Bitcoin Core RPC (-core-url) is required")
 	}
-	var totalRanges = tip/rangeBlocks + 1
+	var rpc, rpcErr = newRPCClient(*coreURL, *coreUser, *corePass, *coreCookie)
+	if rpcErr != nil {
+		logging.Fatal("RPC client: %v", rpcErr)
+	}
 
-	var counts = make(map[string]int)
-	var keysProcessed int64
+	var ctx = context.Background()
+	var tctx, tcancel = context.WithTimeout(ctx, 15*time.Second)
+	var tip, tipErr = rpc.getBlockCount(tctx)
+	tcancel()
+	if tipErr != nil {
+		logging.Fatal("get tip: %v", tipErr)
+	}
 
+	var counts = make(map[string]int) // address → tx count (cached)
 	var began = time.Now()
-	d.View(func(tx *bbolt.Tx) error {
-		var b = tx.Bucket([]byte("addrindex"))
-		if b == nil {
-			logging.Fatal("addrindex bucket not found — is the database empty?")
+	var lastReport time.Time
+
+	for h := int64(0); h <= tip; h++ {
+		// progress report every 5 seconds
+		if time.Since(lastReport) > 5*time.Second {
+			var pct float64
+			if tip > 0 {
+				pct = float64(h) / float64(tip) * 100
+			}
+			fmt.Printf("\rprocessed %d / %d (%.0f%%)", h, tip, pct)
+			lastReport = time.Now()
 		}
-		var c = b.Cursor()
-		var lastReport time.Time
-		for k, v := c.First(); k != nil; k, v = c.Next() {
-			if len(k) < shardLen+4 {
+
+		var bctx, bcancel = context.WithTimeout(ctx, 60*time.Second)
+		var hash, hashErr = rpc.getBlockHash(bctx, h)
+		bcancel()
+		if hashErr != nil {
+			fmt.Fprintf(os.Stderr, "\nblock %d hash: %v\n", h, hashErr)
+			continue
+		}
+
+		bctx, bcancel = context.WithTimeout(ctx, 60*time.Second)
+		var blk, blkErr = rpc.getBlockVerbose(bctx, hash)
+		bcancel()
+		if blkErr != nil {
+			fmt.Fprintf(os.Stderr, "\nblock %d: %v\n", h, blkErr)
+			continue
+		}
+
+		// collect unique addresses from this block
+		var seen = make(map[string]string) // address → scriptHex
+		for _, tx := range blk.Tx {
+			for _, vin := range tx.Vin {
+				if vin.Coinbase != "" { continue }
+				if vin.PrevOut != nil && vin.PrevOut.ScriptPubKey.Address != "" {
+					seen[vin.PrevOut.ScriptPubKey.Address] = vin.PrevOut.ScriptPubKey.Hex
+				}
+			}
+			for _, vout := range tx.Vout {
+				if vout.ScriptPubKey.Address != "" {
+					seen[vout.ScriptPubKey.Address] = vout.ScriptPubKey.Hex
+				}
+			}
+		}
+
+		// look up uncached addresses in the addrindex
+		for addr, scriptHex := range seen {
+			if _, ok := counts[addr]; ok {
 				continue
 			}
-			var shard = k[:shardLen]
-			var rangeIdx = binary.BigEndian.Uint32(k[shardLen:])
-			keysProcessed++
-
-			// progress report every 5 seconds
-			if time.Since(lastReport) > 5*time.Second {
-				var pct float64
-				if totalRanges > 0 {
-					pct = float64(rangeIdx) / float64(totalRanges) * 100
-				}
-				fmt.Printf("\rprocessed %d keys, range %d/%d (%.0f%%)",
-					keysProcessed, rangeIdx, totalRanges, pct)
-				lastReport = time.Now()
-			}
-
-			for i := 0; i+entryLen <= len(v); i += entryLen {
-				var entry = v[i : i+entryLen]
-				var remainder = entry[:remainderLen]
-				var full = string(append(shard, remainder...))
-				counts[full]++
-			}
+			var script, _ = hex.DecodeString(scriptHex)
+			var touches, _ = addrindex.Lookup(script, 1000000000)
+			counts[addr] = len(touches)
 		}
-		return nil
-	})
-	fmt.Printf("\rprocessed %d keys in %s\n", keysProcessed, time.Since(began).Round(time.Second))
+	}
+	fmt.Printf("\rprocessed %d / %d (100%%) in %s\n", tip, tip, time.Since(began).Round(time.Second))
 
 	// sort by count descending, take top N
 	var list []addrCount
@@ -183,6 +235,6 @@ func main() {
 
 	fmt.Printf("\nTop %d addresses by transaction count:\n\n", len(list))
 	for i, a := range list {
-		fmt.Printf("%d. %s — %d transactions\n", i+1, hex.EncodeToString([]byte(a.addr)), a.count)
+		fmt.Printf("%d. %s — %d transactions\n", i+1, a.addr, a.count)
 	}
 }
