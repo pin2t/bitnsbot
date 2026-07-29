@@ -76,13 +76,6 @@ const rangeBlocks = 1000
 // offset within the range, and the transaction's index in that block.
 const entryLen = remainderLen + 2 + 2
 
-// maxLookup caps how many touches a single Lookup returns, so an exchange-hot
-// address can't produce an unbounded slice for a Telegram reply. Unlike the old
-// write-side cap this costs nothing on disk — the history is fully stored, it is
-// only the read that stops early, and the caller flags it the way the btcd path
-// flagged addrTxLimit. A package var for tests.
-var maxLookup = 10000
-
 // Touch is one appearance of an address in the chain: an output paying it or an
 // input spending from it, located by block height and the transaction's index in
 // that block.
@@ -160,11 +153,11 @@ func merge(touches map[string][]Touch, height int) error {
 }
 
 // Lookup returns an address's touches, oldest first, and whether the result hit
-// maxLookup (so the caller can flag partial history — the "10000+" case). It
-// seeks to the address's shard and walks that shard's ranges in order, keeping
-// only the entries whose stored remainder matches, since a shard holds every
-// address whose hash starts with the same two bytes.
-func Lookup(script []byte) (touches []Touch, capped bool) {
+// limit (so the caller can flag partial history). It seeks to the address's
+// shard and walks that shard's ranges in order, keeping only the entries whose
+// stored remainder matches, since a shard holds every address whose hash starts
+// with the same two bytes.
+func Lookup(script []byte, limit int) (touches []Touch, capped bool) {
     if db == nil { return nil, false }
     var prefix = Prefix(script)
     var remainder = prefix[shardLen:prefixLen]
@@ -174,7 +167,7 @@ func Lookup(script []byte) (touches []Touch, capped bool) {
             var base = binary.BigEndian.Uint32(k[shardLen:]) * rangeBlocks
             for i := 0; i+entryLen <= len(v); i += entryLen {
                 if !bytes.Equal(v[i:i+remainderLen], remainder) { continue }
-                if len(touches) >= maxLookup {
+                if len(touches) >= limit {
                     capped = true
                     return nil
                 }

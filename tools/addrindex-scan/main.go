@@ -209,7 +209,7 @@ func main() {
 		logging.Fatal("Bitcoin Core RPC (-core-url) is required to resolve the address")
 	}
 	var script, _ = hex.DecodeString(scriptHex)
-	var touches, capped = addrindex.Lookup(script)
+	var touches, capped = addrindex.Lookup(script, 1000000000)
 
 	if len(touches) == 0 {
 		fmt.Println("No transactions found for", address)
