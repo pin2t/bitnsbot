@@ -17,6 +17,8 @@ import "net/http"
 import "os"
 import "sort"
 import "strings"
+import "sync"
+import "sync/atomic"
 import "time"
 
 import "go.etcd.io/bbolt"
@@ -37,7 +39,14 @@ type rpcClient struct {
 }
 
 func newRPCClient(url, user, pass, cookieFile string) (*rpcClient, error) {
-	var c = &rpcClient{url: url, client: &http.Client{}}
+	var c = &rpcClient{url: url, client: &http.Client{
+		Timeout: time.Second * 5,
+		Transport: &http.Transport{
+			MaxIdleConns:        100,
+			MaxIdleConnsPerHost: 50,
+			IdleConnTimeout:     180 * time.Second,
+		},
+	}}
 	if cookieFile != "" {
 		var data, err = os.ReadFile(cookieFile)
 		if err != nil { return nil, fmt.Errorf("read cookie: %w", err) }
@@ -136,7 +145,6 @@ type addrCount struct {
 
 func main() {
 	flag.Parse()
-
 	var d, err = bbolt.Open(*dbPath, 0600, nil)
 	if err != nil {
 		logging.Fatal("open database: %v", err)
@@ -145,7 +153,6 @@ func main() {
 	if err := addrindex.Init(d); err != nil {
 		logging.Fatal("init addrindex: %v", err)
 	}
-
 	if *coreURL == "" {
 		logging.Fatal("Bitcoin Core RPC (-core-url) is required")
 	}
@@ -153,7 +160,6 @@ func main() {
 	if rpcErr != nil {
 		logging.Fatal("RPC client: %v", rpcErr)
 	}
-
 	var ctx = context.Background()
 	var tctx, tcancel = context.WithTimeout(ctx, 15*time.Second)
 	var tip, tipErr = rpc.getBlockCount(tctx)
@@ -161,82 +167,105 @@ func main() {
 	if tipErr != nil {
 		logging.Fatal("get tip: %v", tipErr)
 	}
-
 	var counts = make(map[string]int) // address → tx count (cached)
+	var countsMu sync.Mutex
 	var began = time.Now()
-	var lastReport time.Time
-
-	for h := int64(0); h <= tip; h++ {
-		// progress report every 5 seconds
-		if time.Since(lastReport) > 5*time.Second {
-			var pct float64
-			if tip > 0 {
-				pct = float64(h) / float64(tip) * 100
-			}
-			fmt.Printf("\rprocessed %d / %d (%.0f%%)", h, tip, pct)
-			lastReport = time.Now()
-		}
-
-		var bctx, bcancel = context.WithTimeout(ctx, 60*time.Second)
-		var hash, hashErr = rpc.getBlockHash(bctx, h)
-		bcancel()
-		if hashErr != nil {
-			fmt.Fprintf(os.Stderr, "\nblock %d hash: %v\n", h, hashErr)
-			continue
-		}
-
-		bctx, bcancel = context.WithTimeout(ctx, 60*time.Second)
-		var blk, blkErr = rpc.getBlockVerbose(bctx, hash)
-		bcancel()
-		if blkErr != nil {
-			fmt.Fprintf(os.Stderr, "\nblock %d: %v\n", h, blkErr)
-			continue
-		}
-
-		// collect unique addresses from this block
-		var seen = make(map[string]string) // address → scriptHex
-		for _, tx := range blk.Tx {
-			for _, vin := range tx.Vin {
-				if vin.Coinbase != "" { continue }
-				if vin.PrevOut != nil && vin.PrevOut.ScriptPubKey.Address != "" {
-					seen[vin.PrevOut.ScriptPubKey.Address] = vin.PrevOut.ScriptPubKey.Hex
+	const numWorkers = 16
+	var processed atomic.Int64
+	// progress reporter: prints every 5 seconds until progressDone is closed
+	var progressDone = make(chan struct{})
+	go func() {
+		var ticker = time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				var h = processed.Load()
+				var pct float64
+				if tip > 0 {
+					pct = float64(h) / float64(tip) * 100
 				}
-			}
-			for _, vout := range tx.Vout {
-				if vout.ScriptPubKey.Address != "" {
-					seen[vout.ScriptPubKey.Address] = vout.ScriptPubKey.Hex
-				}
+				fmt.Printf("\rprocessed %d / %d (%.0f%%)", h, tip, pct)
+			case <-progressDone:
+				return
 			}
 		}
-
-		// look up uncached addresses in the addrindex, keep only top N
-		for addr, scriptHex := range seen {
-			if _, ok := counts[addr]; ok {
-				continue
-			}
-			var script, _ = hex.DecodeString(scriptHex)
-			var touches, _ = addrindex.Lookup(script, 1000000000)
-			var cnt = len(touches)
-			if len(counts) < *topN {
-				counts[addr] = cnt
-			} else {
-				var minAddr string
-				var minCnt int
-				for a, c := range counts {
-					if minAddr == "" || c < minCnt {
-						minAddr, minCnt = a, c
+	}()
+	var heights = make(chan int64, numWorkers*2)
+	var wg sync.WaitGroup
+	for i := 0; i < numWorkers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for h := range heights {
+				var bctx, bcancel = context.WithTimeout(ctx, 60*time.Second)
+				var hash, hashErr = rpc.getBlockHash(bctx, h)
+				bcancel()
+				if hashErr != nil {
+					fmt.Fprintf(os.Stderr, "\nblock %d hash: %v\n", h, hashErr)
+					processed.Add(1)
+					continue
+				}
+				bctx, bcancel = context.WithTimeout(ctx, 60*time.Second)
+				var blk, blkErr = rpc.getBlockVerbose(bctx, hash)
+				bcancel()
+				if blkErr != nil {
+					fmt.Fprintf(os.Stderr, "\nblock %d: %v\n", h, blkErr)
+					processed.Add(1)
+					continue
+				}
+				var seen = make(map[string]string) // address → scriptHex
+				for _, tx := range blk.Tx {
+					for _, vin := range tx.Vin {
+						if vin.Coinbase != "" { continue }
+						if vin.PrevOut != nil && vin.PrevOut.ScriptPubKey.Address != "" {
+							seen[vin.PrevOut.ScriptPubKey.Address] = vin.PrevOut.ScriptPubKey.Hex
+						}
+					}
+					for _, vout := range tx.Vout {
+						if vout.ScriptPubKey.Address != "" {
+							seen[vout.ScriptPubKey.Address] = vout.ScriptPubKey.Hex
+						}
 					}
 				}
-				if cnt > minCnt {
-					delete(counts, minAddr)
-					counts[addr] = cnt
+				for addr, scriptHex := range seen {
+					countsMu.Lock()
+					_, ok := counts[addr]
+					if ok {
+						countsMu.Unlock()
+						continue
+					}
+					countsMu.Unlock() // release lock during I/O-bound Lookup
+					var script, _ = hex.DecodeString(scriptHex)
+					var touches, _ = addrindex.Lookup(script, 1000000000)
+					var cnt = len(touches)
+					countsMu.Lock()
+					if len(counts) < *topN {
+						counts[addr] = cnt
+					} else {
+						var minAddr string
+						var minCnt int
+						for a, c := range counts {
+							if minAddr == "" || c < minCnt {
+								minAddr, minCnt = a, c
+							}
+						}
+						if cnt > minCnt {
+							delete(counts, minAddr)
+							counts[addr] = cnt
+						}
+					}
+					countsMu.Unlock()
 				}
+				processed.Add(1)
 			}
-		}
+		}()
 	}
+	for h := int64(0); h <= tip; h++ { heights <- h }
+	close(heights)
+	wg.Wait()
+	close(progressDone)
 	fmt.Printf("\rprocessed %d / %d (100%%) in %s\n", tip, tip, time.Since(began).Round(time.Second))
-
-	// sort by count descending, take top N
 	var list []addrCount
 	for addr, cnt := range counts {
 		list = append(list, addrCount{addr: addr, count: cnt})
@@ -247,7 +276,6 @@ func main() {
 	if len(list) > *topN {
 		list = list[:*topN]
 	}
-
 	fmt.Printf("\nTop %d addresses by transaction count:\n\n", len(list))
 	for i, a := range list {
 		fmt.Printf("%d. %s — %d transactions\n", i+1, a.addr, a.count)
