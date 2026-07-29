@@ -209,14 +209,29 @@ func main() {
 			}
 		}
 
-		// look up uncached addresses in the addrindex
+		// look up uncached addresses in the addrindex, keep only top N
 		for addr, scriptHex := range seen {
 			if _, ok := counts[addr]; ok {
 				continue
 			}
 			var script, _ = hex.DecodeString(scriptHex)
 			var touches, _ = addrindex.Lookup(script, 1000000000)
-			counts[addr] = len(touches)
+			var cnt = len(touches)
+			if len(counts) < *topN {
+				counts[addr] = cnt
+			} else {
+				var minAddr string
+				var minCnt int
+				for a, c := range counts {
+					if minAddr == "" || c < minCnt {
+						minAddr, minCnt = a, c
+					}
+				}
+				if cnt > minCnt {
+					delete(counts, minAddr)
+					counts[addr] = cnt
+				}
+			}
 		}
 	}
 	fmt.Printf("\rprocessed %d / %d (100%%) in %s\n", tip, tip, time.Since(began).Round(time.Second))
