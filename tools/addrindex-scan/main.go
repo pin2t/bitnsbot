@@ -26,6 +26,7 @@ var coreURL = flag.String("core-url", "", "Bitcoin Core JSON-RPC URL")
 var coreUser = flag.String("core-user", "", "Bitcoin Core RPC username")
 var corePass = flag.String("core-pass", "", "Bitcoin Core RPC password")
 var coreCookie = flag.String("core-cookie", "", "path to Bitcoin Core .cookie file")
+var totalsOnly = flag.Bool("totals", false, "only print totals, not individual transactions")
 
 type rpcClient struct {
 	url    string
@@ -173,6 +174,10 @@ func short(s string) string {
 	return s
 }
 
+func btc(v float64) string {
+	return strings.TrimRight(strings.TrimRight(fmt.Sprintf("%.8f", v), "0"), ".")
+}
+
 func main() {
 	flag.Parse()
 	if flag.NArg() == 0 {
@@ -223,6 +228,8 @@ func main() {
 		fmt.Println("Address index is still building — results may be partial.")
 	}
 
+	var totalReceived, totalSent float64
+	var txCount int
 	for _, t := range touches {
 		var hash, err = rpc.getBlockHash(ctx, int64(t.Height))
 		if err != nil {
@@ -244,20 +251,31 @@ func main() {
 			fmt.Fprintf(os.Stderr, "  block %d tx %s: %v\n", t.Height, short(txid), txErr2)
 			continue
 		}
-		// build the output line
-		var tm = time.Unix(tx.Time, 0).UTC().Format("2 Jan 2006 15:04")
-		var total float64
-		var inParts, outParts []string
+		txCount++
+		// track amounts for this address
 		for _, v := range tx.Vin {
-			total += v.Amount
-			inParts = append(inParts, fmt.Sprintf("%s (%s)", short(v.Address), sats(v.Amount)))
+			if v.Address == address {
+				totalSent += v.Amount
+			}
 		}
 		for _, v := range tx.Vout {
-			outParts = append(outParts, fmt.Sprintf("%s (%s)", short(v.Address), sats(v.Amount)))
+			if v.Address == address {
+				totalReceived += v.Amount
+			}
+		}
+		if *totalsOnly {
+			continue
+		}
+		// build the output line
+		var tm = time.Unix(tx.Time, 0).UTC().Format("2 Jan 2006 15:04")
+		var inParts, outParts []string
+		for _, v := range tx.Vin {
+			inParts = append(inParts, fmt.Sprintf("%s (%s)", short(v.Address), sats(v.Amount)))
 		}
 		var outTotal float64
 		for _, v := range tx.Vout {
 			outTotal += v.Amount
+			outParts = append(outParts, fmt.Sprintf("%s (%s)", short(v.Address), sats(v.Amount)))
 		}
 		fmt.Printf("%s: block #%d, pos %d, tx %s, amount %s",
 			tm, t.Height, t.TxIndex, short(txid), sats(outTotal))
@@ -269,4 +287,9 @@ func main() {
 		}
 		fmt.Println()
 	}
+	// print totals
+	fmt.Printf("\n%d transactions\n", txCount)
+	fmt.Printf("received: %s BTC\n", btc(totalReceived))
+	fmt.Printf("sent:     %s BTC\n", btc(totalSent))
+	fmt.Printf("balance:  %s BTC\n", btc(totalReceived-totalSent))
 }
