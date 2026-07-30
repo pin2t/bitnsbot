@@ -22,10 +22,10 @@ type Watch struct {
 // watches live in memory), so there is no type field; the WatchID JSON key is
 // kept for compatibility with records written before this refactor.
 type watchRecord struct {
-    CreatedAt time.Time
-    ChatID    int64
-    WatchID   string
-    Alias     string
+    CreatedAt int64  `json:"created_at"`
+    ChatID    int64  `json:"chat_id"`
+    WatchID   string `json:"watch_id"`
+    Alias     string `json:"alias"`
 }
 
 // Init stores the shared bbolt handle and ensures the watches bucket exists.
@@ -47,7 +47,7 @@ func itob(v uint64) []byte {
 func Add(chatID int64, address, alias string) error {
     logging.Db("add chat=%d address=%s alias=%s", chatID, address, alias)
     var data, err = json.Marshal(watchRecord{
-        CreatedAt: time.Now(),
+        CreatedAt: time.Now().Unix(),
         ChatID:    chatID,
         WatchID:   address,
         Alias:     alias,
