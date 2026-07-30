@@ -6,6 +6,7 @@ import "fmt"
 import "io"
 import "math"
 import "net/http"
+import "os"
 import "strconv"
 import "strings"
 import "time"
@@ -183,6 +184,13 @@ var sources = []source{
 // it at a local server.
 var historyURL = "https://api.blockchain.info/charts/market-price?timespan=all&format=json&sampled=false"
 
+// historyFile is an optional local copy of the history endpoint's response.
+// When set, backfill() loads from this file instead of the network on first run.
+var historyFile string
+
+// SetHistoryFile is called by main to point the backfill at a local file.
+func SetHistoryFile(path string) { historyFile = path }
+
 func parseCoinGecko(body []byte) (float64, error) {
     var v struct {
         Bitcoin struct {
@@ -275,22 +283,44 @@ func fetchHistory() ([]rateRecord, error) {
     }
 }
 
+// loadHistoryFromFile reads the JSON file at historyFile and returns the parsed
+// records. The file must have the same shape as the blockchain.info history API.
+func loadHistoryFromFile() ([]rateRecord, error) {
+    var data, err = os.ReadFile(historyFile)
+    if err != nil { return nil, err }
+    return parseHistory(data)
+}
+
 // backfill loads the full daily BTC/USD history once, so /info on an old
 // transaction can show a USD value from around its block time instead of
-// nothing. Skipped when the store already holds backfilled history.
+// nothing. Skipped when the store already holds backfilled history.  When
+// -history-file is set it reads from the local file first; otherwise it
+// fetches over the network.
 func backfill() {
     if hasHistory() { return }
-    var records, err = fetchHistory()
-    if err != nil {
-        logging.Warn("rate history backfill: %v", err)
-        return
+    var records []rateRecord
+    var err error
+    if historyFile != "" {
+        records, err = loadHistoryFromFile()
+        if err != nil {
+            logging.Warn("rate history backfill: file %s: %v — falling back to network", historyFile, err)
+        }
+    }
+    if len(records) == 0 {
+        records, err = fetchHistory()
+        if err != nil {
+            logging.Warn("rate history backfill: %v", err)
+            return
+        }
     }
     if len(records) == 0 { return }
     if err := storeMany(records); err != nil {
         logging.Err("store rate history: %v", err)
         return
     }
-    logging.Info("backfilled %d historical BTC rates", len(records))
+    var src = "network"
+    if historyFile != "" { src = "file " + historyFile }
+    logging.Info("backfilled %d historical BTC rates from %s", len(records), src)
 }
 
 // update fetches every source, averages the ones that succeeded, and stores a

@@ -44,6 +44,7 @@ var backupInterval  = flag.Duration("backup-interval", 24*time.Hour, "how often 
 var backupScript    = flag.String("backup-script", "", "command run after each backup, with the backup's path as $1 and in $BACKUP_FILE (empty runs nothing)")
 var logNoTs         = flag.Bool("log-no-ts", false, "omit the date and time prefix from each log line")
 var dbuiListen      = flag.String("dbui-listen", "", "address for the database admin web UI, e.g. 127.0.0.1:8090 (empty disables it; bind to localhost only — it can write any bucket)")
+var historyFile     = flag.String("history-file", "", "path to a JSON file containing historical BTC/USD rates (same format as blockchain.info/charts/market-price); backfilled from this file on first run instead of fetching over the network")
 
 var core *coreClient
 var dbuiSrv *http.Server
@@ -72,6 +73,7 @@ func main() {
     if err = openDB(*dbPath); err != nil {
         logging.Fatal("open database: %v", err)
     }
+    rates.SetHistoryFile(*historyFile)
     rates.Start()
     if *dbuiListen != "" {
         dbuiSrv = dbui.Start(db, *dbuiListen)
