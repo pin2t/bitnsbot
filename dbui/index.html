@@ -151,8 +151,6 @@
     <div class="valbar">
       <span id="valFor"></span>
       <span>
-        <label class="mode"><input type="radio" name="fmt" value="raw" checked> raw</label>
-        <label class="mode"><input type="radio" name="fmt" value="msgpack"> msgpack</label>
         <button id="put" class="primary">Put</button>
       </span>
     </div>
@@ -224,7 +222,6 @@
             $("valbox").value = row.value;
             $("valFor").textContent = bucket + " / " + row.key;
             showTab("value");
-            if (msgpackMode()) decodeMsgpack();
           });
           body.appendChild(tr);
         });
@@ -252,7 +249,6 @@
         $("valbox").value = d.value;
         $("valFor").textContent = bucket + " / " + key;
         showTab("value");
-        if (msgpackMode()) decodeMsgpack();
         status("");
       })
       .catch(function(e) { status("get failed: " + e, "err"); });
@@ -283,32 +279,6 @@
     var key = $("key").value;
     if (!bucket || !key) { status("bucket and key are required", "err"); return; }
     var val = $("valbox").value;
-    var mode = document.querySelector('input[name="fmt"]:checked').value;
-    if (mode === "msgpack") {
-      fetch("api/msgpack/encode", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: val })
-      })
-        .then(function(r) {
-          if (!r.ok) return r.text().then(function(t) { throw new Error(t.trim() || r.status); });
-          return r.json();
-        })
-        .then(function(d) {
-          return fetch("api/put", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ bucket: bucket, key: key, value: d.encoded })
-          });
-        })
-        .then(function(r) {
-          if (!r.ok) return r.text().then(function(t) { throw new Error(t.trim() || r.status); });
-          return r.json();
-        })
-        .then(function() { status("saved " + bucket + " / " + key, "ok"); })
-        .catch(function(e) { status("put failed: " + e, "err"); });
-      return;
-    }
     fetch("api/put", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -320,33 +290,6 @@
       })
       .then(function() { status("saved " + bucket + " / " + key, "ok"); })
       .catch(function(e) { status("put failed: " + e, "err"); });
-  }
-
-  function msgpackMode() {
-    return document.querySelector('input[name="fmt"]:checked').value === "msgpack";
-  }
-
-  function decodeMsgpack() {
-    var val = $("valbox").value;
-    if (!val || val.indexOf("hex:") !== 0) return;
-    fetch("api/msgpack/decode", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ value: val })
-    })
-      .then(function(r) {
-        if (!r.ok) return r.text().then(function(t) { throw new Error(t.trim() || r.status); });
-        return r.json();
-      })
-      .then(function(d) {
-        $("valbox").value = d.decoded;
-        status("");
-      })
-      .catch(function(e) { status("msgpack decode: " + e, "err"); });
-  }
-
-  function onModeChange() {
-    if (msgpackMode()) { decodeMsgpack(); } else { loadValue(); }
   }
 
   function clearBucket() {
@@ -480,9 +423,6 @@
   $("view").addEventListener("click", function() { page = 0; loadView(); });
   $("get").addEventListener("click", loadValue);
   $("put").addEventListener("click", putValue);
-  document.querySelectorAll('input[name="fmt"]').forEach(function(r) {
-    r.addEventListener("change", onModeChange);
-  });
   $("prev").addEventListener("click", function() { if (page > 0) { page--; loadView(); } });
   $("next").addEventListener("click", function() { page++; loadView(); });
   $("clearBucket").addEventListener("click", clearBucket);

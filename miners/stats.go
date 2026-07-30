@@ -1,12 +1,12 @@
 package miners
 
 import "context"
+import "encoding/json"
 import "sort"
 import "strconv"
 import "time"
 
 import "go.etcd.io/bbolt"
-import "github.com/Basekick-Labs/msgpack/v6"
 import "bitnsbot/logging"
 
 var statBucket = []byte("miners-stat")
@@ -141,13 +141,13 @@ func flush(deltas map[string]*stat, last int64) error {
         var sb = tx.Bucket(statBucket)
         for name, d := range deltas {
             var s stat
-            if v := sb.Get([]byte(name)); v != nil { msgpack.Unmarshal(v, &s) }
+            if v := sb.Get([]byte(name)); v != nil { json.Unmarshal(v, &s) }
             s.Blocks += d.Blocks
             s.Reward += d.Reward
             s.Fees += d.Fees
             s.Work += d.Work
             s.LastWork = d.LastWork
-            var data, err = msgpack.Marshal(s)
+            var data, err = json.Marshal(s)
             if err != nil { return err }
             if err := sb.Put([]byte(name), data); err != nil { return err }
         }
@@ -193,7 +193,7 @@ func Top(n int) []Stat {
     db.View(func(tx *bbolt.Tx) error {
         return tx.Bucket(statBucket).ForEach(func(k, v []byte) error {
             var s stat
-            if msgpack.Unmarshal(v, &s) != nil { return nil }
+            if json.Unmarshal(v, &s) != nil { return nil }
             totalBlocks += s.Blocks
             out = append(out, Stat{Name: string(k), Blocks: s.Blocks, Reward: s.Reward, Fees: s.Fees, lastWork: s.LastWork})
             return nil

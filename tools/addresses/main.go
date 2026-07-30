@@ -1,7 +1,7 @@
 // Command addresses scans the blockchain from genesis to tip, collects every
 // address, looks up its transaction count in the addrindex, and stores the
 // result in a new bbolt bucket "addresses" keyed by address string, with a
-// msgpack-encoded value (extensible for future fields).
+// json-encoded value (extensible for future fields).
 //
 // Usage:
 //
@@ -21,7 +21,6 @@ import "sync"
 import "sync/atomic"
 import "time"
 
-import "github.com/Basekick-Labs/msgpack/v6"
 import "go.etcd.io/bbolt"
 import "bitnsbot/addrindex"
 import "bitnsbot/logging"
@@ -140,10 +139,10 @@ type spkData struct {
 	Hex     string `json:"hex"`
 }
 
-// AddressInfo is the msgpack-encoded value stored per address. New fields can
+// AddressInfo is the json-encoded value stored per address. New fields can
 // be added at the end; old decoders will ignore unknown fields.
 type AddressInfo struct {
-	TxCount int `msgpack:"tx_count"`
+	TxCount int `json:"tx_count"`
 }
 
 type addrEntry struct {
@@ -209,7 +208,7 @@ func main() {
 				for _, e := range batch {
 					if b.Get([]byte(e.addr)) != nil { continue }
 					var info = AddressInfo{TxCount: e.txCount}
-					var val, err = msgpack.Marshal(info)
+					var val, err = json.Marshal(info)
 					if err != nil { return err }
 					if err := b.Put([]byte(e.addr), val); err != nil { return err }
 				}

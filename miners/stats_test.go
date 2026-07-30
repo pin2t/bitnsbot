@@ -1,13 +1,13 @@
 package miners
 
 import "context"
+import "encoding/json"
 import "errors"
 import "math"
 import "reflect"
 import "testing"
 
 import "go.etcd.io/bbolt"
-import "github.com/Basekick-Labs/msgpack/v6"
 
 // fakeSource stands in for the btcd-backed chain source: a fixed tip and a map of
 // blocks, recording every height fetched so tests can assert what was processed.
@@ -43,7 +43,7 @@ func statOf(t *testing.T, name string) stat {
     var s stat
     db.View(func(tx *bbolt.Tx) error {
         if v := tx.Bucket(statBucket).Get([]byte(name)); v != nil {
-            if err := msgpack.Unmarshal(v, &s); err != nil { t.Fatalf("unmarshal %s: %v", name, err) }
+            if err := json.Unmarshal(v, &s); err != nil { t.Fatalf("unmarshal %s: %v", name, err) }
         }
         return nil
     })

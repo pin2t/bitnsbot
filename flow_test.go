@@ -10,7 +10,6 @@ import "testing"
 import "time"
 
 import "go.etcd.io/bbolt"
-import "github.com/Basekick-Labs/msgpack/v6"
 
 // infoBlockHash is a real mainnet block hash: 64 hex characters, exactly the
 // same shape as a txid.
@@ -616,7 +615,7 @@ func TestMinersFlow(t *testing.T) {
     if err := db.Update(func(tx *bbolt.Tx) error {
         var b = tx.Bucket([]byte("miners-stat"))
         for _, p := range pools {
-            var data, err = msgpack.Marshal(map[string]any{
+            var data, err = json.Marshal(map[string]any{
                 "Blocks": p.blocks, "Reward": p.reward, "Fees": p.fees,
                 "Work": p.lastWork * float64(p.blocks), "LastWork": p.lastWork,
             })

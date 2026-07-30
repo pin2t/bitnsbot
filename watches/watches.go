@@ -1,10 +1,10 @@
 package watches
 
 import "encoding/binary"
+import "encoding/json"
 import "time"
 
 import "go.etcd.io/bbolt"
-import "github.com/Basekick-Labs/msgpack/v6"
 import "bitnsbot/logging"
 
 var db *bbolt.DB
@@ -46,7 +46,7 @@ func itob(v uint64) []byte {
 // Add stores an address watch for a chat under an auto-incrementing key.
 func Add(chatID int64, address, alias string) error {
     logging.Db("add chat=%d address=%s alias=%s", chatID, address, alias)
-    var data, err = msgpack.Marshal(watchRecord{
+    var data, err = json.Marshal(watchRecord{
         CreatedAt: time.Now(),
         ChatID:    chatID,
         WatchID:   address,
@@ -68,7 +68,7 @@ func List() ([]Watch, error) {
     var err = db.View(func(tx *bbolt.Tx) error {
         return tx.Bucket(bucket).ForEach(func(k, v []byte) error {
             var r watchRecord
-            if err := msgpack.Unmarshal(v, &r); err != nil { return err }
+            if err := json.Unmarshal(v, &r); err != nil { return err }
             watches = append(watches, Watch{ChatID: r.ChatID, Address: r.WatchID, Alias: r.Alias})
             return nil
         })
@@ -89,7 +89,7 @@ func Remove(chatID int64, address string) (int, error) {
         var keys [][]byte
         var err = b.ForEach(func(k, v []byte) error {
             var r watchRecord
-            if err := msgpack.Unmarshal(v, &r); err != nil { return err }
+            if err := json.Unmarshal(v, &r); err != nil { return err }
             if r.ChatID == chatID && r.WatchID == address {
                 keys = append(keys, append([]byte(nil), k...))
             }

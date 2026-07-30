@@ -1,13 +1,13 @@
 package main
 
 import "context"
+import "encoding/json"
 import "fmt"
 import "strconv"
 import "strings"
 import "time"
 
 import "go.etcd.io/bbolt"
-import "github.com/Basekick-Labs/msgpack/v6"
 import "bitnsbot/logging"
 import "bitnsbot/miners"
 import "math"
@@ -52,7 +52,7 @@ func blockInit(handle *bbolt.DB) error {
 func storeBlock(bi *blockInfo) error {
     if db == nil { return nil }
     logging.Db("store block %d", bi.Height)
-    var data, err = msgpack.Marshal(bi)
+    var data, err = json.Marshal(bi)
     if err != nil { return err }
     return db.Update(func(tx *bbolt.Tx) error {
         return tx.Bucket(blocksBucket).Put(itob(uint64(bi.Height)), data)
@@ -66,7 +66,7 @@ func loadBlock(height int64) (*blockInfo, bool) {
     var found bool
     db.View(func(tx *bbolt.Tx) error {
         var v = tx.Bucket(blocksBucket).Get(itob(uint64(height)))
-        if v != nil && msgpack.Unmarshal(v, &bi) == nil {
+        if v != nil && json.Unmarshal(v, &bi) == nil {
             found = true
         }
         return nil

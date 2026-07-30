@@ -10,7 +10,6 @@ import "strings"
 import "time"
 
 import "go.etcd.io/bbolt"
-import "github.com/Basekick-Labs/msgpack/v6"
 import "bitnsbot/logging"
 
 var db *bbolt.DB
@@ -55,7 +54,7 @@ func itob(v uint64) []byte {
 
 func store(r rateRecord) error {
     logging.Db("store rate $%.2f", r.USD)
-    var data, err = msgpack.Marshal(r)
+    var data, err = json.Marshal(r)
     if err != nil { return err }
     return db.Update(func(tx *bbolt.Tx) error {
         return tx.Bucket(bucket).Put(itob(uint64(r.Time.Unix())), data)
@@ -69,7 +68,7 @@ func storeMany(records []rateRecord) error {
     return db.Update(func(tx *bbolt.Tx) error {
         var b = tx.Bucket(bucket)
         for _, r := range records {
-            var data, err = msgpack.Marshal(r)
+            var data, err = json.Marshal(r)
             if err != nil { return err }
             if err := b.Put(itob(uint64(r.Time.Unix())), data); err != nil { return err }
         }
@@ -93,8 +92,8 @@ func Last() (float64, bool) {
         var k, v = tx.Bucket(bucket).Cursor().Last()
         if k != nil {
             var r rateRecord
-            if err := msgpack.Unmarshal(v, &r); err != nil {
-                logging.Err("error msgpack unmarshal %v: %v", v, err)
+            if err := json.Unmarshal(v, &r); err != nil {
+                logging.Err("error json unmarshal %v: %v", v, err)
                 return err
             }
             usd, found = r.USD, true
@@ -118,8 +117,8 @@ func At(t time.Time) (float64, bool) {
         var consider = func(k, v []byte) {
             if k == nil { return }
             var r rateRecord
-            if err := msgpack.Unmarshal(v, &r); err != nil {
-                logging.Err("error msgpack unmarshal %v: %v", v, err)
+            if err := json.Unmarshal(v, &r); err != nil {
+                logging.Err("error json unmarshal %v: %v", v, err)
                 return
             }
             var diff = r.Time.Unix() - target
@@ -152,7 +151,7 @@ func hasHistory() bool {
         var k, v = tx.Bucket(bucket).Cursor().First()
         if k == nil { return nil }
         var r rateRecord
-        if msgpack.Unmarshal(v, &r) == nil && time.Since(r.Time) > historyHorizon {
+        if json.Unmarshal(v, &r) == nil && time.Since(r.Time) > historyHorizon {
             deep = true
         }
         return nil
@@ -404,9 +403,9 @@ func storeMarket(m Market) error {
     if db == nil { return nil }
     var rec = marketRecord{Time: time.Now(), Price: m.Price, MarketCap: m.MarketCap, Volume24h: m.Volume24h}
     logging.Db("store market cap %.0f volume %.0f", m.MarketCap, m.Volume24h)
-    var data, err = msgpack.Marshal(rec)
+    var data, err = json.Marshal(rec)
     if err != nil {
-        logging.Err("store market msgpack marshal: %v", err)
+        logging.Err("store market json marshal: %v", err)
         return err
     }
     return db.Update(func(tx *bbolt.Tx) error {
@@ -426,8 +425,8 @@ func LastMarket() (Market, bool) {
         var k, v = tx.Bucket(marketBucket).Cursor().Last()
         if k == nil { return nil }
         var rec marketRecord
-        if err := msgpack.Unmarshal(v, &rec); err != nil {
-            logging.Err("last market msgpack unmarshal %v: %v", v, err)
+        if err := json.Unmarshal(v, &rec); err != nil {
+            logging.Err("last market json unmarshal %v: %v", v, err)
             return nil
         }
         m, found = Market{Price: rec.Price, MarketCap: rec.MarketCap, Volume24h: rec.Volume24h}, true

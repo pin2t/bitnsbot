@@ -15,7 +15,6 @@ import (
     "unicode/utf8"
 
     "go.etcd.io/bbolt"
-    "github.com/Basekick-Labs/msgpack/v6"
     "bitnsbot/logging"
 )
 
@@ -61,8 +60,6 @@ func handler(db *bbolt.DB) http.Handler {
     mux.HandleFunc("/api/clearbucket", func(w http.ResponseWriter, r *http.Request) { clearBucket(db, w, r) })
     mux.HandleFunc("/api/export", func(w http.ResponseWriter, r *http.Request) { exportBucket(db, w, r) })
     mux.HandleFunc("/api/import", func(w http.ResponseWriter, r *http.Request) { importBucket(db, w, r) })
-    mux.HandleFunc("/api/msgpack/decode", func(w http.ResponseWriter, r *http.Request) { msgpackDecode(w, r) })
-    mux.HandleFunc("/api/msgpack/encode", func(w http.ResponseWriter, r *http.Request) { msgpackEncode(w, r) })
     return mux
 }
 
@@ -323,61 +320,6 @@ func importBucket(db *bbolt.DB, w http.ResponseWriter, r *http.Request) {
     }
     logging.Info("database UI: imported %d keys into %s (%d skipped)", imported, body.Bucket, skipped)
     writeJSON(w, map[string]any{"ok": true, "imported": imported, "skipped": skipped})
-}
-
-func msgpackDecode(w http.ResponseWriter, r *http.Request) {
-    if r.Method != http.MethodPost {
-        http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-        return
-    }
-    var body struct {
-        Value string `json:"value"`
-    }
-    if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-        http.Error(w, "bad request", http.StatusBadRequest)
-        return
-    }
-    raw, err := decodeField(body.Value)
-    if err != nil {
-        http.Error(w, "bad value: "+err.Error(), http.StatusBadRequest)
-        return
-    }
-    var decoded any
-    if err := msgpack.Unmarshal(raw, &decoded); err != nil {
-        http.Error(w, "msgpack decode error: "+err.Error(), http.StatusBadRequest)
-        return
-    }
-    out, err := json.MarshalIndent(decoded, "", "  ")
-    if err != nil {
-        http.Error(w, "json marshal error: "+err.Error(), http.StatusInternalServerError)
-        return
-    }
-    writeJSON(w, map[string]any{"decoded": string(out)})
-}
-
-func msgpackEncode(w http.ResponseWriter, r *http.Request) {
-    if r.Method != http.MethodPost {
-        http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-        return
-    }
-    var body struct {
-        Text string `json:"text"`
-    }
-    if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-        http.Error(w, "bad request", http.StatusBadRequest)
-        return
-    }
-    var val any
-    if err := json.Unmarshal([]byte(body.Text), &val); err != nil {
-        http.Error(w, "json parse error: "+err.Error(), http.StatusBadRequest)
-        return
-    }
-    encoded, err := msgpack.Marshal(val)
-    if err != nil {
-        http.Error(w, "msgpack encode error: "+err.Error(), http.StatusInternalServerError)
-        return
-    }
-    writeJSON(w, map[string]any{"encoded": "hex:" + hex.EncodeToString(encoded)})
 }
 
 func writeJSON(w http.ResponseWriter, v any) {
