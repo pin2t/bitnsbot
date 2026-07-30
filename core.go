@@ -31,10 +31,17 @@ type coreClient struct {
     client *http.Client
     mu     sync.Mutex
     auth   string
+
+    blockTxidsCache   *lruCache[string, *coreBlockTxids]
+    blockVerboseCache *lruCache[string, *coreVerboseBlock]
 }
 
 func newCoreClient(cfg coreConfig) (*coreClient, error) {
-    var c = &coreClient{cfg: cfg, client: &http.Client{}}
+    var c = &coreClient{
+        cfg: cfg, client: &http.Client{},
+        blockTxidsCache:   newLRU[string, *coreBlockTxids](500),
+        blockVerboseCache: newLRU[string, *coreVerboseBlock](500),
+    }
     if err := c.refreshAuth(); err != nil { return nil, err }
     return c, nil
 }
@@ -204,9 +211,20 @@ type coreBlockTxids struct {
 // getBlockTxids is getblock at verbosity 1: the header fields plus the txids
 // only, which is all the confirmation check and the miner collector need.
 func (c *coreClient) getBlockTxids(ctx context.Context, hash string) (*coreBlockTxids, error) {
+    c.mu.Lock()
+    if cached, ok := c.blockTxidsCache.Get(hash); ok {
+        c.mu.Unlock()
+        return cached, nil
+    }
+    c.mu.Unlock()
+
     var blk coreBlockTxids
     var err = c.call(ctx, "getblock", []interface{}{hash, 1}, &blk)
     if err != nil { return nil, err }
+
+    c.mu.Lock()
+    c.blockTxidsCache.Put(hash, &blk)
+    c.mu.Unlock()
     return &blk, nil
 }
 
@@ -224,9 +242,20 @@ type coreVerboseBlock struct {
 // and every non-coinbase transaction already carries its "fee" — so the block's
 // fee distribution needs no prevout fetching at all.
 func (c *coreClient) getBlockVerbose(ctx context.Context, hash string) (*coreVerboseBlock, error) {
+    c.mu.Lock()
+    if cached, ok := c.blockVerboseCache.Get(hash); ok {
+        c.mu.Unlock()
+        return cached, nil
+    }
+    c.mu.Unlock()
+
     var blk coreVerboseBlock
     var err = c.call(ctx, "getblock", []interface{}{hash, 2}, &blk)
     if err != nil { return nil, err }
+
+    c.mu.Lock()
+    c.blockVerboseCache.Put(hash, &blk)
+    c.mu.Unlock()
     return &blk, nil
 }
 

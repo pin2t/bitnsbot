@@ -1,13 +1,13 @@
 package miners
 
 import "context"
+import "encoding/json"
 import "errors"
 import "math"
 import "reflect"
 import "testing"
 
 import "go.etcd.io/bbolt"
-import "github.com/Basekick-Labs/msgpack/v6"
 
 // fakeSource stands in for the btcd-backed chain source: a fixed tip and a map of
 // blocks, recording every height fetched so tests can assert what was processed.
@@ -43,17 +43,17 @@ func statOf(t *testing.T, name string) stat {
     var s stat
     db.View(func(tx *bbolt.Tx) error {
         if v := tx.Bucket(statBucket).Get([]byte(name)); v != nil {
-            if err := msgpack.Unmarshal(v, &s); err != nil { t.Fatalf("unmarshal %s: %v", name, err) }
+            if err := json.Unmarshal(v, &s); err != nil { t.Fatalf("unmarshal %s: %v", name, err) }
         }
         return nil
     })
     return s
 }
 
-func setWindow(t *testing.T, chunk, window int64) {
-    var sc, sw = chunkSize, initialWindow
-    t.Cleanup(func() { chunkSize, initialWindow = sc, sw })
-    chunkSize, initialWindow = chunk, window
+func setChunk(t *testing.T, chunk int64) {
+    var sc = chunkSize
+    t.Cleanup(func() { chunkSize = sc })
+    chunkSize = chunk
 }
 
 func equal(t *testing.T, label string, got, want float64) {
@@ -90,7 +90,7 @@ func fixtureDB(t *testing.T) {
 
 func TestCollectStats(t *testing.T) {
     fixtureDB(t)
-    setWindow(t, 1000, 5)
+    setChunk(t, 1000)
     var src = chainFixture()
     collect(src)
     var a = statOf(t, "PoolA")
@@ -111,7 +111,7 @@ func TestCollectStats(t *testing.T) {
 
 func TestTopConsumption(t *testing.T) {
     fixtureDB(t)
-    setWindow(t, 1000, 5)
+    setChunk(t, 1000)
     collect(chainFixture())
     var top = Top(10)
     if len(top) != 2 { t.Fatalf("top = %d entries, want 2", len(top)) }
@@ -137,7 +137,7 @@ func TestTopConsumption(t *testing.T) {
 // stats are already persisted by the time the second chunk begins.
 func TestCollectChunks(t *testing.T) {
     fixtureDB(t)
-    setWindow(t, 2, 5)
+    setChunk(t, 2)
     var src = chainFixture()
     var flushed bool
     src.onBlock = func(h int64) {
@@ -158,7 +158,7 @@ func TestCollectChunks(t *testing.T) {
 // stats add to what is already stored.
 func TestCollectResumes(t *testing.T) {
     fixtureDB(t)
-    setWindow(t, 1000, 5)
+    setChunk(t, 1000)
     var src = chainFixture()
     collect(src)
     src.fetched = nil
@@ -193,7 +193,7 @@ func TestCollectResumes(t *testing.T) {
 // collector stays put rather than burning its initial window on "unknown".
 func TestCollectWaitsForAddresses(t *testing.T) {
     openTestDB(t)
-    setWindow(t, 1000, 5)
+    setChunk(t, 1000)
     var src = chainFixture()
     collect(src)
     if len(src.fetched) != 0 { t.Fatalf("fetched %v with no pool addresses loaded", src.fetched) }
@@ -210,7 +210,7 @@ func TestTopEmpty(t *testing.T) {
 // the whole range.
 func TestCollectRetriesOnError(t *testing.T) {
     fixtureDB(t)
-    setWindow(t, 1000, 5)
+    setChunk(t, 1000)
     var src = chainFixture()
     src.err = map[int64]bool{3: true}
     collect(src)

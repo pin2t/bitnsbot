@@ -4,13 +4,13 @@ import "encoding/binary"
 import "encoding/json"
 import "fmt"
 import "io"
+import "math"
 import "net/http"
 import "strconv"
 import "strings"
 import "time"
 
 import "go.etcd.io/bbolt"
-import "github.com/Basekick-Labs/msgpack/v6"
 import "bitnsbot/logging"
 
 var db *bbolt.DB
@@ -29,11 +29,12 @@ const tolerance = 36 * time.Hour
 // newly deployed bot, so it cleanly distinguishes "backfilled" from "just started".
 const historyHorizon = 3 * 365 * 24 * time.Hour
 
-// a stored sample: a USD/BTC price at a point in time. Kept unexported — callers
-// only ever see the price (a float64).
+// a stored sample: a USD/BTC price at a point in time.  Time is not stored in the
+// JSON value — the key already encodes the Unix timestamp.  Price is in cents to
+// avoid floating-point drift in the database.
 type rateRecord struct {
-    Time time.Time
-    USD  float64
+    Time  time.Time `json:"-"`
+    Cents int64     `json:"cents"`
 }
 
 // Init stores the shared bbolt handle and ensures the rates bucket exists.
@@ -54,8 +55,8 @@ func itob(v uint64) []byte {
 }
 
 func store(r rateRecord) error {
-    logging.Db("store rate $%.2f", r.USD)
-    var data, err = msgpack.Marshal(r)
+    logging.Db("store rate $%.2f", float64(r.Cents)/100)
+    var data, err = json.Marshal(r)
     if err != nil { return err }
     return db.Update(func(tx *bbolt.Tx) error {
         return tx.Bucket(bucket).Put(itob(uint64(r.Time.Unix())), data)
@@ -69,7 +70,7 @@ func storeMany(records []rateRecord) error {
     return db.Update(func(tx *bbolt.Tx) error {
         var b = tx.Bucket(bucket)
         for _, r := range records {
-            var data, err = msgpack.Marshal(r)
+            var data, err = json.Marshal(r)
             if err != nil { return err }
             if err := b.Put(itob(uint64(r.Time.Unix())), data); err != nil { return err }
         }
@@ -79,7 +80,7 @@ func storeMany(records []rateRecord) error {
 
 // Add stores a current BTC/USD rate (assumed USD), timestamped now.
 func Add(usd float64) error {
-    return store(rateRecord{Time: time.Now(), USD: usd})
+    return store(rateRecord{Time: time.Now(), Cents: int64(math.Round(usd * 100))})
 }
 
 // Last returns the most recently stored USD rate, reading only from the database
@@ -93,11 +94,11 @@ func Last() (float64, bool) {
         var k, v = tx.Bucket(bucket).Cursor().Last()
         if k != nil {
             var r rateRecord
-            if err := msgpack.Unmarshal(v, &r); err != nil {
-                logging.Err("error msgpack unmarshal %v: %v", v, err)
+            if err := json.Unmarshal(v, &r); err != nil {
+                logging.Err("error json unmarshal %v: %v", v, err)
                 return err
             }
-            usd, found = r.USD, true
+            usd, found = float64(r.Cents)/100, true
         }
         return nil
     })
@@ -118,11 +119,11 @@ func At(t time.Time) (float64, bool) {
         var consider = func(k, v []byte) {
             if k == nil { return }
             var r rateRecord
-            if err := msgpack.Unmarshal(v, &r); err != nil {
-                logging.Err("error msgpack unmarshal %v: %v", v, err)
+            if err := json.Unmarshal(v, &r); err != nil {
+                logging.Err("error json unmarshal %v: %v", v, err)
                 return
             }
-            var diff = r.Time.Unix() - target
+            var diff = int64(binary.BigEndian.Uint64(k)) - target
             if diff < 0 { diff = -diff }
             if diff < bestDiff { bestDiff, best, found = diff, r, true }
         }
@@ -138,7 +139,7 @@ func At(t time.Time) (float64, bool) {
     if !found || bestDiff > int64(tolerance.Seconds()) {
         return 0, false
     }
-    return best.USD, true
+    return float64(best.Cents)/100, true
 }
 
 // hasHistory reports whether the store already holds deep (backfilled) history —
@@ -152,7 +153,7 @@ func hasHistory() bool {
         var k, v = tx.Bucket(bucket).Cursor().First()
         if k == nil { return nil }
         var r rateRecord
-        if msgpack.Unmarshal(v, &r) == nil && time.Since(r.Time) > historyHorizon {
+        if json.Unmarshal(v, &r) == nil && time.Since(time.Unix(int64(binary.BigEndian.Uint64(k)), 0)) > historyHorizon {
             deep = true
         }
         return nil
@@ -240,25 +241,38 @@ func parseHistory(body []byte) ([]rateRecord, error) {
     var records []rateRecord
     for _, p := range v.Values {
         if p.Y <= 0 { continue }
-        records = append(records, rateRecord{Time: time.Unix(p.X, 0), USD: p.Y})
+        records = append(records, rateRecord{Time: time.Unix(p.X, 0), Cents: int64(math.Round(p.Y * 100))})
     }
     return records, nil
 }
 
 func fetchHistory() ([]rateRecord, error) {
-    logging.Net("rates → GET %s", historyURL)
-    var resp, err = httpClient.Get(historyURL)
-    if err != nil { return nil, err }
-    defer resp.Body.Close()
-    var body, readErr = io.ReadAll(resp.Body)
-    if readErr != nil { return nil, readErr }
-    if resp.StatusCode != http.StatusOK {
-        return nil, fmt.Errorf("status %d", resp.StatusCode)
+    for attempt := 1; ; attempt++ {
+        logging.Net("rates → GET %s (attempt %d/3)", historyURL, attempt)
+        var resp, err = httpClient.Get(historyURL)
+        if err == nil {
+            var body, readErr = io.ReadAll(resp.Body)
+            resp.Body.Close()
+            if readErr == nil && resp.StatusCode == http.StatusOK {
+                var records, parseErr = parseHistory(body)
+                if parseErr == nil {
+                    logging.Net("rates ← history %d daily samples", len(records))
+                    return records, nil
+                }
+                logging.Warn("rate history backfill: parse (attempt %d/3): %v", attempt, parseErr)
+            } else if readErr != nil {
+                logging.Warn("rate history backfill: read (attempt %d/3): %v", attempt, readErr)
+            } else {
+                logging.Warn("rate history backfill: status %d (attempt %d/3)", resp.StatusCode, attempt)
+            }
+        } else {
+            logging.Warn("rate history backfill: fetch (attempt %d/3): %v", attempt, err)
+        }
+        if attempt >= 3 {
+            return nil, fmt.Errorf("rate history backfill: all 3 attempts failed")
+        }
+        time.Sleep(10 * time.Second)
     }
-    var records, parseErr = parseHistory(body)
-    if parseErr != nil { return nil, parseErr }
-    logging.Net("rates ← history %d daily samples", len(records))
-    return records, nil
 }
 
 // backfill loads the full daily BTC/USD history once, so /info on an old
@@ -391,26 +405,26 @@ func Snapshot() (Market, bool) {
     return m, true
 }
 
-// marketRecord is one stored market snapshot, keyed by time like the rate
-// records so the newest is the last key in the bucket.
+// marketRecord is one stored market snapshot, keyed by Unix timestamp like the
+// rate records so the newest is the last key in the bucket.
 type marketRecord struct {
-    Time      time.Time
-    Price     float64
-    MarketCap float64
-    Volume24h float64
+    Timestamp int64   `json:"timestamp"`
+    Price     float64 `json:"price"`
+    MarketCap float64 `json:"market_cap"`
+    Volume24h float64 `json:"volume_24h"`
 }
 
 func storeMarket(m Market) error {
     if db == nil { return nil }
-    var rec = marketRecord{Time: time.Now(), Price: m.Price, MarketCap: m.MarketCap, Volume24h: m.Volume24h}
+    var rec = marketRecord{Timestamp: time.Now().Unix(), Price: m.Price, MarketCap: m.MarketCap, Volume24h: m.Volume24h}
     logging.Db("store market cap %.0f volume %.0f", m.MarketCap, m.Volume24h)
-    var data, err = msgpack.Marshal(rec)
+    var data, err = json.Marshal(rec)
     if err != nil {
-        logging.Err("store market msgpack marshal: %v", err)
+        logging.Err("store market json marshal: %v", err)
         return err
     }
     return db.Update(func(tx *bbolt.Tx) error {
-        return tx.Bucket(marketBucket).Put(itob(uint64(rec.Time.Unix())), data)
+        return tx.Bucket(marketBucket).Put(itob(uint64(rec.Timestamp)), data)
     })
 }
 
@@ -426,8 +440,8 @@ func LastMarket() (Market, bool) {
         var k, v = tx.Bucket(marketBucket).Cursor().Last()
         if k == nil { return nil }
         var rec marketRecord
-        if err := msgpack.Unmarshal(v, &rec); err != nil {
-            logging.Err("last market msgpack unmarshal %v: %v", v, err)
+        if err := json.Unmarshal(v, &rec); err != nil {
+            logging.Err("last market json unmarshal %v: %v", v, err)
             return nil
         }
         m, found = Market{Price: rec.Price, MarketCap: rec.MarketCap, Volume24h: rec.Volume24h}, true

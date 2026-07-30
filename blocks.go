@@ -1,13 +1,13 @@
 package main
 
 import "context"
+import "encoding/json"
 import "fmt"
 import "strconv"
 import "strings"
 import "time"
 
 import "go.etcd.io/bbolt"
-import "github.com/Basekick-Labs/msgpack/v6"
 import "bitnsbot/logging"
 import "bitnsbot/miners"
 import "math"
@@ -18,6 +18,10 @@ var blocksCursorBucket = []byte("blocks-cursor")
 // blockCacheInterval is how often the collector catches up from the last
 // processed block to the chain tip. A package var so tests can shrink it.
 var blockCacheInterval = 10 * time.Minute
+
+// blocksChunkSize is how many blocks are collected in memory before a single
+// database flush, so the collector writes the cursor only once per chunk.
+var blocksChunkSize int64 = 1000
 
 type blockInfo struct {
     Height     int64
@@ -52,7 +56,7 @@ func blockInit(handle *bbolt.DB) error {
 func storeBlock(bi *blockInfo) error {
     if db == nil { return nil }
     logging.Db("store block %d", bi.Height)
-    var data, err = msgpack.Marshal(bi)
+    var data, err = json.Marshal(bi)
     if err != nil { return err }
     return db.Update(func(tx *bbolt.Tx) error {
         return tx.Bucket(blocksBucket).Put(itob(uint64(bi.Height)), data)
@@ -66,7 +70,7 @@ func loadBlock(height int64) (*blockInfo, bool) {
     var found bool
     db.View(func(tx *bbolt.Tx) error {
         var v = tx.Bucket(blocksBucket).Get(itob(uint64(height)))
-        if v != nil && msgpack.Unmarshal(v, &bi) == nil {
+        if v != nil && json.Unmarshal(v, &bi) == nil {
             found = true
         }
         return nil
@@ -119,15 +123,6 @@ func computeBlockInfo(ctx context.Context, hash string) (*blockInfo, error) {
         TxSizeMin: szMin, TxSizeAvg: int32(szSum / int64(len(blk.Tx))), TxSizeMax: szMax,
         Reward: subsidy(blk.Height), Total: coinbaseOut, Difficulty: blk.Difficulty,
     }, nil
-}
-
-// cacheBlockHeight computes and stores a block by height (backfill / on-demand).
-func cacheBlockHeight(ctx context.Context, height int64) error {
-    var hash, err = core.getBlockHash(ctx, height)
-    if err != nil { return err }
-    var bi, ciErr = computeBlockInfo(ctx, hash)
-    if ciErr != nil { return ciErr }
-    return storeBlock(bi)
 }
 
 // cacheBlockHash computes and stores a block by hash — used by the blockconnected
@@ -195,26 +190,51 @@ func collectBlocks() {
     }
     var began = from - 1
     for from <= tip {
-        var bctx, bcancel = context.WithTimeout(context.Background(), 60*time.Second)
-        if err := cacheBlockHeight(bctx, from); err != nil {
-            logging.Warn("block cache: block %d: %v — retrying next run", from, err)
+        var to = from + blocksChunkSize - 1
+        if to > tip { to = tip }
+        var infos []*blockInfo
+        for h := from; h <= to; h++ {
+            var bctx, bcancel = context.WithTimeout(context.Background(), 60*time.Second)
+            var hash, herr = core.getBlockHash(bctx, h)
             bcancel()
+            if herr != nil {
+                logging.Warn("block cache: block %d hash: %v — retrying next run", h, herr)
+                return
+            }
+            bctx, bcancel = context.WithTimeout(context.Background(), 60*time.Second)
+            var bi, cerr = computeBlockInfo(bctx, hash)
+            bcancel()
+            if cerr != nil {
+                logging.Warn("block cache: block %d: %v — retrying next run", h, cerr)
+                return
+            }
+            infos = append(infos, bi)
+        }
+        if err := flushBlocks(infos, to); err != nil {
+            logging.Err("block cache: flush: %v", err)
             return
         }
-        bcancel()
-        // advance the cursor after each cached block
-        if err := db.Update(func(tx *bbolt.Tx) error {
-            return tx.Bucket(blocksCursorBucket).Put(
-                []byte("cursor"), []byte(strconv.FormatInt(from, 10)))
-        }); err != nil {
-            logging.Err("block cache: save cursor: %v", err)
-            return
-        }
-        from++
+        from = to + 1
     }
     if from-1 > began {
         logging.Info("block cache: processed %d blocks, up to %d", from-1-began, from-1)
     }
+}
+
+// flushBlocks stores a chunk of block info and advances the cursor in one
+// transaction. On error the cursor does not move, so the next run retries the
+// whole chunk.
+func flushBlocks(bis []*blockInfo, cursor int64) error {
+    return db.Update(func(tx *bbolt.Tx) error {
+        var b = tx.Bucket(blocksBucket)
+        for _, bi := range bis {
+            var data, err = json.Marshal(bi)
+            if err != nil { return err }
+            if err := b.Put(itob(uint64(bi.Height)), data); err != nil { return err }
+        }
+        return tx.Bucket(blocksCursorBucket).Put(
+            []byte("cursor"), []byte(strconv.FormatInt(cursor, 10)))
+    })
 }
 
 // formatBlock renders a cached block record as the /info block reply.

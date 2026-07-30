@@ -37,7 +37,7 @@ func TestParseRateHistory(t *testing.T) {
     if len(records) != 2 { // the y=0 early sample is skipped
         t.Fatalf("expected 2 non-zero records, got %d", len(records))
     }
-    if records[0].Time.Unix() != 1420070400 || records[0].USD != 320.19 {
+    if records[0].Time.Unix() != 1420070400 || records[0].Cents != 32019 {
         t.Fatalf("first record = %+v", records[0])
     }
 }
@@ -69,9 +69,9 @@ func TestBackfillRates(t *testing.T) {
 func TestRateStorage(t *testing.T) {
     openTestDB(t)
     var base = time.Now().Truncate(time.Second)
-    store(rateRecord{Time: base.Add(-10 * time.Minute), USD: 100})
-    store(rateRecord{Time: base.Add(-5 * time.Minute), USD: 200})
-    store(rateRecord{Time: base, USD: 300})
+    store(rateRecord{Time: base.Add(-10 * time.Minute), Cents: 10000})
+    store(rateRecord{Time: base.Add(-5 * time.Minute), Cents: 20000})
+    store(rateRecord{Time: base, Cents: 30000})
     // Last returns the newest
     if r, ok := Last(); !ok || r != 300 {
         t.Fatalf("Last = %v %v", r, ok)
