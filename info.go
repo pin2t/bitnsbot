@@ -301,7 +301,7 @@ var addrTxLimit = 10000
 // Both stages are concurrent and bounded, the same pattern the rest of the bot
 // uses. complete is false when the cap or the caller's deadline cut it short.
 func addressHistory(ctx context.Context, script []byte) (txs []*coreTransaction, complete bool) {
-    var touches, capped = addrindex.Lookup(script)
+    var touches, capped = addrindex.Lookup(script, 10000)
     if len(touches) == 0 { return nil, !capped }
     if len(touches) > addrTxLimit {
         touches, capped = touches[:addrTxLimit], true

@@ -7,3 +7,5 @@
 bitnsbot.cfg
 bitnsbot.conf
 .DS_Store
+/addrindex-scan
+/top-active

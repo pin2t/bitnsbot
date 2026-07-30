@@ -27,14 +27,14 @@ func TestMergeAndLookup(t *testing.T) {
     if err := merge(map[string][]Touch{prefix: {{Height: 12, TxIndex: 3}}}, 12); err != nil {
         t.Fatalf("merge: %v", err)
     }
-    var got, capped = Lookup(script)
+    var got, capped = Lookup(script, 10000)
     var want = []Touch{{Height: 10, TxIndex: 0}, {Height: 12, TxIndex: 3}}
     if capped { t.Fatal("unexpectedly capped") }
     if len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
         t.Fatalf("touches = %v, want %v", got, want)
     }
     // an address with no touches returns nothing, not an error
-    var empty, _ = Lookup([]byte("nevertouched"))
+    var empty, _ = Lookup([]byte("nevertouched"), 10000)
     if len(empty) != 0 {
         t.Fatalf("expected no touches, got %v", empty)
     }
@@ -46,9 +46,6 @@ func TestMergeAndLookup(t *testing.T) {
 // wrote, because appending rewrote the address's whole value every time.
 func TestLookupCaps(t *testing.T) {
     openTestDB(t)
-    var saved = maxLookup
-    t.Cleanup(func() { maxLookup = saved })
-    maxLookup = 3
     var script = []byte("hotaddress")
     var prefix = string(Prefix(script))
     for h := uint32(0); h < 5; h++ {
@@ -56,19 +53,18 @@ func TestLookupCaps(t *testing.T) {
             t.Fatalf("merge at height %d: %v", h, err)
         }
     }
-    var got, capped = Lookup(script)
+    var got, capped = Lookup(script, 3)
     if !capped {
-        t.Fatal("expected capped once the read hit maxLookup")
+        t.Fatal("expected capped once the read hit limit 3")
     }
     if len(got) != 3 {
-        t.Fatalf("touches = %d, want exactly maxLookup (3)", len(got))
+        t.Fatalf("touches = %d, want exactly 3", len(got))
     }
     if got[0].Height != 0 || got[2].Height != 2 {
         t.Fatalf("expected the oldest 3 touches, got %v", got)
     }
-    // raising the cap must reveal the rest: nothing was ever dropped on disk
-    maxLookup = 100
-    var all, stillCapped = Lookup(script)
+    // raising the limit must reveal the rest: nothing was ever dropped on disk
+    var all, stillCapped = Lookup(script, 100)
     if stillCapped || len(all) != 5 {
         t.Fatalf("full history = %d touches (capped=%v), want all 5 stored", len(all), stillCapped)
     }
@@ -96,11 +92,11 @@ func TestSharedShardIsolation(t *testing.T) {
     t.Logf("shard %x shared by %q and %q", Prefix(a)[:shardLen], a, b)
     merge(map[string][]Touch{string(Prefix(a)): {{Height: 10, TxIndex: 1}}}, 10)
     merge(map[string][]Touch{string(Prefix(b)): {{Height: 20, TxIndex: 2}}}, 20)
-    var ta, _ = Lookup(a)
+    var ta, _ = Lookup(a, 10000)
     if len(ta) != 1 || ta[0].Height != 10 || ta[0].TxIndex != 1 {
         t.Fatalf("script A got %v, want only its own touch at height 10", ta)
     }
-    var tb, _ = Lookup(b)
+    var tb, _ = Lookup(b, 10000)
     if len(tb) != 1 || tb[0].Height != 20 || tb[0].TxIndex != 2 {
         t.Fatalf("script B got %v, want only its own touch at height 20", tb)
     }
@@ -116,7 +112,7 @@ func TestLookupSpansRanges(t *testing.T) {
     for _, h := range heights {
         merge(map[string][]Touch{prefix: {{Height: h, TxIndex: 0}}}, int(h))
     }
-    var got, _ = Lookup(script)
+    var got, _ = Lookup(script, 10000)
     if len(got) != len(heights) {
         t.Fatalf("touches = %d, want %d across %d ranges", len(got), len(heights), len(heights))
     }
@@ -155,8 +151,8 @@ func TestDistinctScriptsDistinctKeys(t *testing.T) {
     }
     merge(map[string][]Touch{string(Prefix(a)): {{Height: 1, TxIndex: 0}}}, 1)
     merge(map[string][]Touch{string(Prefix(b)): {{Height: 2, TxIndex: 0}}}, 2)
-    var ta, _ = Lookup(a)
-    var tb, _ = Lookup(b)
+    var ta, _ = Lookup(a, 10000)
+    var tb, _ = Lookup(b, 10000)
     if len(ta) != 1 || ta[0].Height != 1 {
         t.Fatalf("scriptA touches = %v", ta)
     }
@@ -233,8 +229,8 @@ func TestCatchUp(t *testing.T) {
     if err := catchUp(src); err != nil { t.Fatalf("catchUp: %v", err) }
     var rawA, _ = hex.DecodeString(scriptA)
     var rawB, _ = hex.DecodeString(scriptB)
-    var touchesA, _ = Lookup(rawA)
-    var touchesB, _ = Lookup(rawB)
+    var touchesA, _ = Lookup(rawA, 10000)
+    var touchesB, _ = Lookup(rawB, 10000)
     if len(touchesA) != 2 || touchesA[0].Height != 0 || touchesA[1].Height != 1 {
         t.Fatalf("scriptA touches = %v, want heights [0, 1]", touchesA)
     }
@@ -273,7 +269,7 @@ func TestCatchUpChunksAndRetries(t *testing.T) {
     }
     // heights 0-1 (one full chunk) must have been flushed before the failure at 3
     var raw, _ = hex.DecodeString(script)
-    var touches, _ = Lookup(raw)
+    var touches, _ = Lookup(raw, 10000)
     if len(touches) != 2 {
         t.Fatalf("touches after partial catch-up = %d, want 2 (the first chunk only)", len(touches))
     }
@@ -289,7 +285,7 @@ func TestCatchUpChunksAndRetries(t *testing.T) {
     if len(deepFetched) != 3 || deepFetched[0] != 2 {
         t.Fatalf("retry fetched %v, want [2 3 4]", deepFetched)
     }
-    touches, _ = Lookup(raw)
+    touches, _ = Lookup(raw, 10000)
     if len(touches) != 5 {
         t.Fatalf("touches after retry = %d, want 5", len(touches))
     }
