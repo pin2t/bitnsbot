@@ -247,19 +247,32 @@ func parseHistory(body []byte) ([]rateRecord, error) {
 }
 
 func fetchHistory() ([]rateRecord, error) {
-    logging.Net("rates → GET %s", historyURL)
-    var resp, err = httpClient.Get(historyURL)
-    if err != nil { return nil, err }
-    defer resp.Body.Close()
-    var body, readErr = io.ReadAll(resp.Body)
-    if readErr != nil { return nil, readErr }
-    if resp.StatusCode != http.StatusOK {
-        return nil, fmt.Errorf("status %d", resp.StatusCode)
+    for attempt := 1; ; attempt++ {
+        logging.Net("rates → GET %s (attempt %d/3)", historyURL, attempt)
+        var resp, err = httpClient.Get(historyURL)
+        if err == nil {
+            var body, readErr = io.ReadAll(resp.Body)
+            resp.Body.Close()
+            if readErr == nil && resp.StatusCode == http.StatusOK {
+                var records, parseErr = parseHistory(body)
+                if parseErr == nil {
+                    logging.Net("rates ← history %d daily samples", len(records))
+                    return records, nil
+                }
+                logging.Warn("rate history backfill: parse (attempt %d/3): %v", attempt, parseErr)
+            } else if readErr != nil {
+                logging.Warn("rate history backfill: read (attempt %d/3): %v", attempt, readErr)
+            } else {
+                logging.Warn("rate history backfill: status %d (attempt %d/3)", resp.StatusCode, attempt)
+            }
+        } else {
+            logging.Warn("rate history backfill: fetch (attempt %d/3): %v", attempt, err)
+        }
+        if attempt >= 3 {
+            return nil, fmt.Errorf("rate history backfill: all 3 attempts failed")
+        }
+        time.Sleep(10 * time.Second)
     }
-    var records, parseErr = parseHistory(body)
-    if parseErr != nil { return nil, parseErr }
-    logging.Net("rates ← history %d daily samples", len(records))
-    return records, nil
 }
 
 // backfill loads the full daily BTC/USD history once, so /info on an old
