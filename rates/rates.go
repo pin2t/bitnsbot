@@ -93,7 +93,11 @@ func Last() (float64, bool) {
         var k, v = tx.Bucket(bucket).Cursor().Last()
         if k != nil {
             var r rateRecord
-            if msgpack.Unmarshal(v, &r) == nil { usd, found = r.USD, true }
+            if err := msgpack.Unmarshal(v, &r); err != nil {
+                logging.Err("error msgpack unmarshal %v: %v", v, err)
+                return err
+            }
+            usd, found = r.USD, true
         }
         return nil
     })
@@ -114,7 +118,10 @@ func At(t time.Time) (float64, bool) {
         var consider = func(k, v []byte) {
             if k == nil { return }
             var r rateRecord
-            if msgpack.Unmarshal(v, &r) != nil { return }
+            if err := msgpack.Unmarshal(v, &r); err != nil {
+                logging.Err("error msgpack unmarshal %v: %v", v, err)
+                return
+            }
             var diff = r.Time.Unix() - target
             if diff < 0 { diff = -diff }
             if diff < bestDiff { bestDiff, best, found = diff, r, true }
@@ -150,6 +157,7 @@ func hasHistory() bool {
         }
         return nil
     })
+    logging.Db("has history %v", deep)
     return deep
 }
 
@@ -397,7 +405,10 @@ func storeMarket(m Market) error {
     var rec = marketRecord{Time: time.Now(), Price: m.Price, MarketCap: m.MarketCap, Volume24h: m.Volume24h}
     logging.Db("store market cap %.0f volume %.0f", m.MarketCap, m.Volume24h)
     var data, err = msgpack.Marshal(rec)
-    if err != nil { return err }
+    if err != nil {
+        logging.Err("store market msgpack marshal: %v", err)
+        return err
+    }
     return db.Update(func(tx *bbolt.Tx) error {
         return tx.Bucket(marketBucket).Put(itob(uint64(rec.Time.Unix())), data)
     })
@@ -415,7 +426,10 @@ func LastMarket() (Market, bool) {
         var k, v = tx.Bucket(marketBucket).Cursor().Last()
         if k == nil { return nil }
         var rec marketRecord
-        if msgpack.Unmarshal(v, &rec) != nil { return nil }
+        if err := msgpack.Unmarshal(v, &rec); err != nil {
+            logging.Err("last market msgpack unmarshal %v: %v", v, err)
+            return nil
+        }
         m, found = Market{Price: rec.Price, MarketCap: rec.MarketCap, Volume24h: rec.Volume24h}, true
         return nil
     })
