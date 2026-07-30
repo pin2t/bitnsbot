@@ -38,7 +38,16 @@ type coreClient struct {
 
 func newCoreClient(cfg coreConfig) (*coreClient, error) {
     var c = &coreClient{
-        cfg: cfg, client: &http.Client{},
+        cfg: cfg,
+        client: &http.Client{
+            Transport: &http.Transport{
+                MaxIdleConns:        100,
+                MaxIdleConnsPerHost: 10,
+                MaxConnsPerHost:     20,
+                IdleConnTimeout:     90 * time.Second,
+                DisableKeepAlives:   false,
+            },
+        },
         blockTxidsCache:   newLRU[string, *coreBlockTxids](500),
         blockVerboseCache: newLRU[string, *coreVerboseBlock](500),
     }
