@@ -72,6 +72,9 @@ func main() {
     if err = openDB(*dbPath); err != nil {
         logging.Fatal("open database: %v", err)
     }
+    if err = dbui.MigrateMsgpack(db); err != nil {
+        logging.Fatal("msgpack migration: %v", err)
+    }
     rates.Start()
     if *dbuiListen != "" {
         dbuiSrv = dbui.Start(db, *dbuiListen)
