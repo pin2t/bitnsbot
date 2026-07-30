@@ -15,7 +15,7 @@ import (
     "unicode/utf8"
 
     "go.etcd.io/bbolt"
-    "github.com/vmihailenco/msgpack/v5"
+    "github.com/Basekick-Labs/msgpack/v6"
     "bitnsbot/logging"
 )
 

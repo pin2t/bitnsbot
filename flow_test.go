@@ -10,7 +10,7 @@ import "testing"
 import "time"
 
 import "go.etcd.io/bbolt"
-import "github.com/vmihailenco/msgpack/v5"
+import "github.com/Basekick-Labs/msgpack/v6"
 
 // infoBlockHash is a real mainnet block hash: 64 hex characters, exactly the
 // same shape as a txid.
