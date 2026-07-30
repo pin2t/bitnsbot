@@ -405,18 +405,18 @@ func Snapshot() (Market, bool) {
     return m, true
 }
 
-// marketRecord is one stored market snapshot, keyed by time like the rate
-// records so the newest is the last key in the bucket.
+// marketRecord is one stored market snapshot, keyed by Unix timestamp like the
+// rate records so the newest is the last key in the bucket.
 type marketRecord struct {
-    Time      time.Time
-    Price     float64
-    MarketCap float64
-    Volume24h float64
+    Timestamp int64   `json:"timestamp"`
+    Price     float64 `json:"price"`
+    MarketCap float64 `json:"market_cap"`
+    Volume24h float64 `json:"volume_24h"`
 }
 
 func storeMarket(m Market) error {
     if db == nil { return nil }
-    var rec = marketRecord{Time: time.Now(), Price: m.Price, MarketCap: m.MarketCap, Volume24h: m.Volume24h}
+    var rec = marketRecord{Timestamp: time.Now().Unix(), Price: m.Price, MarketCap: m.MarketCap, Volume24h: m.Volume24h}
     logging.Db("store market cap %.0f volume %.0f", m.MarketCap, m.Volume24h)
     var data, err = json.Marshal(rec)
     if err != nil {
@@ -424,7 +424,7 @@ func storeMarket(m Market) error {
         return err
     }
     return db.Update(func(tx *bbolt.Tx) error {
-        return tx.Bucket(marketBucket).Put(itob(uint64(rec.Time.Unix())), data)
+        return tx.Bucket(marketBucket).Put(itob(uint64(rec.Timestamp)), data)
     })
 }
 
