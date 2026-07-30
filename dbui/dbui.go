@@ -56,6 +56,8 @@ func handler(db *bbolt.DB) http.Handler {
     mux.HandleFunc("/api/put", func(w http.ResponseWriter, r *http.Request) { put(db, w, r) })
     mux.HandleFunc("/api/delete", func(w http.ResponseWriter, r *http.Request) { del(db, w, r) })
     mux.HandleFunc("/api/clearbucket", func(w http.ResponseWriter, r *http.Request) { clearBucket(db, w, r) })
+    mux.HandleFunc("/api/export", func(w http.ResponseWriter, r *http.Request) { exportBucket(db, w, r) })
+    mux.HandleFunc("/api/import", func(w http.ResponseWriter, r *http.Request) { importBucket(db, w, r) })
     return mux
 }
 
@@ -242,6 +244,80 @@ func clearBucket(db *bbolt.DB, w http.ResponseWriter, r *http.Request) {
     }
     logging.Info("database UI: cleared bucket %s (%d keys)", body.Bucket, count)
     writeJSON(w, map[string]any{"ok": true, "deleted": count})
+}
+
+func exportBucket(db *bbolt.DB, w http.ResponseWriter, r *http.Request) {
+    var bucket = r.URL.Query().Get("bucket")
+    if bucket == "" {
+        http.Error(w, "bucket is required", http.StatusBadRequest)
+        return
+    }
+    var rows = []kvRow{}
+    var err = db.View(func(tx *bbolt.Tx) error {
+        var b = tx.Bucket([]byte(bucket))
+        if b == nil { return errNoBucket }
+        return b.ForEach(func(k, v []byte) error {
+            rows = append(rows, kvRow{encodeField(k), encodeField(v)})
+            return nil
+        })
+    })
+    if err != nil {
+        if err == errNoBucket { http.Error(w, err.Error(), http.StatusNotFound); return }
+        http.Error(w, err.Error(), http.StatusInternalServerError)
+        return
+    }
+    writeJSON(w, map[string]any{"rows": rows})
+}
+
+func importBucket(db *bbolt.DB, w http.ResponseWriter, r *http.Request) {
+    if r.Method != http.MethodPost {
+        http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+        return
+    }
+    var body struct {
+        Bucket   string  `json:"bucket"`
+        Strategy string  `json:"strategy"` // "skip" or "replace"
+        Rows     []kvRow `json:"rows"`
+    }
+    if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+        http.Error(w, "bad request", http.StatusBadRequest)
+        return
+    }
+    if body.Bucket == "" {
+        http.Error(w, "bucket is required", http.StatusBadRequest)
+        return
+    }
+    if body.Strategy != "skip" && body.Strategy != "replace" {
+        http.Error(w, "strategy must be 'skip' or 'replace'", http.StatusBadRequest)
+        return
+    }
+    var imported, skipped int
+    var err = db.Update(func(tx *bbolt.Tx) error {
+        var b = tx.Bucket([]byte(body.Bucket))
+        if b == nil { return errNoBucket }
+        for _, row := range body.Rows {
+            var key, kerr = decodeField(row.Key)
+            if kerr != nil { return kerr }
+            var value, verr = decodeField(row.Value)
+            if verr != nil { return verr }
+            var exists = b.Get(key) != nil
+            if exists && body.Strategy == "skip" {
+                skipped++
+                continue
+            }
+            if err := b.Put(key, value); err != nil { return err }
+            imported++
+        }
+        return nil
+    })
+    if err != nil {
+        var code = http.StatusBadRequest
+        if err == errNoBucket { code = http.StatusNotFound }
+        http.Error(w, err.Error(), code)
+        return
+    }
+    logging.Info("database UI: imported %d keys into %s (%d skipped)", imported, body.Bucket, skipped)
+    writeJSON(w, map[string]any{"ok": true, "imported": imported, "skipped": skipped})
 }
 
 func writeJSON(w http.ResponseWriter, v any) {
