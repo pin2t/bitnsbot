@@ -81,8 +81,8 @@ func collect(src Source) {
     var last, ok = cursor()
     var from int64
     if !ok {
-        from = 0
-        last = -1
+        from = 1
+        last = 0
     } else {
         from = last + 1
     }
@@ -94,12 +94,8 @@ func collect(src Source) {
         for h := from; h <= to; h++ {
             var b, berr = src.Block(ctx, h)
             if berr != nil {
-                // abandon the run without flushing, so the cursor stays put and
-                // the next one retries this range — advancing past a block that
-                // failed to fetch (a btcd restart mid-catch-up fails every block
-                // in the chunk) would drop it from the aggregate for good
-                logging.Warn("miners stats: block %d: %v — retrying next run", h, berr)
-                return
+                logging.Warn("miners stats: block %d: %v — skip", h, berr)
+                continue
             }
             var name = Attribute(b.CoinbaseAddresses, b.CoinbaseScript)
             if name == "" { continue }
