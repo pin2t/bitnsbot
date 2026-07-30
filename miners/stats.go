@@ -20,10 +20,6 @@ var statInterval = 10 * time.Minute
 // flush, so catching up a large gap doesn't build one giant transaction.
 var chunkSize int64 = 1000
 
-// initialWindow is how far back the collector starts on a fresh install (no
-// cursor yet), so /miners has data without walking the whole chain from genesis.
-var initialWindow int64 = 1000
-
 // work per block ≈ difficulty × 2^32 (the expected number of hashes).
 const workPerDifficulty = 4294967296.0
 const secondsPerBlock = 600.0
@@ -85,9 +81,8 @@ func collect(src Source) {
     var last, ok = cursor()
     var from int64
     if !ok {
-        from = tip - initialWindow + 1
-        if from < 0 { from = 0 }
-        last = from - 1
+        from = 0
+        last = -1
     } else {
         from = last + 1
     }
