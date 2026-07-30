@@ -62,23 +62,23 @@ func equal(t *testing.T, label string, got, want float64) {
     }
 }
 
-// blocks 0..4: PoolA mines 0, 2 (via a *second* address, which must combine into
-// the same name) and 4; PoolB mines 1; block 3 is an unknown miner and is skipped.
-// Block 2's payout is not the first coinbase output — real coinbases put witness
+// blocks 1..5: PoolA mines 1, 3 (via a *second* address, which must combine into
+// the same name) and 5; PoolB mines 2; block 4 is an unknown miner and is skipped.
+// Block 3's payout is not the first coinbase output — real coinbases put witness
 // commitments and other outputs alongside it — so every address must be checked.
-// Block 4 is at a higher difficulty — a retarget — so LastWork differs from the
+// Block 5 is at a higher difficulty — a retarget — so LastWork differs from the
 // per-block average and the consumption estimate can be told apart from one built
 // on accumulated work.
 func chainFixture() *fakeSource {
     var lo, hi = 1.0e14, 1.4e14
     return &fakeSource{
-        tip: 4,
+        tip: 5,
         blocks: map[int64]Block{
-            0: {CoinbaseAddresses: []string{"aA"}, Reward: 6.5, Fees: 0.25, Difficulty: lo},
-            1: {CoinbaseAddresses: []string{"aB"}, Reward: 6.4, Fees: 0.15, Difficulty: lo},
-            2: {CoinbaseAddresses: []string{"unrelated", "aA2"}, Reward: 6.3, Fees: 0.05, Difficulty: lo},
-            3: {CoinbaseAddresses: []string{"nobody"}, Reward: 6.2, Fees: 0.10, Difficulty: lo},
-            4: {CoinbaseAddresses: []string{"aA"}, Reward: 6.6, Fees: 0.30, Difficulty: hi},
+            1: {CoinbaseAddresses: []string{"aA"}, Reward: 6.5, Fees: 0.25, Difficulty: lo},
+            2: {CoinbaseAddresses: []string{"aB"}, Reward: 6.4, Fees: 0.15, Difficulty: lo},
+            3: {CoinbaseAddresses: []string{"unrelated", "aA2"}, Reward: 6.3, Fees: 0.05, Difficulty: lo},
+            4: {CoinbaseAddresses: []string{"nobody"}, Reward: 6.2, Fees: 0.10, Difficulty: lo},
+            5: {CoinbaseAddresses: []string{"aA"}, Reward: 6.6, Fees: 0.30, Difficulty: hi},
         },
     }
 }
@@ -106,7 +106,7 @@ func TestCollectStats(t *testing.T) {
     // the unknown miner's block is not attributed to anyone
     if s := statOf(t, "Unknown"); s.Blocks != 0 { t.Fatalf("unknown miner was stored: %+v", s) }
     var last, ok = cursor()
-    if !ok || last != 4 { t.Fatalf("cursor = (%d, %v), want (4, true)", last, ok) }
+    if !ok || last != 5 { t.Fatalf("cursor = (%d, %v), want (5, true)", last, ok) }
 }
 
 func TestTopConsumption(t *testing.T) {
@@ -133,7 +133,7 @@ func TestTopConsumption(t *testing.T) {
 }
 
 // A gap larger than chunkSize is processed in chunks, each flushed to the
-// database before the next starts — the source's hook asserts that block 0's
+// database before the next starts — the source's hook asserts that block 1's
 // stats are already persisted by the time the second chunk begins.
 func TestCollectChunks(t *testing.T) {
     fixtureDB(t)
@@ -141,17 +141,17 @@ func TestCollectChunks(t *testing.T) {
     var src = chainFixture()
     var flushed bool
     src.onBlock = func(h int64) {
-        if h != 2 { return }
+        if h != 3 { return }
         flushed = statOf(t, "PoolA").Blocks == 1
     }
     collect(src)
     if !flushed { t.Fatal("first chunk was not flushed before the second was processed") }
-    if !reflect.DeepEqual(src.fetched, []int64{0, 1, 2, 3, 4}) {
-        t.Fatalf("fetched %v, want 0..4 in order", src.fetched)
+    if !reflect.DeepEqual(src.fetched, []int64{1, 2, 3, 4, 5}) {
+        t.Fatalf("fetched %v, want 1..5 in order", src.fetched)
     }
     if a := statOf(t, "PoolA"); a.Blocks != 3 { t.Fatalf("PoolA blocks = %d, want 3", a.Blocks) }
     var last, _ = cursor()
-    if last != 4 { t.Fatalf("cursor last = %d, want 4", last) }
+    if last != 5 { t.Fatalf("cursor last = %d, want 5", last) }
 }
 
 // A second run resumes at the cursor: only the new blocks are fetched, and their
@@ -162,19 +162,19 @@ func TestCollectResumes(t *testing.T) {
     var src = chainFixture()
     collect(src)
     src.fetched = nil
-    src.tip = 6
-    src.blocks[5] = Block{CoinbaseAddresses: []string{"aB"}, Reward: 6.1, Fees: 0.20, Difficulty: 1.4e14}
-    src.blocks[6] = Block{CoinbaseAddresses: []string{"aB"}, Reward: 6.2, Fees: 0.10, Difficulty: 1.4e14}
+    src.tip = 7
+    src.blocks[6] = Block{CoinbaseAddresses: []string{"aB"}, Reward: 6.1, Fees: 0.20, Difficulty: 1.4e14}
+    src.blocks[7] = Block{CoinbaseAddresses: []string{"aB"}, Reward: 6.2, Fees: 0.10, Difficulty: 1.4e14}
     collect(src)
-    if !reflect.DeepEqual(src.fetched, []int64{5, 6}) {
-        t.Fatalf("second run fetched %v, want only 5 and 6", src.fetched)
+    if !reflect.DeepEqual(src.fetched, []int64{6, 7}) {
+        t.Fatalf("second run fetched %v, want only 6 and 7", src.fetched)
     }
     var b = statOf(t, "PoolB")
     if b.Blocks != 3 { t.Fatalf("PoolB blocks = %d, want 3", b.Blocks) }
     equal(t, "PoolB reward", b.Reward, 6.4+6.1+6.2)
     equal(t, "PoolB fees", b.Fees, 0.15+0.20+0.10)
     var last, _ = cursor()
-    if last != 6 { t.Fatalf("cursor = %d, want 6", last) }
+    if last != 7 { t.Fatalf("cursor = %d, want 7", last) }
     // the window is over the total attributed blocks now (pool A 3 + pool B 3 = 6)
     var top = Top(10)
     var pb Stat
@@ -203,4 +203,18 @@ func TestCollectWaitsForAddresses(t *testing.T) {
 func TestTopEmpty(t *testing.T) {
     fixtureDB(t)
     if got := Top(10); len(got) != 0 { t.Fatalf("Top on an empty bucket = %+v, want none", got) }
+}
+
+// A failing block fetch is skipped — the run continues and the cursor advances
+// past it. The aggregate still includes every block that did succeed.
+func TestCollectRetriesOnError(t *testing.T) {
+    fixtureDB(t)
+    setChunk(t, 1000)
+    var src = chainFixture()
+    src.err = map[int64]bool{4: true}
+    collect(src)
+    // the failed block is skipped; the other four blocks are still processed
+    if a := statOf(t, "PoolA"); a.Blocks != 3 { t.Fatalf("PoolA blocks after run with error = %d, want 3", a.Blocks) }
+    var last, ok = cursor()
+    if !ok || last != 5 { t.Fatalf("cursor = (%d, %v), want (5, true)", last, ok) }
 }
