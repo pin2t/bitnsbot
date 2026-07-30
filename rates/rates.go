@@ -10,6 +10,7 @@ import "strings"
 import "time"
 
 import "go.etcd.io/bbolt"
+import "github.com/vmihailenco/msgpack/v5"
 import "bitnsbot/logging"
 
 var db *bbolt.DB
@@ -54,7 +55,7 @@ func itob(v uint64) []byte {
 
 func store(r rateRecord) error {
     logging.Db("store rate $%.2f", r.USD)
-    var data, err = json.Marshal(r)
+    var data, err = msgpack.Marshal(r)
     if err != nil { return err }
     return db.Update(func(tx *bbolt.Tx) error {
         return tx.Bucket(bucket).Put(itob(uint64(r.Time.Unix())), data)
@@ -68,7 +69,7 @@ func storeMany(records []rateRecord) error {
     return db.Update(func(tx *bbolt.Tx) error {
         var b = tx.Bucket(bucket)
         for _, r := range records {
-            var data, err = json.Marshal(r)
+            var data, err = msgpack.Marshal(r)
             if err != nil { return err }
             if err := b.Put(itob(uint64(r.Time.Unix())), data); err != nil { return err }
         }
@@ -92,7 +93,7 @@ func Last() (float64, bool) {
         var k, v = tx.Bucket(bucket).Cursor().Last()
         if k != nil {
             var r rateRecord
-            if json.Unmarshal(v, &r) == nil { usd, found = r.USD, true }
+            if msgpack.Unmarshal(v, &r) == nil { usd, found = r.USD, true }
         }
         return nil
     })
@@ -113,7 +114,7 @@ func At(t time.Time) (float64, bool) {
         var consider = func(k, v []byte) {
             if k == nil { return }
             var r rateRecord
-            if json.Unmarshal(v, &r) != nil { return }
+            if msgpack.Unmarshal(v, &r) != nil { return }
             var diff = r.Time.Unix() - target
             if diff < 0 { diff = -diff }
             if diff < bestDiff { bestDiff, best, found = diff, r, true }
@@ -144,7 +145,7 @@ func hasHistory() bool {
         var k, v = tx.Bucket(bucket).Cursor().First()
         if k == nil { return nil }
         var r rateRecord
-        if json.Unmarshal(v, &r) == nil && time.Since(r.Time) > historyHorizon {
+        if msgpack.Unmarshal(v, &r) == nil && time.Since(r.Time) > historyHorizon {
             deep = true
         }
         return nil
@@ -395,7 +396,7 @@ func storeMarket(m Market) error {
     if db == nil { return nil }
     var rec = marketRecord{Time: time.Now(), Price: m.Price, MarketCap: m.MarketCap, Volume24h: m.Volume24h}
     logging.Db("store market cap %.0f volume %.0f", m.MarketCap, m.Volume24h)
-    var data, err = json.Marshal(rec)
+    var data, err = msgpack.Marshal(rec)
     if err != nil { return err }
     return db.Update(func(tx *bbolt.Tx) error {
         return tx.Bucket(marketBucket).Put(itob(uint64(rec.Time.Unix())), data)
@@ -414,7 +415,7 @@ func LastMarket() (Market, bool) {
         var k, v = tx.Bucket(marketBucket).Cursor().Last()
         if k == nil { return nil }
         var rec marketRecord
-        if json.Unmarshal(v, &rec) != nil { return nil }
+        if msgpack.Unmarshal(v, &rec) != nil { return nil }
         m, found = Market{Price: rec.Price, MarketCap: rec.MarketCap, Volume24h: rec.Volume24h}, true
         return nil
     })

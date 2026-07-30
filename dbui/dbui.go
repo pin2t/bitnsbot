@@ -4,17 +4,20 @@
 // it can write any bucket, so it must never face the network.
 package dbui
 
-import _ "embed"
-import "encoding/hex"
-import "encoding/json"
-import "errors"
-import "net/http"
-import "strconv"
-import "strings"
-import "unicode/utf8"
+import (
+    _ "embed"
+    "encoding/hex"
+    "encoding/json"
+    "errors"
+    "net/http"
+    "strconv"
+    "strings"
+    "unicode/utf8"
 
-import "go.etcd.io/bbolt"
-import "bitnsbot/logging"
+    "go.etcd.io/bbolt"
+    "github.com/vmihailenco/msgpack/v5"
+    "bitnsbot/logging"
+)
 
 //go:embed index.html
 var indexHTML []byte
@@ -58,6 +61,8 @@ func handler(db *bbolt.DB) http.Handler {
     mux.HandleFunc("/api/clearbucket", func(w http.ResponseWriter, r *http.Request) { clearBucket(db, w, r) })
     mux.HandleFunc("/api/export", func(w http.ResponseWriter, r *http.Request) { exportBucket(db, w, r) })
     mux.HandleFunc("/api/import", func(w http.ResponseWriter, r *http.Request) { importBucket(db, w, r) })
+    mux.HandleFunc("/api/msgpack/decode", func(w http.ResponseWriter, r *http.Request) { msgpackDecode(w, r) })
+    mux.HandleFunc("/api/msgpack/encode", func(w http.ResponseWriter, r *http.Request) { msgpackEncode(w, r) })
     return mux
 }
 
@@ -320,6 +325,61 @@ func importBucket(db *bbolt.DB, w http.ResponseWriter, r *http.Request) {
     writeJSON(w, map[string]any{"ok": true, "imported": imported, "skipped": skipped})
 }
 
+func msgpackDecode(w http.ResponseWriter, r *http.Request) {
+    if r.Method != http.MethodPost {
+        http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+        return
+    }
+    var body struct {
+        Value string `json:"value"`
+    }
+    if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+        http.Error(w, "bad request", http.StatusBadRequest)
+        return
+    }
+    raw, err := decodeField(body.Value)
+    if err != nil {
+        http.Error(w, "bad value: "+err.Error(), http.StatusBadRequest)
+        return
+    }
+    var decoded any
+    if err := msgpack.Unmarshal(raw, &decoded); err != nil {
+        http.Error(w, "msgpack decode error: "+err.Error(), http.StatusBadRequest)
+        return
+    }
+    out, err := json.MarshalIndent(decoded, "", "  ")
+    if err != nil {
+        http.Error(w, "json marshal error: "+err.Error(), http.StatusInternalServerError)
+        return
+    }
+    writeJSON(w, map[string]any{"decoded": string(out)})
+}
+
+func msgpackEncode(w http.ResponseWriter, r *http.Request) {
+    if r.Method != http.MethodPost {
+        http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+        return
+    }
+    var body struct {
+        Text string `json:"text"`
+    }
+    if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+        http.Error(w, "bad request", http.StatusBadRequest)
+        return
+    }
+    var val any
+    if err := json.Unmarshal([]byte(body.Text), &val); err != nil {
+        http.Error(w, "json parse error: "+err.Error(), http.StatusBadRequest)
+        return
+    }
+    encoded, err := msgpack.Marshal(val)
+    if err != nil {
+        http.Error(w, "msgpack encode error: "+err.Error(), http.StatusInternalServerError)
+        return
+    }
+    writeJSON(w, map[string]any{"encoded": "hex:" + hex.EncodeToString(encoded)})
+}
+
 func writeJSON(w http.ResponseWriter, v any) {
     w.Header().Set("Content-Type", "application/json")
     json.NewEncoder(w).Encode(v)
@@ -352,4 +412,42 @@ func isText(b []byte) bool {
         if r < 0x20 && r != '\n' && r != '\r' && r != '\t' { return false }
     }
     return true
+}
+
+// MigrateMsgpack converts JSON values to msgpack in the five buckets that the bot
+// reads and writes as structured data. It is called once on startup before any
+// goroutine reads or writes them. Each value that begins with '{' (a JSON object)
+// and passes json.Unmarshal is re-encoded with msgpack. Values already in msgpack
+// format (binary, not starting with '{') are left alone, so a second run is a
+// no-op.
+func MigrateMsgpack(db *bbolt.DB) error {
+    var buckets = []string{"blocks-stat", "market", "miners-stat", "rates", "watches"}
+    var total int
+    for _, name := range buckets {
+        var count int
+        var err = db.Update(func(tx *bbolt.Tx) error {
+            var b = tx.Bucket([]byte(name))
+            if b == nil { return nil } // bucket doesn't exist yet — nothing to migrate
+            var c = b.Cursor()
+            for k, v := c.First(); k != nil; k, v = c.Next() {
+                if len(v) == 0 || v[0] != '{' { continue }
+                var val any
+                if json.Unmarshal(v, &val) != nil { continue }
+                var encoded, merr = msgpack.Marshal(val)
+                if merr != nil { return merr }
+                if err := b.Put(k, encoded); err != nil { return err }
+                count++
+            }
+            return nil
+        })
+        if err != nil { return err }
+        if count > 0 {
+            logging.Info("database UI: migrated %s: %d keys JSON → msgpack", name, count)
+            total += count
+        }
+    }
+    if total > 0 {
+        logging.Info("database UI: migration complete: %d keys total converted", total)
+    }
+    return nil
 }
