@@ -21,7 +21,7 @@ import "sync"
 import "sync/atomic"
 import "time"
 
-import "github.com/vmihailenco/msgpack/v5"
+import "github.com/Basekick-Labs/msgpack/v6"
 import "go.etcd.io/bbolt"
 import "bitnsbot/addrindex"
 import "bitnsbot/logging"

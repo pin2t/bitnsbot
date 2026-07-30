@@ -3,9 +3,9 @@ module bitnsbot
 go 1.25.6
 
 require (
+	github.com/Basekick-Labs/msgpack/v6 v6.1.0
 	github.com/go-zeromq/zmq4 v0.17.0
 	github.com/pin2t/flagex v1.0.0
-	github.com/vmihailenco/msgpack/v5 v5.4.1
 	go.etcd.io/bbolt v1.5.0
 )
 

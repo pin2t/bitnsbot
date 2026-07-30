@@ -7,7 +7,7 @@ import "reflect"
 import "testing"
 
 import "go.etcd.io/bbolt"
-import "github.com/vmihailenco/msgpack/v5"
+import "github.com/Basekick-Labs/msgpack/v6"
 
 // fakeSource stands in for the btcd-backed chain source: a fixed tip and a map of
 // blocks, recording every height fetched so tests can assert what was processed.

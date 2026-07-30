@@ -7,7 +7,7 @@ import "strings"
 import "time"
 
 import "go.etcd.io/bbolt"
-import "github.com/vmihailenco/msgpack/v5"
+import "github.com/Basekick-Labs/msgpack/v6"
 import "bitnsbot/logging"
 import "bitnsbot/miners"
 import "math"
