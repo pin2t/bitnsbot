@@ -267,12 +267,18 @@ func main() {
 		for {
 			select {
 			case <-ticker.C:
-				var h = processed.Load()
+				var c int64
+				d.View(func(tx *bbolt.Tx) error {
+					if v := tx.Bucket(addressesCursorBucket).Get([]byte("cursor")); v != nil {
+						c, _ = strconv.ParseInt(string(v), 10, 64)
+					}
+					return nil
+				});
 				var pct float64
 				if tip > 0 {
-					pct = float64(h) / float64(tip) * 100
+					pct = float64(c) / float64(tip) * 100
 				}
-				fmt.Printf("\rprocessed %d / %d (%.0f%%)", h, tip, pct)
+				fmt.Printf("\rprocessed %d / %d (%.0f%%)", c, tip, pct)
 			case <-progressDone:
 				return
 			}
