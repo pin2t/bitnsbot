@@ -188,13 +188,13 @@ func main() {
 		logging.Fatal("get tip: %v", tipErr)
 	}
 	// read the last processed height from the addresses-cursor bucket
-	var startHeight int64
+	var start int64
 	if err := d.View(func(tx *bbolt.Tx) error {
 		if v := tx.Bucket(addressesCursorBucket).Get([]byte("cursor")); v != nil {
 			var e error
-			startHeight, e = strconv.ParseInt(string(v), 10, 64)
+			start, e = strconv.ParseInt(string(v), 10, 64)
 			if e != nil { return e }
-			startHeight++ // resume from the next block
+			start++ // resume from the next block
 		}
 		return nil
 	}); err != nil {
@@ -210,7 +210,7 @@ func main() {
 	// the first gap instead of restarting.
 	var processedMu sync.Mutex
 	var processedBlocks = make(map[int64]struct{})
-	var cursorHeight = startHeight - 1 // last committed cursor value
+	var cursor = start - 1 // last committed cursor value
 	// collector receives (addr, txCount) from workers, deduplicates, and
 	// flushes to bbolt in batches of batchSize.
 	var entries = make(chan addrEntry, 10000)
@@ -234,15 +234,15 @@ func main() {
 				// advance cursor past every consecutive processed block
 				processedMu.Lock()
 				for {
-					if _, ok := processedBlocks[cursorHeight+1]; ok {
-						cursorHeight++
+					if _, ok := processedBlocks[cursor+1]; ok {
+						cursor++
 					} else {
 						break
 					}
 				}
 				processedMu.Unlock()
 				return tx.Bucket(addressesCursorBucket).Put(
-					[]byte("cursor"), []byte(strconv.FormatInt(cursorHeight, 10)))
+					[]byte("cursor"), []byte(strconv.FormatInt(cursor, 10)))
 			}); err != nil {
 				fmt.Fprintf(os.Stderr, "\nflush error: %v\n", err)
 			}
@@ -329,7 +329,7 @@ func main() {
 			}
 		}()
 	}
-	for h := startHeight; h <= tip; h++ { heights <- h }
+	for h := start; h <= tip; h++ { heights <- h }
 	close(heights)
 	wg.Wait()
 	close(progressDone)
