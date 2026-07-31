@@ -21,18 +21,11 @@ var tagBucket = []byte("miners-tag")
 // sourceURL is mempool's mining-pool definitions (pool name + coinbase output
 // addresses). A package var so tests can point it at a local server.
 var sourceURL = "https://raw.githubusercontent.com/mempool/mining-pools/master/pools-v2.json"
-
 var httpClient = &http.Client{Timeout: 15 * time.Second}
 
 // updateInterval is how often the bucket is refreshed from the source. A package
 // var so tests can shrink it.
 var updateInterval = 24 * time.Hour
-
-type poolDef struct {
-    Name      string   `json:"name"`
-    Addresses []string `json:"addresses"`
-    Tags      []string `json:"tags"`
-}
 
 // Init stores the shared bbolt handle and ensures the buckets exist: `miners`
 // (address → pool name), `miners-tag` (coinbase tag → pool name), `miners-stat`
@@ -118,15 +111,20 @@ func update() {
         logging.Warn("update miners: status %d", resp.StatusCode)
         return
     }
-    var defs []poolDef
-    if err := json.Unmarshal(body, &defs); err != nil {
+    type poolDef struct {
+        Name      string   `json:"name"`
+        Addresses []string `json:"addresses"`
+        Tags      []string `json:"tags"`
+    }
+    var pools []poolDef
+    if err := json.Unmarshal(body, &pools); err != nil {
         logging.Warn("update miners: %v", err)
         return
     }
     var added, tagged int
     err = db.Update(func(tx *bbolt.Tx) error {
         var b, tb = tx.Bucket(bucket), tx.Bucket(tagBucket)
-        for _, d := range defs {
+        for _, d := range pools {
             for _, a := range d.Addresses {
                 if b.Get([]byte(a)) == nil { added++ }
                 if err := b.Put([]byte(a), []byte(d.Name)); err != nil { return err }
@@ -142,7 +140,7 @@ func update() {
         logging.Err("store miners: %v", err)
         return
     }
-    logging.Info("miners updated: %d pools, %d new addresses, %d new tags", len(defs), added, tagged)
+    logging.Info("miners updated: %d pools, %d new addresses, %d new tags", len(pools), added, tagged)
 }
 
 // Start keeps the bucket fresh in the background: an initial fetch only when the

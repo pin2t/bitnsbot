@@ -424,7 +424,7 @@ func watchesCmd(bot *bot, chatID int64) {
     }
     var addresses, transactions, ids []string
     for _, r := range records {
-        if r.ChatID != chatID {
+        if r.Chat != chatID {
             continue
         }
         ids = append(ids, r.Address)

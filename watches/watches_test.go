@@ -24,7 +24,7 @@ func TestAdd(t *testing.T) {
     if len(list) != 1 {
         t.Fatalf("expected 1 watch, got %d", len(list))
     }
-    if w := list[0]; w.ChatID != 42 || w.Address != "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa" || w.Alias != "Cold wallet" {
+    if w := list[0]; w.Chat != 42 || w.Address != "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa" || w.Alias != "Cold wallet" {
         t.Fatalf("unexpected watch: %#v", w)
     }
 }
@@ -40,10 +40,10 @@ func TestList(t *testing.T) {
     if len(list) != 2 {
         t.Fatalf("expected 2 watches, got %d", len(list))
     }
-    if list[0].ChatID != 1 || list[0].Address != "addrA" {
+    if list[0].Chat != 1 || list[0].Address != "addrA" {
         t.Fatalf("unexpected first: %#v", list[0])
     }
-    if list[1].ChatID != 2 || list[1].Address != "addrB" {
+    if list[1].Chat != 2 || list[1].Address != "addrB" {
         t.Fatalf("unexpected second: %#v", list[1])
     }
 }
@@ -67,7 +67,7 @@ func TestRemove(t *testing.T) {
         t.Fatalf("expected 2 remaining, got %d: %#v", len(list), list)
     }
     for _, w := range list {
-        if w.ChatID == 1 && w.Address == "sharedAddr" {
+        if w.Chat == 1 && w.Address == "sharedAddr" {
             t.Fatalf("chat 1's sharedAddr watch should be gone: %#v", list)
         }
     }
