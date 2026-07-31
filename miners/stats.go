@@ -117,6 +117,7 @@ func collect(src Source) {
         }
         last = to
         from = to + 1
+        time.Sleep(1 * time.Minute)
     }
     if last > began {
         logging.Info("miners stats: processed %d blocks, up to %d", last-began, last)
