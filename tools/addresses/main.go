@@ -142,7 +142,7 @@ type spkData struct {
 // AddressInfo is the json-encoded value stored per address. New fields can
 // be added at the end; old decoders will ignore unknown fields.
 type AddressInfo struct {
-	TxCount int `json:"tx_count"`
+	Txs int `json:"transactions"`
 }
 
 type addrEntry struct {
@@ -152,7 +152,6 @@ type addrEntry struct {
 
 func main() {
 	flag.Parse()
-
 	var d, err = bbolt.Open(*dbPath, 0600, nil)
 	if err != nil {
 		logging.Fatal("open database: %v", err)
@@ -168,7 +167,6 @@ func main() {
 	}); err != nil {
 		logging.Fatal("create addresses bucket: %v", err)
 	}
-
 	if *coreURL == "" {
 		logging.Fatal("Bitcoin Core RPC (-core-url) is required")
 	}
@@ -176,7 +174,6 @@ func main() {
 	if rpcErr != nil {
 		logging.Fatal("RPC client: %v", rpcErr)
 	}
-
 	var ctx = context.Background()
 	var tctx, tcancel = context.WithTimeout(ctx, 15*time.Second)
 	var tip, tipErr = rpc.getBlockCount(tctx)
@@ -184,13 +181,10 @@ func main() {
 	if tipErr != nil {
 		logging.Fatal("get tip: %v", tipErr)
 	}
-
 	var began = time.Now()
 	const numWorkers = 16
 	const batchSize = 1000
-
 	var processed atomic.Int64
-
 	// collector receives (addr, txCount) from workers, deduplicates, and
 	// flushes to bbolt in batches of batchSize.
 	var entries = make(chan addrEntry, 10000)
@@ -200,14 +194,13 @@ func main() {
 		var seen = make(map[string]bool)
 		var batch []addrEntry
 		var totalWritten int64
-
 		flush := func() {
 			if len(batch) == 0 { return }
 			if err := d.Update(func(tx *bbolt.Tx) error {
 				var b = tx.Bucket(addressesBucket)
 				for _, e := range batch {
 					if b.Get([]byte(e.addr)) != nil { continue }
-					var info = AddressInfo{TxCount: e.txCount}
+					var info = AddressInfo{Txs: e.txCount}
 					var val, err = json.Marshal(info)
 					if err != nil { return err }
 					if err := b.Put([]byte(e.addr), val); err != nil { return err }
@@ -220,7 +213,6 @@ func main() {
 			batch = batch[:0]
 			seen = make(map[string]bool)
 		}
-
 		for e := range entries {
 			if seen[e.addr] { continue }
 			seen[e.addr] = true
@@ -232,7 +224,6 @@ func main() {
 		flush() // final partial batch
 		fmt.Fprintf(os.Stderr, "collector finished: %d addresses written\n", totalWritten)
 	}()
-
 	// progress reporter
 	var progressDone = make(chan struct{})
 	go func() {
@@ -252,7 +243,6 @@ func main() {
 			}
 		}
 	}()
-
 	// worker pool
 	var heights = make(chan int64, numWorkers*2)
 	var wg sync.WaitGroup
@@ -269,7 +259,6 @@ func main() {
 					processed.Add(1)
 					continue
 				}
-
 				bctx, bcancel = context.WithTimeout(ctx, 60*time.Second)
 				var blk, blkErr = rpc.getBlockVerbose(bctx, hash)
 				bcancel()
@@ -278,8 +267,6 @@ func main() {
 					processed.Add(1)
 					continue
 				}
-
-				// collect unique addresses from this block
 				var seen = make(map[string]string) // address → scriptHex
 				for _, tx := range blk.Tx {
 					for _, vin := range tx.Vin {
@@ -294,7 +281,6 @@ func main() {
 						}
 					}
 				}
-
 				for addr, scriptHex := range seen {
 					var script, _ = hex.DecodeString(scriptHex)
 					var touches, _ = addrindex.Lookup(script, 1000000000)
@@ -305,13 +291,11 @@ func main() {
 			}
 		}()
 	}
-
 	for h := int64(0); h <= tip; h++ { heights <- h }
 	close(heights)
 	wg.Wait()
 	close(progressDone)
 	close(entries) // signal collector to flush remaining and exit
 	<-collectorDone
-
 	fmt.Printf("\rprocessed %d / %d (100%%) in %s\n", tip, tip, time.Since(began).Round(time.Second))
 }
