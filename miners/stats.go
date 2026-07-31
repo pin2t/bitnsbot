@@ -15,6 +15,7 @@ var cursorBucket = []byte("miners-cursor")
 // statInterval is how often the collector processes new blocks. A package var so
 // tests can shrink it.
 var statInterval = 10 * time.Minute
+var cooldownPeriod = 1 * time.Minute
 
 // chunkSize bounds how many blocks are aggregated in memory before a database
 // flush, so catching up a large gap doesn't build one giant transaction.
@@ -48,11 +49,11 @@ type Source interface {
 
 // stat is the stored per-miner aggregate (keyed by miner name in miners-stat).
 type stat struct {
-    Blocks   int64
-    Reward   float64 // BTC (subsidy + fees)
-    Fees     float64 // BTC
-    Work     float64 // Σ per-block work (difficulty × 2^32 hashes)
-    LastWork float64 // work of this miner's most recent block
+    Blocks   int64   `json:"blocks"`
+    Reward   float64 `json:"reward"`   // BTC (subsidy + fees)
+    Fees     float64 `json:"fees"`     // BTC
+    Work     float64 `json:"work"`     // Σ per-block work (difficulty × 2^32 hashes)
+    LastWork float64 `json:"lastWork"` // work of this miner's most recent block
 }
 
 // StartStats runs the by-miner statistics collector: it catches up from the last
@@ -94,8 +95,8 @@ func collect(src Source) {
         for h := from; h <= to; h++ {
             var b, berr = src.Block(ctx, h)
             if berr != nil {
-                logging.Warn("miners stats: block %d: %v — skip", h, berr)
-                continue
+                logging.Warn("miners stats: error on block %d: %v — retry on next run", h, berr)
+                return
             }
             var name = Attribute(b.CoinbaseAddresses, b.CoinbaseScript)
             if name == "" { continue }
@@ -117,6 +118,7 @@ func collect(src Source) {
         }
         last = to
         from = to + 1
+        if from < tip { time.Sleep(cooldownPeriod) }
     }
     if last > began {
         logging.Info("miners stats: processed %d blocks, up to %d", last-began, last)

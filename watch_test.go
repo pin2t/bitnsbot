@@ -173,7 +173,7 @@ func TestUnwatchFlow(t *testing.T) {
         t.Fatalf("expected only chat 1 to remain, got %#v", got)
     }
     var records, _ = watches.List()
-    if len(records) != 1 || records[0].ChatID != 1 {
+    if len(records) != 1 || records[0].Chat != 1 {
         t.Fatalf("expected only chat 1's record in store, got %#v", records)
     }
     // unwatching something not watched removes nothing

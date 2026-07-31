@@ -24,22 +24,22 @@ var blockCacheInterval = 10 * time.Minute
 var blocksChunkSize int64 = 1000
 
 type blockInfo struct {
-    Height     int64
-    Hash       string
-    Time       int64
-    Size       int32
-    NumTx      int
-    Miner      string
-    FeesOK     bool
-    FeeMin     float64
-    FeeAvg     float64
-    FeeMax     float64
-    TxSizeMin  int32
-    TxSizeAvg  int32
-    TxSizeMax  int32
-    Reward     float64
-    Total      float64
-    Difficulty float64
+    Height     int64    `json:"height"`
+    Hash       string   `json:"hash"`
+    Time       int64    `json:"timestamp"`
+    Size       int32    `json:"size"`
+    NumTx      int      `json:"txCount"`
+    Miner      string   `json:"miner"`
+    FeesOK     bool     `json:"feesOk"`
+    FeeMin     float64  `json:"minFee"`
+    FeeAvg     float64  `json:"avgFee"`
+    FeeMax     float64  `json:"maxFee"`
+    TxSizeMin  int32    `json:"txSizeMin"`
+    TxSizeAvg  int32    `json:"txSizeAvg"`
+    TxSizeMax  int32    `json:"txSizeMax"`
+    Reward     float64  `json:"reward"`
+    Total      float64  `json:"total"`
+    Difficulty float64  `json:"difficulty"`
 }
 
 // blockInit creates the blocks-stat and blocks-cursor buckets inside the shared
@@ -214,6 +214,7 @@ func collectBlocks() {
             logging.Err("block cache: flush: %v", err)
             return
         }
+        if from < tip { time.Sleep(1 * time.Minute) }
         from = to + 1
     }
     if from-1 > began {

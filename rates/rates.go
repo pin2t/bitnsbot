@@ -440,8 +440,8 @@ func Snapshot() (Market, bool) {
 type marketRecord struct {
     Timestamp int64   `json:"timestamp"`
     Price     float64 `json:"price"`
-    MarketCap float64 `json:"market_cap"`
-    Volume24h float64 `json:"volume_24h"`
+    MarketCap float64 `json:"marketCap"`
+    Volume24h float64 `json:"volume24h"`
 }
 
 func storeMarket(m Market) error {

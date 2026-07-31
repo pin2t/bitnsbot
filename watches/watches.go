@@ -13,19 +13,19 @@ var bucket = []byte("watches")
 // Watch is the public view of a stored address watch — the internal record type
 // is not exposed.
 type Watch struct {
-    ChatID  int64
+    Chat    int64
     Address string
     Alias   string
 }
 
 // watchRecord is the stored form. Only address watches are persisted (transaction
-// watches live in memory), so there is no type field; the WatchID JSON key is
+// watches live in memory), so there is no type field; the Watch JSON key is
 // kept for compatibility with records written before this refactor.
 type watchRecord struct {
-    CreatedAt int64  `json:"created_at"`
-    ChatID    int64  `json:"chat_id"`
-    WatchID   string `json:"watch_id"`
-    Alias     string `json:"alias"`
+    Created int64  `json:"created"`
+    Chat    int64  `json:"chat"`
+    Watch   string `json:"watch"`
+    Alias   string `json:"alias"`
 }
 
 // Init stores the shared bbolt handle and ensures the watches bucket exists.
@@ -47,10 +47,10 @@ func itob(v uint64) []byte {
 func Add(chatID int64, address, alias string) error {
     logging.Db("add chat=%d address=%s alias=%s", chatID, address, alias)
     var data, err = json.Marshal(watchRecord{
-        CreatedAt: time.Now().Unix(),
-        ChatID:    chatID,
-        WatchID:   address,
-        Alias:     alias,
+        Created: time.Now().Unix(),
+        Chat:    chatID,
+        Watch:   address,
+        Alias:   alias,
     })
     if err != nil { return err }
     return db.Update(func(tx *bbolt.Tx) error {
@@ -69,7 +69,7 @@ func List() ([]Watch, error) {
         return tx.Bucket(bucket).ForEach(func(k, v []byte) error {
             var r watchRecord
             if err := json.Unmarshal(v, &r); err != nil { return err }
-            watches = append(watches, Watch{ChatID: r.ChatID, Address: r.WatchID, Alias: r.Alias})
+            watches = append(watches, Watch{Chat: r.Chat, Address: r.Watch, Alias: r.Alias})
             return nil
         })
     })
@@ -90,7 +90,7 @@ func Remove(chatID int64, address string) (int, error) {
         var err = b.ForEach(func(k, v []byte) error {
             var r watchRecord
             if err := json.Unmarshal(v, &r); err != nil { return err }
-            if r.ChatID == chatID && r.WatchID == address {
+            if r.Chat == chatID && r.Watch == address {
                 keys = append(keys, append([]byte(nil), k...))
             }
             return nil

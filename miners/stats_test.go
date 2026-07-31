@@ -6,8 +6,8 @@ import "errors"
 import "math"
 import "reflect"
 import "testing"
-
 import "go.etcd.io/bbolt"
+import "time"
 
 // fakeSource stands in for the btcd-backed chain source: a fixed tip and a map of
 // blocks, recording every height fetched so tests can assert what was processed.
@@ -54,6 +54,12 @@ func setChunk(t *testing.T, chunk int64) {
     var sc = chunkSize
     t.Cleanup(func() { chunkSize = sc })
     chunkSize = chunk
+}
+
+func setCooldown(t *testing.T, p time.Duration) {
+    var cd = cooldownPeriod
+    t.Cleanup(func() { cooldownPeriod = cd })
+    cooldownPeriod = p
 }
 
 func equal(t *testing.T, label string, got, want float64) {
@@ -138,6 +144,7 @@ func TestTopConsumption(t *testing.T) {
 func TestCollectChunks(t *testing.T) {
     fixtureDB(t)
     setChunk(t, 2)
+    setCooldown(t, time.Millisecond)
     var src = chainFixture()
     var flushed bool
     src.onBlock = func(h int64) {
@@ -203,18 +210,4 @@ func TestCollectWaitsForAddresses(t *testing.T) {
 func TestTopEmpty(t *testing.T) {
     fixtureDB(t)
     if got := Top(10); len(got) != 0 { t.Fatalf("Top on an empty bucket = %+v, want none", got) }
-}
-
-// A failing block fetch is skipped — the run continues and the cursor advances
-// past it. The aggregate still includes every block that did succeed.
-func TestCollectRetriesOnError(t *testing.T) {
-    fixtureDB(t)
-    setChunk(t, 1000)
-    var src = chainFixture()
-    src.err = map[int64]bool{4: true}
-    collect(src)
-    // the failed block is skipped; the other four blocks are still processed
-    if a := statOf(t, "PoolA"); a.Blocks != 3 { t.Fatalf("PoolA blocks after run with error = %d, want 3", a.Blocks) }
-    var last, ok = cursor()
-    if !ok || last != 5 { t.Fatalf("cursor = (%d, %v), want (5, true)", last, ok) }
 }

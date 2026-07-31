@@ -338,7 +338,7 @@ func startNotify(bot *bot) {
         return
     }
     for _, w := range records {
-        startNotifyChat(bot, w.ChatID, watchTypeAddress, w.Address, w.Alias)
+        startNotifyChat(bot, w.Chat, watchTypeAddress, w.Address, w.Alias)
     }
     var addrs = notifyAddresses()
     if core != nil && len(addrs) > 0 {
