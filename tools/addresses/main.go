@@ -16,6 +16,7 @@ import "flag"
 import "fmt"
 import "net/http"
 import "os"
+import "strconv"
 import "strings"
 import "sync"
 import "sync/atomic"
@@ -32,6 +33,7 @@ var corePass = flag.String("core-pass", "", "Bitcoin Core RPC password")
 var coreCookie = flag.String("core-cookie", "", "path to Bitcoin Core .cookie file")
 
 var addressesBucket = []byte("addresses")
+var addressesCursorBucket = []byte("addresses-cursor")
 
 type rpcClient struct {
 	url    string
@@ -160,12 +162,16 @@ func main() {
 	if err := addrindex.Init(d); err != nil {
 		logging.Fatal("init addrindex: %v", err)
 	}
-	// ensure the addresses bucket exists
+	// ensure the addresses and cursor buckets exist
 	if err := d.Update(func(tx *bbolt.Tx) error {
-		_, err := tx.CreateBucketIfNotExists(addressesBucket)
-		return err
+		for _, name := range [][]byte{addressesBucket, addressesCursorBucket} {
+			if _, err := tx.CreateBucketIfNotExists(name); err != nil {
+				return err
+			}
+		}
+		return nil
 	}); err != nil {
-		logging.Fatal("create addresses bucket: %v", err)
+		logging.Fatal("create buckets: %v", err)
 	}
 	if *coreURL == "" {
 		logging.Fatal("Bitcoin Core RPC (-core-url) is required")
@@ -181,10 +187,30 @@ func main() {
 	if tipErr != nil {
 		logging.Fatal("get tip: %v", tipErr)
 	}
+	// read the last processed height from the addresses-cursor bucket
+	var startHeight int64
+	if err := d.View(func(tx *bbolt.Tx) error {
+		if v := tx.Bucket(addressesCursorBucket).Get([]byte("cursor")); v != nil {
+			var e error
+			startHeight, e = strconv.ParseInt(string(v), 10, 64)
+			if e != nil { return e }
+			startHeight++ // resume from the next block
+		}
+		return nil
+	}); err != nil {
+		logging.Fatal("read cursor: %v", err)
+	}
 	var began = time.Now()
 	const numWorkers = 16
 	const batchSize = 1000
 	var processed atomic.Int64
+	// processedBlocks tracks which block heights have been fully processed
+	// by workers. The collector uses it to advance the cursor past every
+	// consecutive block that completed, so an interrupted run resumes from
+	// the first gap instead of restarting.
+	var processedMu sync.Mutex
+	var processedBlocks = make(map[int64]struct{})
+	var cursorHeight = startHeight - 1 // last committed cursor value
 	// collector receives (addr, txCount) from workers, deduplicates, and
 	// flushes to bbolt in batches of batchSize.
 	var entries = make(chan addrEntry, 10000)
@@ -205,7 +231,19 @@ func main() {
 					if err != nil { return err }
 					if err := b.Put([]byte(e.addr), val); err != nil { return err }
 				}
-				return nil
+				// advance cursor past every consecutive processed block
+				processedMu.Lock()
+				for {
+					if _, ok := processedBlocks[cursorHeight+1]; ok {
+						cursorHeight++
+						delete(processedBlocks, cursorHeight)
+					} else {
+						break
+					}
+				}
+				processedMu.Unlock()
+				return tx.Bucket(addressesCursorBucket).Put(
+					[]byte("cursor"), []byte(strconv.FormatInt(cursorHeight, 10)))
 			}); err != nil {
 				fmt.Fprintf(os.Stderr, "\nflush error: %v\n", err)
 			}
@@ -288,10 +326,13 @@ func main() {
 					entries <- addrEntry{addr: addr, txCount: cnt}
 				}
 				processed.Add(1)
+				processedMu.Lock()
+				processedBlocks[h] = struct{}{}
+				processedMu.Unlock()
 			}
 		}()
 	}
-	for h := int64(0); h <= tip; h++ { heights <- h }
+	for h := startHeight; h <= tip; h++ { heights <- h }
 	close(heights)
 	wg.Wait()
 	close(progressDone)
