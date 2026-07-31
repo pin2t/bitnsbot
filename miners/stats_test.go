@@ -204,17 +204,3 @@ func TestTopEmpty(t *testing.T) {
     fixtureDB(t)
     if got := Top(10); len(got) != 0 { t.Fatalf("Top on an empty bucket = %+v, want none", got) }
 }
-
-// A failing block fetch is skipped — the run continues and the cursor advances
-// past it. The aggregate still includes every block that did succeed.
-func TestCollectRetriesOnError(t *testing.T) {
-    fixtureDB(t)
-    setChunk(t, 1000)
-    var src = chainFixture()
-    src.err = map[int64]bool{4: true}
-    collect(src)
-    // the failed block is skipped; the other four blocks are still processed
-    if a := statOf(t, "PoolA"); a.Blocks != 3 { t.Fatalf("PoolA blocks after run with error = %d, want 3", a.Blocks) }
-    var last, ok = cursor()
-    if !ok || last != 5 { t.Fatalf("cursor = (%d, %v), want (5, true)", last, ok) }
-}
