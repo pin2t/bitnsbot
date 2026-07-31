@@ -6,8 +6,8 @@ import "errors"
 import "math"
 import "reflect"
 import "testing"
-
 import "go.etcd.io/bbolt"
+import "time"
 
 // fakeSource stands in for the btcd-backed chain source: a fixed tip and a map of
 // blocks, recording every height fetched so tests can assert what was processed.
@@ -54,6 +54,12 @@ func setChunk(t *testing.T, chunk int64) {
     var sc = chunkSize
     t.Cleanup(func() { chunkSize = sc })
     chunkSize = chunk
+}
+
+func setCooldown(t *testing.T, p time.Duration) {
+    var cd = cooldownPeriod
+    t.Cleanup(func() { cooldownPeriod = cd })
+    cooldownPeriod = p
 }
 
 func equal(t *testing.T, label string, got, want float64) {
@@ -138,6 +144,7 @@ func TestTopConsumption(t *testing.T) {
 func TestCollectChunks(t *testing.T) {
     fixtureDB(t)
     setChunk(t, 2)
+    setCooldown(t, time.Millisecond)
     var src = chainFixture()
     var flushed bool
     src.onBlock = func(h int64) {

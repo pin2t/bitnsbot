@@ -214,7 +214,7 @@ func collectBlocks() {
             logging.Err("block cache: flush: %v", err)
             return
         }
-        time.Sleep(1 * time.Minute)
+        if from < tip { time.Sleep(1 * time.Minute) }
         from = to + 1
     }
     if from-1 > began {

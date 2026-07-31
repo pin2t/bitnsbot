@@ -15,6 +15,7 @@ var cursorBucket = []byte("miners-cursor")
 // statInterval is how often the collector processes new blocks. A package var so
 // tests can shrink it.
 var statInterval = 10 * time.Minute
+var cooldownPeriod = 1 * time.Minute
 
 // chunkSize bounds how many blocks are aggregated in memory before a database
 // flush, so catching up a large gap doesn't build one giant transaction.
@@ -117,7 +118,7 @@ func collect(src Source) {
         }
         last = to
         from = to + 1
-        time.Sleep(1 * time.Minute)
+        if from < tip { time.Sleep(cooldownPeriod) }
     }
     if last > began {
         logging.Info("miners stats: processed %d blocks, up to %d", last-began, last)
