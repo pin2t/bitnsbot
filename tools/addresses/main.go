@@ -236,7 +236,6 @@ func main() {
 				for {
 					if _, ok := processedBlocks[cursorHeight+1]; ok {
 						cursorHeight++
-						delete(processedBlocks, cursorHeight)
 					} else {
 						break
 					}
@@ -255,9 +254,7 @@ func main() {
 			if seen[e.addr] { continue }
 			seen[e.addr] = true
 			batch = append(batch, e)
-			if len(batch) >= batchSize {
-				flush()
-			}
+			if len(batch) >= batchSize { flush() }
 		}
 		flush() // final partial batch
 		fmt.Fprintf(os.Stderr, "collector finished: %d addresses written\n", totalWritten)
