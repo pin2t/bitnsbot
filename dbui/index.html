@@ -104,8 +104,17 @@
   </div>
 
   <div class="tabs">
+    <button class="tab" data-panel="buckets">Buckets</button>
     <button class="tab active" data-panel="data">Data</button>
     <button class="tab" data-panel="value">Value</button>
+  </div>
+
+  <div id="buckets" class="panel">
+    <table>
+      <thead><tr><th>Bucket</th><th style="text-align:right">Keys</th><th style="text-align:right">Size</th></tr></thead>
+      <tbody id="bucketRows"></tbody>
+    </table>
+    <div id="bucketEmpty" class="empty" hidden>No buckets.</div>
   </div>
 
   <div id="data" class="panel active">
@@ -178,7 +187,10 @@
     });
   }
   document.querySelectorAll(".tab").forEach(function(t) {
-    t.addEventListener("click", function() { showTab(t.dataset.panel); });
+    t.addEventListener("click", function() {
+      showTab(t.dataset.panel);
+      if (t.dataset.panel === "buckets") loadBucketStats();
+    });
   });
 
   function loadBuckets() {
@@ -191,6 +203,27 @@
         sel.appendChild(o);
       });
     }).catch(function(e) { status("could not load buckets: " + e, "err"); });
+  }
+
+  function loadBucketStats() {
+    fetch("api/bucketstats").then(function(r) { return r.json(); }).then(function(d) {
+      var body = $("bucketRows");
+      body.innerHTML = "";
+      (d.buckets || []).forEach(function(b) {
+        var tr = document.createElement("tr");
+        var tdn = document.createElement("td");
+        var tdk = document.createElement("td");
+        var tds = document.createElement("td");
+        tdn.textContent = b.name;
+        tdk.textContent = b.keys;
+        tdk.style.textAlign = "right";
+        tds.textContent = b.size;
+        tds.style.textAlign = "right";
+        tr.appendChild(tdn); tr.appendChild(tdk); tr.appendChild(tds);
+        body.appendChild(tr);
+      });
+      $("bucketEmpty").hidden = (d.buckets && d.buckets.length > 0);
+    }).catch(function(e) { status("could not load bucket stats: " + e, "err"); });
   }
 
   function loadView() {
@@ -433,6 +466,7 @@
   $("importFileInput").addEventListener("change", doImport);
   $("empty").hidden = false;
   loadBuckets();
+  loadBucketStats();
 </script>
 </body>
 </html>
