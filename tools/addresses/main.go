@@ -16,6 +16,7 @@ import "flag"
 import "fmt"
 import "net/http"
 import "os"
+import "strconv"
 import "strings"
 import "sync"
 import "sync/atomic"
@@ -32,6 +33,7 @@ var corePass = flag.String("core-pass", "", "Bitcoin Core RPC password")
 var coreCookie = flag.String("core-cookie", "", "path to Bitcoin Core .cookie file")
 
 var addressesBucket = []byte("addresses")
+var addressesCursorBucket = []byte("addresses-cursor")
 
 type rpcClient struct {
 	url    string
@@ -142,7 +144,7 @@ type spkData struct {
 // AddressInfo is the json-encoded value stored per address. New fields can
 // be added at the end; old decoders will ignore unknown fields.
 type AddressInfo struct {
-	TxCount int `json:"tx_count"`
+	Txs int `json:"transactions"`
 }
 
 type addrEntry struct {
@@ -152,7 +154,6 @@ type addrEntry struct {
 
 func main() {
 	flag.Parse()
-
 	var d, err = bbolt.Open(*dbPath, 0600, nil)
 	if err != nil {
 		logging.Fatal("open database: %v", err)
@@ -161,14 +162,17 @@ func main() {
 	if err := addrindex.Init(d); err != nil {
 		logging.Fatal("init addrindex: %v", err)
 	}
-	// ensure the addresses bucket exists
+	// ensure the addresses and cursor buckets exist
 	if err := d.Update(func(tx *bbolt.Tx) error {
-		_, err := tx.CreateBucketIfNotExists(addressesBucket)
-		return err
+		for _, name := range [][]byte{addressesBucket, addressesCursorBucket} {
+			if _, err := tx.CreateBucketIfNotExists(name); err != nil {
+				return err
+			}
+		}
+		return nil
 	}); err != nil {
-		logging.Fatal("create addresses bucket: %v", err)
+		logging.Fatal("create buckets: %v", err)
 	}
-
 	if *coreURL == "" {
 		logging.Fatal("Bitcoin Core RPC (-core-url) is required")
 	}
@@ -176,7 +180,6 @@ func main() {
 	if rpcErr != nil {
 		logging.Fatal("RPC client: %v", rpcErr)
 	}
-
 	var ctx = context.Background()
 	var tctx, tcancel = context.WithTimeout(ctx, 15*time.Second)
 	var tip, tipErr = rpc.getBlockCount(tctx)
@@ -184,13 +187,30 @@ func main() {
 	if tipErr != nil {
 		logging.Fatal("get tip: %v", tipErr)
 	}
-
+	// read the last processed height from the addresses-cursor bucket
+	var start int64
+	if err := d.View(func(tx *bbolt.Tx) error {
+		if v := tx.Bucket(addressesCursorBucket).Get([]byte("cursor")); v != nil {
+			var e error
+			start, e = strconv.ParseInt(string(v), 10, 64)
+			if e != nil { return e }
+			start++ // resume from the next block
+		}
+		return nil
+	}); err != nil {
+		logging.Fatal("read cursor: %v", err)
+	}
 	var began = time.Now()
 	const numWorkers = 16
 	const batchSize = 1000
-
 	var processed atomic.Int64
-
+	// processedBlocks tracks which block heights have been fully processed
+	// by workers. The collector uses it to advance the cursor past every
+	// consecutive block that completed, so an interrupted run resumes from
+	// the first gap instead of restarting.
+	var processedMu sync.Mutex
+	var processedBlocks = make(map[int64]struct{})
+	var cursor = start - 1 // last committed cursor value
 	// collector receives (addr, txCount) from workers, deduplicates, and
 	// flushes to bbolt in batches of batchSize.
 	var entries = make(chan addrEntry, 10000)
@@ -200,19 +220,29 @@ func main() {
 		var seen = make(map[string]bool)
 		var batch []addrEntry
 		var totalWritten int64
-
 		flush := func() {
 			if len(batch) == 0 { return }
 			if err := d.Update(func(tx *bbolt.Tx) error {
 				var b = tx.Bucket(addressesBucket)
 				for _, e := range batch {
 					if b.Get([]byte(e.addr)) != nil { continue }
-					var info = AddressInfo{TxCount: e.txCount}
+					var info = AddressInfo{Txs: e.txCount}
 					var val, err = json.Marshal(info)
 					if err != nil { return err }
 					if err := b.Put([]byte(e.addr), val); err != nil { return err }
 				}
-				return nil
+				// advance cursor past every consecutive processed block
+				processedMu.Lock()
+				for {
+					if _, ok := processedBlocks[cursor+1]; ok {
+						cursor++
+					} else {
+						break
+					}
+				}
+				processedMu.Unlock()
+				return tx.Bucket(addressesCursorBucket).Put(
+					[]byte("cursor"), []byte(strconv.FormatInt(cursor, 10)))
 			}); err != nil {
 				fmt.Fprintf(os.Stderr, "\nflush error: %v\n", err)
 			}
@@ -220,19 +250,15 @@ func main() {
 			batch = batch[:0]
 			seen = make(map[string]bool)
 		}
-
 		for e := range entries {
 			if seen[e.addr] { continue }
 			seen[e.addr] = true
 			batch = append(batch, e)
-			if len(batch) >= batchSize {
-				flush()
-			}
+			if len(batch) >= batchSize { flush() }
 		}
 		flush() // final partial batch
 		fmt.Fprintf(os.Stderr, "collector finished: %d addresses written\n", totalWritten)
 	}()
-
 	// progress reporter
 	var progressDone = make(chan struct{})
 	go func() {
@@ -241,18 +267,23 @@ func main() {
 		for {
 			select {
 			case <-ticker.C:
-				var h = processed.Load()
+				var c int64
+				d.View(func(tx *bbolt.Tx) error {
+					if v := tx.Bucket(addressesCursorBucket).Get([]byte("cursor")); v != nil {
+						c, _ = strconv.ParseInt(string(v), 10, 64)
+					}
+					return nil
+				});
 				var pct float64
 				if tip > 0 {
-					pct = float64(h) / float64(tip) * 100
+					pct = float64(c) / float64(tip) * 100
 				}
-				fmt.Printf("\rprocessed %d / %d (%.0f%%)", h, tip, pct)
+				fmt.Printf("\rprocessed %d / %d (%.0f%%)", c, tip, pct)
 			case <-progressDone:
 				return
 			}
 		}
 	}()
-
 	// worker pool
 	var heights = make(chan int64, numWorkers*2)
 	var wg sync.WaitGroup
@@ -269,7 +300,6 @@ func main() {
 					processed.Add(1)
 					continue
 				}
-
 				bctx, bcancel = context.WithTimeout(ctx, 60*time.Second)
 				var blk, blkErr = rpc.getBlockVerbose(bctx, hash)
 				bcancel()
@@ -278,8 +308,6 @@ func main() {
 					processed.Add(1)
 					continue
 				}
-
-				// collect unique addresses from this block
 				var seen = make(map[string]string) // address → scriptHex
 				for _, tx := range blk.Tx {
 					for _, vin := range tx.Vin {
@@ -294,7 +322,6 @@ func main() {
 						}
 					}
 				}
-
 				for addr, scriptHex := range seen {
 					var script, _ = hex.DecodeString(scriptHex)
 					var touches, _ = addrindex.Lookup(script, 1000000000)
@@ -302,16 +329,17 @@ func main() {
 					entries <- addrEntry{addr: addr, txCount: cnt}
 				}
 				processed.Add(1)
+				processedMu.Lock()
+				processedBlocks[h] = struct{}{}
+				processedMu.Unlock()
 			}
 		}()
 	}
-
-	for h := int64(0); h <= tip; h++ { heights <- h }
+	for h := start; h <= tip; h++ { heights <- h }
 	close(heights)
 	wg.Wait()
 	close(progressDone)
 	close(entries) // signal collector to flush remaining and exit
 	<-collectorDone
-
 	fmt.Printf("\rprocessed %d / %d (100%%) in %s\n", tip, tip, time.Since(began).Round(time.Second))
 }
