@@ -163,17 +163,6 @@ func shutdown(bot *bot, srv *http.Server) {
     if err := closeDB(); err != nil {
         logging.Err("close watches database: %v", err)
     }
-    if bot != nil {
-        if err := bot.deleteWebhook(ctx, true); err != nil {
-            logging.Err("delete webhook: %v", err)
-        }
-        if err := bot.close(ctx); err != nil {
-            logging.Err("close bot: %v", err)
-        }
-        if err := bot.logOut(ctx); err != nil {
-            logging.Err("log out bot: %v", err)
-        }
-    }
 }
 
 // callback handles a tapped inline-keyboard button. The button's data is the
