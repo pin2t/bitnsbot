@@ -144,7 +144,7 @@ func TestBlockNotification(t *testing.T) {
     defer func() { core = nil }()
     // Core pushes new tips over ZMQ rather than through an RPC subscription, so
     // this is what zmq.go does on a hashblock frame.
-    go cacheBlockHash("0000000000000000abc")
+    go processBlock("0000000000000000abc")
     var ok bool
     for i := 0; i < 40 && !ok; i++ {
         _, ok = loadBlock(100)

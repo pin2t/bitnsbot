@@ -289,7 +289,7 @@ func TestTxConfirmation(t *testing.T) {
     txwatches.Add(txid, 7, "Alice")
     // a hashblock frame is what zmq.go turns into a checkConfirmations that finds
     // txid in the new block and messages chat 7
-    go checkConfirmations(b, "0000000000000000abc")
+    go processConfirms(b, "0000000000000000abc")
     var found string
     var deadline = time.Now().Add(3 * time.Second)
     for time.Now().Before(deadline) {
@@ -357,7 +357,7 @@ func TestAddrConfirmation(t *testing.T) {
     stopNotify()
     defer stopNotify()
     txwatches.AddAddrConfirm(txid, 7, addr, "John", txwatches.Summary{})
-    checkConfirmations(b, "hash200")
+    processConfirms(b, "hash200")
     sentMu.Lock()
     defer sentMu.Unlock()
     var found string
@@ -675,7 +675,7 @@ func TestConfirmationLinksBlock(t *testing.T) {
     t.Cleanup(func() { core = nil })
     t.Cleanup(stopNotify)
     txwatches.AddAddrConfirm(txid, 42, addr, "", txwatches.Summary{})
-    checkConfirmations(b, "0000000000000000abc")
+    processConfirms(b, "0000000000000000abc")
     var deadline = time.Now().Add(3 * time.Second)
     for time.Now().Before(deadline) {
         markupMu.Lock()

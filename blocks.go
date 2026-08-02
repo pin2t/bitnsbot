@@ -125,10 +125,10 @@ func computeBlockInfo(ctx context.Context, hash string) (*blockInfo, error) {
     }, nil
 }
 
-// cacheBlockHash computes and stores a block by hash — used by the blockconnected
+// processBlock computes and stores a block by hash — used by the blockconnected
 // notification, which carries the new tip's hash. Runs off core's read-loop
 // goroutine (spawned by the handler) since computeBlockInfo calls back into core.
-func cacheBlockHash(hash string) {
+func processBlock(hash string) {
     if core == nil { return }
     var ctx, cancel = context.WithTimeout(context.Background(), 60*time.Second)
     defer cancel()

@@ -233,26 +233,20 @@ func startZMQ(ctx context.Context, endpoints []string, b *bot) error {
             switch string(msg.Frames[0]) {
             case "hashblock":
                 var hash = hex.EncodeToString(msg.Frames[1])
-                go cacheBlockHash(hash)
-                go checkConfirmations(b, hash)
+                go processBlock(hash)
+                go processConfirms(b, hash)
             case "rawtx":
-                onRawTx(msg.Frames[1])
+                if !anyWatched() { continue }
+                var tx, ok = parseTx(msg.Frames[1])
+                if !ok {
+                    logging.Warn("zmq: could not parse a %d-byte transaction", len(msg.Frames[1]))
+                    return
+                }
+                if !matches(tx) { continue }
+                go broadcast(hex.EncodeToString(msg.Frames[1]))
             }
         }
     }()
     logging.Status("subscribed to Bitcoin Core notifications at %s", strings.Join(endpoints, ", "))
     return nil
-}
-
-// onRawTx is the hot path: it runs for every transaction entering the mempool,
-// so it does no I/O unless the transaction touches a watched address.
-func onRawTx(raw []byte) {
-    if !anyWatched() { return }
-    var tx, ok = parseTx(raw)
-    if !ok {
-        logging.Warn("zmq: could not parse a %d-byte transaction", len(raw))
-        return
-    }
-    if !matches(tx) { return }
-    go broadcast(hex.EncodeToString(raw))
 }

@@ -330,8 +330,8 @@ func confEstimate(ctx context.Context, feeRate float64) string {
     }
     switch {
     case feeRate >= fast*1e5:   return "~10-20 min"
-    case feeRate >= medium*1e5: return "~1h"
-    default:                    return "2h+"
+    case feeRate >= medium*1e5: return "~1 h"
+    default:                    return "2+ h"
     }
 }
 
@@ -404,12 +404,12 @@ func confirmationMessage(c txwatches.Confirmed, height int64) (string, []string)
     return fmt.Sprintf("🔔 %s", msg), ids
 }
 
-// checkConfirmations notifies and drops every transaction watch whose transaction
+// processConfirms notifies and drops every transaction watch whose transaction
 // appears in the just-connected block. The block's txids come from a light
 // getblock (verbosity 1); the fetch is skipped entirely when nothing is watched,
 // so an idle bot pays nothing per block. Runs off core's read-loop goroutine
 // (spawned by notifier.Handle) since it calls back into core.
-func checkConfirmations(b *bot, hash string) {
+func processConfirms(b *bot, hash string) {
     if b == nil || core == nil { return }
     if !txwatches.Any() { return }
     var ctx, cancel = context.WithTimeout(context.Background(), 30*time.Second)
