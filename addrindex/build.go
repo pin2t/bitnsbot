@@ -46,7 +46,7 @@ var backfillInterval = 2 * time.Minute
 func StartBackfill(src Blockchain) {
     go func() {
         for {
-            if err := catchUp(src); err != nil {
+            if err := index(src); err != nil {
                 logging.Warn("addrindex: %v", err)
             }
             time.Sleep(backfillInterval)
@@ -54,12 +54,12 @@ func StartBackfill(src Blockchain) {
     }()
 }
 
-func catchUp(src Blockchain) error {
+func index(src Blockchain) error {
     var ctx, cancel = context.WithTimeout(context.Background(), 6*time.Hour)
     defer cancel()
     var tip, err = src.Tip(ctx)
     if err != nil { return err }
-    var height, ok = LoadCursor()
+    var height, ok = Cursor()
     var from int
     if ok { from = height + 1 }
     for from <= tip {
@@ -68,13 +68,7 @@ func catchUp(src Blockchain) error {
         var touches = map[string][]Touch{}
         for h := from; h <= to; h++ {
             var blk, berr = src.BlockAt(ctx, h)
-            if berr != nil {
-                // abandon the chunk without merging, same reasoning as the
-                // miners collector: advancing the cursor past a block that
-                // failed to fetch would drop it from the index for good, and
-                // the next pass retries the whole range
-                return berr
-            }
+            if berr != nil { return berr }
             indexBlock(touches, uint32(h), blk)
         }
         if err := merge(touches, to); err != nil { return err }

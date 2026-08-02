@@ -402,7 +402,7 @@ func address(ctx context.Context, bot *bot, chatID int64, addr string) {
     if decodeErr == nil {
         txs, complete = addressHistory(ctx, script)
     }
-    if built, ok := addrindex.LoadCursor(); !ok {
+    if built, ok := addrindex.Cursor(); !ok {
         // nothing indexed yet: say so rather than report an empty history as fact
         pairs = append(pairs, [2]string{"Activity", "unavailable (address index is still building)"})
     } else if len(txs) == 0 && !complete {

@@ -186,8 +186,7 @@ func updateCursor(tx *bbolt.Tx, height int) error {
     return tx.Bucket(cursorBucket).Put([]byte("cursor"), []byte(strconv.FormatInt(int64(height), 10)))
 }
 
-// LoadCursor returns the built-to position, or ok=false on a fresh index.
-func LoadCursor() (h int, ok bool) {
+func Cursor() (h int, ok bool) {
     if db == nil { return 0, false }
     db.View(func(tx *bbolt.Tx) error {
         if v := tx.Bucket(cursorBucket).Get([]byte("cursor")); v != nil {
