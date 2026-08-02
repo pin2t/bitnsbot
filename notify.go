@@ -84,8 +84,12 @@ func addressNotification(n notification, watchID, alias string) (string, []strin
     var in, gotIn = n.received[watchID]
     var out, gotOut = n.sent[watchID]
     if !gotIn && !gotOut { return "", nil, txwatches.Summary{}, false }
-    var label = short(watchID)
-    if alias != "" { label += " (" + html.EscapeString(alias) + ")" }
+    var label string
+    if alias != "" {
+        label = fmt.Sprintf("%s (%s)", short(watchID), html.EscapeString(alias))
+    } else {
+        label = short(watchID)
+    }
     var ids = []string{n.txid, watchID}
     var pairs [][2]string
     var header string
@@ -108,10 +112,10 @@ func addressNotification(n notification, watchID, alias string) (string, []strin
             return recipients[i].b < recipients[j].b
         })
         summary = txwatches.Summary{Amount: out, Recipients: addrs, Outgoing: true}
-        header = label + " is sending " + amountLine(out, time.Time{}, true) + " to\n"
+        header = fmt.Sprintf("%s is sending %s to\n", label, amountLine(out, time.Time{}, true))
         if len(recipients) == 0 { header += "none\n" }
         for i := 0; i < min(len(recipients), shownAddrs); i++ {
-            header += short(recipients[i].a) + ": " + amountLine(float64(recipients[i].b) / 1e8, time.Now(), true) + "\n"
+            header += fmt.Sprintf("%s: %s\n", short(recipients[i].a), amountLine(float64(recipients[i].b)/1e8, time.Now(), true))
             ids = append(ids, recipients[i].a)
         }
         if len(recipients) > shownAddrs { header += "...\n" }
@@ -125,18 +129,21 @@ func addressNotification(n notification, watchID, alias string) (string, []strin
             )
         }
         if n.feeOK {
-            pairs = append(pairs, [2]string{"Fee", sats(n.fee) + " sats (" + strings.TrimSuffix(strconv.FormatFloat(n.feeRate, 'f', 1, 64), ".0") + " sat/vB)"})
+            pairs = append(pairs, [2]string{"Fee", fmt.Sprintf("%s sats (%s sat/vB)", sats(n.fee), strings.TrimSuffix(strconv.FormatFloat(n.feeRate, 'f', 1, 64), ".0"))})
             if n.confEstimate != "" { pairs = append(pairs, [2]string{"ETA", n.confEstimate}) }
         }
     } else {
-        var msg = "🔔 " + label + " receiving " + amountLine(in, time.Time{}, true)
+        var msg string
         summary = txwatches.Summary{Amount: in}
-        msg += ". Transaction <code>" + n.txid + "</code>"
-        if n.confEstimate != "" { msg += "\n" + "ETA " + n.confEstimate }
+        if n.confEstimate != "" {
+            msg = fmt.Sprintf("🔔 %s receiving %s. Transaction <code>%s</code>\nETA %s", label, amountLine(in, time.Time{}, true), n.txid, n.confEstimate)
+        } else {
+            msg = fmt.Sprintf("🔔 %s received %s. Transaction <code>%s</code>", label, amountLine(in, time.Time{}, true), n.txid)
+        }
         return msg, ids, summary, true
     }
-    header += "Transaction <code>" + n.txid + "</code>"
-    return "🔔 " + header + fields(pairs), ids, summary, true
+    header += fmt.Sprintf("Transaction <code>%s</code>", n.txid)
+    return fmt.Sprintf("🔔 %s%s", header, fields(pairs)), ids, summary, true
 }
 
 // fields renders the aligned <pre> block a message hangs beneath, or nothing at
@@ -370,23 +377,31 @@ func confirmationMessage(c txwatches.Confirmed, height int64) (string, []string)
     var ids = []string{c.Txid}
     if c.Addr == "" {
         // a direct /watch <txid>: there is no address and no amount to restate
-        var label = short(c.Txid)
-        if c.Alias != "" { label += " (" + html.EscapeString(c.Alias) + ")" }
+        var label string
+        if c.Alias != "" {
+            label = fmt.Sprintf("%s (%s)", short(c.Txid), html.EscapeString(c.Alias))
+        } else {
+            label = short(c.Txid)
+        }
         ids = append(ids, strconv.FormatInt(height, 10))
         return fmt.Sprintf("🔔 Transaction %s was confirmed in block #%d after %s", label, height, elapsed), ids
     }
-    var label = short(c.Addr)
-    if c.Alias != "" { label += " (" + html.EscapeString(c.Alias) + ")" }
+    var label string
+    if c.Alias != "" {
+        label = fmt.Sprintf("%s (%s)", short(c.Addr), html.EscapeString(c.Alias))
+    } else {
+        label = short(c.Addr)
+    }
     ids = append(ids, c.Addr)
     var msg string
     if c.Summary.Outgoing {
-        msg = label + " sent " + amountLine(c.Summary.Amount, time.Time{}, true) + " to " + compactAddrs(c.Summary.Recipients) + ". " + landed
+        msg = fmt.Sprintf("%s sent %s to %s. %s", label, amountLine(c.Summary.Amount, time.Time{}, true), compactAddrs(c.Summary.Recipients), landed)
         ids = append(ids, firstN(c.Summary.Recipients, shownAddrs)...)
     } else {
-        msg = label + " received " + amountLine(c.Summary.Amount, time.Time{}, true) + ". " + landed
+        msg = fmt.Sprintf("%s received %s. %s", label, amountLine(c.Summary.Amount, time.Time{}, true), landed)
     }
     ids = append(ids, strconv.FormatInt(height, 10))
-    return "🔔 " + msg, ids
+    return fmt.Sprintf("🔔 %s", msg), ids
 }
 
 // checkConfirmations notifies and drops every transaction watch whose transaction

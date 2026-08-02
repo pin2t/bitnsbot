@@ -50,7 +50,7 @@ func info(bot *bot, chat int64, arg string) {
 func transaction(ctx context.Context, bot *bot, chat int64, txid string) {
     var tx, err = core.getRawTransaction(ctx, txid)
     if err != nil {
-        send(bot, chat, "Couldn't find transaction "+short(txid)+".", nil)
+        send(bot, chat, fmt.Sprintf("Couldn't find transaction %s.", short(txid)), nil)
         return
     }
     var total float64
@@ -387,7 +387,7 @@ func address(ctx context.Context, bot *bot, chatID int64, addr string) {
         return
     }
     if !addrInfo.IsValid {
-        send(bot, chatID, html.EscapeString(addr)+" doesn't look like a valid Bitcoin address.", nil)
+        send(bot, chatID, fmt.Sprintf("%s doesn't look like a valid Bitcoin address.", html.EscapeString(addr)), nil)
         return
     }
     var addrType = "standard (P2PKH)"
