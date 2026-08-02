@@ -61,7 +61,7 @@ func main() {
             logging.Fatal("apply config: %v", err)
         }
     }
-    logging.SetVerbosity(*verbose)
+    logging.SetVerbose(*verbose)
     if *logNoTs {
         logging.DisableTimestamp()
     }

@@ -64,13 +64,13 @@ func store(r rateRecord) error {
     })
 }
 
-// storeMany writes many records in one transaction — used for the historical
+// storeRates writes many records in one transaction — used for the historical
 // backfill, where per-record transactions would mean thousands of fsyncs.
-func storeMany(records []rateRecord) error {
-    logging.Db("store %d rates", len(records))
+func storeRates(rates []rateRecord) error {
+    logging.Db("store %d rates", len(rates))
     return db.Update(func(tx *bbolt.Tx) error {
         var b = tx.Bucket(bucket)
-        for _, r := range records {
+        for _, r := range rates {
             var data, err = json.Marshal(r)
             if err != nil { return err }
             if err := b.Put(itob(uint64(r.Time.Unix())), data); err != nil { return err }
@@ -314,7 +314,7 @@ func backfill() {
         }
     }
     if len(records) == 0 { return }
-    if err := storeMany(records); err != nil {
+    if err := storeRates(records); err != nil {
         logging.Err("store rate history: %v", err)
         return
     }

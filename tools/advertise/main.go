@@ -232,7 +232,7 @@ func splitAddr(addr string) (net.IP, uint16, error) {
 
 func main() {
     flag.Parse()
-    logging.SetVerbosity(*verbose)
+    logging.SetVerbose(*verbose)
     var advIP, advPort, err = splitAddr(*advertised)
     if err != nil {
         logging.Fatal("-advertise %q: %v", *advertised, err)

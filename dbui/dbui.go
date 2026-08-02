@@ -4,19 +4,16 @@
 // it can write any bucket, so it must never face the network.
 package dbui
 
-import (
-    _ "embed"
-    "encoding/hex"
-    "encoding/json"
-    "errors"
-    "net/http"
-    "strconv"
-    "strings"
-    "unicode/utf8"
-
-    "go.etcd.io/bbolt"
-    "bitnsbot/logging"
-)
+import _ "embed"
+import "encoding/hex"
+import "encoding/json"
+import "errors"
+import "net/http"
+import "strconv"
+import "strings"
+import "unicode/utf8"
+import "go.etcd.io/bbolt"
+import "bitnsbot/logging"
 
 //go:embed index.html
 var indexHTML []byte
@@ -99,14 +96,10 @@ func bucketStats(db *bbolt.DB, w http.ResponseWriter) {
 
 func sizeStr(n int) string {
     switch {
-    case n >= 1<<30:
-        return strconv.FormatFloat(float64(n)/(1<<30), 'f', 1, 64) + " G"
-    case n >= 1<<20:
-        return strconv.FormatFloat(float64(n)/(1<<20), 'f', 1, 64) + " M"
-    case n >= 1<<10:
-        return strconv.FormatFloat(float64(n)/(1<<10), 'f', 1, 64) + " k"
-    default:
-        return strconv.Itoa(n) + " B"
+    case n >= 1<<30: return strconv.FormatFloat(float64(n)/(1<<30), 'f', 1, 64) + " G"
+    case n >= 1<<20: return strconv.FormatFloat(float64(n)/(1<<20), 'f', 1, 64) + " M"
+    case n >= 1<<10: return strconv.FormatFloat(float64(n)/(1<<10), 'f', 1, 64) + " K"
+    default: return strconv.Itoa(n) + " B"
     }
 }
 

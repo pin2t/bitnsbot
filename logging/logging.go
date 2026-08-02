@@ -2,27 +2,25 @@ package logging
 
 import "log"
 
-// verbosity gates the leveled helpers; set once at startup from the -verbose
-// flag via SetVerbosity. 0 = ERR/WARN/status, 1 = +INFO, 2 = +NET/DB.
-var verbosity int
+// verbose gates the leveled helpers; set once at startup from the -verbose
+// flag via SetVerbose. 0 = ERR/WARN/status, 1 = +INFO, 2 = +NET/DB.
+var verbose int
 
-func SetVerbosity(v int) { verbosity = v }
-
+func SetVerbose(v int) { verbose = v }
 func DisableTimestamp() { log.SetFlags(0) }
-
 func Err(format string, args ...any)    { log.Printf("[ERR] "+format, args...) }
 func Warn(format string, args ...any)   { log.Printf("[WARN] "+format, args...) }
 func Status(format string, args ...any) { log.Printf(format, args...) }
 func Fatal(format string, args ...any)  { log.Fatalf("[ERR] "+format, args...) }
 
 func Info(format string, args ...any) {
-    if verbosity >= 1 { log.Printf("[INFO] "+format, args...) }
+    if verbose >= 1 { log.Printf("[INFO] "+format, args...) }
 }
 
 func Net(format string, args ...any) {
-    if verbosity >= 2 { log.Printf("[NET] "+format, args...) }
+    if verbose >= 2 { log.Printf("[NET] "+format, args...) }
 }
 
 func Db(format string, args ...any) {
-    if verbosity >= 2 { log.Printf("[DB] "+format, args...) }
+    if verbose >= 2 { log.Printf("[DB] "+format, args...) }
 }

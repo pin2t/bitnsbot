@@ -61,9 +61,8 @@ func sats(btc float64) string {
 // e.g. metric(3299245, 1) → "3.3 M", metric(6719, 1) → "6.7 k", and (used for
 // block difficulty) metric(79000000000000, 2) → "79 T".
 func metric(f float64, decimals int) string {
-    var unit = " bytes"
-    if f == 1 { unit = " byte"}
-    for _, u := range []string{" k", " M", " G", " T", " P", " E"} {
+    var unit = " B"
+    for _, u := range []string{" K", " M", " G", " T", " P", " E"} {
         if f < 1000 { break }
         f /= 1000
         unit = u
