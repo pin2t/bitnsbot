@@ -224,7 +224,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "warning: too many touches, showing the oldest %d\n", len(touches))
 	}
 
-	if _, ok := addrindex.LoadCursor(); !ok {
+	if _, ok := addrindex.Cursor(); !ok {
 		fmt.Println("Address index is still building — results may be partial.")
 	}
 

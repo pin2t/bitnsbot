@@ -159,7 +159,7 @@ func TestInfoFlow(t *testing.T) {
     }
     for _, want := range []string{
         "Block #100", "Hash:          000000...ckhash", "Time:          14 november 2023 22:13",
-        "Size:          285 bytes", "Transactions:  1", "Miner:         Unknown", "Difficulty:    1.5",
+        "Size:          285 B", "Transactions:  1", "Miner:         Unknown", "Difficulty:    1.5",
         "Fees:          none (coinbase only)", "minimum:       204 bytes", "Reward:        50 BTC",
         "Reward + fees: 50 BTC",
     } {
@@ -446,7 +446,7 @@ func TestMempoolFlow(t *testing.T) {
         t.Fatalf("expected a mempool reply, got %#v", sent)
     }
     for _, want := range []string{
-        "Mempool", "Size:", "3.5 M", "Transactions: 6.7 k",
+        "Mempool", "Size:", "3.5 M", "Transactions: 6.7 K",
         "Total flow:", "≈3.50 BTC", "Total fees:", "≈0.0003 BTC",
     } {
         if !strings.Contains(sent[1], want) {

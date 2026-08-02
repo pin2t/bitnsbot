@@ -15,8 +15,8 @@ func TestMessageLogging(t *testing.T) {
     }))
     defer server.Close()
     bot := newBot("TESTTOKEN", server.URL)
-    logging.SetVerbosity(1)
-    defer logging.SetVerbosity(0)
+    logging.SetVerbose(1)
+    defer logging.SetVerbose(0)
     var buf bytes.Buffer
     log.SetOutput(&buf)
     defer log.SetOutput(os.Stderr)
@@ -48,7 +48,7 @@ func TestLoggingLevels(t *testing.T) {
     var buf bytes.Buffer
     log.SetOutput(&buf)
     defer log.SetOutput(os.Stderr)
-    defer logging.SetVerbosity(0)
+    defer logging.SetVerbose(0)
     var cases = []struct {
         v      int
         shown  []string
@@ -59,7 +59,7 @@ func TestLoggingLevels(t *testing.T) {
         {2, []string{"[ERR]", "[WARN]", "[INFO]", "[NET]", "[DB]"}, nil},
     }
     for _, c := range cases {
-        logging.SetVerbosity(c.v)
+        logging.SetVerbose(c.v)
         buf.Reset()
         logging.Err("e")
         logging.Warn("w")

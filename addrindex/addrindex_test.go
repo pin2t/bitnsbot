@@ -125,13 +125,13 @@ func TestLookupSpansRanges(t *testing.T) {
 
 func TestCursor(t *testing.T) {
     openTestDB(t)
-    if _, ok := LoadCursor(); ok {
+    if _, ok := Cursor(); ok {
         t.Fatal("expected no cursor on a fresh index")
     }
     if err := merge(nil, 500); err != nil {
         t.Fatalf("merge: %v", err)
     }
-    var h, ok = LoadCursor()
+    var h, ok = Cursor()
     if !ok || h != 500 {
         t.Fatalf("cursor = %+v ok=%v, want Height=500", h, ok)
     }
@@ -178,7 +178,7 @@ func (f *fakeSource) BlockAt(ctx context.Context, height int) (Block, error) {
 
 // A tiny synthetic chain: height 0 pays scriptA, height 1 spends it (pays
 // scriptB), height 2 is unrelated. Built directly from parsed shapes via a
-// Block whose Raw/Spent are pre-serialized isn't needed here since catchUp calls
+// Block whose Raw/Spent are pre-serialized isn't needed here since index calls
 // indexBlock, which calls the real parsers — so these use minimal-but-valid wire
 // bytes: one coinbase-shaped input (0x00 right after version is unambiguously
 // the segwit marker on the real wire, precisely because a legacy transaction can
@@ -226,7 +226,7 @@ func TestCatchUp(t *testing.T) {
         1: syntheticBlock(t, []string{scriptB}, []string{scriptA}),
         2: syntheticBlock(t, nil, nil),
     }}
-    if err := catchUp(src); err != nil { t.Fatalf("catchUp: %v", err) }
+    if err := index(src); err != nil { t.Fatalf("catchUp: %v", err) }
     var rawA, _ = hex.DecodeString(scriptA)
     var rawB, _ = hex.DecodeString(scriptB)
     var touchesA, _ = Lookup(rawA, 10000)
@@ -237,13 +237,13 @@ func TestCatchUp(t *testing.T) {
     if len(touchesB) != 1 || touchesB[0].Height != 1 {
         t.Fatalf("scriptB touches = %v, want [height 1]", touchesB)
     }
-    var height, ok = LoadCursor()
+    var height, ok = Cursor()
     if !ok || height != 2 {
         t.Fatalf("cursor = %+v ok=%v, want Height=2", height, ok)
     }
     // a second pass with nothing new fetches nothing
     src.fetched = nil
-    if err := catchUp(src); err != nil { t.Fatalf("second catchUp: %v", err) }
+    if err := index(src); err != nil { t.Fatalf("second catchUp: %v", err) }
     if len(src.fetched) != 0 {
         t.Fatalf("second catchUp refetched %v, want nothing (already at tip)", src.fetched)
     }
@@ -264,7 +264,7 @@ func TestCatchUpChunksAndRetries(t *testing.T) {
         blocks[h] = syntheticBlock(t, []string{script}, nil)
     }
     var src = &fakeSource{tip: 4, blocks: blocks, err: map[int]bool{3: true}}
-    if err := catchUp(src); err == nil {
+    if err := index(src); err == nil {
         t.Fatal("expected an error from the failing block")
     }
     // heights 0-1 (one full chunk) must have been flushed before the failure at 3
@@ -273,14 +273,14 @@ func TestCatchUpChunksAndRetries(t *testing.T) {
     if len(touches) != 2 {
         t.Fatalf("touches after partial catch-up = %d, want 2 (the first chunk only)", len(touches))
     }
-    var height, _ = LoadCursor()
+    var height, _ = Cursor()
     if height != 1 {
         t.Fatalf("cursor = %d, want 1 (stuck before the failed block)", height)
     }
     // fixing the block and retrying picks up from where it stopped
     src.err = nil
     src.fetched = nil
-    if err := catchUp(src); err != nil { t.Fatalf("retry: %v", err) }
+    if err := index(src); err != nil { t.Fatalf("retry: %v", err) }
     var deepFetched = append([]int{}, src.fetched...)
     if len(deepFetched) != 3 || deepFetched[0] != 2 {
         t.Fatalf("retry fetched %v, want [2 3 4]", deepFetched)
