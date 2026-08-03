@@ -190,17 +190,15 @@ func cachedBtc(btc float64) string {
 }
 
 // durationText renders elapsed time compactly: "45 sec", "12 min", "2 h 5 min".
-func durationText(d time.Duration) string {
+func durationText(d time.Duration, chat int64) string {
     switch {
-    case d < time.Minute:
-        return fmt.Sprintf("%d sec", int(d.Seconds()))
-    case d < time.Hour:
-        return fmt.Sprintf("%d min", int(d.Minutes()))
+    case d < time.Minute: return i18n(chat).Sprintf("%d sec", int(d.Seconds()))
+    case d < time.Hour:   return i18n(chat).Sprintf("%d min", int(d.Minutes()))
     default:
         var h = int(d / time.Hour)
         var m = int(d/time.Minute) % 60
-        if m == 0 { return fmt.Sprintf("%d h", h) }
-        return fmt.Sprintf("%d h %d min", h, m)
+        if m == 0 { return i18n(chat).Sprintf("%d h", h) }
+        return i18n(chat).Sprintf("%d h %d min", h, m)
     }
 }
 

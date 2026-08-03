@@ -371,37 +371,37 @@ func stopNotify() {
 // sentence, and the txid needs to be outside such a block anyway to be
 // tap-to-copy. The amount and recipients come from the summary recorded when the
 // transaction was first seen, so the block arriving costs no extra lookups.
-func confirmationMessage(chatID int64, c txwatches.Confirmed, height int64) (string, []string) {
-    var elapsed = durationText(time.Since(c.WatchedAt))
-    var landed = i18n(chatID).Sprintf("Confirmed in block #%d after %s. Transaction <code>%s</code>", height, elapsed, c.Txid)
+func confirmationMessage(chat int64, c txwatches.Confirmed, height int64) (string, []string) {
+    var elapsed = durationText(time.Since(c.WatchedAt), chat)
+    var landed = i18n(chat).Sprintf("Confirmed in block #%d after %s. Transaction <code>%s</code>", height, elapsed, c.Txid)
     var ids = []string{c.Txid}
     if c.Addr == "" {
         // a direct /watch <txid>: there is no address and no amount to restate
         var label string
         if c.Alias != "" {
-            label = i18n(chatID).Sprintf("%s (%s)", short(c.Txid), html.EscapeString(c.Alias))
+            label = i18n(chat).Sprintf("%s (%s)", short(c.Txid), html.EscapeString(c.Alias))
         } else {
             label = short(c.Txid)
         }
         ids = append(ids, strconv.FormatInt(height, 10))
-        return i18n(chatID).Sprintf("🔔 Transaction %s was confirmed in block #%d after %s", label, height, elapsed), ids
+        return i18n(chat).Sprintf("🔔 Transaction %s was confirmed in block #%d after %s", label, height, elapsed), ids
     }
     var label string
     if c.Alias != "" {
-        label = i18n(chatID).Sprintf("%s (%s)", short(c.Addr), html.EscapeString(c.Alias))
+        label = i18n(chat).Sprintf("%s (%s)", short(c.Addr), html.EscapeString(c.Alias))
     } else {
         label = short(c.Addr)
     }
     ids = append(ids, c.Addr)
     var msg string
     if c.Summary.Outgoing {
-        msg = i18n(chatID).Sprintf("%s sent %s to %s. %s", label, amountLine(c.Summary.Amount, time.Time{}, true), compactAddrs(c.Summary.Recipients), landed)
+        msg = i18n(chat).Sprintf("%s sent %s to %s. %s", label, amountLine(c.Summary.Amount, time.Time{}, true), compactAddrs(c.Summary.Recipients), landed)
         ids = append(ids, firstN(c.Summary.Recipients, shownAddrs)...)
     } else {
-        msg = i18n(chatID).Sprintf("%s received %s. %s", label, amountLine(c.Summary.Amount, time.Time{}, true), landed)
+        msg = i18n(chat).Sprintf("%s received %s. %s", label, amountLine(c.Summary.Amount, time.Time{}, true), landed)
     }
     ids = append(ids, strconv.FormatInt(height, 10))
-    return i18n(chatID).Sprintf("🔔 %s", msg), ids
+    return i18n(chat).Sprintf("🔔 %s", msg), ids
 }
 
 // processConfirms notifies and drops every transaction watch whose transaction

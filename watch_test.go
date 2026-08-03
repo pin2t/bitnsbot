@@ -322,7 +322,7 @@ func TestDurationText(t *testing.T) {
         {2 * time.Hour, "2 h"},
     }
     for _, c := range cases {
-        if got := durationText(c.d); got != c.want {
+        if got := durationText(c.d, 0); got != c.want {
             t.Errorf("durationText(%v) = %q, want %q", c.d, got, c.want)
         }
     }
