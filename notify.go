@@ -61,7 +61,7 @@ func startNotifyChat(b *bot, chatID int64, typ watchType, watchID, alias string)
                 return
             case n := <-ch:
                 if typ != watchTypeAddress { continue }
-                var msg, ids, summary, ok = addressNotification(n, watchID, alias)
+                var msg, ids, summary, ok = addressNotification(chatID, n, watchID, alias)
                 if !ok { continue }
                 send(b, chatID, msg, ids)
                 txwatches.AddAddrConfirm(n.txid, chatID, watchID, alias, summary)
@@ -80,13 +80,13 @@ func startNotifyChat(b *bot, chatID int64, typ watchType, watchID, alias string)
 // txid in <code> for tap-to-copy. Only the supporting figures stay in the <pre>
 // block. The txid has to sit outside that block — Telegram does not parse
 // entities inside <pre>, so a <code> there would render literally.
-func addressNotification(n notification, watchID, alias string) (string, []string, txwatches.Summary, bool) {
+func addressNotification(chatID int64, n notification, watchID, alias string) (string, []string, txwatches.Summary, bool) {
     var in, gotIn = n.received[watchID]
     var out, gotOut = n.sent[watchID]
     if !gotIn && !gotOut { return "", nil, txwatches.Summary{}, false }
     var label string
     if alias != "" {
-        label = fmt.Sprintf("%s (%s)", short(watchID), html.EscapeString(alias))
+        label = i18n(chatID).Sprintf("%s (%s)", short(watchID), html.EscapeString(alias))
     } else {
         label = short(watchID)
     }
@@ -112,10 +112,10 @@ func addressNotification(n notification, watchID, alias string) (string, []strin
             return recipients[i].b < recipients[j].b
         })
         summary = txwatches.Summary{Amount: out, Recipients: addrs, Outgoing: true}
-        header = fmt.Sprintf("%s is sending %s to\n", label, amountLine(out, time.Time{}, true))
+        header = i18n(chatID).Sprintf("%s is sending %s to\n", label, amountLine(out, time.Time{}, true))
         if len(recipients) == 0 { header += "none\n" }
         for i := 0; i < min(len(recipients), shownAddrs); i++ {
-            header += fmt.Sprintf("%s: %s\n", short(recipients[i].a), amountLine(float64(recipients[i].b)/1e8, time.Now(), true))
+            header += i18n(chatID).Sprintf("%s: %s\n", short(recipients[i].a), amountLine(float64(recipients[i].b)/1e8, time.Now(), true))
             ids = append(ids, recipients[i].a)
         }
         if len(recipients) > shownAddrs { header += "...\n" }
@@ -129,21 +129,21 @@ func addressNotification(n notification, watchID, alias string) (string, []strin
             )
         }
         if n.feeOK {
-            pairs = append(pairs, [2]string{"Fee", fmt.Sprintf("%s sats (%s sat/vB)", sats(n.fee), strings.TrimSuffix(strconv.FormatFloat(n.feeRate, 'f', 1, 64), ".0"))})
+            pairs = append(pairs, [2]string{"Fee", i18n(chatID).Sprintf("%s sats (%s sat/vB)", sats(n.fee), strings.TrimSuffix(strconv.FormatFloat(n.feeRate, 'f', 1, 64), ".0"))})
             if n.confEstimate != "" { pairs = append(pairs, [2]string{"ETA", n.confEstimate}) }
         }
     } else {
         var msg string
         summary = txwatches.Summary{Amount: in}
         if n.confEstimate != "" {
-            msg = fmt.Sprintf("🔔 %s receiving %s. Transaction <code>%s</code>\nETA %s", label, amountLine(in, time.Time{}, true), n.txid, n.confEstimate)
+            msg = i18n(chatID).Sprintf("🔔 %s receiving %s. Transaction <code>%s</code>\nETA %s", label, amountLine(in, time.Time{}, true), n.txid, n.confEstimate)
         } else {
-            msg = fmt.Sprintf("🔔 %s received %s. Transaction <code>%s</code>", label, amountLine(in, time.Time{}, true), n.txid)
+            msg = i18n(chatID).Sprintf("🔔 %s receiving %s. Transaction <code>%s</code>", label, amountLine(in, time.Time{}, true), n.txid)
         }
         return msg, ids, summary, true
     }
-    header += fmt.Sprintf("Transaction <code>%s</code>", n.txid)
-    return fmt.Sprintf("🔔 %s%s", header, fields(pairs)), ids, summary, true
+    header += i18n(chatID).Sprintf("Transaction <code>%s</code>", n.txid)
+    return i18n(chatID).Sprintf("🔔 %s%s", header, fields(pairs)), ids, summary, true
 }
 
 // fields renders the aligned <pre> block a message hangs beneath, or nothing at
@@ -371,37 +371,37 @@ func stopNotify() {
 // sentence, and the txid needs to be outside such a block anyway to be
 // tap-to-copy. The amount and recipients come from the summary recorded when the
 // transaction was first seen, so the block arriving costs no extra lookups.
-func confirmationMessage(c txwatches.Confirmed, height int64) (string, []string) {
+func confirmationMessage(chatID int64, c txwatches.Confirmed, height int64) (string, []string) {
     var elapsed = durationText(time.Since(c.WatchedAt))
-    var landed = fmt.Sprintf("Confirmed in block #%d after %s. Transaction <code>%s</code>", height, elapsed, c.Txid)
+    var landed = i18n(chatID).Sprintf("Confirmed in block #%d after %s. Transaction <code>%s</code>", height, elapsed, c.Txid)
     var ids = []string{c.Txid}
     if c.Addr == "" {
         // a direct /watch <txid>: there is no address and no amount to restate
         var label string
         if c.Alias != "" {
-            label = fmt.Sprintf("%s (%s)", short(c.Txid), html.EscapeString(c.Alias))
+            label = i18n(chatID).Sprintf("%s (%s)", short(c.Txid), html.EscapeString(c.Alias))
         } else {
             label = short(c.Txid)
         }
         ids = append(ids, strconv.FormatInt(height, 10))
-        return fmt.Sprintf("🔔 Transaction %s was confirmed in block #%d after %s", label, height, elapsed), ids
+        return i18n(chatID).Sprintf("🔔 Transaction %s was confirmed in block #%d after %s", label, height, elapsed), ids
     }
     var label string
     if c.Alias != "" {
-        label = fmt.Sprintf("%s (%s)", short(c.Addr), html.EscapeString(c.Alias))
+        label = i18n(chatID).Sprintf("%s (%s)", short(c.Addr), html.EscapeString(c.Alias))
     } else {
         label = short(c.Addr)
     }
     ids = append(ids, c.Addr)
     var msg string
     if c.Summary.Outgoing {
-        msg = fmt.Sprintf("%s sent %s to %s. %s", label, amountLine(c.Summary.Amount, time.Time{}, true), compactAddrs(c.Summary.Recipients), landed)
+        msg = i18n(chatID).Sprintf("%s sent %s to %s. %s", label, amountLine(c.Summary.Amount, time.Time{}, true), compactAddrs(c.Summary.Recipients), landed)
         ids = append(ids, firstN(c.Summary.Recipients, shownAddrs)...)
     } else {
-        msg = fmt.Sprintf("%s received %s. %s", label, amountLine(c.Summary.Amount, time.Time{}, true), landed)
+        msg = i18n(chatID).Sprintf("%s received %s. %s", label, amountLine(c.Summary.Amount, time.Time{}, true), landed)
     }
     ids = append(ids, strconv.FormatInt(height, 10))
-    return fmt.Sprintf("🔔 %s", msg), ids
+    return i18n(chatID).Sprintf("🔔 %s", msg), ids
 }
 
 // processConfirms notifies and drops every transaction watch whose transaction
@@ -420,7 +420,7 @@ func processConfirms(b *bot, hash string) {
         return
     }
     for _, c := range txwatches.Confirms(blk.Tx) {
-        var msg, ids = confirmationMessage(c, blk.Height)
+        var msg, ids = confirmationMessage(c.ChatID, c, blk.Height)
         send(b, c.ChatID, msg, ids)
         logging.Info("confirmed watch %s for chat %d in block %d", short(c.Txid), c.ChatID, blk.Height)
     }

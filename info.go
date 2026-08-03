@@ -50,7 +50,7 @@ func info(bot *bot, chat int64, arg string) {
 func transaction(ctx context.Context, bot *bot, chat int64, txid string) {
     var tx, err = core.getRawTransaction(ctx, txid)
     if err != nil {
-        send(bot, chat, fmt.Sprintf("Couldn't find transaction %s.", short(txid)), nil)
+        send(bot, chat, i18n(chat).Sprintf("Couldn't find transaction %s.", short(txid)), nil)
         return
     }
     var total float64
@@ -109,7 +109,7 @@ func transaction(ctx context.Context, bot *bot, chat int64, txid string) {
     if tx.BlockHash != "" { ids = append(ids, tx.BlockHash) }
     ids = append(ids, firstN(inputs, shownAddrs)...)
     ids = append(ids, firstN(outputAddrs(tx), shownAddrs)...)
-    send(bot, chat, fmt.Sprintf("Transaction <code>%s</code>\n\n<pre>%s</pre>", tx.Txid, strings.Join(lines, "\n")), ids)
+    send(bot, chat, i18n(chat).Sprintf("Transaction <code>%s</code>\n\n<pre>%s</pre>", tx.Txid, strings.Join(lines, "\n")), ids)
 }
 
 // txInputs reports a transaction's fee and the addresses it spends from — in
@@ -255,7 +255,7 @@ func block(ctx context.Context, bot *bot, chat int64, height int64) {
     }
     var hash, err = core.getBlockHash(ctx, height)
     if err != nil {
-        send(bot, chat, fmt.Sprintf("Couldn't find block %d.", height), nil)
+        send(bot, chat, i18n(chat).Sprintf("Couldn't find block %d.", height), nil)
         return
     }
     var bi, ciErr = computeBlockInfo(ctx, hash)
@@ -387,7 +387,7 @@ func address(ctx context.Context, bot *bot, chatID int64, addr string) {
         return
     }
     if !addrInfo.IsValid {
-        send(bot, chatID, fmt.Sprintf("%s doesn't look like a valid Bitcoin address.", html.EscapeString(addr)), nil)
+        send(bot, chatID, i18n(chatID).Sprintf("%s doesn't look like a valid Bitcoin address.", html.EscapeString(addr)), nil)
         return
     }
     var addrType = "standard (P2PKH)"
@@ -438,5 +438,5 @@ func address(ctx context.Context, bot *bot, chatID int64, addr string) {
     for _, p := range pairs {
         lines = append(lines, fmt.Sprintf("%-*s %s", pad, p[0]+":", p[1]))
     }
-    send(bot, chatID, fmt.Sprintf("Address %s\n\n<pre>%s</pre>", short(addr), strings.Join(lines, "\n")), nil)
+    send(bot, chatID, i18n(chatID).Sprintf("Address %s\n\n<pre>%s</pre>", short(addr), strings.Join(lines, "\n")), nil)
 }
