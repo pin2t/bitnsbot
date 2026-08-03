@@ -41,15 +41,15 @@ func newCoreClient(cfg coreConfig) (*coreClient, error) {
         cfg: cfg,
         client: &http.Client{
             Transport: &http.Transport{
-                MaxIdleConns:        100,
+                MaxIdleConns:        50,
                 MaxIdleConnsPerHost: 10,
                 MaxConnsPerHost:     20,
-                IdleConnTimeout:     90 * time.Second,
+                IdleConnTimeout:     60 * time.Second,
                 DisableKeepAlives:   false,
             },
         },
-        blockTxidsCache:   newLRU[string, *coreBlockTxids](500),
-        blockVerboseCache: newLRU[string, *coreVerboseBlock](500),
+        blockTxidsCache:   newLRU[string, *coreBlockTxids](100),
+        blockVerboseCache: newLRU[string, *coreVerboseBlock](100),
     }
     if err := c.refreshAuth(); err != nil { return nil, err }
     return c, nil
