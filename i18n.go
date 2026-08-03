@@ -24,7 +24,6 @@ var langTrans = map[string]trans{
 		"Watching %s: %s":                          "Отслеживаю %s: %s",
 		"You're not watching %s.":                   "Вы не отслеживаете %s.",
 		"Stopped watching %s.":                      "Прекращено отслеживание %s.",
-		"%s":                                        "%s",
 		"Estimated network fees\n\n<pre>%s</pre>\n%s":              "Оценка комиссий сети\n\n<pre>%s</pre>\n%s",
 		"Mempool\n\n<pre>%s</pre>":                                 "Мемпул\n\n<pre>%s</pre>",
 		"%d blocks":                                                "%d блоков",
@@ -33,21 +32,16 @@ var langTrans = map[string]trans{
 		"Bitcoin market\n\n<pre>%s</pre>":                          "Рынок Bitcoin\n\n<pre>%s</pre>",
 
 		// ---- notify.go ----
-		"%s (%s)":                                              "%s (%s)",
 		"%s is sending %s to\n":                                "%s отправляет %s на\n",
-		"%s: %s\n":                                             "%s: %s\n",
 		"%s sats (%s sat/vB)":                                  "%s сат (%s сат/вБ)",
 		"🔔 %s receiving %s. Transaction <code>%s</code>\nETA %s": "🔔 %s получает %s. Транзакция <code>%s</code>\nETA %s",
 		"🔔 %s receiving %s. Transaction <code>%s</code>":        "🔔 %s получает %s. Транзакция <code>%s</code>",
 		"Transaction <code>%s</code>":                            "Транзакция <code>%s</code>",
-		"🔔 %s%s":             "🔔 %s%s",
 		"Confirmed in block #%d after %s. Transaction <code>%s</code>": "Подтверждено в блоке #%d через %s. Транзакция <code>%s</code>",
 		"🔔 Transaction %s was confirmed in block #%d after %s":  "🔔 Транзакция %s подтверждена в блоке #%d через %s",
 		"%s sent %s to %s. %s":    "%s отправил %s на %s. %s",
 		"%s received %s. %s":      "%s получил %s. %s",
-		"🔔 %s":                   "🔔 %s",
 	},
-
 	"es": {
 		// ---- info.go ----
 		"Couldn't find transaction %s.":                 "No se encontró la transacción %s.",
@@ -61,7 +55,6 @@ var langTrans = map[string]trans{
 		"Watching %s: %s":                          "Observando %s: %s",
 		"You're not watching %s.":                   "No estás observando %s.",
 		"Stopped watching %s.":                      "Se dejó de observar %s.",
-		"%s":                                        "%s",
 		"Estimated network fees\n\n<pre>%s</pre>\n%s":              "Comisiones de red estimadas\n\n<pre>%s</pre>\n%s",
 		"Mempool\n\n<pre>%s</pre>":                                 "Mempool\n\n<pre>%s</pre>",
 		"%d blocks":                                                "%d bloques",
@@ -70,19 +63,15 @@ var langTrans = map[string]trans{
 		"Bitcoin market\n\n<pre>%s</pre>":                          "Mercado Bitcoin\n\n<pre>%s</pre>",
 
 		// ---- notify.go ----
-		"%s (%s)":                                              "%s (%s)",
 		"%s is sending %s to\n":                                "%s está enviando %s a\n",
-		"%s: %s\n":                                             "%s: %s\n",
 		"%s sats (%s sat/vB)":                                  "%s sats (%s sat/vB)",
 		"🔔 %s receiving %s. Transaction <code>%s</code>\nETA %s": "🔔 %s recibiendo %s. Transacción <code>%s</code>\nETA %s",
 		"🔔 %s receiving %s. Transaction <code>%s</code>":        "🔔 %s recibiendo %s. Transacción <code>%s</code>",
 		"Transaction <code>%s</code>":                            "Transacción <code>%s</code>",
-		"🔔 %s%s":             "🔔 %s%s",
 		"Confirmed in block #%d after %s. Transaction <code>%s</code>": "Confirmado en bloque #%d después de %s. Transacción <code>%s</code>",
 		"🔔 Transaction %s was confirmed in block #%d after %s":  "🔔 Transacción %s fue confirmada en bloque #%d después de %s",
 		"%s sent %s to %s. %s":    "%s envió %s a %s. %s",
 		"%s received %s. %s":      "%s recibió %s. %s",
-		"🔔 %s":                   "🔔 %s",
 	},
 }
 
@@ -93,14 +82,6 @@ var chatLangs = newLRU[int64, string](10000)
 // SetChatLanguage sets the language for a specific chat.
 func SetChatLanguage(chatID int64, lang string) {
 	chatLangs.Put(chatID, lang)
-}
-
-// ChatLanguage returns the language code for a chat, or "en" if not set.
-func ChatLanguage(chatID int64) string {
-	if lang, ok := chatLangs.Get(chatID); ok {
-		return lang
-	}
-	return "en"
 }
 
 // i18n returns the trans for the given chat's language, or nil when the
