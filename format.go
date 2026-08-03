@@ -9,9 +9,10 @@ import "time"
 import "bitnsbot/rates"
 
 func ago(n int, unit string, chat int64) string {
-    if n == 1 { return "1 " + unit + " " + i18n(chat).String("ago") }
-    if i18n(chat) != nil {
-        return fmt.Sprintf("%d %s %s", n, unit, i18n(chat).String("ago"))
+    var tr = i18n(chat)
+    if n == 1 { return "1 " + unit + " " + tr.String("ago") }
+    if tr != nil {
+        return fmt.Sprintf("%d %s %s", n, unit, tr.String("ago"))
     }
     return fmt.Sprintf("%d %ss ago", n, unit)
 }
@@ -59,13 +60,13 @@ func sats(btc float64) string {
 // e.g. metric(3299245, 1) → "3.3 M", metric(6719, 1) → "6.7 k", and (used for
 // block difficulty) metric(79000000000000, 2) → "79 T".
 func metric(f float64, decimals int) string {
-    var unit = " B"
-    for _, u := range []string{" K", " M", " G", " T", " P", " E"} {
+    var unit = "B"
+    for _, u := range []string{"K", "M", "G", "T", "P", "E"} {
         if f < 1000 { break }
         f /= 1000
         unit = u
     }
-    return strings.TrimRight(strings.TrimRight(strconv.FormatFloat(f, 'f', decimals, 64), "0"), ".") + unit
+    return strings.TrimRight(strings.TrimRight(strconv.FormatFloat(f, 'f', decimals, 64), "0"), ".") + " " + unit
 }
 
 // compactBtc renders a BTC amount compactly with a USD approximation at the
@@ -76,28 +77,6 @@ func compactBtc(btc float64) string {
         return btcAmount(btc)
     }
     return amountLine(btc, time.Time{}, true)
-}
-
-// timeCompact renders a past time relatively and compactly ("2 m ago", "5 d ago",
-// "3 h ago", "10 min ago") within the last year, or the exact lowercase date for
-// older ("very old") times. "m" is months here; minutes are "min".
-func timeCompact(unix int64) string {
-    var t = time.Unix(unix, 0)
-    var since = time.Since(t)
-    switch {
-    case since < time.Minute:
-        return "just now"
-    case since < time.Hour:
-        return fmt.Sprintf("%d min ago", int(since.Minutes()))
-    case since < 24*time.Hour:
-        return fmt.Sprintf("%d h ago", int(since.Hours()))
-    case since < 30*24*time.Hour:
-        return fmt.Sprintf("%d d ago", int(since.Hours()/24))
-    case since < 365*24*time.Hour:
-        return fmt.Sprintf("%d m ago", int(since.Hours()/24/30))
-    default:
-        return strings.ToLower(t.UTC().Format("2 January 2006"))
-    }
 }
 
 // periodText renders a duration as its two most-significant non-zero units among

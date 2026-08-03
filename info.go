@@ -379,15 +379,15 @@ func addressStats(txs []*coreTransaction, addr string) (received, sent, fees flo
     return
 }
 
-func address(ctx context.Context, bot *bot, chatID int64, addr string) {
+func address(ctx context.Context, bot *bot, chat int64, addr string) {
     var addrInfo, err = core.validateAddress(ctx, addr)
     if err != nil {
         logging.Err("validate address: %v", err)
-        send(bot, chatID, "Sorry, something went wrong looking up that address.", nil)
+        send(bot, chat, "Sorry, something went wrong looking up that address.", nil)
         return
     }
     if !addrInfo.IsValid {
-        send(bot, chatID, i18n(chatID).Sprintf("%s doesn't look like a valid Bitcoin address.", html.EscapeString(addr)), nil)
+        send(bot, chat, i18n(chat).Sprintf("%s doesn't look like a valid Bitcoin address.", html.EscapeString(addr)), nil)
         return
     }
     var addrType = "standard (P2PKH)"
@@ -421,10 +421,10 @@ func address(ctx context.Context, bot *bot, chatID int64, addr string) {
             [2]string{"Transactions", count},
         )
         if firstT > 0 {
-            pairs = append(pairs, [2]string{"First tx", timeCompact(firstT)})
+            pairs = append(pairs, [2]string{"First tx", when(firstT, chat)})
         }
         if lastT > 0 {
-            pairs = append(pairs, [2]string{"Last tx", timeCompact(lastT)})
+            pairs = append(pairs, [2]string{"Last tx", when(lastT, chat)})
         }
         if firstT > 0 && lastT > firstT {
             pairs = append(pairs, [2]string{"Activity period", periodText(time.Duration(lastT-firstT) * time.Second)})
@@ -438,5 +438,5 @@ func address(ctx context.Context, bot *bot, chatID int64, addr string) {
     for _, p := range pairs {
         lines = append(lines, fmt.Sprintf("%-*s %s", pad, p[0]+":", p[1]))
     }
-    send(bot, chatID, i18n(chatID).Sprintf("Address %s\n\n<pre>%s</pre>", short(addr), strings.Join(lines, "\n")), nil)
+    send(bot, chat, i18n(chat).Sprintf("Address %s\n\n<pre>%s</pre>", short(addr), strings.Join(lines, "\n")), nil)
 }

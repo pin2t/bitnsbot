@@ -652,28 +652,6 @@ func TestPeriodText(t *testing.T) {
     }
 }
 
-func TestTimeCompact(t *testing.T) {
-    var now = time.Now()
-    var cases = []struct {
-        t    time.Time
-        want string
-    }{
-        {now.Add(-30 * time.Second), "just now"},
-        {now.Add(-5 * time.Minute), "5 min ago"},
-        {now.Add(-3 * time.Hour), "3 h ago"},
-        {now.Add(-5 * 24 * time.Hour), "5 d ago"},
-        {now.Add(-70 * 24 * time.Hour), "2 m ago"},
-    }
-    for _, c := range cases {
-        if got := timeCompact(c.t.Unix()); got != c.want {
-            t.Errorf("timeCompact(%v) = %q, want %q", c.t, got, c.want)
-        }
-    }
-    if got := timeCompact(time.Date(2015, 1, 1, 0, 0, 0, 0, time.UTC).Unix()); got != "1 january 2015" {
-        t.Errorf("timeCompact(2015-01-01) = %q, want %q", got, "1 january 2015")
-    }
-}
-
 func TestMinersFlow(t *testing.T) {
     var sent []string
     var server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

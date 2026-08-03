@@ -12,14 +12,11 @@ type trans map[string]string
 // translation is found.
 var langTrans = map[string]trans{
 	"ru": {
-		// ---- info.go ----
 		"Couldn't find transaction %s.":                 "Транзакция %s не найдена.",
 		"Transaction <code>%s</code>\n\n<pre>%s</pre>":  "Транзакция <code>%s</code>\n\n<pre>%s</pre>",
 		"Couldn't find block %d.":                       "Блок %d не найден.",
 		"%s doesn't look like a valid Bitcoin address.": "%s не похож на действительный Bitcoin-адрес.",
 		"Address %s\n\n<pre>%s</pre>":                   "Адрес %s\n\n<pre>%s</pre>",
-
-		// ---- main.go ----
 		"Watching %s: %s (%s)":                     "Отслеживаю %s: %s (%s)",
 		"Watching %s: %s":                          "Отслеживаю %s: %s",
 		"You're not watching %s.":                   "Вы не отслеживаете %s.",
@@ -30,8 +27,6 @@ var langTrans = map[string]trans{
 		"%d. %s. %s mined, reward %s BTC, fees %s BTC, consumption %s GW": "%d. %s. %s добыто, награда %s BTC, комиссии %s BTC, потребление %s ГВт",
 		"Top miners by blocks mined:\n\n%s":                        "Топ майнеров по добытым блокам:\n\n%s",
 		"Bitcoin market\n\n<pre>%s</pre>":                          "Рынок Bitcoin\n\n<pre>%s</pre>",
-
-		// ---- notify.go ----
 		"%s is sending %s to\n":                                "%s отправляет %s на\n",
 		"%s sats (%s sat/vB)":                                  "%s сат (%s сат/вБ)",
 		"🔔 %s receiving %s. Transaction <code>%s</code>\nETA %s": "🔔 %s получает %s. Транзакция <code>%s</code>\nETA %s",
@@ -41,16 +36,19 @@ var langTrans = map[string]trans{
 		"🔔 Transaction %s was confirmed in block #%d after %s":  "🔔 Транзакция %s подтверждена в блоке #%d через %s",
 		"%s sent %s to %s. %s":    "%s отправил %s на %s. %s",
 		"%s received %s. %s":      "%s получил %s. %s",
+		"ago":                     "назад",
+		"just now":                "только что",
+	    "minute":                  "минута",
+	    "hour":                    "час",
+		"day":                     "день",
+	    "month":                   "месяц",
 	},
 	"es": {
-		// ---- info.go ----
 		"Couldn't find transaction %s.":                 "No se encontró la transacción %s.",
 		"Transaction <code>%s</code>\n\n<pre>%s</pre>":  "Transacción <code>%s</code>\n\n<pre>%s</pre>",
 		"Couldn't find block %d.":                       "No se encontró el bloque %d.",
 		"%s doesn't look like a valid Bitcoin address.": "%s no parece una dirección Bitcoin válida.",
 		"Address %s\n\n<pre>%s</pre>":                   "Dirección %s\n\n<pre>%s</pre>",
-
-		// ---- main.go ----
 		"Watching %s: %s (%s)":                     "Observando %s: %s (%s)",
 		"Watching %s: %s":                          "Observando %s: %s",
 		"You're not watching %s.":                   "No estás observando %s.",
@@ -61,8 +59,6 @@ var langTrans = map[string]trans{
 		"%d. %s. %s mined, reward %s BTC, fees %s BTC, consumption %s GW": "%d. %s. %s minado, recompensa %s BTC, comisiones %s BTC, consumo %s GW",
 		"Top miners by blocks mined:\n\n%s":                        "Principales mineros por bloques minados:\n\n%s",
 		"Bitcoin market\n\n<pre>%s</pre>":                          "Mercado Bitcoin\n\n<pre>%s</pre>",
-
-		// ---- notify.go ----
 		"%s is sending %s to\n":                                "%s está enviando %s a\n",
 		"%s sats (%s sat/vB)":                                  "%s sats (%s sat/vB)",
 		"🔔 %s receiving %s. Transaction <code>%s</code>\nETA %s": "🔔 %s recibiendo %s. Transacción <code>%s</code>\nETA %s",
@@ -72,6 +68,7 @@ var langTrans = map[string]trans{
 		"🔔 Transaction %s was confirmed in block #%d after %s":  "🔔 Transacción %s fue confirmada en bloque #%d después de %s",
 		"%s sent %s to %s. %s":    "%s envió %s a %s. %s",
 		"%s received %s. %s":      "%s recibió %s. %s",
+		"ago":                     "ago",
 	},
 }
 
