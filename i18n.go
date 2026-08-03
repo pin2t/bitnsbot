@@ -11,6 +11,7 @@ type trans map[string]string
 // the default and Sprintf/String fall back to the original format string when no
 // translation is found.
 var langTrans = map[string]trans{
+	// i18n-vet:translation ru
 	"ru": {
 		"Couldn't find transaction %s.":                 "Транзакция %s не найдена.",
 		"Transaction <code>%s</code>\n\n<pre>%s</pre>":  "Транзакция <code>%s</code>\n\n<pre>%s</pre>",
@@ -43,6 +44,9 @@ var langTrans = map[string]trans{
 		"day":                     "день",
 	    "month":                   "месяц",
 	},
+	// i18n-vet:end translation
+
+	// i18n-vet:translation es
 	"es": {
 		"Couldn't find transaction %s.":                 "No se encontró la transacción %s.",
 		"Transaction <code>%s</code>\n\n<pre>%s</pre>":  "Transacción <code>%s</code>\n\n<pre>%s</pre>",
@@ -70,6 +74,7 @@ var langTrans = map[string]trans{
 		"%s received %s. %s":      "%s recibió %s. %s",
 		"ago":                     "ago",
 	},
+	// i18n-vet:end translation
 }
 
 // chatLangs is an LRU cache of chat ID → language code, bounded to prevent
