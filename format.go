@@ -8,26 +8,24 @@ import "time"
 
 import "bitnsbot/rates"
 
-func ago(n int, unit string) string {
-    if n == 1 { return "1 " + unit + " ago" }
+func ago(n int, unit string, chat int64) string {
+    if n == 1 { return "1 " + unit + " " + i18n(chat).String("ago") }
+    if i18n(chat) != nil {
+        return fmt.Sprintf("%d %s %s", n, unit, i18n(chat).String("ago"))
+    }
     return fmt.Sprintf("%d %ss ago", n, unit)
 }
 
-func when(unix int64) string {
+func when(unix int64, chat int64) string {
     var t = time.Unix(unix, 0)
     if t.After(time.Now().AddDate(0, -3, 0)) {
         var since = time.Since(t)
         switch {
-        case since < time.Minute:
-            return "just now"
-        case since < time.Hour:
-            return ago(int(since.Minutes()), "minute")
-        case since < 24*time.Hour:
-            return ago(int(since.Hours()), "hour")
-        case since < 31*24*time.Hour:
-            return ago(int(since.Hours()/24), "day")
-        default:
-            return ago(int(since.Hours()/24/30), "month")
+        case since < time.Minute:     return i18n(chat).String("just now")
+        case since < time.Hour:       return ago(int(since.Minutes()), i18n(chat).String("minute"), chat)
+        case since < 24*time.Hour:    return ago(int(since.Hours()), i18n(chat).String("hour"), chat)
+        case since < 31*24*time.Hour: return ago(int(since.Hours()/24), i18n(chat).String("day"), chat)
+        default:                      return ago(int(since.Hours()/24/30), i18n(chat).String("month"), chat)
         }
     }
     return strings.ToLower(t.UTC().Format("2 January 2006 15:04"))
@@ -299,11 +297,4 @@ func amountText(btc float64) string {
         return trimNum(btc, 8) + " BTC"
     }
     return group(sats) + " sats"
-}
-
-func amountTextSats(sats int) string {
-    if sats >= notifyBTCThreshold || sats <= -notifyBTCThreshold {
-        return trimNum(float64(sats * 1.) / 1e8 , 8) + " BTC"
-    }
-    return group(int64(sats)) + " sats"
 }

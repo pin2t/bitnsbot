@@ -239,11 +239,11 @@ func flushBlocks(bis []*blockInfo, cursor int64) error {
 }
 
 // formatBlock renders a cached block record as the /info block reply.
-func formatBlock(bi *blockInfo) string {
+func formatBlock(bi *blockInfo, chat int64) string {
     var difficulty = metric(bi.Difficulty, 2)
     var pairs = [][2]string{
         {"Hash", short(bi.Hash)},
-        {"Time", when(bi.Time)},
+        {"Time", when(bi.Time, chat)},
         {"Size", metric(float64(bi.Size), 2)},
         {"Transactions", strconv.Itoa(bi.NumTx)},
         {"Miner", bi.Miner},

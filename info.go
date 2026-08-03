@@ -71,7 +71,7 @@ func transaction(ctx context.Context, bot *bot, chat int64, txid string) {
         at, current = time.Unix(tx.Time, 0), false
         pairs = append(pairs,
             [2]string{"Status", fmt.Sprintf("confirmed (%d confirmations)", tx.Confirmations)},
-            [2]string{"Confirmed", when(tx.Time)},
+            [2]string{"Confirmed", when(tx.Time, chat)},
             [2]string{"Block", short(tx.BlockHash)},
         )
     }
@@ -250,7 +250,7 @@ func compactAddrs(addrs []string) string {
 
 func block(ctx context.Context, bot *bot, chat int64, height int64) {
     if bi, ok := loadBlock(height); ok {
-        send(bot, chat, formatBlock(bi), nil)
+        send(bot, chat, formatBlock(bi, chat), nil)
         return
     }
     var hash, err = core.getBlockHash(ctx, height)
@@ -265,7 +265,7 @@ func block(ctx context.Context, bot *bot, chat int64, height int64) {
         return
     }
     storeBlock(bi)
-    send(bot, chat, formatBlock(bi), nil)
+    send(bot, chat, formatBlock(bi, chat), nil)
 }
 
 // feeStats summarises a block's fee distribution. Core reports each
