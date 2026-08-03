@@ -45,9 +45,9 @@ func newRPCClient(url, user, pass, cookieFile string) (*rpcClient, error) {
 	var c = &rpcClient{url: url, client: &http.Client{
 		Timeout: time.Second * 5,
 		Transport: &http.Transport{
-			MaxIdleConns:        100,
-			MaxIdleConnsPerHost: 50,
-			IdleConnTimeout:     180 * time.Second,
+			MaxIdleConns:        128,
+			MaxIdleConnsPerHost: 64,
+			IdleConnTimeout:     60 * time.Second,
 		},
 	}}
 	if cookieFile != "" {
@@ -201,8 +201,8 @@ func main() {
 		logging.Fatal("read cursor: %v", err)
 	}
 	var began = time.Now()
-	const numWorkers = 16
-	const batchSize = 1000
+	const numWorkers = 64
+	const batchSize = 5000
 	var processed atomic.Int64
 	// processedBlocks tracks which block heights have been fully processed
 	// by workers. The collector uses it to advance the cursor past every
