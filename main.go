@@ -207,11 +207,17 @@ func webhookHandler(bot *bot) http.HandlerFunc {
 
 func update(bot *bot, update Update) {
     if q := update.CallbackQuery; q != nil {
+        if q.From != nil && q.From.LanguageCode != "" && q.Message != nil {
+            SetChatLanguage(q.Message.Chat.ID, q.From.LanguageCode)
+        }
         callback(bot, q)
         return
     }
     var msg = update.Message
     if msg == nil { return }
+    if msg.From != nil && msg.From.LanguageCode != "" {
+        SetChatLanguage(msg.Chat.ID, msg.From.LanguageCode)
+    }
     logMessage(msg)
     var command, arg = parseCommand(msg.Text)
     switch command {

@@ -86,17 +86,18 @@ var langTrans = map[string]trans{
 	},
 }
 
-// chatLangs maps chat IDs to language codes.
-var chatLangs = map[int64]string{}
+// chatLangs is an LRU cache of chat ID → language code, bounded to prevent
+// unbounded growth from one-off chats.
+var chatLangs = newLRU[int64, string](10000)
 
 // SetChatLanguage sets the language for a specific chat.
 func SetChatLanguage(chatID int64, lang string) {
-	chatLangs[chatID] = lang
+	chatLangs.Put(chatID, lang)
 }
 
 // ChatLanguage returns the language code for a chat, or "en" if not set.
 func ChatLanguage(chatID int64) string {
-	if lang, ok := chatLangs[chatID]; ok {
+	if lang, ok := chatLangs.Get(chatID); ok {
 		return lang
 	}
 	return "en"
@@ -106,7 +107,7 @@ func ChatLanguage(chatID int64) string {
 // language is "en" (the default). Sprintf and String fall back to the original
 // English string when trans is nil or the key is missing.
 func i18n(chatID int64) trans {
-	lang := chatLangs[chatID]
+	lang, _ := chatLangs.Get(chatID)
 	if lang == "" || lang == "en" {
 		return nil
 	}
