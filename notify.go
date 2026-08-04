@@ -17,9 +17,6 @@ import "bitnsbot/watches"
 
 type watchType string
 
-const watchTypeTransaction watchType = "transaction"
-const watchTypeAddress watchType = "address"
-
 type notification struct {
     txid         string
     received     map[string]float64 // address → value paid to it by this tx's outputs
@@ -32,7 +29,6 @@ type notification struct {
 
 type notifyKey struct {
     chat int64
-    typ  watchType
     id   string
 }
 
@@ -44,30 +40,25 @@ type notifyChans struct {
 var notifyMu sync.Mutex
 var notifies = make(map[notifyKey]notifyChans)
 
-func startNotifyChat(b *bot, chatID int64, typ watchType, watchID, alias string) {
+func startNotifyChat(b *bot, chat int64, watch, alias string) {
     var ch = make(chan notification)
     var stop = make(chan struct{})
     notifyMu.Lock()
-    notifies[notifyKey{chatID, typ, watchID}] = notifyChans{ch, stop}
+    notifies[notifyKey{chat, watch}] = notifyChans{ch, stop}
     notifyMu.Unlock()
-    go func(b *bot, chatID int64, typ watchType, watchID, alias string, ch <-chan notification, stop chan struct{}) {
-        var label = short(watchID)
-        if alias != "" {
-            label += " (" + html.EscapeString(alias) + ")"
-        }
+    go func(b *bot, chat int64, watch, alias string, ch <-chan notification, stop chan struct{}) {
         for {
             select {
             case <-stop:
                 return
             case n := <-ch:
-                if typ != watchTypeAddress { continue }
-                var msg, ids, summary, ok = addressNotification(chatID, n, watchID, alias)
+                var msg, ids, summary, ok = addressNotification(chat, n, watch, alias)
                 if !ok { continue }
-                send(b, chatID, msg, ids)
-                txwatches.AddAddrConfirm(n.txid, chatID, watchID, alias, summary)
+                send(b, chat, msg, ids)
+                txwatches.AddAddrConfirm(n.txid, chat, watch, alias, summary)
             }
         }
-    }(b, chatID, typ, watchID, alias, ch, stop)
+    }(b, chat, watch, alias, ch, stop)
 }
 
 // addressNotification renders the mempool message for a transaction touching a
@@ -162,10 +153,10 @@ func fields(pairs [][2]string) string {
     return "\n\n<pre>" + strings.Join(lines, "\n") + "</pre>"
 }
 
-func stopNotifyChat(chat int64, typ watchType, id string) {
+func stopNotifyChat(chat int64, id string) {
     notifyMu.Lock()
     defer notifyMu.Unlock()
-    var key = notifyKey{chat, typ, id}
+    var key = notifyKey{chat, id}
     if c, found := notifies[key]; found {
         close(c.stop)
         delete(notifies, key)
@@ -177,7 +168,7 @@ func notifyAddresses() (res []string) {
     defer notifyMu.Unlock()
     res = make([]string, 0, len(notifies))
     for k, _ := range notifies {
-        if k.typ == watchTypeAddress && !slices.Contains(res, k.id) {
+        if !slices.Contains(res, k.id) {
             res = append(res, k.id)
         }
     }
@@ -345,7 +336,7 @@ func startNotify(bot *bot) {
         return
     }
     for _, w := range records {
-        startNotifyChat(bot, w.Chat, watchTypeAddress, w.Address, w.Alias)
+        startNotifyChat(bot, w.Chat, w.Address, w.Alias)
     }
     var addrs = notifyAddresses()
     if core != nil && len(addrs) > 0 {
