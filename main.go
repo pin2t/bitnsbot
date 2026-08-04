@@ -22,6 +22,7 @@ import "bitnsbot/miners"
 import "bitnsbot/rates"
 import "bitnsbot/txwatches"
 import "bitnsbot/watches"
+import "unicode/utf8"
 
 var configPath      = flag.String("config", "", "path to a properties file (name=value lines) with flag values; command-line flags take precedence")
 var verbose         = flag.Int("verbose", 0, "log verbosity: 0=ERR/WARN/status, 1=+INFO, 2=+NET/DB (raw external traffic and storage requests)")
@@ -459,9 +460,7 @@ func fees(bot *bot, chat int64) {
         {i18n(chat).String("Minimum (2+ h):"),      rec.minimum},
     }
     var pad int
-    for _, t := range tiers {
-        if len(t.label) > pad { pad = len(t.label) }
-    }
+    for _, t := range tiers { pad = max(pad, utf8.RuneCountInString(t.label)+1) }
     var price, havePrice = rates.Last()
     var lines []string
     for _, t := range tiers {
@@ -620,9 +619,7 @@ func mempoolCmd(bot *bot, chat int64) {
         }
     }
     var pad int
-    for _, p := range pairs {
-        if len(p[0])+1 > pad { pad = len(p[0]) + 1 }
-    }
+    for _, p := range pairs { pad = max(pad, utf8.RuneCountInString(p[0])+1) }
     var lines []string
     for _, p := range pairs {
         lines = append(lines, fmt.Sprintf("%-*s %s", pad, p[0]+":", p[1]))
@@ -745,13 +742,11 @@ func marketCmd(bot *bot, chat int64) {
         lines = append(lines, fmt.Sprintf("%-*s %s", pad, p[0]+":", p[1]))
     }
     if len(changes) > 0 {
-        var cpad int
-        for _, c := range changes {
-            if len(c[0])+1 > cpad { cpad = len(c[0]) + 1 }
-        }
+        var pad int
+        for _, p := range pairs { pad = max(pad, utf8.RuneCountInString(p[0])+1) }
         lines = append(lines, "", i18n(chat).String("Changes"))
         for _, c := range changes {
-            lines = append(lines, fmt.Sprintf("%-*s %s", cpad, c[0]+":", c[1]))
+            lines = append(lines, fmt.Sprintf("%-*s %s", pad, c[0]+":", c[1]))
         }
     }
     send(bot, chat, i18n(chat).Sprintf("Bitcoin market\n\n<pre>%s</pre>", strings.Join(lines, "\n")), nil)
