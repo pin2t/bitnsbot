@@ -257,7 +257,7 @@ func TestWatchFlow(t *testing.T) {
         t.Fatalf("expected chat 1 to be pending")
     }
     update(bot, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"}})
-    if len(sent) != 2 || sent[1] != "Watching address: 1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa" {
+    if len(sent) != 2 || sent[1] != "Watching 1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa" {
         t.Fatalf("unexpected second reply: %#v", sent)
     }
     if pendingWatchChats[1] {
@@ -265,19 +265,19 @@ func TestWatchFlow(t *testing.T) {
     }
     var txid = "f21b47a9143a23e80cc59e81588d21558b394005580b285961957cb3bed5b3e0"
     update(bot, Update{Message: &Message{Chat: Chat{ID: 2}, Text: "/watch " + txid}})
-    if len(sent) != 3 || sent[2] != "Watching transaction: "+txid {
+    if len(sent) != 3 || sent[2] != "Watching "+txid {
         t.Fatalf("unexpected third reply: %#v", sent)
     }
     // an alias as the second parameter (one message)
     var aliasAddr = "1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2"
     update(bot, Update{Message: &Message{Chat: Chat{ID: 5}, Text: "/watch " + aliasAddr + " Savings"}})
-    if sent[len(sent)-1] != "Watching address: "+aliasAddr+" (Savings)" {
+    if sent[len(sent)-1] != "Watching "+aliasAddr+" (Savings)" {
         t.Fatalf("unexpected alias reply: %#v", sent)
     }
     // and through the bare-/watch follow-up — target and alias in the same message
     update(bot, Update{Message: &Message{Chat: Chat{ID: 6}, Text: "/watch"}})
     update(bot, Update{Message: &Message{Chat: Chat{ID: 6}, Text: aliasAddr + " Cold storage"}})
-    if sent[len(sent)-1] != "Watching address: "+aliasAddr+" (Cold storage)" {
+    if sent[len(sent)-1] != "Watching "+aliasAddr+" (Cold storage)" {
         t.Fatalf("unexpected pending-alias reply: %#v", sent)
     }
     // /watches lists the alias next to the id
@@ -305,7 +305,7 @@ func TestFeesFlow(t *testing.T) {
     // not configured → fixed message
     core = nil
     update(bot, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/fees"}})
-    if len(sent) != 1 || sent[0] != "Bitcoin node connection is not configured." {
+    if len(sent) != 1 || sent[0] != "Bitcoin node connection is not configured" {
         t.Fatalf("unexpected not-configured reply: %#v", sent)
     }
     // configured: the estimate is now projected from the mempool itself rather
@@ -338,7 +338,7 @@ func TestFeesFlow(t *testing.T) {
     }
     for _, want := range []string{
         "Estimated network fees", "<pre>",
-        "Fastest (10-20 min):", "Half hour:", "Hour:", "Economy:", "Minimum:",
+        "Fastest (10-20 min):", "Medium (~1 h):", "Minimum (2+ h):",
         "sat/vB", "projected from 8 000 mempool transactions",
     } {
         if !strings.Contains(sent[1], want) {
@@ -408,7 +408,7 @@ func TestMempoolFlow(t *testing.T) {
     var bot = newBot("TESTTOKEN", server.URL)
     core = nil
     update(bot, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/mempool"}})
-    if len(sent) != 1 || sent[0] != "Bitcoin node connection is not configured." {
+    if len(sent) != 1 || sent[0] != "Bitcoin node connection is not configured" {
         t.Fatalf("unexpected not-configured reply: %#v", sent)
     }
     var btcdServer = newFakeCoreServer(t, func(method string, params []interface{}) (interface{}, error) {
@@ -446,7 +446,7 @@ func TestMempoolFlow(t *testing.T) {
         t.Fatalf("expected a mempool reply, got %#v", sent)
     }
     for _, want := range []string{
-        "Mempool", "Size:", "3.5 M", "Transactions: 6.7 K",
+        "Mempool", "Size:", "3.5 M", "Transactions: 6 700",
         "Total flow:", "≈3.50 BTC", "Total fees:", "≈0.0003 BTC",
     } {
         if !strings.Contains(sent[1], want) {
@@ -562,14 +562,14 @@ func TestI18nSetLanguage(t *testing.T) {
 
 	// English (default) — no SetChatLanguage called
 	update(bot, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/watch bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4 Test"}})
-	if len(sent) != 1 || !strings.Contains(sent[0], "Watching address:") {
+	if len(sent) != 1 || !strings.Contains(sent[0], "Watching bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4 (Test)") {
 		t.Fatalf("expected English watch reply, got: %#v", sent)
 	}
 
 	// Russian
 	SetChatLanguage(2, "ru")
 	update(bot, Update{Message: &Message{Chat: Chat{ID: 2}, Text: "/watch bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4 Тест"}})
-	if len(sent) != 2 || !strings.Contains(sent[1], "Отслеживаю address:") {
+	if len(sent) != 2 || !strings.Contains(sent[1], "Отслеживаю ") {
 		t.Fatalf("expected Russian watch reply, got: %#v", sent)
 	}
 	update(bot, Update{Message: &Message{Chat: Chat{ID: 2}, Text: "/unwatch bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"}})
@@ -580,7 +580,7 @@ func TestI18nSetLanguage(t *testing.T) {
 	// Spanish
 	SetChatLanguage(3, "es")
 	update(bot, Update{Message: &Message{Chat: Chat{ID: 3}, Text: "/watch bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4 Prueba"}})
-	if len(sent) != 4 || !strings.Contains(sent[3], "Observando address:") {
+	if len(sent) != 4 || !strings.Contains(sent[3], "Observando ") {
 		t.Fatalf("expected Spanish watch reply, got: %#v", sent)
 	}
 	update(bot, Update{Message: &Message{Chat: Chat{ID: 3}, Text: "/unwatch bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"}})
@@ -618,7 +618,7 @@ func TestI18nAutoDetect(t *testing.T) {
 		From: &User{LanguageCode: "ru"},
 		Text: "/watch bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4 тест",
 	}})
-	if len(sent) != 1 || !strings.Contains(sent[0], "Отслеживаю address:") {
+	if len(sent) != 1 || !strings.Contains(sent[0], "Отслеживаю ") {
 		t.Fatalf("expected auto-detected Russian reply, got: %#v", sent)
 	}
 

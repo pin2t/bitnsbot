@@ -166,7 +166,7 @@ func TestUnwatchFlow(t *testing.T) {
     }
     // chat 2 unwatches; only chat 1 must remain, both as a live watcher and in the store
     update(b, Update{Message: &Message{Chat: Chat{ID: 2}, Text: "/unwatch " + addr}})
-    if sent[len(sent)-1] != "Stopped watching "+addr+"." {
+    if sent[len(sent)-1] != "Stopped watching "+addr {
         t.Fatalf("unexpected unwatch reply: %#v", sent)
     }
     if got := watcherChats(addr); len(got) != 1 || got[0] != 1 {
@@ -178,7 +178,7 @@ func TestUnwatchFlow(t *testing.T) {
     }
     // unwatching something not watched removes nothing
     update(b, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/unwatch bogusaddr"}})
-    if sent[len(sent)-1] != "You're not watching bogusaddr." {
+    if sent[len(sent)-1] != "You're not watching bogusaddr" {
         t.Fatalf("unexpected not-watching reply: %q", sent[len(sent)-1])
     }
     // bare /unwatch marks the chat pending and consumes the next plain message
@@ -187,7 +187,7 @@ func TestUnwatchFlow(t *testing.T) {
         t.Fatalf("expected chat 1 pending for unwatch")
     }
     update(b, Update{Message: &Message{Chat: Chat{ID: 1}, Text: addr}})
-    if sent[len(sent)-1] != "Stopped watching "+addr+"." {
+    if sent[len(sent)-1] != "Stopped watching "+addr {
         t.Fatalf("expected follow-up to remove chat 1's watch, got: %q", sent[len(sent)-1])
     }
     if pendingUnwatchChats[1] {
@@ -216,7 +216,7 @@ func TestWatchesFlow(t *testing.T) {
     defer stopNotify()
     // nothing watched yet
     update(b, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/watches"}})
-    if sent[len(sent)-1] != "You're not watching anything yet." {
+    if sent[len(sent)-1] != "You're not watching anything yet" {
         t.Fatalf("unexpected empty reply: %q", sent[len(sent)-1])
     }
     var addr = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
