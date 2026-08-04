@@ -86,7 +86,7 @@ func addressNotification(chatID int64, n notification, watchID, alias string) (s
     if !gotIn && !gotOut { return "", nil, txwatches.Summary{}, false }
     var label string
     if alias != "" {
-        label = i18n(chatID).Sprintf("%s (%s)", short(watchID), html.EscapeString(alias))
+        label = short(watchID) + " (" + html.EscapeString(alias) + ")"
     } else {
         label = short(watchID)
     }
@@ -115,7 +115,7 @@ func addressNotification(chatID int64, n notification, watchID, alias string) (s
         header = i18n(chatID).Sprintf("%s is sending %s to\n", label, amountLine(out, time.Time{}, true))
         if len(recipients) == 0 { header += "none\n" }
         for i := 0; i < min(len(recipients), shownAddrs); i++ {
-            header += i18n(chatID).Sprintf("%s: %s\n", short(recipients[i].a), amountLine(float64(recipients[i].b)/1e8, time.Now(), true))
+            header += fmt.Sprintf("%s: %s\n", short(recipients[i].a), amountLine(float64(recipients[i].b)/1e8, time.Now(), true))
             ids = append(ids, recipients[i].a)
         }
         if len(recipients) > shownAddrs { header += "...\n" }
@@ -143,7 +143,7 @@ func addressNotification(chatID int64, n notification, watchID, alias string) (s
         return msg, ids, summary, true
     }
     header += i18n(chatID).Sprintf("Transaction <code>%s</code>", n.txid)
-    return i18n(chatID).Sprintf("🔔 %s%s", header, fields(pairs)), ids, summary, true
+    return fmt.Sprintf("🔔 %s%s", header, fields(pairs)), ids, summary, true
 }
 
 // fields renders the aligned <pre> block a message hangs beneath, or nothing at
@@ -379,7 +379,7 @@ func confirmationMessage(chat int64, c txwatches.Confirmed, height int64) (strin
         // a direct /watch <txid>: there is no address and no amount to restate
         var label string
         if c.Alias != "" {
-            label = i18n(chat).Sprintf("%s (%s)", short(c.Txid), html.EscapeString(c.Alias))
+            label = short(c.Txid) + " (" + html.EscapeString(c.Alias) + ")"
         } else {
             label = short(c.Txid)
         }
@@ -388,7 +388,7 @@ func confirmationMessage(chat int64, c txwatches.Confirmed, height int64) (strin
     }
     var label string
     if c.Alias != "" {
-        label = i18n(chat).Sprintf("%s (%s)", short(c.Addr), html.EscapeString(c.Alias))
+        label = short(c.Addr) + " (" + html.EscapeString(c.Alias) + ")"
     } else {
         label = short(c.Addr)
     }
@@ -401,7 +401,7 @@ func confirmationMessage(chat int64, c txwatches.Confirmed, height int64) (strin
         msg = i18n(chat).Sprintf("%s received %s. %s", label, amountLine(c.Summary.Amount, time.Time{}, true), landed)
     }
     ids = append(ids, strconv.FormatInt(height, 10))
-    return i18n(chat).Sprintf("🔔 %s", msg), ids
+    return "🔔 " + msg, ids
 }
 
 // processConfirms notifies and drops every transaction watch whose transaction

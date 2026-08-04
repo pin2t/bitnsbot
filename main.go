@@ -49,8 +49,15 @@ var historyFile     = flag.String("history-file", "", "path to a JSON file conta
 var core *coreClient
 var dbuiSrv *http.Server
 var ver = "1.0"
+var commit = ""
 
 func main() {
+    var b, _ = debug.ReadBuildInfo()
+    if b != nil {
+        for _, s := range b.Settings {
+            if s.Key == "vcs.revision" { commit = "Build " + s.Value[:6] }
+        }
+    }
     flag.Usage = func() {
         fmt.Fprintf(flag.CommandLine.Output(), "Usage of %s:\n", os.Args[0])
         flag.PrintDefaults()
@@ -92,10 +99,6 @@ func main() {
         if err != nil {
             logging.Fatal("Bitcoin Core client: %v", err)
         }
-        // unlike btcd's websocket there is no connection to establish or
-        // supervise — every call is its own HTTP request — so a bad URL or
-        // credentials surface on the first real call instead of at startup.
-        // Check once here so that failure is loud and immediate.
         var ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
         var height, herr = core.getBlockCount(ctx)
         cancel()
@@ -297,28 +300,21 @@ func parseCommand(text string) (command, arg string) {
     return command, arg
 }
 
-func start(bot *bot, chatID int64) {
-    var b, _ = debug.ReadBuildInfo()
-    var commit = ""
-    if b != nil {
-        for _, s := range b.Settings {
-            if s.Key == "vcs.revision" { commit = "Build " + s.Value[:6] }
-        }
-    }
-    send(bot, chatID, i18n(chatID).Sprintf(
-        "Bitnsbot. I keep an eye on the Bitcoin network for you.\n\n"+
-        "• <b>/info</b> — look up a transaction, block, or address\n"+
-        "• <b>/watch</b> — get notified when an address receives a payment, or when a transaction confirms\n"+
-        "• <b>/unwatch</b> — stop watching an address or transaction\n"+
-        "• <b>/watches</b> — list what you're currently watching\n"+
-        "• <b>/fees</b> — show current network fee estimates\n"+
-        "• <b>/mempool</b> — show current mempool size and totals\n"+
-        "• <b>/miners</b> — top mining pools by blocks mined\n"+
-        "• <b>/market</b> — price, market cap, volume and recent changes\n"+
-        "• <b>/start</b> — show this message\n"+
+func start(bot *bot, chat int64) {
+    send(bot, chat,
+        i18n(chat).String("Bitnsbot. I keep an eye on the Bitcoin network for you.\n\n") +
+        i18n(chat).String("• <b>/info</b> — look up a transaction, block, or address\n") +
+        i18n(chat).String("• <b>/watch</b> — get notified when an address receives a payment, or when a transaction confirms\n") +
+        i18n(chat).String("• <b>/unwatch</b> — stop watching an address or transaction\n") +
+        i18n(chat).String("• <b>/watches</b> — list what you're currently watching\n") +
+        i18n(chat).String("• <b>/fees</b> — show current network fee estimates\n") +
+        i18n(chat).String("• <b>/mempool</b> — show current mempool size and totals\n") +
+        i18n(chat).String("• <b>/miners</b> — top mining pools by blocks mined\n") +
+        i18n(chat).String("• <b>/market</b> — price, market cap, volume and recent changes\n") +
+        i18n(chat).String("• <b>/start</b> — show this message\n") +
         "\n"+
-        "Version %s. %s. Source code <a href=\"https://github.com/pin2t/bitnsbot\">bitnsbot</a>. Don't forget to give me a ⭐",
-        ver, commit), nil)
+        i18n(chat).Sprintf("Version %s. Build %s. Source code <a href=\"https://github.com/pin2t/bitnsbot\">bitnsbot</a>. Don't forget to give me a ⭐",
+            ver, commit), nil)
 }
 
 var pendingWatchMu sync.Mutex
@@ -450,7 +446,7 @@ func watchesCmd(bot *bot, chatID int64) {
         lines = append(lines, "", "Transactions:")
         lines = append(lines, transactions...)
     }
-    send(bot, chatID, i18n(chatID).Sprintf("%s", strings.Join(lines, "\n")), ids)
+    send(bot, chatID, strings.Join(lines, "\n"), ids)
 }
 
 // fees replies with current network fee estimates for three confirmation
