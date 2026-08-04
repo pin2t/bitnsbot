@@ -50,7 +50,7 @@ func info(bot *bot, chat int64, arg string) {
 func transaction(ctx context.Context, bot *bot, chat int64, txid string) {
     var tx, err = core.getRawTransaction(ctx, txid)
     if err != nil {
-        send(bot, chat, "Couldn't find transaction "+short(txid)+".", nil)
+        send(bot, chat, i18n(chat).Sprintf("Couldn't find transaction %s.", short(txid)), nil)
         return
     }
     var total float64
@@ -71,7 +71,7 @@ func transaction(ctx context.Context, bot *bot, chat int64, txid string) {
         at, current = time.Unix(tx.Time, 0), false
         pairs = append(pairs,
             [2]string{"Status", fmt.Sprintf("confirmed (%d confirmations)", tx.Confirmations)},
-            [2]string{"Confirmed", when(tx.Time)},
+            [2]string{"Confirmed", when(tx.Time, chat)},
             [2]string{"Block", short(tx.BlockHash)},
         )
     }
@@ -109,7 +109,7 @@ func transaction(ctx context.Context, bot *bot, chat int64, txid string) {
     if tx.BlockHash != "" { ids = append(ids, tx.BlockHash) }
     ids = append(ids, firstN(inputs, shownAddrs)...)
     ids = append(ids, firstN(outputAddrs(tx), shownAddrs)...)
-    send(bot, chat, fmt.Sprintf("Transaction <code>%s</code>\n\n<pre>%s</pre>", tx.Txid, strings.Join(lines, "\n")), ids)
+    send(bot, chat, i18n(chat).Sprintf("Transaction <code>%s</code>\n\n<pre>%s</pre>", tx.Txid, strings.Join(lines, "\n")), ids)
 }
 
 // txInputs reports a transaction's fee and the addresses it spends from — in
@@ -250,12 +250,12 @@ func compactAddrs(addrs []string) string {
 
 func block(ctx context.Context, bot *bot, chat int64, height int64) {
     if bi, ok := loadBlock(height); ok {
-        send(bot, chat, formatBlock(bi), nil)
+        send(bot, chat, formatBlock(bi, chat), nil)
         return
     }
     var hash, err = core.getBlockHash(ctx, height)
     if err != nil {
-        send(bot, chat, fmt.Sprintf("Couldn't find block %d.", height), nil)
+        send(bot, chat, i18n(chat).Sprintf("Couldn't find block %d.", height), nil)
         return
     }
     var bi, ciErr = computeBlockInfo(ctx, hash)
@@ -265,7 +265,7 @@ func block(ctx context.Context, bot *bot, chat int64, height int64) {
         return
     }
     storeBlock(bi)
-    send(bot, chat, formatBlock(bi), nil)
+    send(bot, chat, formatBlock(bi, chat), nil)
 }
 
 // feeStats summarises a block's fee distribution. Core reports each
@@ -379,15 +379,15 @@ func addressStats(txs []*coreTransaction, addr string) (received, sent, fees flo
     return
 }
 
-func address(ctx context.Context, bot *bot, chatID int64, addr string) {
+func address(ctx context.Context, bot *bot, chat int64, addr string) {
     var addrInfo, err = core.validateAddress(ctx, addr)
     if err != nil {
         logging.Err("validate address: %v", err)
-        send(bot, chatID, "Sorry, something went wrong looking up that address.", nil)
+        send(bot, chat, "Sorry, something went wrong looking up that address.", nil)
         return
     }
     if !addrInfo.IsValid {
-        send(bot, chatID, html.EscapeString(addr)+" doesn't look like a valid Bitcoin address.", nil)
+        send(bot, chat, i18n(chat).Sprintf("%s doesn't look like a valid Bitcoin address.", html.EscapeString(addr)), nil)
         return
     }
     var addrType = "standard (P2PKH)"
@@ -421,10 +421,10 @@ func address(ctx context.Context, bot *bot, chatID int64, addr string) {
             [2]string{"Transactions", count},
         )
         if firstT > 0 {
-            pairs = append(pairs, [2]string{"First tx", timeCompact(firstT)})
+            pairs = append(pairs, [2]string{"First tx", when(firstT, chat)})
         }
         if lastT > 0 {
-            pairs = append(pairs, [2]string{"Last tx", timeCompact(lastT)})
+            pairs = append(pairs, [2]string{"Last tx", when(lastT, chat)})
         }
         if firstT > 0 && lastT > firstT {
             pairs = append(pairs, [2]string{"Activity period", periodText(time.Duration(lastT-firstT) * time.Second)})
@@ -438,5 +438,5 @@ func address(ctx context.Context, bot *bot, chatID int64, addr string) {
     for _, p := range pairs {
         lines = append(lines, fmt.Sprintf("%-*s %s", pad, p[0]+":", p[1]))
     }
-    send(bot, chatID, fmt.Sprintf("Address %s\n\n<pre>%s</pre>", short(addr), strings.Join(lines, "\n")), nil)
+    send(bot, chat, i18n(chat).Sprintf("Address %s\n\n<pre>%s</pre>", short(addr), strings.Join(lines, "\n")), nil)
 }

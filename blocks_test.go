@@ -105,7 +105,7 @@ func TestFormatBlock(t *testing.T) {
         TxSizeMin: 110, TxSizeAvg: 445, TxSizeMax: 98000,
         Reward: 3.125, Total: 3.755, Difficulty: 79000000000000,
     }
-    var s = formatBlock(bi)
+    var s = formatBlock(bi, 1)
     for _, want := range []string{
         "Block #800000",
         "Size:          1.52 M",
@@ -144,7 +144,7 @@ func TestBlockNotification(t *testing.T) {
     defer func() { core = nil }()
     // Core pushes new tips over ZMQ rather than through an RPC subscription, so
     // this is what zmq.go does on a hashblock frame.
-    go cacheBlockHash("0000000000000000abc")
+    go processBlock("0000000000000000abc")
     var ok bool
     for i := 0; i < 40 && !ok; i++ {
         _, ok = loadBlock(100)

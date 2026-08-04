@@ -49,8 +49,15 @@ var historyFile     = flag.String("history-file", "", "path to a JSON file conta
 var core *coreClient
 var dbuiSrv *http.Server
 var ver = "1.0"
+var commit = ""
 
 func main() {
+    var b, _ = debug.ReadBuildInfo()
+    if b != nil {
+        for _, s := range b.Settings {
+            if s.Key == "vcs.revision" { commit = "Build " + s.Value[:6] }
+        }
+    }
     flag.Usage = func() {
         fmt.Fprintf(flag.CommandLine.Output(), "Usage of %s:\n", os.Args[0])
         flag.PrintDefaults()
@@ -92,10 +99,6 @@ func main() {
         if err != nil {
             logging.Fatal("Bitcoin Core client: %v", err)
         }
-        // unlike btcd's websocket there is no connection to establish or
-        // supervise — every call is its own HTTP request — so a bad URL or
-        // credentials surface on the first real call instead of at startup.
-        // Check once here so that failure is loud and immediate.
         var ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
         var height, herr = core.getBlockCount(ctx)
         cancel()
@@ -207,11 +210,17 @@ func webhookHandler(bot *bot) http.HandlerFunc {
 
 func update(bot *bot, update Update) {
     if q := update.CallbackQuery; q != nil {
+        if q.From != nil && q.From.LanguageCode != "" && q.Message != nil {
+            SetChatLanguage(q.Message.Chat.ID, q.From.LanguageCode)
+        }
         callback(bot, q)
         return
     }
     var msg = update.Message
     if msg == nil { return }
+    if msg.From != nil && msg.From.LanguageCode != "" {
+        SetChatLanguage(msg.Chat.ID, msg.From.LanguageCode)
+    }
     logMessage(msg)
     var command, arg = parseCommand(msg.Text)
     switch command {
@@ -291,30 +300,21 @@ func parseCommand(text string) (command, arg string) {
     return command, arg
 }
 
-func start(bot *bot, chatID int64) {
-    var b, _ = debug.ReadBuildInfo()
-    var commit = ""
-    if b != nil {
-        for _, s := range b.Settings {
-            if s.Key == "vcs.revision" { commit = "Build " + s.Value[:6] }
-        }
-    }
-    send(bot, chatID, strings.Join([]string{
-        "Bitnsbot. I keep an eye on the Bitcoin network for you.",
-        "",
-        "• <b>/info</b> — look up a transaction, block, or address",
-        "• <b>/watch</b> — get notified when an address receives a payment, or when a transaction confirms",
-        "• <b>/unwatch</b> — stop watching an address or transaction",
-        "• <b>/watches</b> — list what you're currently watching",
-        "• <b>/fees</b> — show current network fee estimates",
-        "• <b>/mempool</b> — show current mempool size and totals",
-        "• <b>/miners</b> — top mining pools by blocks mined",
-        "• <b>/market</b> — price, market cap, volume and recent changes",
-        "• <b>/start</b> — show this message",
-        "",
-        "Version " + ver + ". " + commit + ". Source code <a href=\"https://github.com/pin2t/bitnsbot\">bitnsbot</a>. " +
-        "Don't forget to give me a ⭐",
-    }, "\n"), nil)
+func start(bot *bot, chat int64) {
+    send(bot, chat,
+        i18n(chat).String("Bitnsbot. I keep an eye on the Bitcoin network for you.\n\n") +
+        i18n(chat).String("• <b>/info</b> — look up a transaction, block, or address\n") +
+        i18n(chat).String("• <b>/watch</b> — get notified when an address receives a payment, or when a transaction confirms\n") +
+        i18n(chat).String("• <b>/unwatch</b> — stop watching an address or transaction\n") +
+        i18n(chat).String("• <b>/watches</b> — list what you're currently watching\n") +
+        i18n(chat).String("• <b>/fees</b> — show current network fee estimates\n") +
+        i18n(chat).String("• <b>/mempool</b> — show current mempool size and totals\n") +
+        i18n(chat).String("• <b>/miners</b> — top mining pools by blocks mined\n") +
+        i18n(chat).String("• <b>/market</b> — price, market cap, volume and recent changes\n") +
+        i18n(chat).String("• <b>/start</b> — show this message\n") +
+        "\n"+
+        i18n(chat).Sprintf("Version %s. Build %s. Source code <a href=\"https://github.com/pin2t/bitnsbot\">bitnsbot</a>. Don't forget to give me a ⭐",
+            ver, commit), nil)
 }
 
 var pendingWatchMu sync.Mutex
@@ -357,9 +357,11 @@ func watchCmd(bot *bot, chatID int64, arg string) {
         }
     }
     logging.Info("added %s subscription %s for chat %d (alias %q)", typ, watchID, chatID, alias)
-    var msg = "Watching " + string(typ) + ": " + html.EscapeString(watchID)
+    var msg string
     if alias != "" {
-        msg += " (" + html.EscapeString(alias) + ")"
+        msg = i18n(chatID).Sprintf("Watching %s: %s (%s)", typ, html.EscapeString(watchID), html.EscapeString(alias))
+    } else {
+        msg = i18n(chatID).Sprintf("Watching %s: %s", typ, html.EscapeString(watchID))
     }
     send(bot, chatID, msg, nil)
 }
@@ -380,11 +382,11 @@ func unwatch(bot *bot, chatID int64, arg string) {
     pendingUnwatchMu.Unlock()
     if isTxid(arg) {
         if txwatches.Remove(arg, chatID) == 0 {
-            send(bot, chatID, "You're not watching "+html.EscapeString(arg)+".", nil)
+            send(bot, chatID, i18n(chatID).Sprintf("You're not watching %s.", html.EscapeString(arg)), nil)
             return
         }
         logging.Info("removed transaction watch %s for chat %d", arg, chatID)
-        send(bot, chatID, "Stopped watching "+html.EscapeString(arg)+".", nil)
+        send(bot, chatID, i18n(chatID).Sprintf("Stopped watching %s.", html.EscapeString(arg)), nil)
         return
     }
     var removed, err = watches.Remove(chatID, arg)
@@ -394,14 +396,14 @@ func unwatch(bot *bot, chatID int64, arg string) {
         return
     }
     if removed == 0 {
-        send(bot, chatID, "You're not watching "+html.EscapeString(arg)+".", nil)
+        send(bot, chatID, i18n(chatID).Sprintf("You're not watching %s.", html.EscapeString(arg)), nil)
         return
     }
     stopNotifyChat(chatID, watchTypeAddress, arg)
     txwatches.RemoveAddrConfirms(arg, chatID)
     logging.Info("removed subscription %s for chat %d", arg, chatID)
     unwatchScripts(arg)
-    send(bot, chatID, "Stopped watching "+html.EscapeString(arg)+".", nil)
+    send(bot, chatID, i18n(chatID).Sprintf("Stopped watching %s.", html.EscapeString(arg)), nil)
 }
 
 func watchesCmd(bot *bot, chatID int64) {
@@ -507,7 +509,7 @@ func fees(bot *bot, chatID int64) {
     if havePrice {
         note += fmt.Sprintf("\nUSD for a typical %d vB transaction", typicalTxVsize)
     }
-    send(bot, chatID, "Estimated network fees\n\n<pre>"+strings.Join(lines, "\n")+"</pre>\n"+note, nil)
+    send(bot, chatID, i18n(chatID).Sprintf("Estimated network fees\n\n<pre>%s</pre>\n%s", strings.Join(lines, "\n"), note), nil)
 }
 
 // flowInterval is how often startMempoolFlow polls the mempool tx count. A
@@ -668,7 +670,7 @@ func mempoolCmd(bot *bot, chatID int64) {
     for _, p := range pairs {
         lines = append(lines, fmt.Sprintf("%-*s %s", pad, p[0]+":", p[1]))
     }
-    send(bot, chatID, "Mempool\n\n<pre>"+strings.Join(lines, "\n")+"</pre>", nil)
+    send(bot, chatID, i18n(chatID).Sprintf("Mempool\n\n<pre>%s</pre>", strings.Join(lines, "\n")), nil)
 }
 
 // mempoolTotals sums the fee (from the verbose mempool) and the output amount
@@ -726,12 +728,12 @@ func minersCmd(bot *bot, chatID int64) {
     }
     var lines []string
     for i, m := range top {
-        var blocks = fmt.Sprintf("%d blocks", m.Blocks)
+        var blocks = i18n(chatID).Sprintf("%d blocks", m.Blocks)
         if m.Blocks == 1 { blocks = "1 block" }
-        lines = append(lines, fmt.Sprintf("%d. %s. %s mined, reward %s BTC, fees %s BTC, consumption %s GW",
+        lines = append(lines, i18n(chatID).Sprintf("%d. %s. %s mined, reward %s BTC, fees %s BTC, consumption %s GW",
             i+1, m.Name, blocks, trimNum(m.Reward, 2), trimNum(m.Fees, 2), trimNum(m.ConsumptionGW, 1)))
     }
-    send(bot, chatID, "Top miners by blocks mined:\n\n"+strings.Join(lines, "\n"), nil)
+    send(bot, chatID, i18n(chatID).Sprintf("Top miners by blocks mined:\n\n%s", strings.Join(lines, "\n")), nil)
 }
 
 // marketCmd reports the current price, market capitalisation and 24h volume,
@@ -772,12 +774,12 @@ func marketCmd(bot *bot, chatID int64) {
         label string
         back  time.Duration
     }{
-        {"24h", 24 * time.Hour},
-        {"1w", 7 * 24 * time.Hour},
-        {"1m", 30 * 24 * time.Hour},
-        {"3m", 90 * 24 * time.Hour},
-        {"1y", 365 * 24 * time.Hour},
-        {"5y", 5 * 365 * 24 * time.Hour},
+        {"24 h", 24 * time.Hour},
+        {"1 w", 7 * 24 * time.Hour},
+        {"1 m", 30 * 24 * time.Hour},
+        {"3 m", 90 * 24 * time.Hour},
+        {"1 y", 365 * 24 * time.Hour},
+        {"5 y", 5 * 365 * 24 * time.Hour},
     }
     var changes [][2]string
     for _, p := range periods {
@@ -803,7 +805,7 @@ func marketCmd(bot *bot, chatID int64) {
             lines = append(lines, fmt.Sprintf("%-*s %s", cpad, c[0]+":", c[1]))
         }
     }
-    send(bot, chatID, "Bitcoin market\n\n<pre>"+strings.Join(lines, "\n")+"</pre>", nil)
+    send(bot, chatID, i18n(chatID).Sprintf("Bitcoin market\n\n<pre>%s</pre>", strings.Join(lines, "\n")), nil)
 }
 
 func send(bot *bot, chat int64, text string, ids []string) {

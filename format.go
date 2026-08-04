@@ -8,26 +8,25 @@ import "time"
 
 import "bitnsbot/rates"
 
-func ago(n int, unit string) string {
-    if n == 1 { return "1 " + unit + " ago" }
+func ago(n int, unit string, chat int64) string {
+    var tr = i18n(chat)
+    if n == 1 { return "1 " + unit + " " + tr.String("ago") }
+    if tr != nil {
+        return fmt.Sprintf("%d %s %s", n, unit, tr.String("ago"))
+    }
     return fmt.Sprintf("%d %ss ago", n, unit)
 }
 
-func when(unix int64) string {
+func when(unix int64, chat int64) string {
     var t = time.Unix(unix, 0)
     if t.After(time.Now().AddDate(0, -3, 0)) {
         var since = time.Since(t)
         switch {
-        case since < time.Minute:
-            return "just now"
-        case since < time.Hour:
-            return ago(int(since.Minutes()), "minute")
-        case since < 24*time.Hour:
-            return ago(int(since.Hours()), "hour")
-        case since < 31*24*time.Hour:
-            return ago(int(since.Hours()/24), "day")
-        default:
-            return ago(int(since.Hours()/24/30), "month")
+        case since < time.Minute:     return i18n(chat).String("just now")
+        case since < time.Hour:       return ago(int(since.Minutes()), i18n(chat).String("minute"), chat)
+        case since < 24*time.Hour:    return ago(int(since.Hours()), i18n(chat).String("hour"), chat)
+        case since < 31*24*time.Hour: return ago(int(since.Hours()/24), i18n(chat).String("day"), chat)
+        default:                      return ago(int(since.Hours()/24/30), i18n(chat).String("month"), chat)
         }
     }
     return strings.ToLower(t.UTC().Format("2 January 2006 15:04"))
@@ -61,13 +60,13 @@ func sats(btc float64) string {
 // e.g. metric(3299245, 1) → "3.3 M", metric(6719, 1) → "6.7 k", and (used for
 // block difficulty) metric(79000000000000, 2) → "79 T".
 func metric(f float64, decimals int) string {
-    var unit = " B"
-    for _, u := range []string{" K", " M", " G", " T", " P", " E"} {
+    var unit = "B"
+    for _, u := range []string{"K", "M", "G", "T", "P", "E"} {
         if f < 1000 { break }
         f /= 1000
         unit = u
     }
-    return strings.TrimRight(strings.TrimRight(strconv.FormatFloat(f, 'f', decimals, 64), "0"), ".") + unit
+    return strings.TrimRight(strings.TrimRight(strconv.FormatFloat(f, 'f', decimals, 64), "0"), ".") + " " + unit
 }
 
 // compactBtc renders a BTC amount compactly with a USD approximation at the
@@ -78,28 +77,6 @@ func compactBtc(btc float64) string {
         return btcAmount(btc)
     }
     return amountLine(btc, time.Time{}, true)
-}
-
-// timeCompact renders a past time relatively and compactly ("2 m ago", "5 d ago",
-// "3 h ago", "10 min ago") within the last year, or the exact lowercase date for
-// older ("very old") times. "m" is months here; minutes are "min".
-func timeCompact(unix int64) string {
-    var t = time.Unix(unix, 0)
-    var since = time.Since(t)
-    switch {
-    case since < time.Minute:
-        return "just now"
-    case since < time.Hour:
-        return fmt.Sprintf("%d min ago", int(since.Minutes()))
-    case since < 24*time.Hour:
-        return fmt.Sprintf("%d h ago", int(since.Hours()))
-    case since < 30*24*time.Hour:
-        return fmt.Sprintf("%d d ago", int(since.Hours()/24))
-    case since < 365*24*time.Hour:
-        return fmt.Sprintf("%d m ago", int(since.Hours()/24/30))
-    default:
-        return strings.ToLower(t.UTC().Format("2 January 2006"))
-    }
 }
 
 // periodText renders a duration as its two most-significant non-zero units among
@@ -213,17 +190,15 @@ func cachedBtc(btc float64) string {
 }
 
 // durationText renders elapsed time compactly: "45 sec", "12 min", "2 h 5 min".
-func durationText(d time.Duration) string {
+func durationText(d time.Duration, chat int64) string {
     switch {
-    case d < time.Minute:
-        return fmt.Sprintf("%d sec", int(d.Seconds()))
-    case d < time.Hour:
-        return fmt.Sprintf("%d min", int(d.Minutes()))
+    case d < time.Minute: return i18n(chat).Sprintf("%d sec", int(d.Seconds()))
+    case d < time.Hour:   return i18n(chat).Sprintf("%d min", int(d.Minutes()))
     default:
         var h = int(d / time.Hour)
         var m = int(d/time.Minute) % 60
-        if m == 0 { return fmt.Sprintf("%d h", h) }
-        return fmt.Sprintf("%d h %d min", h, m)
+        if m == 0 { return i18n(chat).Sprintf("%d h", h) }
+        return i18n(chat).Sprintf("%d h %d min", h, m)
     }
 }
 
@@ -299,11 +274,4 @@ func amountText(btc float64) string {
         return trimNum(btc, 8) + " BTC"
     }
     return group(sats) + " sats"
-}
-
-func amountTextSats(sats int) string {
-    if sats >= notifyBTCThreshold || sats <= -notifyBTCThreshold {
-        return trimNum(float64(sats * 1.) / 1e8 , 8) + " BTC"
-    }
-    return group(int64(sats)) + " sats"
 }

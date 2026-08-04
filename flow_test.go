@@ -538,6 +538,101 @@ func TestMempoolFlowRate(t *testing.T) {
     }
 }
 
+func TestI18nSetLanguage(t *testing.T) {
+	t.Cleanup(func() { chatLangs = newLRU[int64, string](10000) })
+
+	var sent []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Text string `json:"text"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		sent = append(sent, body.Text)
+		json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": true})
+	}))
+	defer server.Close()
+	bot := newBot("TESTTOKEN", server.URL)
+	err := openDB(filepath.Join(t.TempDir(), "watches.db"))
+	if err != nil {
+		t.Fatalf("openDB: %v", err)
+	}
+	defer closeDB()
+	stopNotify()
+	defer stopNotify()
+
+	// English (default) — no SetChatLanguage called
+	update(bot, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/watch bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4 Test"}})
+	if len(sent) != 1 || !strings.Contains(sent[0], "Watching address:") {
+		t.Fatalf("expected English watch reply, got: %#v", sent)
+	}
+
+	// Russian
+	SetChatLanguage(2, "ru")
+	update(bot, Update{Message: &Message{Chat: Chat{ID: 2}, Text: "/watch bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4 Тест"}})
+	if len(sent) != 2 || !strings.Contains(sent[1], "Отслеживаю address:") {
+		t.Fatalf("expected Russian watch reply, got: %#v", sent)
+	}
+	update(bot, Update{Message: &Message{Chat: Chat{ID: 2}, Text: "/unwatch bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"}})
+	if len(sent) != 3 || !strings.Contains(sent[2], "Прекращено отслеживание") {
+		t.Fatalf("expected Russian unwatch reply, got: %#v", sent)
+	}
+
+	// Spanish
+	SetChatLanguage(3, "es")
+	update(bot, Update{Message: &Message{Chat: Chat{ID: 3}, Text: "/watch bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4 Prueba"}})
+	if len(sent) != 4 || !strings.Contains(sent[3], "Observando address:") {
+		t.Fatalf("expected Spanish watch reply, got: %#v", sent)
+	}
+	update(bot, Update{Message: &Message{Chat: Chat{ID: 3}, Text: "/unwatch bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"}})
+	if len(sent) != 5 || !strings.Contains(sent[4], "Se dejó de observar") {
+		t.Fatalf("expected Spanish unwatch reply, got: %#v", sent)
+	}
+}
+
+func TestI18nAutoDetect(t *testing.T) {
+	t.Cleanup(func() { chatLangs = newLRU[int64, string](10000) })
+
+	var sent []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Text string `json:"text"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		sent = append(sent, body.Text)
+		json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": true})
+	}))
+	defer server.Close()
+	bot := newBot("TESTTOKEN", server.URL)
+	err := openDB(filepath.Join(t.TempDir(), "watches.db"))
+	if err != nil {
+		t.Fatalf("openDB: %v", err)
+	}
+	defer closeDB()
+	stopNotify()
+	defer stopNotify()
+
+	// Simulate a Telegram user with language_code "ru" — the update handler
+	// should call SetChatLanguage automatically.
+	update(bot, Update{Message: &Message{
+		Chat: Chat{ID: 1},
+		From: &User{LanguageCode: "ru"},
+		Text: "/watch bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4 тест",
+	}})
+	if len(sent) != 1 || !strings.Contains(sent[0], "Отслеживаю address:") {
+		t.Fatalf("expected auto-detected Russian reply, got: %#v", sent)
+	}
+
+	// Same chat, different language in a later message — should switch.
+	update(bot, Update{Message: &Message{
+		Chat: Chat{ID: 1},
+		From: &User{LanguageCode: "es"},
+		Text: "/unwatch bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4",
+	}})
+	if len(sent) != 2 || !strings.Contains(sent[1], "Se dejó de observar") {
+		t.Fatalf("expected auto-detected Spanish reply after language switch, got: %#v", sent)
+	}
+}
+
 func TestPeriodText(t *testing.T) {
     var cases = []struct {
         d    time.Duration
@@ -554,28 +649,6 @@ func TestPeriodText(t *testing.T) {
         if got := periodText(c.d); got != c.want {
             t.Errorf("periodText(%v) = %q, want %q", c.d, got, c.want)
         }
-    }
-}
-
-func TestTimeCompact(t *testing.T) {
-    var now = time.Now()
-    var cases = []struct {
-        t    time.Time
-        want string
-    }{
-        {now.Add(-30 * time.Second), "just now"},
-        {now.Add(-5 * time.Minute), "5 min ago"},
-        {now.Add(-3 * time.Hour), "3 h ago"},
-        {now.Add(-5 * 24 * time.Hour), "5 d ago"},
-        {now.Add(-70 * 24 * time.Hour), "2 m ago"},
-    }
-    for _, c := range cases {
-        if got := timeCompact(c.t.Unix()); got != c.want {
-            t.Errorf("timeCompact(%v) = %q, want %q", c.t, got, c.want)
-        }
-    }
-    if got := timeCompact(time.Date(2015, 1, 1, 0, 0, 0, 0, time.UTC).Unix()); got != "1 january 2015" {
-        t.Errorf("timeCompact(2015-01-01) = %q, want %q", got, "1 january 2015")
     }
 }
 

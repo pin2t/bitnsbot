@@ -1,0 +1,155 @@
+package main
+
+import "fmt"
+
+// trans holds translations for a single language, mapping English source strings
+// to translated strings. A nil or empty trans is valid and falls back to the
+// original English string.
+type trans map[string]string
+
+// langTrans holds per-language translation maps. English is not stored — it is
+// the default and Sprintf/String fall back to the original format string when no
+// translation is found.
+var langTrans = map[string]trans{
+	// i18n-vet:translation ru
+	"ru": {
+		"Couldn't find transaction %s.":                 "Транзакция %s не найдена.",
+		"Transaction <code>%s</code>\n\n<pre>%s</pre>":  "Транзакция <code>%s</code>\n\n<pre>%s</pre>",
+		"Couldn't find block %d.":                       "Блок %d не найден.",
+		"%s doesn't look like a valid Bitcoin address.": "%s не похож на действительный Bitcoin-адрес.",
+		"Address %s\n\n<pre>%s</pre>":                   "Адрес %s\n\n<pre>%s</pre>",
+		"Watching %s: %s (%s)":                     "Отслеживаю %s: %s (%s)",
+		"Watching %s: %s":                          "Отслеживаю %s: %s",
+		"You're not watching %s.":                   "Вы не отслеживаете %s.",
+		"Stopped watching %s.":                      "Прекращено отслеживание %s.",
+		"Estimated network fees\n\n<pre>%s</pre>\n%s":              "Оценка комиссий сети\n\n<pre>%s</pre>\n%s",
+		"Mempool\n\n<pre>%s</pre>":                                 "Мемпул\n\n<pre>%s</pre>",
+		"%d blocks":                                                "%d блоков",
+		"%d. %s. %s mined, reward %s BTC, fees %s BTC, consumption %s GW": "%d. %s. %s добыто, награда %s BTC, комиссии %s BTC, потребление %s ГВт",
+		"Top miners by blocks mined:\n\n%s":                        "Топ майнеров по добытым блокам:\n\n%s",
+		"Bitcoin market\n\n<pre>%s</pre>":                          "Рынок Bitcoin\n\n<pre>%s</pre>",
+		"%s is sending %s to\n":                                    "%s отправляет %s на\n",
+		"%s sats (%s sat/vB)":                                      "%s сат (%s сат/вБ)",
+		"🔔 %s receiving %s. Transaction <code>%s</code>\nETA %s":  "🔔 %s получает %s. Транзакция <code>%s</code>\nETA %s",
+		"🔔 %s receiving %s. Transaction <code>%s</code>":          "🔔 %s получает %s. Транзакция <code>%s</code>",
+		"Transaction <code>%s</code>":                              "Транзакция <code>%s</code>",
+		"Confirmed in block #%d after %s. Transaction <code>%s</code>": "Подтверждено в блоке #%d через %s. Транзакция <code>%s</code>",
+		"🔔 Transaction %s was confirmed in block #%d after %s":    "🔔 Транзакция %s подтверждена в блоке #%d через %s",
+		"%s sent %s to %s. %s":    "%s отправил %s на %s. %s",
+		"%s received %s. %s":      "%s получил %s. %s",
+		"ago":                     "назад",
+		"just now":                "только что",
+	    "minute":                  "минута",
+	    "hour":                    "час",
+		"day":                     "день",
+	    "month":                   "месяц",
+		"Bitnsbot. I keep an eye on the Bitcoin network for you.\n\n": "Bitnsbot. Я слежу за сетью Bitcoin.",
+		"• <b>/info</b> — look up a transaction, block, or address\n": "• <b>/info</b> — информация о транзакциях, блоках и адресах в сети",
+		"• <b>/watch</b> — get notified when an address receives a payment, or when a transaction confirms\n": "• <b>/watch</b> — подписка на уведомения об операциях по адресу, или о подтверждении транзакции",
+		"• <b>/unwatch</b> — stop watching an address or transaction\n": "• <b>/unwatch</b> — отписка от уведомлений",
+		"• <b>/watches</b> — list what you're currently watching\n": "• <b>/watches</b> — список ваших подписок",
+		"• <b>/fees</b> — show current network fee estimates\n": "• <b>/fees</b> — текущие комиссии в сети",
+		"• <b>/mempool</b> — show current mempool size and totals\n": "• <b>/mempool</b> — статистика транзакций ожидающих подтверждения (мемпула)",
+		"• <b>/miners</b> — top mining pools by blocks mined\n": "• <b>/miners</b> — статистика майнеров",
+		"• <b>/market</b> — price, market cap, volume and recent changes\n": "• <b>/market</b> — рыночная информация",
+		"• <b>/start</b> — show this message\n": "• <b>/start</b> — это сообщение",
+		"Version %s. Build %s. Source code <a href=\"https://github.com/pin2t/bitnsbot\">bitnsbot</a>. Don't forget to give me a ⭐": "Версия %s. Номер сборки %s. Исходный код <a href=\"https://github.com/pin2t/bitnsbot\">bitnsbot</a>. Поставьте мне звезду",
+		"%d sec":      "%d сек",
+		"%d min":      "%d сек",
+		"%d h":        "%d ч",
+		"%d h %d min": "%d ч %d мин",
+	},
+	// i18n-vet:end translation
+
+	// i18n-vet:translation es
+	"es": {
+		"Couldn't find transaction %s.":                 "No se encontró la transacción %s.",
+		"Transaction <code>%s</code>\n\n<pre>%s</pre>":  "Transacción <code>%s</code>\n\n<pre>%s</pre>",
+		"Couldn't find block %d.":                       "No se encontró el bloque %d.",
+		"%s doesn't look like a valid Bitcoin address.": "%s no parece una dirección Bitcoin válida.",
+		"Address %s\n\n<pre>%s</pre>":                   "Dirección %s\n\n<pre>%s</pre>",
+		"Watching %s: %s (%s)":                     "Observando %s: %s (%s)",
+		"Watching %s: %s":                          "Observando %s: %s",
+		"You're not watching %s.":                   "No estás observando %s.",
+		"Stopped watching %s.":                      "Se dejó de observar %s.",
+		"Estimated network fees\n\n<pre>%s</pre>\n%s":              "Comisiones de red estimadas\n\n<pre>%s</pre>\n%s",
+		"Mempool\n\n<pre>%s</pre>":                                 "Mempool\n\n<pre>%s</pre>",
+		"%d blocks":                                                "%d bloques",
+		"%d. %s. %s mined, reward %s BTC, fees %s BTC, consumption %s GW": "%d. %s. %s minado, recompensa %s BTC, comisiones %s BTC, consumo %s GW",
+		"Top miners by blocks mined:\n\n%s":                        "Principales mineros por bloques minados:\n\n%s",
+		"Bitcoin market\n\n<pre>%s</pre>":                          "Mercado Bitcoin\n\n<pre>%s</pre>",
+		"%s is sending %s to\n":                                "%s está enviando %s a\n",
+		"%s sats (%s sat/vB)":                                  "%s sats (%s sat/vB)",
+		"🔔 %s receiving %s. Transaction <code>%s</code>\nETA %s": "🔔 %s recibiendo %s. Transacción <code>%s</code>\nETA %s",
+		"🔔 %s receiving %s. Transaction <code>%s</code>":        "🔔 %s recibiendo %s. Transacción <code>%s</code>",
+		"Transaction <code>%s</code>":                            "Transacción <code>%s</code>",
+		"Confirmed in block #%d after %s. Transaction <code>%s</code>": "Confirmado en bloque #%d después de %s. Transacción <code>%s</code>",
+		"🔔 Transaction %s was confirmed in block #%d after %s":  "🔔 Transacción %s fue confirmada en bloque #%d después de %s",
+		"%s sent %s to %s. %s":    "%s envió %s a %s. %s",
+		"%s received %s. %s":      "%s recibió %s. %s",
+		"ago":                     "ago",
+		"just now":                "ahora mismo",
+		"minute":                  "minuto",
+		"hour":                    "hora",
+		"day":                     "día",
+		"month":                   "mes",
+		"Bitnsbot. I keep an eye on the Bitcoin network for you.\n\n": "Bitnsbot. Vigilo la red Bitcoin por ti.\n\n",
+		"• <b>/info</b> — look up a transaction, block, or address\n": "• <b>/info</b> — consultar una transacción, bloque o dirección\n",
+		"• <b>/watch</b> — get notified when an address receives a payment, or when a transaction confirms\n": "• <b>/watch</b> — recibir notificaciones cuando una dirección recibe un pago o una transacción se confirma\n",
+		"• <b>/unwatch</b> — stop watching an address or transaction\n": "• <b>/unwatch</b> — dejar de observar una dirección o transacción\n",
+		"• <b>/watches</b> — list what you're currently watching\n": "• <b>/watches</b> — lista de lo que estás observando\n",
+		"• <b>/fees</b> — show current network fee estimates\n": "• <b>/fees</b> — mostrar estimaciones de comisiones de red\n",
+		"• <b>/mempool</b> — show current mempool size and totals\n": "• <b>/mempool</b> — mostrar tamaño y totales del mempool\n",
+		"• <b>/miners</b> — top mining pools by blocks mined\n": "• <b>/miners</b> — principales pools de minería por bloques minados\n",
+		"• <b>/market</b> — price, market cap, volume and recent changes\n": "• <b>/market</b> — precio, capitalización, volumen y cambios recientes\n",
+		"• <b>/start</b> — show this message\n": "• <b>/start</b> — mostrar este mensaje\n",
+		"Version %s. Build %s. Source code <a href=\"https://github.com/pin2t/bitnsbot\">bitnsbot</a>. Don't forget to give me a ⭐": "Versión %s. Build %s. Código fuente <a href=\"https://github.com/pin2t/bitnsbot\">bitnsbot</a>. No olvides darme una ⭐",
+		"%d sec":      "%d s",
+		"%d min":      "%d min",
+		"%d h":        "%d h",
+		"%d h %d min": "%d h %d min",
+	},
+	// i18n-vet:end translation
+}
+
+// chatLangs is an LRU cache of chat ID → language code, bounded to prevent
+// unbounded growth from one-off chats.
+var chatLangs = newLRU[int64, string](10000)
+
+// SetChatLanguage sets the language for a specific chat.
+func SetChatLanguage(chatID int64, lang string) {
+	chatLangs.Put(chatID, lang)
+}
+
+// i18n returns the trans for the given chat's language, or nil when the
+// language is "en" (the default). Sprintf and String fall back to the original
+// English string when trans is nil or the key is missing.
+func i18n(chatID int64) trans {
+	lang, _ := chatLangs.Get(chatID)
+	if lang == "" || lang == "en" {
+		return nil
+	}
+	return langTrans[lang]
+}
+
+// Sprintf works like fmt.Sprintf but translates the format string first. If no
+// translation exists, it falls back to the original format string.
+func (t trans) Sprintf(format string, a ...interface{}) string {
+	if t != nil {
+		if translated, ok := t[format]; ok {
+			return fmt.Sprintf(translated, a...)
+		}
+	}
+	return fmt.Sprintf(format, a...)
+}
+
+// String returns a translated string for the given key. If no translation
+// exists, it returns the key unchanged.
+func (t trans) String(s string) string {
+	if t != nil {
+		if translated, ok := t[s]; ok {
+			return translated
+		}
+	}
+	return s
+}
