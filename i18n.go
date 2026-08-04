@@ -193,6 +193,15 @@ var langTrans = map[string]trans{
 		"1 y":      "1 año",
 		"5 y":      "5 años",
 		"Changes":  "Cambios",
+		"Fee":      "Comisión",
+		"ETA":      "Confirmación",
+		"~10-20 min":  "~10-20 min",
+		"~1 hour":     "~1 hora",
+		"2+ hours":    "2+ horas",
+		"none":        "ninguno",
+		"Sending":     "Enviando",
+		"Change back": "Cambio",
+		"Net":         "Neto",
 	},
 	// i18n-vet:end translation
 }
