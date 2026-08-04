@@ -14,8 +14,7 @@ import "time"
 import "bitnsbot/logging"
 import "bitnsbot/txwatches"
 import "bitnsbot/watches"
-
-type watchType string
+import "unicode/utf8"
 
 type notification struct {
     txid         string
@@ -23,7 +22,7 @@ type notification struct {
     sent         map[string]float64 // address → value spent from it by this tx's inputs
     fee          float64            // BTC
     feeRate      float64            // sat/vB
-    confEstimate string             // "~10-20 min" etc; "" if unavailable
+    confEstimate string             // confETAXXX, "" if unavailable
     feeOK        bool               // whether fee/feeRate are populated
 }
 
@@ -72,15 +71,16 @@ func startNotifyChat(b *bot, chat int64, watch, alias string) {
 // block. The txid has to sit outside that block — Telegram does not parse
 // entities inside <pre>, so a <code> there would render literally.
 func addressNotification(chatID int64, n notification, watchID, alias string) (string, []string, txwatches.Summary, bool) {
+    var estimates = map[string]string{
+        confETAFast:   i18n(chatID).String("~10-20 min"),
+        confETAMedium: i18n(chatID).String("~1 hour"),
+        confETASlow:   i18n(chatID).String("2+ hours"),
+    }
     var in, gotIn = n.received[watchID]
     var out, gotOut = n.sent[watchID]
     if !gotIn && !gotOut { return "", nil, txwatches.Summary{}, false }
-    var label string
-    if alias != "" {
-        label = short(watchID) + " (" + html.EscapeString(alias) + ")"
-    } else {
-        label = short(watchID)
-    }
+    var label = short(watchID)
+    if alias != "" { label += " (" + html.EscapeString(alias) + ")" }
     var ids = []string{n.txid, watchID}
     var pairs [][2]string
     var header string
@@ -104,34 +104,33 @@ func addressNotification(chatID int64, n notification, watchID, alias string) (s
         })
         summary = txwatches.Summary{Amount: out, Recipients: addrs, Outgoing: true}
         header = i18n(chatID).Sprintf("%s is sending %s to\n", label, amountLine(out, time.Time{}, true))
-        if len(recipients) == 0 { header += "none\n" }
+        if len(recipients) == 0 { header += i18n(chatID).String("none") + "\n" }
         for i := 0; i < min(len(recipients), shownAddrs); i++ {
             header += fmt.Sprintf("%s: %s\n", short(recipients[i].a), amountLine(float64(recipients[i].b)/1e8, time.Now(), true))
             ids = append(ids, recipients[i].a)
         }
         if len(recipients) > shownAddrs { header += "...\n" }
-        pairs = append(pairs, [2]string{"Sending", amountLine(out, time.Time{}, true)})
+        pairs = append(pairs, [2]string{i18n(chatID).String("Sending"), amountLine(out, time.Time{}, true)})
         if gotIn {
             // part of the spend came back as change, so the address is only down
             // by the difference
             pairs = append(pairs,
-                [2]string{"Change back", amountLine(in, time.Time{}, true)},
-                [2]string{"Net", amountLine(in-out, time.Time{}, true)},
+                [2]string{i18n(chatID).String("Change back"), amountLine(in, time.Time{}, true)},
+                [2]string{i18n(chatID).String("Net"), amountLine(in-out, time.Time{}, true)},
             )
         }
         if n.feeOK {
-            pairs = append(pairs, [2]string{"Fee", i18n(chatID).Sprintf("%s sats (%s sat/vB)", sats(n.fee), strings.TrimSuffix(strconv.FormatFloat(n.feeRate, 'f', 1, 64), ".0"))})
-            if n.confEstimate != "" { pairs = append(pairs, [2]string{"ETA", n.confEstimate}) }
+            pairs = append(pairs, [2]string{i18n(chatID).String("Fee"), i18n(chatID).Sprintf("%s sats (%s sat/vB)", sats(n.fee), strings.TrimSuffix(strconv.FormatFloat(n.feeRate, 'f', 1, 64), ".0"))})
+            if n.confEstimate != "" {
+                pairs = append(pairs, [2]string{i18n(chatID).String("ETA"), estimates[n.confEstimate]})
+            }
         }
     } else {
-        var msg string
-        summary = txwatches.Summary{Amount: in}
+        var msg = i18n(chatID).Sprintf("🔔 %s receiving %s. Transaction <code>%s</code>", label, amountLine(in, time.Time{}, true), n.txid)
         if n.confEstimate != "" {
-            msg = i18n(chatID).Sprintf("🔔 %s receiving %s. Transaction <code>%s</code>\nETA %s", label, amountLine(in, time.Time{}, true), n.txid, n.confEstimate)
-        } else {
-            msg = i18n(chatID).Sprintf("🔔 %s receiving %s. Transaction <code>%s</code>", label, amountLine(in, time.Time{}, true), n.txid)
+            msg += "\n" + i18n(chatID).String("ETA") + " " + estimates[n.confEstimate]
         }
-        return msg, ids, summary, true
+        return msg, ids, txwatches.Summary{Amount: in}, true
     }
     header += i18n(chatID).Sprintf("Transaction <code>%s</code>", n.txid)
     return fmt.Sprintf("🔔 %s%s", header, fields(pairs)), ids, summary, true
@@ -143,9 +142,7 @@ func addressNotification(chatID int64, n notification, watchID, alias string) (s
 func fields(pairs [][2]string) string {
     if len(pairs) == 0 { return "" }
     var pad int
-    for _, p := range pairs {
-        if len(p[0])+1 > pad { pad = len(p[0]) + 1 }
-    }
+    for _, p := range pairs { pad = max(pad, utf8.RuneCountInString(p[0])+1) }
     var lines []string
     for _, p := range pairs {
         lines = append(lines, fmt.Sprintf("%-*s %s", pad, p[0]+":", p[1]))
@@ -310,6 +307,10 @@ func seedOutpoints(addrs []string) {
     }()
 }
 
+const confETAFast = "fast"
+const confETAMedium = "med"
+const confETASlow = "slow"
+
 // confEstimate maps a transaction's fee rate (sat/vB) to a rough confirmation
 // window by comparing it to core's fee estimates (BTC/kvB → sat/vB via ×1e5) for
 // the 2- and 6-block targets. Returns "" if the estimator has no data yet.
@@ -320,9 +321,9 @@ func confEstimate(ctx context.Context, feeRate float64) string {
         return ""
     }
     switch {
-    case feeRate >= fast*1e5:   return "~10-20 min"
-    case feeRate >= medium*1e5: return "~1 h"
-    default:                    return "2+ h"
+    case feeRate >= fast*1e5:   return confETAFast
+    case feeRate >= medium*1e5: return confETAMedium
+    default:                    return confETASlow
     }
 }
 
@@ -367,26 +368,27 @@ func confirmationMessage(chat int64, c txwatches.Confirmed, height int64) (strin
     var landed = i18n(chat).Sprintf("Confirmed in block #%d after %s. Transaction <code>%s</code>", height, elapsed, c.Txid)
     var ids = []string{c.Txid}
     if c.Addr == "" {
-        // a direct /watch <txid>: there is no address and no amount to restate
-        var label string
+        var label = short(c.Txid)
         if c.Alias != "" {
-            label = short(c.Txid) + " (" + html.EscapeString(c.Alias) + ")"
-        } else {
-            label = short(c.Txid)
+            label += " (" + html.EscapeString(c.Alias) + ")"
         }
         ids = append(ids, strconv.FormatInt(height, 10))
         return i18n(chat).Sprintf("🔔 Transaction %s was confirmed in block #%d after %s", label, height, elapsed), ids
     }
-    var label string
+    var label = short(c.Addr)
     if c.Alias != "" {
-        label = short(c.Addr) + " (" + html.EscapeString(c.Alias) + ")"
-    } else {
-        label = short(c.Addr)
+        label += " (" + html.EscapeString(c.Alias) + ")"
     }
     ids = append(ids, c.Addr)
     var msg string
     if c.Summary.Outgoing {
-        msg = i18n(chat).Sprintf("%s sent %s to %s. %s", label, amountLine(c.Summary.Amount, time.Time{}, true), compactAddrs(c.Summary.Recipients), landed)
+        var saddr string
+        if len(c.Summary.Recipients) > 0 {
+            saddr = compactAddrs(c.Summary.Recipients)
+        } else {
+            saddr = i18n(chat).String("none")
+        }
+        msg = i18n(chat).Sprintf("%s sent %s to %s. %s", label, amountLine(c.Summary.Amount, time.Time{}, true), saddr, landed)
         ids = append(ids, firstN(c.Summary.Recipients, shownAddrs)...)
     } else {
         msg = i18n(chat).Sprintf("%s received %s. %s", label, amountLine(c.Summary.Amount, time.Time{}, true), landed)
