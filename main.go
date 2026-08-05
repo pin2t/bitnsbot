@@ -212,6 +212,7 @@ func webhookHandler(bot *bot) http.HandlerFunc {
 func update(bot *bot, update Update) {
     if q := update.CallbackQuery; q != nil {
         if q.From != nil && q.From.LanguageCode != "" && q.Message != nil {
+            logging.Info("update callback: chat %v lang %v", q.Message.Chat.ID, q.From.LanguageCode)
             SetChatLanguage(q.Message.Chat.ID, q.From.LanguageCode)
         }
         callback(bot, q)
@@ -221,6 +222,7 @@ func update(bot *bot, update Update) {
     if msg == nil { return }
     var chat = msg.Chat.ID
     if msg.From != nil && msg.From.LanguageCode != "" {
+        logging.Info("update: chat %v lang %v", chat, msg.From.LanguageCode)
         SetChatLanguage(chat, msg.From.LanguageCode)
     }
     logMessage(msg)
