@@ -242,36 +242,36 @@ func flushBlocks(bis []*blockInfo, cursor int64) error {
 func formatBlock(bi *blockInfo, chat int64) string {
     var difficulty = metric(bi.Difficulty, 2)
     var pairs = [][2]string{
-        {"Hash", short(bi.Hash)},
-        {"Time", when(bi.Time, chat)},
-        {"Size", metric(float64(bi.Size), 2)},
-        {"Transactions", strconv.Itoa(bi.NumTx)},
-        {"Miner", bi.Miner},
-        {"Difficulty", difficulty},
+        {i18n(chat).String("Hash"), short(bi.Hash)},
+        {i18n(chat).String("Time"), when(bi.Time, chat)},
+        {i18n(chat).String("Size"), metric(float64(bi.Size), 2)},
+        {i18n(chat).String("Transactions"), strconv.Itoa(bi.NumTx)},
+        {i18n(chat).String("Miner"), bi.Miner},
+        {i18n(chat).String("Difficulty"), difficulty},
     }
     switch {
     case !bi.FeesOK:
-        pairs = append(pairs, [2]string{"Fees", "unavailable"})
+        pairs = append(pairs, [2]string{i18n(chat).String("Fees"), i18n(chat).String("unavailable")})
     case bi.NumTx <= 1:
-        pairs = append(pairs, [2]string{"Fees", "none (coinbase only)"})
+        pairs = append(pairs, [2]string{i18n(chat).String("Fees"), i18n(chat).String("none (coinbase only)")})
     default:
         var feeLine = func (fee float64, sz int32) string {
-            return sats(fee) + " sats (" + strings.TrimSuffix(strconv.FormatFloat(math.Round(fee*1e8) / float64(sz), 'f', 1, 64), ".0") + " sat/vB)"
+            return sats(fee) + i18n(chat).String(" sats") + " (" + strings.TrimSuffix(strconv.FormatFloat(math.Round(fee*1e8) / float64(sz), 'f', 1, 64), ".0") + " sat/vB)"
         }
         pairs = append(pairs,
-            [2]string{"Fees", ""},
-            [2]string{"lowest", feeLine(bi.FeeMin, bi.TxSizeMin)},
-            [2]string{"average", feeLine(bi.FeeAvg, bi.TxSizeAvg)},
-            [2]string{"highest", feeLine(bi.FeeMax, bi.TxSizeMax)},
+            [2]string{i18n(chat).String("Fees"), ""},
+            [2]string{i18n(chat).String("lowest"), feeLine(bi.FeeMin, bi.TxSizeMin)},
+            [2]string{i18n(chat).String("average"), feeLine(bi.FeeAvg, bi.TxSizeAvg)},
+            [2]string{i18n(chat).String("highest"), feeLine(bi.FeeMax, bi.TxSizeMax)},
         )
     }
     pairs = append(pairs,
-        [2]string{"Tx sizes", ""},
-        [2]string{"minimum", group(int64(bi.TxSizeMin)) + " bytes"},
-        [2]string{"average", group(int64(bi.TxSizeAvg)) + " bytes"},
-        [2]string{"maximum", group(int64(bi.TxSizeMax)) + " bytes"},
-        [2]string{"Reward", amountLine(bi.Reward, time.Unix(bi.Time, 0), false)},
-        [2]string{"Reward + fees", amountLine(bi.Reward, time.Unix(bi.Time, 0), false)},
+        [2]string{i18n(chat).String("Tx sizes"), ""},
+        [2]string{i18n(chat).String("minimum"), group(int64(bi.TxSizeMin)) + i18n(chat).String(" bytes")},
+        [2]string{i18n(chat).String("average"), group(int64(bi.TxSizeAvg)) + i18n(chat).String(" bytes")},
+        [2]string{i18n(chat).String("maximum"), group(int64(bi.TxSizeMax)) + i18n(chat).String(" bytes")},
+        [2]string{i18n(chat).String("Reward"), amountLine(bi.Reward, time.Unix(bi.Time, 0), false)},
+        [2]string{i18n(chat).String("Reward + fees"), amountLine(bi.Reward, time.Unix(bi.Time, 0), false)},
     )
     var pad int
     for _, p := range pairs {
@@ -281,7 +281,7 @@ func formatBlock(bi *blockInfo, chat int64) string {
     for _, p := range pairs {
         lines = append(lines, fmt.Sprintf("%-*s %s", pad, p[0]+":", p[1]))
     }
-    return fmt.Sprintf("Block #%d\n\n<pre>%s</pre>", bi.Height, strings.Join(lines, "\n"))
+    return i18n(chat).Sprintf("Block #%d\n\n<pre>%s</pre>", bi.Height, strings.Join(lines, "\n"))
 }
 
 // minerSource adapts the core connection to the miners package's stats collector:
