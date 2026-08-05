@@ -39,7 +39,7 @@ func TestInfoFlow(t *testing.T) {
     }
     core = nil
     update(bot, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "hello world"}})
-    if len(sent) != 2 || sent[1] != "Bitcoin node connection is not configured." {
+    if len(sent) != 2 || sent[1] != "Bitcoin node connection is not configured" {
         t.Fatalf("unexpected second reply: %#v", sent)
     }
     if pendingInfoChats[1] {
