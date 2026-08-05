@@ -55,7 +55,7 @@ var langTrans = map[string]trans{
 		"• <b>/start</b> — show this message\n": "• <b>/start</b> — это сообщение\n",
 		"Version %s. Build %s. Source code <a href=\"https://github.com/pin2t/bitnsbot\">bitnsbot</a>. Don't forget to give me a ⭐": "Версия %s. Сборка %s. Исходный код <a href=\"https://github.com/pin2t/bitnsbot\">bitnsbot</a>. Поставьте мне звезду",
 		"%d sec":      "%d сек",
-		"%d min":      "%d сек",
+		"%d min":      "%d мин",
 		"%d h":        "%d ч",
 		"%d h %d min": "%d ч %d мин",
 		"Send an address or transaction to watch, optionally followed by an alias — all in one message, e.g. bc1q… John": "Отправьте адрес или хеш транзакции для отслеживания (с алиасом через пробел), например bc1q... Иван",

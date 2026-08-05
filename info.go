@@ -11,6 +11,7 @@ import "sync"
 import "time"
 import "bitnsbot/addrindex"
 import "bitnsbot/logging"
+import "unicode/utf8"
 
 var pendingInfoMu sync.Mutex
 var pendingInfoChats = make(map[int64]bool)
@@ -95,9 +96,7 @@ func transaction(ctx context.Context, bot *bot, chat int64, txid string) {
     }
     pairs = append(pairs, [2]string{"Outputs", compactAddrs(outputAddrs(tx))})
     var pad int
-    for _, p := range pairs {
-        if len(p[0])+1 > pad { pad = len(p[0]) + 1 }
-    }
+    for _, p := range pairs { pad = max(pad, utf8.RuneCountInString(p[0]) + 1) }
     var lines []string
     for _, p := range pairs {
         lines = append(lines, fmt.Sprintf("%-*s %s", pad, p[0]+":", p[1]))
