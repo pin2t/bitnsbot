@@ -21,14 +21,14 @@ func info(bot *bot, chat int64, arg string) {
         pendingInfoMu.Lock()
         pendingInfoChats[chat] = true
         pendingInfoMu.Unlock()
-        send(bot, chat, "Please send Bitcoin address or transaction or block number or block hash", nil)
+        send(bot, chat, i18n(chat).String("Please send Bitcoin address or transaction or block number or block hash"), nil)
         return
     }
     pendingInfoMu.Lock()
     delete(pendingInfoChats, chat)
     pendingInfoMu.Unlock()
     if core == nil {
-        send(bot, chat, "Bitcoin node connection is not configured.", nil)
+        send(bot, chat, i18n(chat).String("Bitcoin node connection is not configured"), nil)
         return
     }
     var ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
@@ -51,7 +51,7 @@ func info(bot *bot, chat int64, arg string) {
 func transaction(ctx context.Context, bot *bot, chat int64, txid string) {
     var tx, err = core.getRawTransaction(ctx, txid)
     if err != nil {
-        send(bot, chat, i18n(chat).Sprintf("Couldn't find transaction %s.", short(txid)), nil)
+        send(bot, chat, i18n(chat).Sprintf("Couldn't find transaction %s", short(txid)), nil)
         return
     }
     var total float64
@@ -67,34 +67,28 @@ func transaction(ctx context.Context, bot *bot, chat int64, txid string) {
     var at = time.Time{}
     var current = true
     if tx.Confirmations == 0 {
-        pairs = append(pairs, [2]string{"Status", "unconfirmed (in mempool)"})
+        pairs = append(pairs, [2]string{i18n(chat).String("Status"), i18n(chat).String("unconfirmed (in mempool)")})
     } else {
         at, current = time.Unix(tx.Time, 0), false
         pairs = append(pairs,
-            [2]string{"Status", fmt.Sprintf("confirmed (%d confirmations)", tx.Confirmations)},
-            [2]string{"Confirmed", when(tx.Time, chat)},
-            [2]string{"Block", short(tx.BlockHash)},
+            [2]string{i18n(chat).String("Status"), i18n(chat).Sprintf("confirmed (%d confirmations)", tx.Confirmations)},
+            [2]string{i18n(chat).String("Confirmed"), when(tx.Time, chat)},
+            [2]string{i18n(chat).String("Block"), short(tx.BlockHash)},
         )
     }
-    pairs = append(pairs, [2]string{"Amount", amountLine(total, at, current)})
+    pairs = append(pairs, [2]string{i18n(chat).String("Amount"), amountLine(total, at, current)})
     switch {
-    case coinbase:
-        pairs = append(pairs, [2]string{"Fee", "none (coinbase)"})
-    case feeOK:
-        pairs = append(pairs, [2]string{"Fee", sats(fee) + " sats"})
-    default:
-        pairs = append(pairs, [2]string{"Fee", "unavailable"})
+    case coinbase: pairs = append(pairs, [2]string{i18n(chat).String("Fee"), i18n(chat).String("none (coinbase)")})
+    case feeOK:    pairs = append(pairs, [2]string{i18n(chat).String("Fee"), sats(fee) + i18n(chat).String(" sats")})
+    default:       pairs = append(pairs, [2]string{i18n(chat).String("Fee"), i18n(chat).String("unavailable")})
     }
-    pairs = append(pairs, [2]string{"Size", group(int64(tx.Size)) + " bytes"})
+    pairs = append(pairs, [2]string{i18n(chat).String("Size"), group(int64(tx.Size)) + i18n(chat).String(" bytes")})
     switch {
-    case coinbase:
-        pairs = append(pairs, [2]string{"Inputs", "coinbase (newly generated)"})
-    case feeOK:
-        pairs = append(pairs, [2]string{"Inputs", compactAddrs(inputs)})
-    default:
-        pairs = append(pairs, [2]string{"Inputs", "unavailable"})
+    case coinbase: pairs = append(pairs, [2]string{i18n(chat).String("Inputs"), i18n(chat).String("coinbase (newly generated))")})
+    case feeOK:    pairs = append(pairs, [2]string{i18n(chat).String("Inputs"), compactAddrs(inputs)})
+    default:       pairs = append(pairs, [2]string{i18n(chat).String("Inputs"), i18n(chat).String("unavailable")})
     }
-    pairs = append(pairs, [2]string{"Outputs", compactAddrs(outputAddrs(tx))})
+    pairs = append(pairs, [2]string{i18n(chat).String("Outputs"), compactAddrs(outputAddrs(tx))})
     var pad int
     for _, p := range pairs { pad = max(pad, utf8.RuneCountInString(p[0]) + 1) }
     var lines []string
@@ -254,13 +248,13 @@ func block(ctx context.Context, bot *bot, chat int64, height int64) {
     }
     var hash, err = core.getBlockHash(ctx, height)
     if err != nil {
-        send(bot, chat, i18n(chat).Sprintf("Couldn't find block %d.", height), nil)
+        send(bot, chat, i18n(chat).Sprintf("Couldn't find block %d", height), nil)
         return
     }
     var bi, ciErr = computeBlockInfo(ctx, hash)
     if ciErr != nil {
         logging.Err("compute block %d: %v", height, ciErr)
-        send(bot, chat, "Sorry, something went wrong fetching that block.", nil)
+        send(bot, chat, i18n(chat).String("Sorry, something went wrong fetching that block"), nil)
         return
     }
     storeBlock(bi)
@@ -382,11 +376,11 @@ func address(ctx context.Context, bot *bot, chat int64, addr string) {
     var addrInfo, err = core.validateAddress(ctx, addr)
     if err != nil {
         logging.Err("validate address: %v", err)
-        send(bot, chat, "Sorry, something went wrong looking up that address.", nil)
+        send(bot, chat, i18n(chat).String("Sorry, something went wrong looking up that address"), nil)
         return
     }
     if !addrInfo.IsValid {
-        send(bot, chat, i18n(chat).Sprintf("%s doesn't look like a valid Bitcoin address.", html.EscapeString(addr)), nil)
+        send(bot, chat, i18n(chat).Sprintf("%s doesn't look like a valid Bitcoin address", html.EscapeString(addr)), nil)
         return
     }
     var addrType = "standard (P2PKH)"
@@ -395,44 +389,41 @@ func address(ctx context.Context, bot *bot, chat int64, addr string) {
     } else if addrInfo.IsScript {
         addrType = "script hash (P2SH)"
     }
-    var pairs = [][2]string{{"Type", addrType}}
+    var pairs = [][2]string{{i18n(chat).String("Type"), addrType}}
     var script, decodeErr = hex.DecodeString(addrInfo.ScriptPubKey)
     var txs, complete = []*coreTransaction(nil), false
     if decodeErr == nil {
         txs, complete = addressHistory(ctx, script)
     }
     if built, ok := addrindex.Cursor(); !ok {
-        // nothing indexed yet: say so rather than report an empty history as fact
-        pairs = append(pairs, [2]string{"Activity", "unavailable (address index is still building)"})
+        pairs = append(pairs, [2]string{i18n(chat).String("Activity"), i18n(chat).String("unavailable (address index is still building)")})
     } else if len(txs) == 0 && !complete {
-        pairs = append(pairs, [2]string{"Activity", "unavailable"})
+        pairs = append(pairs, [2]string{i18n(chat).String("Activity"), i18n(chat).String("unavailable")})
     } else {
         _ = built
         var received, sent, fees, firstT, lastT = addressStats(txs, addr)
         var count = group(int64(len(txs)))
         if !complete { count += "+" }
         pairs = append(pairs,
-            [2]string{"Balance", compactBtc(received - sent)},
-            [2]string{"Total received", compactBtc(received)},
-            [2]string{"Total sent", compactBtc(sent)},
-            [2]string{"Total flow", compactBtc(received + sent)},
-            [2]string{"Total fees", compactBtc(fees)},
-            [2]string{"Transactions", count},
+            [2]string{i18n(chat).String("Balance"), compactBtc(received - sent)},
+            [2]string{i18n(chat).String("Total received"), compactBtc(received)},
+            [2]string{i18n(chat).String("Total sent"), compactBtc(sent)},
+            [2]string{i18n(chat).String("Total flow"), compactBtc(received + sent)},
+            [2]string{i18n(chat).String("Total fees"), compactBtc(fees)},
+            [2]string{i18n(chat).String("Transactions"), count},
         )
         if firstT > 0 {
-            pairs = append(pairs, [2]string{"First tx", when(firstT, chat)})
+            pairs = append(pairs, [2]string{i18n(chat).String("First tx"), when(firstT, chat)})
         }
         if lastT > 0 {
-            pairs = append(pairs, [2]string{"Last tx", when(lastT, chat)})
+            pairs = append(pairs, [2]string{i18n(chat).String("Last tx"), when(lastT, chat)})
         }
         if firstT > 0 && lastT > firstT {
-            pairs = append(pairs, [2]string{"Activity period", periodText(time.Duration(lastT-firstT) * time.Second)})
+            pairs = append(pairs, [2]string{i18n(chat).String("Activity period"), periodText(time.Duration(lastT-firstT) * time.Second)})
         }
     }
     var pad int
-    for _, p := range pairs {
-        if len(p[0])+1 > pad { pad = len(p[0]) + 1 }
-    }
+    for _, p := range pairs { pad = max(pad, utf8.RuneCountInString(p[0]) + 1) }
     var lines []string
     for _, p := range pairs {
         lines = append(lines, fmt.Sprintf("%-*s %s", pad, p[0]+":", p[1]))
