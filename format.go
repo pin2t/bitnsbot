@@ -5,16 +5,13 @@ import "math"
 import "strconv"
 import "strings"
 import "time"
-
 import "bitnsbot/rates"
+import "unicode/utf8"
 
 func ago(n int, unit string, chat int64) string {
-    var tr = i18n(chat)
-    if n == 1 { return "1 " + unit + " " + tr.String("ago") }
-    if tr != nil {
-        return fmt.Sprintf("%d %s %s", n, unit, tr.String("ago"))
-    }
-    return fmt.Sprintf("%d %ss ago", n, unit)
+    var s = i18n(chat).String("ago")
+    if n == 1 { return "1 " + unit + " " + s }
+    return fmt.Sprintf("%d %s %s", n, unit, s)
 }
 
 func when(unix int64, chat int64) string {
@@ -274,4 +271,14 @@ func amountText(btc float64) string {
         return trimNum(btc, 8) + " BTC"
     }
     return group(sats) + " sats"
+}
+
+func joinAlign(pairs [][2]string) string {
+    var pad int
+    for _, p := range pairs { pad = max(pad, utf8.RuneCountInString(p[0]) + 1) }
+    var lines []string
+    for _, p := range pairs {
+        lines = append(lines, fmt.Sprintf("%-*s %s", pad, p[0]+":", p[1]))
+    }
+    return strings.Join(lines, "\n")
 }

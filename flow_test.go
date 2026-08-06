@@ -217,11 +217,11 @@ func TestInfoFlow(t *testing.T) {
         t.Fatalf("unexpected invalid address reply: %#v", sent)
     }
     update(bot, Update{Message: &Message{Chat: Chat{ID: 10}, Text: "/info " + recentTxid}})
-    if len(sent) != 10 || !strings.Contains(sent[9], "Confirmed:") || !strings.Contains(sent[9], "2 days ago") {
+    if len(sent) != 10 || !strings.Contains(sent[9], "Confirmed:") || !strings.Contains(sent[9], "2 day ago") {
         t.Fatalf("expected relative confirmation time for recent transaction, got: %#v", sent)
     }
     update(bot, Update{Message: &Message{Chat: Chat{ID: 11}, Text: "/info 200"}})
-    if len(sent) != 11 || !strings.Contains(sent[10], "Block #200") || !strings.Contains(sent[10], "Time:          2 days ago") {
+    if len(sent) != 11 || !strings.Contains(sent[10], "Block #200") || !strings.Contains(sent[10], "Time:          2 day ago") {
         t.Fatalf("expected relative time format for recent block, got: %#v", sent)
     }
     if !strings.Contains(sent[10], "Difficulty:    1 G") {

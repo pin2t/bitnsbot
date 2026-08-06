@@ -618,13 +618,7 @@ func mempoolCmd(bot *bot, chat int64) {
             )
         }
     }
-    var pad int
-    for _, p := range pairs { pad = max(pad, utf8.RuneCountInString(p[0])+1) }
-    var lines []string
-    for _, p := range pairs {
-        lines = append(lines, fmt.Sprintf("%-*s %s", pad, p[0]+":", p[1]))
-    }
-    send(bot, chat, i18n(chat).Sprintf("Mempool\n\n<pre>%s</pre>", strings.Join(lines, "\n")), nil)
+    send(bot, chat, i18n(chat).Sprintf("Mempool\n\n<pre>%s</pre>", joinAlign(pairs)), nil)
 }
 
 // mempoolTotals sums the fee (from the verbose mempool) and the output amount
@@ -733,23 +727,11 @@ func marketCmd(bot *bot, chat int64) {
             changes = append(changes, [2]string{p.label, change(now, then)})
         }
     }
-    var pad int
-    for _, p := range pairs {
-        if len(p[0])+1 > pad { pad = len(p[0]) + 1 }
-    }
-    var lines []string
-    for _, p := range pairs {
-        lines = append(lines, fmt.Sprintf("%-*s %s", pad, p[0]+":", p[1]))
-    }
     if len(changes) > 0 {
-        var pad int
-        for _, p := range pairs { pad = max(pad, utf8.RuneCountInString(p[0])+1) }
-        lines = append(lines, "", i18n(chat).String("Changes"))
-        for _, c := range changes {
-            lines = append(lines, fmt.Sprintf("%-*s %s", pad, c[0]+":", c[1]))
-        }
+        pairs = append(pairs, [2]string{i18n(chat).String("Changes"), ""})
+        for _, c := range changes { pairs = append(pairs, c) }
     }
-    send(bot, chat, i18n(chat).Sprintf("Bitcoin market\n\n<pre>%s</pre>", strings.Join(lines, "\n")), nil)
+    send(bot, chat, i18n(chat).Sprintf("Bitcoin market\n\n<pre>%s</pre>", joinAlign(pairs)), nil)
 }
 
 func send(bot *bot, chat int64, text string, ids []string) {

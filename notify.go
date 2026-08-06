@@ -14,7 +14,6 @@ import "time"
 import "bitnsbot/logging"
 import "bitnsbot/txwatches"
 import "bitnsbot/watches"
-import "unicode/utf8"
 
 type notification struct {
     txid         string
@@ -141,13 +140,7 @@ func addressNotification(chatID int64, n notification, watchID, alias string) (s
 // already mined has no fee or confirmation estimate to report.
 func fields(pairs [][2]string) string {
     if len(pairs) == 0 { return "" }
-    var pad int
-    for _, p := range pairs { pad = max(pad, utf8.RuneCountInString(p[0])+1) }
-    var lines []string
-    for _, p := range pairs {
-        lines = append(lines, fmt.Sprintf("%-*s %s", pad, p[0]+":", p[1]))
-    }
-    return "\n\n<pre>" + strings.Join(lines, "\n") + "</pre>"
+    return "\n\n<pre>" + joinAlign(pairs) + "</pre>"
 }
 
 func stopNotifyChat(chat int64, id string) {

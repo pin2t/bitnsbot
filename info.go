@@ -1,7 +1,6 @@
 package main
 
 import "context"
-import "fmt"
 import "html"
 import "encoding/hex"
 import "sort"
@@ -11,7 +10,6 @@ import "sync"
 import "time"
 import "bitnsbot/addrindex"
 import "bitnsbot/logging"
-import "unicode/utf8"
 
 var pendingInfoMu sync.Mutex
 var pendingInfoChats = make(map[int64]bool)
@@ -89,12 +87,6 @@ func transaction(ctx context.Context, bot *bot, chat int64, txid string) {
     default:       pairs = append(pairs, [2]string{i18n(chat).String("Inputs"), i18n(chat).String("unavailable")})
     }
     pairs = append(pairs, [2]string{i18n(chat).String("Outputs"), compactAddrs(outputAddrs(tx))})
-    var pad int
-    for _, p := range pairs { pad = max(pad, utf8.RuneCountInString(p[0]) + 1) }
-    var lines []string
-    for _, p := range pairs {
-        lines = append(lines, fmt.Sprintf("%-*s %s", pad, p[0]+":", p[1]))
-    }
     // only the ids the text actually shows get buttons — compactAddrs truncates
     // to shownAddrs with a trailing "...", and a button for something the reader
     // cannot see in the message would be a puzzle rather than a shortcut
@@ -102,7 +94,7 @@ func transaction(ctx context.Context, bot *bot, chat int64, txid string) {
     if tx.BlockHash != "" { ids = append(ids, tx.BlockHash) }
     ids = append(ids, firstN(inputs, shownAddrs)...)
     ids = append(ids, firstN(outputAddrs(tx), shownAddrs)...)
-    send(bot, chat, i18n(chat).Sprintf("Transaction <code>%s</code>\n\n<pre>%s</pre>", tx.Txid, strings.Join(lines, "\n")), ids)
+    send(bot, chat, i18n(chat).Sprintf("Transaction <code>%s</code>\n\n<pre>%s</pre>", tx.Txid, joinAlign(pairs)), ids)
 }
 
 // txInputs reports a transaction's fee and the addresses it spends from — in
@@ -422,11 +414,5 @@ func address(ctx context.Context, bot *bot, chat int64, addr string) {
             pairs = append(pairs, [2]string{i18n(chat).String("Activity period"), periodText(time.Duration(lastT-firstT) * time.Second)})
         }
     }
-    var pad int
-    for _, p := range pairs { pad = max(pad, utf8.RuneCountInString(p[0]) + 1) }
-    var lines []string
-    for _, p := range pairs {
-        lines = append(lines, fmt.Sprintf("%-*s %s", pad, p[0]+":", p[1]))
-    }
-    send(bot, chat, i18n(chat).Sprintf("Address %s\n\n<pre>%s</pre>", short(addr), strings.Join(lines, "\n")), nil)
+    send(bot, chat, i18n(chat).Sprintf("Address %s\n\n<pre>%s</pre>", short(addr), joinAlign(pairs)), nil)
 }
