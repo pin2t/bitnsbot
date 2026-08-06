@@ -80,7 +80,7 @@ func transaction(ctx context.Context, bot *bot, chat int64, txid string) {
     case feeOK:    pairs = append(pairs, [2]string{i18n(chat).String("Fee"), sats(fee) + i18n(chat).String(" sats")})
     default:       pairs = append(pairs, [2]string{i18n(chat).String("Fee"), i18n(chat).String("unavailable")})
     }
-    pairs = append(pairs, [2]string{i18n(chat).String("Size"), group(int64(tx.Size)) + i18n(chat).String(" bytes")})
+    pairs = append(pairs, [2]string{i18n(chat).String("Size"), group(int64(tx.Size)) + " " + i18n(chat).String("B")})
     switch {
     case coinbase: pairs = append(pairs, [2]string{i18n(chat).String("Inputs"), i18n(chat).String("coinbase (newly generated))")})
     case feeOK:    pairs = append(pairs, [2]string{i18n(chat).String("Inputs"), compactAddrs(inputs)})

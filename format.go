@@ -66,6 +66,17 @@ func metric(f float64, decimals int) string {
     return strings.TrimRight(strings.TrimRight(strconv.FormatFloat(f, 'f', decimals, 64), "0"), ".") + unit
 }
 
+func humSize(s int64) string {
+    var f = float64(s)
+    var unit = " B"
+    for _, u := range []string{" KB", " MB", " GB", " TB", " PB", " EB"} {
+        if f < 1000 { break }
+        f /= 1000
+        unit = u
+    }
+    return strings.TrimRight(strings.TrimRight(strconv.FormatFloat(f, 'f', 2, 64), "0"), ".") + unit
+}
+
 // compactBtc renders a BTC amount compactly with a USD approximation at the
 // latest rate: as BTC once it reaches 0.05 BTC ("0.5 BTC"), otherwise in sats
 // ("100 000 sats"), so large and small amounts each read naturally.
