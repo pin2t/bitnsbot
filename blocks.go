@@ -273,15 +273,7 @@ func formatBlock(bi *blockInfo, chat int64) string {
         [2]string{i18n(chat).String("Reward"), amountLine(bi.Reward, time.Unix(bi.Time, 0), false)},
         [2]string{i18n(chat).String("Reward + fees"), amountLine(bi.Reward, time.Unix(bi.Time, 0), false)},
     )
-    var pad int
-    for _, p := range pairs {
-        if len(p[0])+1 > pad { pad = len(p[0]) + 1 }
-    }
-    var lines []string
-    for _, p := range pairs {
-        lines = append(lines, fmt.Sprintf("%-*s %s", pad, p[0]+":", p[1]))
-    }
-    return i18n(chat).Sprintf("Block #%d\n\n<pre>%s</pre>", bi.Height, strings.Join(lines, "\n"))
+    return i18n(chat).Sprintf("Block #%d\n\n<pre>%s</pre>", bi.Height, joinAlign(pairs))
 }
 
 // minerSource adapts the core connection to the miners package's stats collector:
