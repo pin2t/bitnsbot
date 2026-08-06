@@ -613,8 +613,8 @@ func mempoolCmd(bot *bot, chat int64) {
         summaryMu.Unlock()
         if ok {
             pairs = append(pairs,
-                [2]string{i18n(chat).String("Total flow"), cachedBtc(amount)},
-                [2]string{i18n(chat).String("Total fees"), cachedBtc(fee)},
+                [2]string{i18n(chat).String("Total flow"), "~" + btcAmount(amount)},
+                [2]string{i18n(chat).String("Total fees"), "~" + btcAmount(fee)},
             )
         }
     }
@@ -673,7 +673,7 @@ func minersCmd(bot *bot, chat int64) {
         lines = append(lines, i18n(chat).Sprintf("%d. %s. %s mined, reward %s BTC, fees %s BTC, consumption %s GW",
             i+1, m.Name, blocks, trimNum(m.Reward, 2), trimNum(m.Fees, 2), trimNum(m.ConsumptionGW, 1)))
     }
-    send(bot, chat, i18n(chat).Sprintf("Top miners by blocks mined:\n\n%s", strings.Join(lines, "\n")), nil)
+    send(bot, chat, i18n(chat).String("Top miners by blocks mined:") + "\n\n" + strings.Join(lines, "\n"), nil)
 }
 
 // marketCmd reports the current price, market capitalisation and 24h volume,
@@ -701,12 +701,12 @@ func marketCmd(bot *bot, chat int64) {
     }
     var pairs = [][2]string{{i18n(chat).String("Price"), price(now)}}
     if haveSnapshot && snapshot.MarketCap > 0 {
-        pairs = append(pairs, [2]string{i18n(chat).String("Market cap"), money(snapshot.MarketCap)})
+        pairs = append(pairs, [2]string{i18n(chat).String("Market cap"), money(snapshot.MarketCap, chat)})
     } else {
         pairs = append(pairs, [2]string{i18n(chat).String("Market cap"), i18n(chat).String("unavailable")})
     }
     if haveSnapshot && snapshot.Volume24h > 0 {
-        pairs = append(pairs, [2]string{i18n(chat).String("Volume 24h"), money(snapshot.Volume24h)})
+        pairs = append(pairs, [2]string{i18n(chat).String("Volume 24h"), money(snapshot.Volume24h, chat)})
     } else {
         pairs = append(pairs, [2]string{i18n(chat).String("Volume 24h"), i18n(chat).String("unavailable")})
     }
@@ -714,12 +714,12 @@ func marketCmd(bot *bot, chat int64) {
         label string
         back  time.Duration
     }{
-        {i18n(chat).String("24 h"), 24 * time.Hour},
-        {i18n(chat).String("1 w"), 7 * 24 * time.Hour},
-        {i18n(chat).String("1 m"), 30 * 24 * time.Hour},
-        {i18n(chat).String("3 m"), 90 * 24 * time.Hour},
-        {i18n(chat).String("1 y"), 365 * 24 * time.Hour},
-        {i18n(chat).String("5 y"), 5 * 365 * 24 * time.Hour},
+        {i18n(chat).String("1 day"),    24 * time.Hour},
+        {i18n(chat).String("1 week"),   7 * 24 * time.Hour},
+        {i18n(chat).String("1 month"),  30 * 24 * time.Hour},
+        {i18n(chat).String("3 months"), 90 * 24 * time.Hour},
+        {i18n(chat).String("1 year"),   365 * 24 * time.Hour},
+        {i18n(chat).String("5 years"),  5 * 365 * 24 * time.Hour},
     }
     var changes [][2]string
     for _, p := range periods {

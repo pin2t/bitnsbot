@@ -8,7 +8,6 @@ import "path/filepath"
 import "strings"
 import "testing"
 import "time"
-
 import "go.etcd.io/bbolt"
 
 // infoBlockHash is a real mainnet block hash: 64 hex characters, exactly the
