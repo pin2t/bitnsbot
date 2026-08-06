@@ -594,7 +594,7 @@ func mempoolCmd(bot *bot, chat int64) {
         return
     }
     var pairs = [][2]string{
-        {i18n(chat).String("Size"),         metric(float64(info.Bytes), 1)},
+        {i18n(chat).String("Size"),         humSize(info.Bytes, chat)},
         {i18n(chat).String("Transactions"), group(int64(info.Size))},
     }
     flowMu.Lock()

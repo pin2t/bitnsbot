@@ -244,7 +244,7 @@ func formatBlock(bi *blockInfo, chat int64) string {
     var pairs = [][2]string{
         {i18n(chat).String("Hash"), short(bi.Hash)},
         {i18n(chat).String("Time"), when(bi.Time, chat)},
-        {i18n(chat).String("Size"), humSize(int64(bi.Size))},
+        {i18n(chat).String("Size"), humSize(int64(bi.Size), chat)},
         {i18n(chat).String("Transactions"), strconv.Itoa(bi.NumTx)},
         {i18n(chat).String("Miner"), bi.Miner},
         {i18n(chat).String("Difficulty"), difficulty},

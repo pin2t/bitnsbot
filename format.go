@@ -66,10 +66,10 @@ func metric(f float64, decimals int) string {
     return strings.TrimRight(strings.TrimRight(strconv.FormatFloat(f, 'f', decimals, 64), "0"), ".") + unit
 }
 
-func humSize(s int64) string {
+func humSize(s int64, chat int64) string {
     var f = float64(s)
-    var unit = " B"
-    for _, u := range []string{" KB", " MB", " GB", " TB", " PB", " EB"} {
+    var unit = i18n(chat).String(" B")
+    for _, u := range []string{i18n(chat).String(" KB"), i18n(chat).String(" MB"), i18n(chat).String(" GB"), i18n(chat).String(" TB"), i18n(chat).String(" PB"), i18n(chat).String(" EB")} {
         if f < 1000 { break }
         f /= 1000
         unit = u
