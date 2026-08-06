@@ -295,6 +295,12 @@ var langTrans = map[string]trans{
 		" T":       " k",
 		" M":       " M",
 		" sat/vB)": " sat/vB)",
+		" KB": " KB",
+		" MB": " MB",
+		" GB": " GB",
+		" TB": " TB",
+		" PB": " PB",
+		" EB": " EB",
 	},
 	// i18n-vet:end translation
 }
