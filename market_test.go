@@ -9,13 +9,13 @@ func TestMoney(t *testing.T) {
         1327983664334: "$1.33 T",
         31914279096:   "$31.91 B",
         1500000:       "$1.5 M",
-        2500:          "$2.5 K",
+        2500:          "$2500",
         999:           "$999",
         0:             "$0",
         -31914279096:  "-$31.91 B",
     }
     for in, want := range cases {
-        if got := money(in); got != want {
+        if got := money(in, 1); got != want {
             t.Errorf("money(%v) = %q, want %q", in, got, want)
         }
     }

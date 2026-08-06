@@ -20,10 +20,10 @@ func when(unix int64, chat int64) string {
         var since = time.Since(t)
         switch {
         case since < time.Minute:     return i18n(chat).String("just now")
-        case since < time.Hour:       return ago(int(since.Minutes()), i18n(chat).String("minute"), chat)
-        case since < 24*time.Hour:    return ago(int(since.Hours()), i18n(chat).String("hour"), chat)
-        case since < 31*24*time.Hour: return ago(int(since.Hours()/24), i18n(chat).String("day"), chat)
-        default:                      return ago(int(since.Hours()/24/30), i18n(chat).String("month"), chat)
+        case since < time.Hour:       return ago(int(since.Minutes()), i18n(chat).String("min"), chat)
+        case since < 24*time.Hour:    return ago(int(since.Hours()), i18n(chat).String("h"), chat)
+        case since < 31*24*time.Hour: return ago(int(since.Hours()/24), i18n(chat).String("d"), chat)
+        default:                      return ago(int(since.Hours()/24/30), i18n(chat).String("m"), chat)
         }
     }
     return strings.ToLower(t.UTC().Format("2 January 2006 15:04"))
@@ -57,13 +57,24 @@ func sats(btc float64) string {
 // e.g. metric(3299245, 1) → "3.3 M", metric(6719, 1) → "6.7 k", and (used for
 // block difficulty) metric(79000000000000, 2) → "79 T".
 func metric(f float64, decimals int) string {
-    var unit = "B"
-    for _, u := range []string{"K", "M", "G", "T", "P", "E"} {
+    var unit = ""
+    for _, u := range []string{" K", " M", " G", " T", " P", " E"} {
         if f < 1000 { break }
         f /= 1000
         unit = u
     }
-    return strings.TrimRight(strings.TrimRight(strconv.FormatFloat(f, 'f', decimals, 64), "0"), ".") + " " + unit
+    return strings.TrimRight(strings.TrimRight(strconv.FormatFloat(f, 'f', decimals, 64), "0"), ".") + unit
+}
+
+func humSize(s int64, chat int64) string {
+    var f = float64(s)
+    var unit = i18n(chat).String(" B")
+    for _, u := range []string{i18n(chat).String(" KB"), i18n(chat).String(" MB"), i18n(chat).String(" GB"), i18n(chat).String(" TB"), i18n(chat).String(" PB"), i18n(chat).String(" EB")} {
+        if f < 1000 { break }
+        f /= 1000
+        unit = u
+    }
+    return strings.TrimRight(strings.TrimRight(strconv.FormatFloat(f, 'f', 2, 64), "0"), ".") + unit
 }
 
 // compactBtc renders a BTC amount compactly with a USD approximation at the
@@ -170,22 +181,6 @@ func btcAmount(btc float64) string {
     return s
 }
 
-// cachedBtc is like btcAmount but marks the value as precomputed with an
-// ≈ prefix on both the BTC and USD parts: ≈1000 BTC (≈$123,456).
-func cachedBtc(btc float64) string {
-    var num string
-    if btc >= 1 || btc <= -1 {
-        num = strconv.FormatFloat(btc, 'f', 2, 64)
-    } else {
-        num = strings.TrimRight(strings.TrimRight(strconv.FormatFloat(btc, 'f', 8, 64), "0"), ".")
-    }
-    var s = "≈" + num + " BTC"
-    if rate, ok := rates.Last(); ok {
-        s += " (≈" + usd(btc, rate) + ")"
-    }
-    return s
-}
-
 // durationText renders elapsed time compactly: "45 sec", "12 min", "2 h 5 min".
 func durationText(d time.Duration, chat int64) string {
     switch {
@@ -209,13 +204,13 @@ func trimNum(v float64, decimals int) string {
 // "$1.33 T", "$31.9 B". Deliberately not `metric`, which is SI and so says "G"
 // where finance says "B"; market capitalisation reported in gigadollars would
 // read as a units error.
-func money(usd float64) string {
+func money(usd float64, chat int64) string {
     var sign = ""
     if usd < 0 { sign, usd = "-", -usd }
     var units = []struct {
         scale  float64
         suffix string
-    }{{1e12, " T"}, {1e9, " B"}, {1e6, " M"}, {1e3, " K"}}
+    }{{1e12, i18n(chat).String(" T")}, {1e9, i18n(chat).String(" B")}, {1e6, i18n(chat).String(" M")}}
     for _, u := range units {
         if usd >= u.scale {
             return sign + "$" + trimNum(usd/u.scale, 2) + u.suffix

@@ -8,7 +8,6 @@ import "path/filepath"
 import "strings"
 import "testing"
 import "time"
-
 import "go.etcd.io/bbolt"
 
 // infoBlockHash is a real mainnet block hash: 64 hex characters, exactly the
@@ -160,7 +159,7 @@ func TestInfoFlow(t *testing.T) {
     for _, want := range []string{
         "Block #100", "Hash:          000000...ckhash", "Time:          14 november 2023 22:13",
         "Size:          285 B", "Transactions:  1", "Miner:         Unknown", "Difficulty:    1.5",
-        "Fees:          none (coinbase only)", "minimum:       204 bytes", "Reward:        50 BTC",
+        "Fees:          none (coinbase only)", "minimum:       204 B", "Reward:        50 BTC",
         "Reward + fees: 50 BTC",
     } {
         if !strings.Contains(sent[3], want) {
@@ -178,7 +177,7 @@ func TestInfoFlow(t *testing.T) {
     for _, want := range []string{
         "Transaction <code>f21b47a9143a23e80cc59e81588d21558b394005580b285961957cb3bed5b3e0</code>",
         "confirmed (6 confirmations)", "Confirmed:", "14 november 2023 22:13",
-        "Amount:", "1.5 BTC", "Fee:", "150 000 sats", "Size:", "225 bytes",
+        "Amount:", "1.5 BTC", "Fee:", "150 000 sats", "Size:", "225 B",
         "Inputs:", "1A1zP1...DivfNa", "Outputs:", "bc1qw5...v8f3t4",
     } {
         if !strings.Contains(sent[4], want) {
@@ -217,11 +216,11 @@ func TestInfoFlow(t *testing.T) {
         t.Fatalf("unexpected invalid address reply: %#v", sent)
     }
     update(bot, Update{Message: &Message{Chat: Chat{ID: 10}, Text: "/info " + recentTxid}})
-    if len(sent) != 10 || !strings.Contains(sent[9], "Confirmed:") || !strings.Contains(sent[9], "2 day ago") {
+    if len(sent) != 10 || !strings.Contains(sent[9], "Confirmed:") || !strings.Contains(sent[9], "2 d ago") {
         t.Fatalf("expected relative confirmation time for recent transaction, got: %#v", sent)
     }
     update(bot, Update{Message: &Message{Chat: Chat{ID: 11}, Text: "/info 200"}})
-    if len(sent) != 11 || !strings.Contains(sent[10], "Block #200") || !strings.Contains(sent[10], "Time:          2 day ago") {
+    if len(sent) != 11 || !strings.Contains(sent[10], "Block #200") || !strings.Contains(sent[10], "Time:          2 d ago") {
         t.Fatalf("expected relative time format for recent block, got: %#v", sent)
     }
     if !strings.Contains(sent[10], "Difficulty:    1 G") {
@@ -447,7 +446,7 @@ func TestMempoolFlow(t *testing.T) {
     }
     for _, want := range []string{
         "Mempool", "Size:", "3.5 M", "Transactions: 6 700",
-        "Total flow:", "≈3.50 BTC", "Total fees:", "≈0.0003 BTC",
+        "Total flow:", "~3.50 BTC", "Total fees:", "~0.0003 BTC",
     } {
         if !strings.Contains(sent[1], want) {
             t.Fatalf("mempool reply missing %q: %q", want, sent[1])
