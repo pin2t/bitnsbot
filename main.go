@@ -10,6 +10,7 @@ import "html"
 import "net/http"
 import "os"
 import "os/signal"
+import "sort"
 import "strings"
 import "sync"
 import "syscall"
@@ -135,6 +136,7 @@ func main() {
             logging.Fatal("set webhook: %v", err)
         }
         logging.Status("webhook registered at %s", *webhookURL)
+        registerMenu(bot)
     }
     http.HandleFunc(*webhookPath, webhookHandler(bot))
     var srv = &http.Server{Addr: *listenAddr}
@@ -296,21 +298,60 @@ func parseCommand(text string) (command, arg string) {
     return command, arg
 }
 
+// commands is the single source for both /start's listing and the command menu
+// Telegram shows beside the input field, so the two cannot drift apart. The menu
+// description is the part of the line after the dash; keeping the whole /start
+// line as the key means the existing translations keep working untouched.
+var commands = []struct{ name, line string }{
+    {"info", "• <b>/info</b> — look up a transaction, block, or address\n"},
+    {"watch", "• <b>/watch</b> — get notified when an address receives a payment, or when a transaction confirms\n"},
+    {"unwatch", "• <b>/unwatch</b> — stop watching an address or transaction\n"},
+    {"watches", "• <b>/watches</b> — list what you're currently watching\n"},
+    {"fees", "• <b>/fees</b> — show current network fee estimates\n"},
+    {"mempool", "• <b>/mempool</b> — show current mempool size and totals\n"},
+    {"miners", "• <b>/miners</b> — top mining pools by blocks mined\n"},
+    {"market", "• <b>/market</b> — price, market cap, volume and recent changes\n"},
+    {"start", "• <b>/start</b> — show this message\n"},
+}
+
 func start(bot *bot, chat int64) {
-    send(bot, chat,
-        i18n(chat).String("Bitnsbot. I keep an eye on the Bitcoin network for you.\n\n") +
-        i18n(chat).String("• <b>/info</b> — look up a transaction, block, or address\n") +
-        i18n(chat).String("• <b>/watch</b> — get notified when an address receives a payment, or when a transaction confirms\n") +
-        i18n(chat).String("• <b>/unwatch</b> — stop watching an address or transaction\n") +
-        i18n(chat).String("• <b>/watches</b> — list what you're currently watching\n") +
-        i18n(chat).String("• <b>/fees</b> — show current network fee estimates\n") +
-        i18n(chat).String("• <b>/mempool</b> — show current mempool size and totals\n") +
-        i18n(chat).String("• <b>/miners</b> — top mining pools by blocks mined\n") +
-        i18n(chat).String("• <b>/market</b> — price, market cap, volume and recent changes\n") +
-        i18n(chat).String("• <b>/start</b> — show this message\n") +
-        "\n"+
+    var text = i18n(chat).String("Bitnsbot. I keep an eye on the Bitcoin network for you.\n\n")
+    for _, c := range commands { text += i18n(chat).String(c.line) }
+    send(bot, chat, text + "\n" +
         i18n(chat).Sprintf("Version %s. Build %s. Source code <a href=\"https://github.com/pin2t/bitnsbot\">bitnsbot</a>. Don't forget to give me a ⭐",
             ver, commit), nil)
+}
+
+// menuDescription is the text Telegram shows beside a command in the menu: the
+// /start line without its bullet and command prefix.
+func menuDescription(line string) string {
+    var _, desc, _ = strings.Cut(line, " — ")
+    return strings.TrimSuffix(desc, "\n")
+}
+
+// registerMenu publishes the command menu, once per language. Telegram stores a
+// separate list per language_code and falls back to the list registered without
+// one, so English goes up with an empty code. A failure is logged and skipped —
+// the menu is a convenience and the bot works fine without it.
+func registerMenu(bot *bot) {
+    var langs = []string{""}
+    for lang := range langTrans { langs = append(langs, lang) }
+    sort.Strings(langs)
+    for _, lang := range langs {
+        var cmds []map[string]string
+        for _, c := range commands {
+            cmds = append(cmds, map[string]string{"command": c.name,
+                "description": menuDescription(langTrans[lang].String(c.line))})
+        }
+        var ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
+        var err = bot.setCommands(ctx, cmds, lang)
+        cancel()
+        if err != nil {
+            logging.Err("register command menu (language %q): %v", lang, err)
+            continue
+        }
+        logging.Status("command menu registered: %d commands, language %q", len(cmds), lang)
+    }
 }
 
 var pendingWatchMu sync.Mutex
