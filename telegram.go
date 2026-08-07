@@ -156,3 +156,13 @@ func (b *bot) setWebhook(ctx context.Context, url, token string) error {
     var _, err = b.call(ctx, "setWebhook", payload)
     return err
 }
+
+// setCommands fills the menu Telegram shows beside the input field. An empty
+// lang registers the default list, used for every language without one of its
+// own.
+func (b *bot) setCommands(ctx context.Context, cmds []map[string]string, lang string) error {
+    var payload = map[string]any{"commands": cmds}
+    if lang != "" { payload["language_code"] = lang }
+    var _, err = b.call(ctx, "setMyCommands", payload)
+    return err
+}

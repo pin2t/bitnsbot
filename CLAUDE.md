@@ -265,9 +265,23 @@ There is also no way to do what one might first reach for — putting `/info <id
 
 `update()` routes an incoming `CallbackQuery` to `callback()`, which answers the query first — Telegram spins the button until it is acknowledged, so that must happen regardless of what the lookup does — and then calls `info()` with the data.
 
+### The command menu
+
+The menu Telegram shows beside the input field is registered with **`setMyCommands`** (`bot.setCommands` in `telegram.go`), called by `registerMenu` in `main.go` at startup.
+
+**`/start` and the menu are driven off one list**, the package-level `commands` slice of `{name, line}` — that is what makes "the menu contains the same items as /start" a property of the code rather than a convention someone has to remember. `start()` loops over it emitting `i18n(chat).String(c.line)`, and the menu takes each entry's description from the same line via `menuDescription`, which cuts at the `" — "` separator and drops the trailing newline.
+
+Keeping the **whole `/start` line** as the translation key (rather than storing the description separately) is deliberate: the ru and es translations of those nine lines already existed, and this reuses them untouched instead of re-keying and re-translating them.
+
+The one cost is that **`i18n-vet` stops seeing them**. It extracts only `*ast.BasicLit` arguments to `i18n(...).String(...)`, so literals moved into `commands` fall outside its reach — and it runs in CI (`ci.yml`), so that loss is real. `TestCommandLinesTranslated` covers the same ground directly: every line in `commands` must have a translation in every language of `langTrans`. `TestMenuCommandsWithinTelegramLimits` additionally pins that no description comes out empty, which is what a translation using a different dash would produce, and that none exceeds Telegram's 256-byte cap — a single bad entry makes Telegram reject the whole call and leaves the menu empty.
+
+Registration is **one call per language**: Telegram stores a separate list per `language_code` and falls back to the list registered without one, so English goes up with an empty code and each entry of `langTrans` gets its own. Failures are logged and skipped, never fatal — the menu is a convenience, and the bot runs fine without it.
+
+It sits **inside the `-register-webhook` block**. `setMyCommands` is global to the bot token, so a second instance started with `-register-webhook=false` (which already means "do not touch the live bot's Telegram-side state") would otherwise overwrite the real bot's menu.
+
 ### Command dispatch and the "pending argument" pattern
 
-`update()` in `main.go` is the single entry point for every incoming Telegram update: pull `Update.Message`, log it (`logMessage`), split it into a command and argument (`parseCommand`), then switch on the command. `/start`, `/watches`, `/fees`, `/mempool`, `/miners` (see Miner statistics) and `/market` (see The /market command) take no argument and act immediately (`/start` sends a fixed `<b>`-formatted bulleted help listing the commands; `/watches` (`watchesCmd`, renamed off the `watches` package) lists the calling chat's watches — Addresses from `watches.List()` filtered by `chatID`, Transactions from `txwatches.For(chatID)` — and prints each id **un-shortened** inside `<code>…</code>` for Telegram tap-to-copy; ids are `html.EscapeString`'d because address watch ids are arbitrary unvalidated user input, unlike txids).
+`update()` in `main.go` is the single entry point for every incoming Telegram update: pull `Update.Message`, log it (`logMessage`), split it into a command and argument (`parseCommand`), then switch on the command. `/start`, `/watches`, `/fees`, `/mempool`, `/miners` (see Miner statistics) and `/market` (see The /market command) take no argument and act immediately (`/start` sends a `<b>`-formatted bulleted help listing the commands, built from the shared `commands` list — see The command menu below; `/watches` (`watchesCmd`, renamed off the `watches` package) lists the calling chat's watches — Addresses from `watches.List()` filtered by `chatID`, Transactions from `txwatches.For(chatID)` — and prints each id **un-shortened** inside `<code>…</code>` for Telegram tap-to-copy; ids are `html.EscapeString`'d because address watch ids are arbitrary unvalidated user input, unlike txids).
 
 `/fees` (`fees()`) replies with five fee tiers — Fastest (10-20 min), Half hour, Hour, Economy, Minimum — each in sat/vB with the USD cost of a typical transaction beside it, rendered in an aligned `<pre>` table. Labels deliberately avoid `<`/`>`/`&` so the fixed text needs no HTML-escaping and the `len()`-based padding matches the rendered width.
 
