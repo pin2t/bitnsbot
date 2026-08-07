@@ -34,11 +34,11 @@ func TestAmountLineUSD(t *testing.T) {
         t.Fatalf("rates.Init: %v", err)
     }
     // no rate stored yet → sats only, no USD
-    if s := amountLine(1.5, time.Time{}, true); strings.Contains(s, "$") {
+    if s := amountLine(1.5, time.Time{}, true, 123); strings.Contains(s, "$") {
         t.Fatalf("expected no USD without a rate: %q", s)
     }
     rates.Add(60000)
-    var s = amountLine(1.5, time.Time{}, true)
+    var s = amountLine(1.5, time.Time{}, true, 123)
     if !strings.Contains(s, "1.5 BTC") || !strings.Contains(s, "$90,000") {
         t.Fatalf("amountLine = %q", s)
     }
@@ -55,7 +55,7 @@ func TestAmountLineFallback(t *testing.T) {
     rates.Add(60000)
     // a confirmed tx whose block time predates our rate history (older than the
     // tolerance) still shows USD, falling back to the latest known rate.
-    var s = amountLine(1.5, time.Now().Add(-5*24*time.Hour), false)
+    var s = amountLine(1.5, time.Now().Add(-5*24*time.Hour), false, 123)
     if !strings.Contains(s, "$90,000") {
         t.Fatalf("expected USD via fallback for an old confirmed tx: %q", s)
     }

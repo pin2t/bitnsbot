@@ -80,11 +80,11 @@ func humSize(s int64, chat int64) string {
 // compactBtc renders a BTC amount compactly with a USD approximation at the
 // latest rate: as BTC once it reaches 0.05 BTC ("0.5 BTC"), otherwise in sats
 // ("100 000 sats"), so large and small amounts each read naturally.
-func compactBtc(btc float64) string {
+func compactBtc(btc float64, chat int64) string {
     if btc >= 0.05 {
         return btcAmount(btc)
     }
-    return amountLine(btc, time.Time{}, true)
+    return amountLine(btc, time.Time{}, true, chat)
 }
 
 // periodText renders a duration as its two most-significant non-zero units among
@@ -145,21 +145,17 @@ func usd(btc, rate float64) string {
 // rate nearest the transaction's time otherwise — falling back to the last
 // stored rate for confirmed times that predate our rate history, so an old
 // transaction still shows its value at today's rate rather than nothing.
-func amountLine(btc float64, at time.Time, current bool) string {
-    var s = amountText(btc)
+func amountLine(btc float64, at time.Time, current bool, chat int64) string {
+    var s = amountText(btc, chat)
     var rate float64
     var ok bool
     if current {
         rate, ok = rates.Last()
     } else {
         rate, ok = rates.At(at)
-        if !ok {
-            rate, ok = rates.Last()
-        }
+        if !ok { rate, ok = rates.Last() }
     }
-    if ok {
-        s += " (≈ " + usd(btc, rate) + ")"
-    }
+    if ok { s += " (≈ " + usd(btc, rate) + ")" }
     return s
 }
 
@@ -260,12 +256,12 @@ const notifyBTCThreshold = 5_000_000
 
 // amountText renders an amount for a notification headline: sats up to
 // notifyBTCThreshold, BTC above it, trailing zeros trimmed either way.
-func amountText(btc float64) string {
+func amountText(btc float64, chat int64) string {
     var sats = int64(math.Round(btc * 1e8))
     if sats >= notifyBTCThreshold || sats <= -notifyBTCThreshold {
         return trimNum(btc, 8) + " BTC"
     }
-    return group(sats) + " sats"
+    return group(sats) + " " + i18n(chat).String("sats")
 }
 
 func joinAlign(pairs [][2]string) string {
