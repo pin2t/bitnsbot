@@ -250,13 +250,12 @@ func formatBlock(bi *blockInfo, chat int64) string {
         {i18n(chat).String("Difficulty"), difficulty},
     }
     switch {
-    case !bi.FeesOK:
-        pairs = append(pairs, [2]string{i18n(chat).String("Fees"), i18n(chat).String("unavailable")})
-    case bi.NumTx <= 1:
-        pairs = append(pairs, [2]string{i18n(chat).String("Fees"), i18n(chat).String("none (coinbase only)")})
+    case !bi.FeesOK:     pairs = append(pairs, [2]string{i18n(chat).String("Fees"), i18n(chat).String("unavailable")})
+    case bi.NumTx <= 1:  pairs = append(pairs, [2]string{i18n(chat).String("Fees"), i18n(chat).String("none (coinbase only)")})
     default:
         var feeLine = func (fee float64, sz int32) string {
-            return sats(fee) + i18n(chat).String(" sats") + " (" + strings.TrimSuffix(strconv.FormatFloat(math.Round(fee*1e8) / float64(sz), 'f', 1, 64), ".0") + i18n(chat).String(" sat/vB)")
+            return sats(fee) + " " + i18n(chat).String("sats") +
+                " (" + strings.TrimSuffix(strconv.FormatFloat(math.Round(fee*1e8) / float64(sz), 'f', 1, 64), ".0") + " " + i18n(chat).String("sat/vB") + ")"
         }
         pairs = append(pairs,
             [2]string{i18n(chat).String("Fees"), ""},
@@ -270,8 +269,8 @@ func formatBlock(bi *blockInfo, chat int64) string {
         [2]string{i18n(chat).String("minimum"), group(int64(bi.TxSizeMin)) + " " + i18n(chat).String("B")},
         [2]string{i18n(chat).String("average"), group(int64(bi.TxSizeAvg)) + " " + i18n(chat).String("B")},
         [2]string{i18n(chat).String("maximum"), group(int64(bi.TxSizeMax)) + " " + i18n(chat).String("B")},
-        [2]string{i18n(chat).String("Reward"), amountLine(bi.Reward, time.Unix(bi.Time, 0), false)},
-        [2]string{i18n(chat).String("Reward + fees"), amountLine(bi.Reward, time.Unix(bi.Time, 0), false)},
+        [2]string{i18n(chat).String("Reward"), amountLine(bi.Reward, time.Unix(bi.Time, 0), false, chat)},
+        [2]string{i18n(chat).String("Reward + fees"), amountLine(bi.Reward, time.Unix(bi.Time, 0), false, chat)},
     )
     return i18n(chat).Sprintf("Block #%d\n\n<pre>%s</pre>", bi.Height, joinAlign(pairs))
 }

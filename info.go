@@ -74,18 +74,12 @@ func transaction(ctx context.Context, bot *bot, chat int64, txid string) {
             [2]string{i18n(chat).String("Block"), short(tx.BlockHash)},
         )
     }
-    pairs = append(pairs, [2]string{i18n(chat).String("Amount"), amountLine(total, at, current)})
-    switch {
-    case coinbase: pairs = append(pairs, [2]string{i18n(chat).String("Fee"), i18n(chat).String("none (coinbase)")})
-    case feeOK:    pairs = append(pairs, [2]string{i18n(chat).String("Fee"), sats(fee) + i18n(chat).String(" sats")})
-    default:       pairs = append(pairs, [2]string{i18n(chat).String("Fee"), i18n(chat).String("unavailable")})
+    pairs = append(pairs, [2]string{i18n(chat).String("Amount"), amountLine(total, at, current, chat)})
+    if (feeOK) {
+        pairs = append(pairs, [2]string{i18n(chat).String("Fee"), sats(fee) + " " + i18n(chat).String("sats")})
+        pairs = append(pairs, [2]string{i18n(chat).String("Inputs"), compactAddrs(inputs)})
     }
     pairs = append(pairs, [2]string{i18n(chat).String("Size"), group(int64(tx.Size)) + " " + i18n(chat).String("B")})
-    switch {
-    case coinbase: pairs = append(pairs, [2]string{i18n(chat).String("Inputs"), i18n(chat).String("coinbase (newly generated))")})
-    case feeOK:    pairs = append(pairs, [2]string{i18n(chat).String("Inputs"), compactAddrs(inputs)})
-    default:       pairs = append(pairs, [2]string{i18n(chat).String("Inputs"), i18n(chat).String("unavailable")})
-    }
     pairs = append(pairs, [2]string{i18n(chat).String("Outputs"), compactAddrs(outputAddrs(tx))})
     // only the ids the text actually shows get buttons — compactAddrs truncates
     // to shownAddrs with a trailing "...", and a button for something the reader
@@ -397,11 +391,11 @@ func address(ctx context.Context, bot *bot, chat int64, addr string) {
         var count = group(int64(len(txs)))
         if !complete { count += "+" }
         pairs = append(pairs,
-            [2]string{i18n(chat).String("Balance"), compactBtc(received - sent)},
-            [2]string{i18n(chat).String("Total received"), compactBtc(received)},
-            [2]string{i18n(chat).String("Total sent"), compactBtc(sent)},
-            [2]string{i18n(chat).String("Total flow"), compactBtc(received + sent)},
-            [2]string{i18n(chat).String("Total fees"), compactBtc(fees)},
+            [2]string{i18n(chat).String("Balance"), compactBtc(received - sent, chat)},
+            [2]string{i18n(chat).String("Total received"), compactBtc(received, chat)},
+            [2]string{i18n(chat).String("Total sent"), compactBtc(sent, chat)},
+            [2]string{i18n(chat).String("Total flow"), compactBtc(received + sent, chat)},
+            [2]string{i18n(chat).String("Total fees"), compactBtc(fees, chat)},
             [2]string{i18n(chat).String("Transactions"), count},
         )
         if firstT > 0 {
