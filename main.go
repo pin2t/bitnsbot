@@ -10,7 +10,6 @@ import "html"
 import "net/http"
 import "os"
 import "os/signal"
-import "sort"
 import "strings"
 import "sync"
 import "syscall"
@@ -24,6 +23,7 @@ import "bitnsbot/rates"
 import "bitnsbot/txwatches"
 import "bitnsbot/watches"
 import "unicode/utf8"
+import "sort"
 
 var configPath      = flag.String("config", "", "path to a properties file (name=value lines) with flag values; command-line flags take precedence")
 var verbose         = flag.Int("verbose", 0, "log verbosity: 0=ERR/WARN/status, 1=+INFO, 2=+NET/DB (raw external traffic and storage requests)")

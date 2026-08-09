@@ -90,7 +90,7 @@ func compactBtc(btc float64, chat int64) string {
 // periodText renders a duration as its two most-significant non-zero units among
 // years / months / days / hours / minutes — "3 y 2 d", "2 m 1 d", "5 h 10 min".
 // Years and months use 365- and 30-day approximations, extracted in order.
-func periodText(d time.Duration) string {
+func periodText(d time.Duration, chat int64) string {
     var total = int(d.Minutes())
     var years = total / (365 * 24 * 60)
     total -= years * 365 * 24 * 60
@@ -103,7 +103,7 @@ func periodText(d time.Duration) string {
     var units = []struct {
         n int
         s string
-    }{{years, "y"}, {months, "m"}, {days, "d"}, {hours, "h"}, {mins, "min"}}
+    }{{years, i18n(chat).String("y")}, {months, i18n(chat).String("m")}, {days, i18n(chat).String("d")}, {hours, i18n(chat).String("h")}, {mins, i18n(chat).String("min")}}
     var parts []string
     for _, u := range units {
         if u.n > 0 {
@@ -111,7 +111,7 @@ func periodText(d time.Duration) string {
         }
     }
     if len(parts) == 0 {
-        return "0 min"
+        return i18n(chat).String("just now")
     }
     if len(parts) > 2 {
         parts = parts[:2]

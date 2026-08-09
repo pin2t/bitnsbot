@@ -642,10 +642,10 @@ func TestPeriodText(t *testing.T) {
         {(2*30 + 1) * 24 * time.Hour, "2 m 1 d"},
         {5*time.Hour + 10*time.Minute, "5 h 10 min"},
         {45 * time.Minute, "45 min"},
-        {30 * time.Second, "0 min"},
+        {30 * time.Second, "just now"},
     }
     for _, c := range cases {
-        if got := periodText(c.d); got != c.want {
+        if got := periodText(c.d, 1); got != c.want {
             t.Errorf("periodText(%v) = %q, want %q", c.d, got, c.want)
         }
     }

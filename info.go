@@ -405,7 +405,7 @@ func address(ctx context.Context, bot *bot, chat int64, addr string) {
             pairs = append(pairs, [2]string{i18n(chat).String("Last tx"), when(lastT, chat)})
         }
         if firstT > 0 && lastT > firstT {
-            pairs = append(pairs, [2]string{i18n(chat).String("Activity period"), periodText(time.Duration(lastT-firstT) * time.Second)})
+            pairs = append(pairs, [2]string{i18n(chat).String("Activity period"), periodText(time.Duration(lastT-firstT) * time.Second, 1)})
         }
     }
     send(bot, chat, i18n(chat).Sprintf("Address %s\n\n<pre>%s</pre>", short(addr), joinAlign(pairs)), nil)
