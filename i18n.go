@@ -1,6 +1,8 @@
 package main
 
 import "fmt"
+import "strings"
+import "time"
 
 // trans holds translations for a single language, mapping English source strings
 // to translated strings. A nil or empty trans is valid and falls back to the
@@ -154,6 +156,18 @@ var langTrans = map[string]trans{
 		" B":       " млрд",
 		" M":       " млн",
 		"sat/vB":   "сат/вБ",
+		"January":   "января",
+		"February":  "февраля",
+		"March":     "марта",
+		"April":     "апреля",
+		"May":       "мая",
+		"June":      "июня",
+		"July":      "июля",
+		"August":    "августа",
+		"September": "сентября",
+		"October":   "октября",
+		"November":  "ноября",
+		"December":  "декабря",
 	},
 	// i18n-vet:end translation
 
@@ -301,6 +315,18 @@ var langTrans = map[string]trans{
 		" TB": " TB",
 		" PB": " PB",
 		" EB": " EB",
+		"January":   "enero",
+		"February":  "febrero",
+		"March":     "marzo",
+		"April":     "abril",
+		"May":       "mayo",
+		"June":      "junio",
+		"July":      "julio",
+		"August":    "agosto",
+		"September": "septiembre",
+		"October":   "octubre",
+		"November":  "noviembre",
+		"December":  "diciembre",
 	},
 	// i18n-vet:end translation
 }
@@ -345,4 +371,18 @@ func (t trans) String(s string) string {
 		}
 	}
 	return s
+}
+
+// DateTime formats tm as "2 January 2006 15:04" using the English month name,
+// then replaces it with the translation for this language if one exists.
+func (t trans) DateTime(tm time.Time) string {
+	formatted := tm.Format("2 January 2006 15:04")
+	if t == nil {
+		return formatted
+	}
+	month := tm.Month().String()
+	if translated, ok := t[month]; ok {
+		formatted = strings.Replace(formatted, month, translated, 1)
+	}
+	return formatted
 }

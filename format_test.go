@@ -81,3 +81,22 @@ func TestNegativeAmounts(t *testing.T) {
         t.Fatalf("usd(-0.001, 50000) = %q", got)
     }
 }
+
+func TestDateTime(t *testing.T) {
+    var tm = time.Date(2023, 6, 15, 10, 30, 0, 0, time.UTC)
+
+    // English (nil trans) — returns English month name unchanged.
+    if got := trans(nil).DateTime(tm); got != "15 June 2023 10:30" {
+        t.Fatalf("nil trans: expected '15 June 2023 10:30', got %q", got)
+    }
+
+    // Russian — month translated to genitive form.
+    if got := langTrans["ru"].DateTime(tm); got != "15 июня 2023 10:30" {
+        t.Fatalf("ru: expected '15 июня 2023 10:30', got %q", got)
+    }
+
+    // Spanish.
+    if got := langTrans["es"].DateTime(tm); got != "15 junio 2023 10:30" {
+        t.Fatalf("es: expected '15 junio 2023 10:30', got %q", got)
+    }
+}

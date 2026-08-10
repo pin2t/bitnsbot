@@ -26,7 +26,7 @@ func when(unix int64, chat int64) string {
         default:                      return ago(int(since.Hours()/24/30), i18n(chat).String("m"), chat)
         }
     }
-    return strings.ToLower(t.UTC().Format("2 January 2006 15:04"))
+    return strings.ToLower(i18n(chat).DateTime(t.UTC()))
 }
 
 func short(s string) string {
