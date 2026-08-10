@@ -6,6 +6,8 @@ github.com/go-zeromq/zmq4 v0.17.0 h1:r12/XdqPeRbuaF4C3QZJeWCt7a5vpJbslDH1rTXF+Kc
 github.com/go-zeromq/zmq4 v0.17.0/go.mod h1:EQxjJD92qKnrsVMzAnx62giD6uJIPi1dMGZ781iCDtY=
 github.com/pin2t/flagex v1.0.0 h1:lXJQIKhQ2aElS275HTdRsLEHk7SbX7Mxez//1ZYPMxM=
 github.com/pin2t/flagex v1.0.0/go.mod h1:iCyBTyEpoEOkDJ5V2T+SvX/ecPJZCxYv6/49ZHhuIHo=
+github.com/pin2t/flagex v1.1.0 h1:Ch9Fq6KezAbtjK9FjYnZTFgyyjYJy93pNIyfs+sJAbQ=
+github.com/pin2t/flagex v1.1.0/go.mod h1:iCyBTyEpoEOkDJ5V2T+SvX/ecPJZCxYv6/49ZHhuIHo=
 github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
 github.com/stretchr/testify v1.11.1 h1:7s2iGBzp5EwR7/aIZr8ao5+dra3wiQyKjjFuvgVKu7U=
