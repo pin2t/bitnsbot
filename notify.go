@@ -236,7 +236,7 @@ func broadcast(txHex string) {
         if entry, eerr := core.getMempoolEntry(ctx, tx.Txid); eerr == nil && entry.Vsize > 0 {
             n.fee = entry.Fees.Base
             n.feeRate = math.Round(entry.Fees.Base*1e8) / float64(entry.Vsize)
-            n.confEstimate = confEstimate(ctx, n.feeRate)
+            n.confEstimate = confEstimate(n.feeRate)
             n.feeOK = true
         }
     }
@@ -307,18 +307,19 @@ const confETAMedium = "med"
 const confETASlow = "slow"
 
 // confEstimate maps a transaction's fee rate (sat/vB) to a rough confirmation
-// window by comparing it to core's fee estimates (BTC/kvB → sat/vB via ×1e5) for
-// the 2- and 6-block targets. Returns "" if the estimator has no data yet.
-func confEstimate(ctx context.Context, feeRate float64) string {
-    var fast, ferr = core.estimateSmartFee(ctx, 2)
-    var medium, merr = core.estimateSmartFee(ctx, 6)
-    if ferr != nil || merr != nil || fast <= 0 || medium <= 0 {
+// window by comparing it to the cached mempool-based fee recommendations. Returns
+// "" until the first background recomputation completes.
+func confEstimate(feeRate float64) string {
+    feesMu.Lock()
+    var rec, ok = cachedFees, cachedFeesOK
+    feesMu.Unlock()
+    if !ok {
         return ""
     }
     switch {
-    case feeRate >= fast*1e5:   return confETAFast
-    case feeRate >= medium*1e5: return confETAMedium
-    default:                    return confETASlow
+    case feeRate >= rec.fastest: return confETAFast
+    case feeRate >= rec.hour:    return confETAMedium
+    default:                     return confETASlow
     }
 }
 
