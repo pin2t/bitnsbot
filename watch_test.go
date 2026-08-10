@@ -87,6 +87,13 @@ func TestWatchNotification(t *testing.T) {
     })
     core = newFakeCoreClient(t, srv)
     defer func() { core = nil }()
+    // Populate cachedFees so confEstimate can map fee rates to ETA without
+    // calling Core's estimatesmartfee.
+    feesMu.Lock()
+    cachedFees = recommendedFees{fastest: 50, halfHour: 30, hour: 20, economy: 10, minimum: 1}
+    cachedFeesOK = true
+    cachedFeesCount = 1000
+    feesMu.Unlock()
     openDB(filepath.Join(t.TempDir(), "watches.db"))
     defer closeDB()
     stopNotify()
@@ -465,6 +472,13 @@ func awaitNotification(t *testing.T, btcdSrv *httptest.Server, watchedAddr strin
     }))
     var b = newBot("TESTTOKEN", tg.URL)
     core = newFakeCoreClient(t, btcdSrv)
+    // Populate cachedFees so confEstimate can map fee rates to ETA without
+    // calling Core's estimatesmartfee.
+    feesMu.Lock()
+    cachedFees = recommendedFees{fastest: 50, halfHour: 30, hour: 20, economy: 10, minimum: 1}
+    cachedFeesOK = true
+    cachedFeesCount = 1000
+    feesMu.Unlock()
     openDB(filepath.Join(t.TempDir(), "watches.db"))
     stopNotify()
     resetWatched()

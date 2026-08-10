@@ -117,6 +117,7 @@ func main() {
     startBlockCache()
     startMempoolFlow()
     startMempoolSummary()
+    startMempoolFees()
     if core != nil && *coreZMQ != "" {
         if err := startZMQ(context.Background(), strings.Split(*coreZMQ, ","), bot); err != nil {
             logging.Fatal("subscribe to Bitcoin Core ZMQ: %v", err)
@@ -479,19 +480,13 @@ func fees(bot *bot, chat int64) {
         send(bot, chat, i18n(chat).String("Bitcoin node connection is not configured"), nil)
         return
     }
-    var ctx, cancel = context.WithTimeout(context.Background(), 60*time.Second)
-    defer cancel()
-    var entries, err = core.rawMempoolVerbose(ctx)
-    if err != nil {
-        logging.Warn("fees: read mempool: %v", err)
+    feesMu.Lock()
+    var rec, ok, count = cachedFees, cachedFeesOK, cachedFeesCount
+    feesMu.Unlock()
+    if !ok {
         send(bot, chat, i18n(chat).String("Fee estimates aren't available right now — couldn't read the mempool"), nil)
         return
     }
-    var minFee float64
-    if info, ierr := core.getMempoolInfo(ctx); ierr == nil {
-        minFee = info.MempoolMinFee
-    }
-    var rec = calculateRecommendedFee(buildProjectedBlocks(entries), minFee)
     var tiers = []struct {
         label string
         rate  float64
@@ -511,7 +506,7 @@ func fees(bot *bot, chat int64) {
         }
         lines = append(lines, fmt.Sprintf("%-*s %s", pad, t.label, cell))
     }
-    var note = i18n(chat).Sprintf("projected from %s mempool transactions", group(int64(len(entries))))
+    var note = i18n(chat).Sprintf("projected from %s mempool transactions", group(int64(count)))
     if havePrice {
         note += "\n" + i18n(chat).Sprintf("USD for a typical %d vB transaction", typicalTxVsize)
     }
@@ -540,6 +535,14 @@ var summaryMu sync.Mutex
 var summaryAmount float64
 var summaryFee float64
 var summaryOK bool
+
+// cached fees recommendation, recomputed every 10 minutes alongside
+// startMempoolFees so /fees can reply instantly and confEstimate can
+// pick up the current fee landscape without an RPC call.
+var feesMu sync.Mutex
+var cachedFees recommendedFees
+var cachedFeesOK bool
+var cachedFeesCount int // number of mempool entries the fees were projected from
 
 // updateFlow folds one mempool tx-count sample into the flow-rate state: the rate
 // is Δcount over flowInterval, and the change is Δrate (flowRate still holds the
@@ -602,6 +605,39 @@ func startMempoolSummary() {
             summaryMu.Lock()
             summaryAmount, summaryFee, summaryOK = amount, fee, ok
             summaryMu.Unlock()
+        }
+        calc()
+        var t = time.NewTicker(10 * time.Minute)
+        defer t.Stop()
+        for range t.C {
+            calc()
+        }
+    }()
+}
+
+// startMempoolFees recomputes the fee recommendations (projected blocks +
+// recommended fees) every 10 minutes and stores them so /fees can reply
+// instantly and confEstimate can use current mempool-based rates instead of
+// core's slow-to-react estimatesmartfee.
+func startMempoolFees() {
+    if core == nil { return }
+    go func() {
+        var calc = func() {
+            var ctx, cancel = context.WithTimeout(context.Background(), 60*time.Second)
+            defer cancel()
+            var entries, err = core.rawMempoolVerbose(ctx)
+            if err != nil {
+                logging.Warn("mempool fees: %v", err)
+                return
+            }
+            var minFee float64
+            if info, ierr := core.getMempoolInfo(ctx); ierr == nil {
+                minFee = info.MempoolMinFee
+            }
+            var rec = calculateRecommendedFee(buildProjectedBlocks(entries), minFee)
+            feesMu.Lock()
+            cachedFees, cachedFeesOK, cachedFeesCount = rec, true, len(entries)
+            feesMu.Unlock()
         }
         calc()
         var t = time.NewTicker(10 * time.Minute)

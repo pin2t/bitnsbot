@@ -1,5 +1,6 @@
 package main
 
+import "context"
 import "encoding/json"
 import "fmt"
 import "net/http"
@@ -331,6 +332,18 @@ func TestFeesFlow(t *testing.T) {
     defer btcdServer.Close()
     core = newFakeCoreClient(t, btcdServer)
     defer func() { core = nil }()
+    // Populate cachedFees the same way startMempoolFees does, since fees() now
+    // reads from the cache instead of calling Core on every request.
+    {
+        var ctx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
+        defer cancel()
+        var entries, _ = core.rawMempoolVerbose(ctx)
+        var info, _ = core.getMempoolInfo(ctx)
+        var rec = calculateRecommendedFee(buildProjectedBlocks(entries), info.MempoolMinFee)
+        feesMu.Lock()
+        cachedFees, cachedFeesOK, cachedFeesCount = rec, true, len(entries)
+        feesMu.Unlock()
+    }
     update(bot, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/fees"}})
     if len(sent) != 2 {
         t.Fatalf("expected a fees reply, got %#v", sent)
@@ -352,6 +365,10 @@ func TestFeesFlow(t *testing.T) {
     if lastMode != "HTML" {
         t.Fatalf("expected HTML parse mode, got %q", lastMode)
     }
+    // Reset to not leak into TestFeesUnavailable.
+    feesMu.Lock()
+    cachedFeesOK = false
+    feesMu.Unlock()
 }
 
 func TestFeesUnavailable(t *testing.T) {
