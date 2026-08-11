@@ -47,6 +47,11 @@ func info(bot *bot, chat int64, arg string) {
 }
 
 func transaction(ctx context.Context, bot *bot, chat int64, txid string) {
+    var estimates = map[string]string{
+        confETAFast:   i18n(chat).String("~10-20 min"),
+        confETAMedium: i18n(chat).String("~1 hour"),
+        confETASlow:   i18n(chat).String("2+ hours"),
+    }
     var tx, err = core.getRawTransaction(ctx, txid)
     if err != nil {
         send(bot, chat, i18n(chat).Sprintf("Couldn't find transaction %s", short(txid)), nil)
@@ -58,33 +63,45 @@ func transaction(ctx context.Context, bot *bot, chat int64, txid string) {
     var fee float64
     var inputs []string
     var feeOK bool
-    if !coinbase {
-        fee, inputs, _, feeOK = txInputs(ctx, tx)
-    }
+    if !coinbase { fee, inputs, _, feeOK = txInputs(ctx, tx) }
     var pairs [][2]string
     var at = time.Time{}
     var current = true
+    var blockHeight int64
     if tx.Confirmations == 0 {
-        pairs = append(pairs, [2]string{i18n(chat).String("Status"), i18n(chat).String("unconfirmed (in mempool)")})
+        var confText = i18n(chat).String("none (confirms in ~10-20 min)")
+        if feeOK && tx.Vsize > 0 {
+            confText = i18n(chat).String("none (confirms in") + " " + estimates[confEstimate(fee * 1e8 / float64(tx.Vsize))] + ")"
+        }
+        pairs = append(pairs, [2]string{i18n(chat).String("Confirmations"), confText})
     } else {
         at, current = time.Unix(tx.Time, 0), false
-        pairs = append(pairs,
-            [2]string{i18n(chat).String("Status"), i18n(chat).Sprintf("confirmed (%d confirmations)", tx.Confirmations)},
-            [2]string{i18n(chat).String("Confirmed"), when(tx.Time, chat)},
-            [2]string{i18n(chat).String("Block"), short(tx.BlockHash)},
-        )
+        if header, err := core.getBlockHeader(ctx, tx.BlockHash); err == nil {
+            blockHeight = header.Height
+        }
+        pairs = append(pairs, [2]string{i18n(chat).String("Confirmations"), i18n(chat).Sprintf("%d (block #%d)", tx.Confirmations, blockHeight)})
     }
     pairs = append(pairs, [2]string{i18n(chat).String("Amount"), amountLine(total, at, current, chat)})
-    if (feeOK) {
-        pairs = append(pairs, [2]string{i18n(chat).String("Fee"), sats(fee) + " " + i18n(chat).String("sats")})
-        pairs = append(pairs, [2]string{i18n(chat).String("Inputs"), compactAddrs(inputs)})
+    if feeOK {
+        var feeStr = sats(fee) + " " + i18n(chat).String("sats")
+        if tx.Vsize > 0 {
+            var feeRate = fee * 1e8 / float64(tx.Vsize)
+            feeStr += " (" + trimNum(feeRate, 1) + i18n(chat).String(" sat/vB") + ")"
+        }
+        pairs = append(pairs, [2]string{i18n(chat).String("Fee"), feeStr})
     }
     pairs = append(pairs, [2]string{i18n(chat).String("Size"), group(int64(tx.Size)) + " " + i18n(chat).String("B")})
+    if feeOK {
+        pairs = append(pairs, [2]string{i18n(chat).String("Inputs"), compactAddrs(inputs)})
+    }
     pairs = append(pairs, [2]string{i18n(chat).String("Outputs"), compactAddrs(outputAddrs(tx))})
     // only the ids the text actually shows get buttons — compactAddrs truncates
     // to shownAddrs with a trailing "...", and a button for something the reader
     // cannot see in the message would be a puzzle rather than a shortcut
     var ids []string
+    if blockHeight > 0 {
+        ids = append(ids, strconv.FormatInt(blockHeight, 10))
+    }
     if tx.BlockHash != "" { ids = append(ids, tx.BlockHash) }
     ids = append(ids, firstN(inputs, shownAddrs)...)
     ids = append(ids, firstN(outputAddrs(tx), shownAddrs)...)
@@ -381,12 +398,11 @@ func address(ctx context.Context, bot *bot, chat int64, addr string) {
     if decodeErr == nil {
         txs, complete = addressHistory(ctx, script)
     }
-    if built, ok := addrindex.Cursor(); !ok {
+    if _, ok := addrindex.Cursor(); !ok {
         pairs = append(pairs, [2]string{i18n(chat).String("Activity"), i18n(chat).String("unavailable (address index is still building)")})
     } else if len(txs) == 0 && !complete {
         pairs = append(pairs, [2]string{i18n(chat).String("Activity"), i18n(chat).String("unavailable")})
     } else {
-        _ = built
         var received, sent, fees, firstT, lastT = addressStats(txs, addr)
         var count = group(int64(len(txs)))
         if !complete { count += "+" }
@@ -398,12 +414,8 @@ func address(ctx context.Context, bot *bot, chat int64, addr string) {
             [2]string{i18n(chat).String("Total fees"), compactBtc(fees, chat)},
             [2]string{i18n(chat).String("Transactions"), count},
         )
-        if firstT > 0 {
-            pairs = append(pairs, [2]string{i18n(chat).String("First tx"), when(firstT, chat)})
-        }
-        if lastT > 0 {
-            pairs = append(pairs, [2]string{i18n(chat).String("Last tx"), when(lastT, chat)})
-        }
+        if firstT > 0 { pairs = append(pairs, [2]string{i18n(chat).String("First tx"), when(firstT, chat)}) }
+        if lastT > 0 { pairs = append(pairs, [2]string{i18n(chat).String("Last tx"), when(lastT, chat)}) }
         if firstT > 0 && lastT > firstT {
             pairs = append(pairs, [2]string{i18n(chat).String("Activity period"), periodText(time.Duration(lastT-firstT) * time.Second, chat)})
         }

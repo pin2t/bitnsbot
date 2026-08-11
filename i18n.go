@@ -114,6 +114,9 @@ var langTrans = map[string]trans{
 		"Block":                        "Блок",
 		"Amount":                       "Сумма",
 		"confirmed (%d confirmations)": "%d подтверждений",
+		"Confirmations":                       "Подтверждений",
+		"none (confirms in ~10-20 min)":       "нет (подтверждение через ~10-20 мин)",
+		"%d (block #%d)":                      "%d (блок #%d)",
 		"none (coinbase)":              "нет (награда)",
 		"sats":                         "сат",
 		"B":                            "Б",
@@ -168,6 +171,7 @@ var langTrans = map[string]trans{
 		"October":   "октября",
 		"November":  "ноября",
 		"December":  "декабря",
+		"none (confirms in": "нет (подтвердится через",
 	},
 	// i18n-vet:end translation
 
@@ -272,6 +276,9 @@ var langTrans = map[string]trans{
 		"Block":                        "Bloque",
 		"Amount":                       "Monto",
 		"confirmed (%d confirmations)": "confirmada (%d confirmaciones)",
+		"Confirmations":                       "Confirmaciones",
+		"none (confirms in ~10-20 min)":       "ninguna (~10-20 min)",
+		"%d (block #%d)":                      "%d (bloque #%d)",
 		"none (coinbase)":              "ninguna (coinbase)",
 		"sats":                         "sats",
 		" bytes":                       " bytes",
@@ -327,6 +334,7 @@ var langTrans = map[string]trans{
 		"October":   "octubre",
 		"November":  "noviembre",
 		"December":  "diciembre",
+		"none (confirms in": "ninguna (se confirma en",
 	},
 	// i18n-vet:end translation
 }
@@ -366,9 +374,7 @@ func (t trans) Sprintf(format string, a ...interface{}) string {
 // exists, it returns the key unchanged.
 func (t trans) String(s string) string {
 	if t != nil {
-		if translated, ok := t[s]; ok {
-			return translated
-		}
+		if translated, ok := t[s]; ok { return translated }
 	}
 	return s
 }
@@ -377,9 +383,7 @@ func (t trans) String(s string) string {
 // then replaces it with the translation for this language if one exists.
 func (t trans) DateTime(tm time.Time) string {
 	formatted := tm.Format("2 January 2006 15:04")
-	if t == nil {
-		return formatted
-	}
+	if t == nil { return formatted }
 	month := tm.Month().String()
 	if translated, ok := t[month]; ok {
 		formatted = strings.Replace(formatted, month, translated, 1)

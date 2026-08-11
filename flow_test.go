@@ -177,7 +177,7 @@ func TestInfoFlow(t *testing.T) {
     }
     for _, want := range []string{
         "Transaction <code>f21b47a9143a23e80cc59e81588d21558b394005580b285961957cb3bed5b3e0</code>",
-        "confirmed (6 confirmations)", "Confirmed:", "14 november 2023 22:13",
+        "Confirmations:", "6 (block #100)",
         "Amount:", "1.5 BTC", "Fee:", "150 000 sats", "Size:", "225 B",
         "Inputs:", "1A1zP1...DivfNa", "Outputs:", "bc1qw5...v8f3t4",
     } {
@@ -217,8 +217,8 @@ func TestInfoFlow(t *testing.T) {
         t.Fatalf("unexpected invalid address reply: %#v", sent)
     }
     update(bot, Update{Message: &Message{Chat: Chat{ID: 10}, Text: "/info " + recentTxid}})
-    if len(sent) != 10 || !strings.Contains(sent[9], "Confirmed:") || !strings.Contains(sent[9], "2 d ago") {
-        t.Fatalf("expected relative confirmation time for recent transaction, got: %#v", sent)
+    if len(sent) != 10 || !strings.Contains(sent[9], "Confirmations:") {
+        t.Fatalf("expected transaction reply for recent transaction, got: %#v", sent)
     }
     update(bot, Update{Message: &Message{Chat: Chat{ID: 11}, Text: "/info 200"}})
     if len(sent) != 11 || !strings.Contains(sent[10], "Block #200") || !strings.Contains(sent[10], "Time:          2 d ago") {
