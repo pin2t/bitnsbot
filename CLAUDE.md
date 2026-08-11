@@ -49,7 +49,7 @@ The bot lives in `package main` in the repo root; five supporting packages sit i
 Root (`package main`):
 - `telegram.go` — the Bot API client: the unexported `bot` type, `newBot`, and `call`/`send`/`setWebhook` methods, plus the wire types (`Update`, `Message`, `User`, `Chat`) decoded from incoming webhook JSON.
 - `db.go` — the bbolt connection: the package-level `var db *bbolt.DB`, `openDB(path)`/`closeDB()`, and the shared `itob` big-endian key helper. `openDB` opens the one file, creates the `blocks` bucket, and hands the same handle to `rates.Init`/`watches.Init`/`miners.Init`/`addrindex.Init` (which own their own buckets) — one file, one handle, ten buckets (`blocks`, `rates`, `watches`, the rates package's `market`, the miners package's `miners`/`miners-tag`/`miners-stat`/`miners-block`, and the addrindex package's `addrindex`/`addrindex-cursor`).
-- `core.go` — a `coreClient` for talking to Bitcoin Core's HTTP JSON-RPC API (see below).
+- `core.go` — a `coreConn` for talking to Bitcoin Core's HTTP JSON-RPC API (see below).
 - `zmq.go` — the ZMQ subscriber, the local transaction parser, and the watched-script/outpoint matcher that replaces btcd's server-side filter (see below).
 - `blocks.go` — the `blocks` bucket: cached per-block info records (`blockInfo`), `computeBlockInfo` (builds a record from Core), the startup backfill goroutine, and `formatBlock` (the `/info` block reply). See Block info cache below.
 - `backup.go` — the periodic database backup goroutine (`startBackup`/`backup`). See Database backups below.

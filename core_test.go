@@ -42,8 +42,8 @@ func newFakeCoreServer(t *testing.T, respond func(method string, params []interf
     return server
 }
 
-func newFakeCoreClient(t *testing.T, server *httptest.Server) *coreClient {
-    var client, err = newCoreClient(coreConfig{url: server.URL, user: "testuser", pass: "testpass"})
+func newFakeCoreConn(t *testing.T, server *httptest.Server) *coreConn {
+    var client, err = newCoreConn(server.URL, "testuser", "testpass", "")
     if err != nil {
         t.Fatalf("newCoreClient: %v", err)
     }
@@ -57,7 +57,7 @@ func TestCoreGetBlockCount(t *testing.T) {
         }
         return 958955, nil
     })
-    var client = newFakeCoreClient(t, server)
+    var client = newFakeCoreConn(t, server)
     var count, err = client.getBlockCount(context.Background())
     if err != nil {
         t.Fatalf("getBlockCount: %v", err)
@@ -73,7 +73,7 @@ func TestCoreMethodError(t *testing.T) {
     var server = newFakeCoreServer(t, func(method string, params []interface{}) (interface{}, error) {
         return nil, errors.New("Block not found")
     })
-    var client = newFakeCoreClient(t, server)
+    var client = newFakeCoreConn(t, server)
     var _, err = client.getBlockHeader(context.Background(), "deadbeef")
     if err == nil {
         t.Fatal("expected an error for an unknown block hash")
@@ -105,7 +105,7 @@ func TestCoreGetRawTransactionPrevouts(t *testing.T) {
             "vout": []map[string]any{{"value": 1.4999, "n": 0, "scriptPubKey": map[string]any{"address": "bc1qdest", "hex": "0014aa"}}},
         }, nil
     })
-    core = newFakeCoreClient(t, server)
+    core = newFakeCoreConn(t, server)
     t.Cleanup(func() { core = nil })
     var tx, err = core.getRawTransaction(context.Background(), "abc")
     if err != nil {

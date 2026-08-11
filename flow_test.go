@@ -151,7 +151,7 @@ func TestInfoFlow(t *testing.T) {
         return nil, fmt.Errorf("unexpected method %s", method)
     })
     defer btcdServer.Close()
-    core = newFakeCoreClient(t, btcdServer)
+    core = newFakeCoreConn(t, btcdServer)
     defer func() { core = nil }()
     update(bot, Update{Message: &Message{Chat: Chat{ID: 5}, Text: "/info 100"}})
     if len(sent) != 4 {
@@ -330,7 +330,7 @@ func TestFeesFlow(t *testing.T) {
         return nil, fmt.Errorf("unexpected method %s", method)
     })
     defer btcdServer.Close()
-    core = newFakeCoreClient(t, btcdServer)
+    core = newFakeCoreConn(t, btcdServer)
     defer func() { core = nil }()
     // Populate cachedFees the same way startMempoolFees does, since fees() now
     // reads from the cache instead of calling Core on every request.
@@ -387,7 +387,7 @@ func TestFeesUnavailable(t *testing.T) {
         return nil, fmt.Errorf("not enough blocks have been observed")
     })
     defer btcdServer.Close()
-    core = newFakeCoreClient(t, btcdServer)
+    core = newFakeCoreConn(t, btcdServer)
     defer func() { core = nil }()
     update(bot, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/fees"}})
     if len(sent) != 1 || !strings.Contains(sent[0], "aren't available") {
@@ -451,7 +451,7 @@ func TestMempoolFlow(t *testing.T) {
         return nil, fmt.Errorf("unexpected method %s", method)
     })
     defer btcdServer.Close()
-    core = newFakeCoreClient(t, btcdServer)
+    core = newFakeCoreConn(t, btcdServer)
     defer func() { core = nil }()
     // set cached totals so /mempool can read them (background goroutine not running)
     summaryMu.Lock()
@@ -546,7 +546,7 @@ func TestMempoolFlowRate(t *testing.T) {
         return nil, fmt.Errorf("unexpected method %s", method)
     })
     defer srv.Close()
-    core = newFakeCoreClient(t, srv)
+    core = newFakeCoreConn(t, srv)
     defer func() { core = nil }()
     update(b, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/mempool"}})
     if len(sent) != 1 || !strings.Contains(sent[0], "Flow rate:") || !strings.Contains(sent[0], "5.0 tx/sec (+2.0)") {

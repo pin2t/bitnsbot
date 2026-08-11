@@ -150,9 +150,7 @@ func parseTx(raw []byte) (*parsedTx, bool) {
 // little-endian on the wire, printed big-endian.
 func reverseHex(b []byte) string {
     var flipped = make([]byte, len(b))
-    for i := range b {
-        flipped[i] = b[len(b)-1-i]
-    }
+    for i := range b { flipped[i] = b[len(b)-1-i] }
     return hex.EncodeToString(flipped)
 }
 

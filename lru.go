@@ -4,7 +4,7 @@ import "container/list"
 
 // lruCache is a small generic LRU cache: safe for concurrent use only when the
 // caller serialises access (the block caches are only touched from the caller's
-// goroutine or behind the coreClient mutex).
+// goroutine or behind the coreConn mutex).
 type lruCache[K comparable, V any] struct {
 	capacity int
 	items    map[K]*list.Element

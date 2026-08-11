@@ -226,9 +226,7 @@ func addressOfScript(s coreScriptPubKey) string {
 const shownAddrs = 3
 
 func compactAddrs(addrs []string) string {
-    if len(addrs) == 0 {
-        return "none"
-    }
+    if len(addrs) == 0 { return "none" }
     var show, more = addrs, false
     if len(addrs) > shownAddrs {
         show, more = addrs[:shownAddrs], true
@@ -238,9 +236,7 @@ func compactAddrs(addrs []string) string {
         parts = append(parts, short(a))
     }
     var s = strings.Join(parts, ", ")
-    if more {
-        s += ", ..."
-    }
+    if more { s += ", ..." }
     return s
 }
 
