@@ -64,31 +64,63 @@ func transaction(ctx context.Context, bot *bot, chat int64, txid string) {
     var pairs [][2]string
     var at = time.Time{}
     var current = true
+    var blockHeight int64
     if tx.Confirmations == 0 {
-        pairs = append(pairs, [2]string{i18n(chat).String("Status"), i18n(chat).String("unconfirmed (in mempool)")})
+        var confText = i18n(chat).String("none (confirms in ~10-20 min)")
+        if feeOK && tx.Vsize > 0 {
+            var feeRate = fee * 1e8 / float64(tx.Vsize)
+            if eta := confETA(chat, feeRate); eta != "" {
+                confText = eta
+            }
+        }
+        pairs = append(pairs, [2]string{i18n(chat).String("Confirmations"), confText})
     } else {
         at, current = time.Unix(tx.Time, 0), false
-        pairs = append(pairs,
-            [2]string{i18n(chat).String("Status"), i18n(chat).Sprintf("confirmed (%d confirmations)", tx.Confirmations)},
-            [2]string{i18n(chat).String("Confirmed"), when(tx.Time, chat)},
-            [2]string{i18n(chat).String("Block"), short(tx.BlockHash)},
-        )
+        if header, err := core.getBlockHeader(ctx, tx.BlockHash); err == nil {
+            blockHeight = header.Height
+        }
+        pairs = append(pairs, [2]string{i18n(chat).String("Confirmations"), i18n(chat).Sprintf("%d (block #%d)", tx.Confirmations, blockHeight)})
     }
     pairs = append(pairs, [2]string{i18n(chat).String("Amount"), amountLine(total, at, current, chat)})
-    if (feeOK) {
-        pairs = append(pairs, [2]string{i18n(chat).String("Fee"), sats(fee) + " " + i18n(chat).String("sats")})
-        pairs = append(pairs, [2]string{i18n(chat).String("Inputs"), compactAddrs(inputs)})
+    if feeOK {
+        var feeStr = sats(fee) + " " + i18n(chat).String("sats")
+        if tx.Vsize > 0 {
+            var feeRate = fee * 1e8 / float64(tx.Vsize)
+            feeStr += " (" + trimNum(feeRate, 1) + i18n(chat).String(" sat/vB") + ")"
+        }
+        pairs = append(pairs, [2]string{i18n(chat).String("Fee"), feeStr})
     }
     pairs = append(pairs, [2]string{i18n(chat).String("Size"), group(int64(tx.Size)) + " " + i18n(chat).String("B")})
+    if feeOK {
+        pairs = append(pairs, [2]string{i18n(chat).String("Inputs"), compactAddrs(inputs)})
+    }
     pairs = append(pairs, [2]string{i18n(chat).String("Outputs"), compactAddrs(outputAddrs(tx))})
     // only the ids the text actually shows get buttons — compactAddrs truncates
     // to shownAddrs with a trailing "...", and a button for something the reader
     // cannot see in the message would be a puzzle rather than a shortcut
     var ids []string
+    if blockHeight > 0 {
+        ids = append(ids, strconv.FormatInt(blockHeight, 10))
+    }
     if tx.BlockHash != "" { ids = append(ids, tx.BlockHash) }
     ids = append(ids, firstN(inputs, shownAddrs)...)
     ids = append(ids, firstN(outputAddrs(tx), shownAddrs)...)
     send(bot, chat, i18n(chat).Sprintf("Transaction <code>%s</code>\n\n<pre>%s</pre>", tx.Txid, joinAlign(pairs)), ids)
+}
+
+// confETA maps a fee rate to a human-readable confirmation time estimate using
+// the background mempool-based fee recommendations. Returns "" when the cached
+// recommendations are not yet available.
+func confETA(chat int64, feeRate float64) string {
+    switch confEstimate(feeRate) {
+    case confETAFast:
+        return i18n(chat).String("~10-20 min")
+    case confETAMedium:
+        return i18n(chat).String("~1 hour")
+    case confETASlow:
+        return i18n(chat).String("2+ hours")
+    }
+    return ""
 }
 
 // txInputs reports a transaction's fee and the addresses it spends from — in
