@@ -48,7 +48,7 @@ var logNoTs         = flag.Bool("log-no-ts", false, "omit the date and time pref
 var dbuiListen      = flag.String("dbui-listen", "", "address for the database admin web UI, e.g. 127.0.0.1:8090 (empty disables it; bind to localhost only — it can write any bucket)")
 var historyFile     = flag.String("history-file", "", "path to a JSON file containing historical BTC/USD rates (same format as blockchain.info/charts/market-price); backfilled from this file on first run instead of fetching over the network")
 
-var core *coreClient
+var core *coreConn
 var dbuiSrv *http.Server
 var ver = "1.0"
 var commit = ""
@@ -92,12 +92,7 @@ func main() {
         logging.Status("backing up the database to %s every %s", *backupPath, *backupInterval)
     }
     if *coreURL != "" {
-        core, err = newCoreClient(coreConfig{
-            url:        *coreURL,
-            user:       *coreUser,
-            pass:       *corePass,
-            cookieFile: *coreCookie,
-        })
+        core, err = newCoreConn(*coreURL, *coreUser, *corePass, *coreCookie)
         if err != nil {
             logging.Fatal("Bitcoin Core client: %v", err)
         }

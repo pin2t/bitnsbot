@@ -73,7 +73,7 @@ func TestComputeBlockInfo(t *testing.T) {
         return nil, fmt.Errorf("unexpected method %s", method)
     })
     defer srv.Close()
-    core = newFakeCoreClient(t, srv)
+    core = newFakeCoreConn(t, srv)
     defer func() { core = nil }()
     var bi, err = computeBlockInfo(context.Background(), "hash500")
     if err != nil {
@@ -140,7 +140,7 @@ func TestBlockNotification(t *testing.T) {
         return nil, fmt.Errorf("unexpected method %s", method)
     })
     defer srv.Close()
-    core = newFakeCoreClient(t, srv)
+    core = newFakeCoreConn(t, srv)
     defer func() { core = nil }()
     // Core pushes new tips over ZMQ rather than through an RPC subscription, so
     // this is what zmq.go does on a hashblock frame.

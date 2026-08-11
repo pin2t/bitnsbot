@@ -85,7 +85,7 @@ func TestWatchNotification(t *testing.T) {
         }
         return nil, nil
     })
-    core = newFakeCoreClient(t, srv)
+    core = newFakeCoreConn(t, srv)
     defer func() { core = nil }()
     // Populate cachedFees so confEstimate can map fee rates to ETA without
     // calling Core's estimatesmartfee.
@@ -287,7 +287,7 @@ func TestTxConfirmation(t *testing.T) {
         return nil, nil
     })
     defer srv.Close()
-    core = newFakeCoreClient(t, srv)
+    core = newFakeCoreConn(t, srv)
     defer func() { core = nil }()
     openDB(filepath.Join(t.TempDir(), "watches.db"))
     defer closeDB()
@@ -359,7 +359,7 @@ func TestAddrConfirmation(t *testing.T) {
         return nil, nil
     })
     defer srv.Close()
-    core = newFakeCoreClient(t, srv)
+    core = newFakeCoreConn(t, srv)
     defer func() { core = nil }()
     stopNotify()
     defer stopNotify()
@@ -471,7 +471,7 @@ func awaitNotification(t *testing.T, btcdSrv *httptest.Server, watchedAddr strin
         json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": true})
     }))
     var b = newBot("TESTTOKEN", tg.URL)
-    core = newFakeCoreClient(t, btcdSrv)
+    core = newFakeCoreConn(t, btcdSrv)
     // Populate cachedFees so confEstimate can map fee rates to ETA without
     // calling Core's estimatesmartfee.
     feesMu.Lock()
@@ -590,7 +590,7 @@ func TestSeedOutpoints(t *testing.T) {
         }
         return nil, nil
     })
-    core = newFakeCoreClient(t, srv)
+    core = newFakeCoreConn(t, srv)
     resetWatched()
     t.Cleanup(func() { core = nil; resetWatched() })
     seedOutpoints([]string{addr})
@@ -684,7 +684,7 @@ func TestConfirmationLinksBlock(t *testing.T) {
         }
         return nil, nil
     })
-    core = newFakeCoreClient(t, srv)
+    core = newFakeCoreConn(t, srv)
     stopNotify()
     t.Cleanup(func() { core = nil })
     t.Cleanup(stopNotify)
