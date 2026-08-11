@@ -171,6 +171,7 @@ var langTrans = map[string]trans{
 		"October":   "октября",
 		"November":  "ноября",
 		"December":  "декабря",
+		"none (confirms in": "нет (подтвердится через",
 	},
 	// i18n-vet:end translation
 
@@ -333,6 +334,7 @@ var langTrans = map[string]trans{
 		"October":   "octubre",
 		"November":  "noviembre",
 		"December":  "diciembre",
+		"none (confirms in": "",
 	},
 	// i18n-vet:end translation
 }

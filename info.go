@@ -47,6 +47,11 @@ func info(bot *bot, chat int64, arg string) {
 }
 
 func transaction(ctx context.Context, bot *bot, chat int64, txid string) {
+    var estimates = map[string]string{
+        confETAFast:   i18n(chat).String("~10-20 min"),
+        confETAMedium: i18n(chat).String("~1 hour"),
+        confETASlow:   i18n(chat).String("2+ hours"),
+    }
     var tx, err = core.getRawTransaction(ctx, txid)
     if err != nil {
         send(bot, chat, i18n(chat).Sprintf("Couldn't find transaction %s", short(txid)), nil)
@@ -58,9 +63,7 @@ func transaction(ctx context.Context, bot *bot, chat int64, txid string) {
     var fee float64
     var inputs []string
     var feeOK bool
-    if !coinbase {
-        fee, inputs, _, feeOK = txInputs(ctx, tx)
-    }
+    if !coinbase { fee, inputs, _, feeOK = txInputs(ctx, tx) }
     var pairs [][2]string
     var at = time.Time{}
     var current = true
@@ -68,10 +71,7 @@ func transaction(ctx context.Context, bot *bot, chat int64, txid string) {
     if tx.Confirmations == 0 {
         var confText = i18n(chat).String("none (confirms in ~10-20 min)")
         if feeOK && tx.Vsize > 0 {
-            var feeRate = fee * 1e8 / float64(tx.Vsize)
-            if eta := confETA(chat, feeRate); eta != "" {
-                confText = eta
-            }
+            confText = i18n(chat).String("none (confirms in") + " " + estimates[confEstimate(fee * 1e8 / float64(tx.Vsize))] + ")"
         }
         pairs = append(pairs, [2]string{i18n(chat).String("Confirmations"), confText})
     } else {
@@ -106,21 +106,6 @@ func transaction(ctx context.Context, bot *bot, chat int64, txid string) {
     ids = append(ids, firstN(inputs, shownAddrs)...)
     ids = append(ids, firstN(outputAddrs(tx), shownAddrs)...)
     send(bot, chat, i18n(chat).Sprintf("Transaction <code>%s</code>\n\n<pre>%s</pre>", tx.Txid, joinAlign(pairs)), ids)
-}
-
-// confETA maps a fee rate to a human-readable confirmation time estimate using
-// the background mempool-based fee recommendations. Returns "" when the cached
-// recommendations are not yet available.
-func confETA(chat int64, feeRate float64) string {
-    switch confEstimate(feeRate) {
-    case confETAFast:
-        return i18n(chat).String("~10-20 min")
-    case confETAMedium:
-        return i18n(chat).String("~1 hour")
-    case confETASlow:
-        return i18n(chat).String("2+ hours")
-    }
-    return ""
 }
 
 // txInputs reports a transaction's fee and the addresses it spends from — in
@@ -413,12 +398,11 @@ func address(ctx context.Context, bot *bot, chat int64, addr string) {
     if decodeErr == nil {
         txs, complete = addressHistory(ctx, script)
     }
-    if built, ok := addrindex.Cursor(); !ok {
+    if _, ok := addrindex.Cursor(); !ok {
         pairs = append(pairs, [2]string{i18n(chat).String("Activity"), i18n(chat).String("unavailable (address index is still building)")})
     } else if len(txs) == 0 && !complete {
         pairs = append(pairs, [2]string{i18n(chat).String("Activity"), i18n(chat).String("unavailable")})
     } else {
-        _ = built
         var received, sent, fees, firstT, lastT = addressStats(txs, addr)
         var count = group(int64(len(txs)))
         if !complete { count += "+" }
@@ -430,12 +414,8 @@ func address(ctx context.Context, bot *bot, chat int64, addr string) {
             [2]string{i18n(chat).String("Total fees"), compactBtc(fees, chat)},
             [2]string{i18n(chat).String("Transactions"), count},
         )
-        if firstT > 0 {
-            pairs = append(pairs, [2]string{i18n(chat).String("First tx"), when(firstT, chat)})
-        }
-        if lastT > 0 {
-            pairs = append(pairs, [2]string{i18n(chat).String("Last tx"), when(lastT, chat)})
-        }
+        if firstT > 0 { pairs = append(pairs, [2]string{i18n(chat).String("First tx"), when(firstT, chat)}) }
+        if lastT > 0 { pairs = append(pairs, [2]string{i18n(chat).String("Last tx"), when(lastT, chat)}) }
         if firstT > 0 && lastT > firstT {
             pairs = append(pairs, [2]string{i18n(chat).String("Activity period"), periodText(time.Duration(lastT-firstT) * time.Second, chat)})
         }
