@@ -277,7 +277,7 @@ var langTrans = map[string]trans{
 		"Amount":                       "Monto",
 		"confirmed (%d confirmations)": "confirmada (%d confirmaciones)",
 		"Confirmations":                       "Confirmaciones",
-		"none (confirms in ~10-20 min)":       "ninguna (confirma en ~10-20 min)",
+		"none (confirms in ~10-20 min)":       "ninguna (~10-20 min)",
 		"%d (block #%d)":                      "%d (bloque #%d)",
 		"none (coinbase)":              "ninguna (coinbase)",
 		"sats":                         "sats",
@@ -334,7 +334,7 @@ var langTrans = map[string]trans{
 		"October":   "octubre",
 		"November":  "noviembre",
 		"December":  "diciembre",
-		"none (confirms in": "",
+		"none (confirms in": "ninguna (se confirma en",
 	},
 	// i18n-vet:end translation
 }
@@ -374,9 +374,7 @@ func (t trans) Sprintf(format string, a ...interface{}) string {
 // exists, it returns the key unchanged.
 func (t trans) String(s string) string {
 	if t != nil {
-		if translated, ok := t[s]; ok {
-			return translated
-		}
+		if translated, ok := t[s]; ok { return translated }
 	}
 	return s
 }
@@ -385,9 +383,7 @@ func (t trans) String(s string) string {
 // then replaces it with the translation for this language if one exists.
 func (t trans) DateTime(tm time.Time) string {
 	formatted := tm.Format("2 January 2006 15:04")
-	if t == nil {
-		return formatted
-	}
+	if t == nil { return formatted }
 	month := tm.Month().String()
 	if translated, ok := t[month]; ok {
 		formatted = strings.Replace(formatted, month, translated, 1)
