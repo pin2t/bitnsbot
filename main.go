@@ -501,11 +501,11 @@ func fees(bot *bot, chat int64) {
         }
         lines = append(lines, fmt.Sprintf("%-*s %s", pad, t.label, cell))
     }
-    var note = i18n(chat).Sprintf("projected from %s mempool transactions", group(int64(count)))
+    var msg = i18n(chat).Sprintf("Network fees projected from %s mempool transactions", group(int64(count))
     if havePrice {
-        note += "\n" + i18n(chat).Sprintf("USD for a typical %d vB transaction", typicalTxVsize)
+        msg += ". " + i18n(chat).Sprintf("USD for a typical %d vB transaction", typicalTxVsize)
     }
-    send(bot, chat, i18n(chat).Sprintf("Estimated network fees\n\n<pre>%s</pre>\n%s", strings.Join(lines, "\n"), note), nil)
+    send(bot, chat, msg + "\n\n<pre>" + strings.Join(lines, "\n") + "</pre>", nil)
 }
 
 // flowInterval is how often startMempoolFlow polls the mempool tx count. A
