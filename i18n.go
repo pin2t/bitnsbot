@@ -76,7 +76,7 @@ var langTrans = map[string]trans{
 		"Minimum (2+ h):":      "Минимальная (несколько часов):",
 		" sat/vB":                                " сат/вБ",
 		"projected from %s mempool transactions": "оценка на основе %s транзакций ожидающих подтверждения",
-		"USD for a typical %d vB transaction":    "Сумма в USD для типичной транзакции %d вБ",
+		"USD for a typical %d vB transaction":    "Сумма в USD для типичной транзакции размером %d вБ",
 		"Sorry, something went wrong reading the mempool": "Ошибка чтения мемпула",
 		"Size":         "Размер",
 		"Transactions": "Транзакций",
