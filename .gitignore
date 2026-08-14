@@ -9,3 +9,6 @@ bitnsbot.conf
 .DS_Store
 /addrindex-scan
 /top-active
+/tools/addresses/addresses
+/tools/dbui/dbui
+/tools/i18n-vet/i18n-vet
