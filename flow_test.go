@@ -349,9 +349,9 @@ func TestFeesFlow(t *testing.T) {
         t.Fatalf("expected a fees reply, got %#v", sent)
     }
     for _, want := range []string{
-        "Estimated network fees", "<pre>",
+        "Network fees projected from 8 000 mempool transactions", "<pre>",
         "Fastest (10-20 min):", "Medium (~1 h):", "Minimum (2+ h):",
-        "sat/vB", "projected from 8 000 mempool transactions",
+        "sat/vB",
     } {
         if !strings.Contains(sent[1], want) {
             t.Fatalf("fees reply missing %q: %q", want, sent[1])

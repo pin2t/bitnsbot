@@ -501,7 +501,7 @@ func fees(bot *bot, chat int64) {
         }
         lines = append(lines, fmt.Sprintf("%-*s %s", pad, t.label, cell))
     }
-    var msg = i18n(chat).Sprintf("Network fees projected from %s mempool transactions", group(int64(count))
+    var msg = i18n(chat).Sprintf("Network fees projected from %s mempool transactions", group(int64(count)))
     if havePrice {
         msg += ". " + i18n(chat).Sprintf("USD for a typical %d vB transaction", typicalTxVsize)
     }
