@@ -90,7 +90,9 @@ func transaction(ctx context.Context, bot *bot, chat int64, txid string) {
         }
         pairs = append(pairs, [2]string{i18n(chat).String("Fee"), feeStr})
     }
-    pairs = append(pairs, [2]string{i18n(chat).String("Size"), group(int64(tx.Size)) + " " + i18n(chat).String("B")})
+    var szMsg = group(int64(tx.Size)) + " " + i18n(chat).String("B")
+    if tx.Vsize > 0 { szMsg += i18n(chat).Sprintf(" (%s vB)", group(int64(tx.Vsize))) }
+    pairs = append(pairs, [2]string{i18n(chat).String("Size"), szMsg})
     if feeOK {
         pairs = append(pairs, [2]string{i18n(chat).String("Inputs"), compactAddrs(inputs)})
     }

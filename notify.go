@@ -313,9 +313,7 @@ func confEstimate(feeRate float64) string {
     feesMu.Lock()
     var rec, ok = cachedFees, cachedFeesOK
     feesMu.Unlock()
-    if !ok {
-        return ""
-    }
+    if !ok { return confETAFast }
     switch {
     case feeRate >= rec.fastest: return confETAFast
     case feeRate >= rec.hour:    return confETAMedium
