@@ -172,6 +172,7 @@ var langTrans = map[string]trans{
 		"November":  "ноября",
 		"December":  "декабря",
 		"none (confirms in": "нет (подтвердится через",
+		" (%s vB)":   " (%s вБ)",
 	},
 	// i18n-vet:end translation
 
@@ -335,6 +336,7 @@ var langTrans = map[string]trans{
 		"November":  "noviembre",
 		"December":  "diciembre",
 		"none (confirms in": "ninguna (se confirma en",
+		" (%s vB)":   " (%s vB)",
 	},
 	// i18n-vet:end translation
 }
