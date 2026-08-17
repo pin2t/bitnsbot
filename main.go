@@ -353,6 +353,11 @@ func registerMenu(bot *bot) {
 var pendingWatchMu sync.Mutex
 var pendingWatchChats = make(map[int64]bool)
 
+// maxSubscriptionsPerChat bounds how many subscriptions (address and transaction
+// watches) a single chat may hold at once. watchCmd rejects a new watch once the
+// chat already has this many.
+const maxSubscriptionsPerChat = 500
+
 func watchCmd(bot *bot, chat int64, arg string) {
     if arg == "" {
         pendingWatchMu.Lock()
@@ -368,6 +373,18 @@ func watchCmd(bot *bot, chat int64, arg string) {
     var watch = fields[0]
     var alias string
     if len(fields) > 1 { alias = strings.TrimSpace(fields[1]) }
+    var count, err = watches.Count(chat)
+    if err != nil {
+        logging.Err("count watches: %v", err)
+        send(bot, chat, i18n(chat).String("Sorry, something went wrong saving that watch"), nil)
+        return
+    }
+    count += len(txwatches.For(chat))
+    if count >= maxSubscriptionsPerChat {
+        logging.Info("rejected subscription for chat %d: already at %d (limit %d)", chat, count, maxSubscriptionsPerChat)
+        send(bot, chat, i18n(chat).Sprintf("Sorry, this chat has reached the limit of %d subscriptions. Unwatch something first to add a new one.", maxSubscriptionsPerChat), nil)
+        return
+    }
     if isTxid(watch) {
         txwatches.Add(watch, chat, alias)
     } else {

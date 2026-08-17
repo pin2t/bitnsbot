@@ -1,6 +1,7 @@
 package main
 
 import "encoding/json"
+import "fmt"
 import "net/http"
 import "net/http/httptest"
 import "path/filepath"
@@ -252,6 +253,47 @@ func TestWatchesFlow(t *testing.T) {
     update(b, Update{Message: &Message{Chat: Chat{ID: 3}, Text: "/watches"}})
     if last := sent[len(sent)-1]; !strings.Contains(last, "a&lt;b&gt;c") {
         t.Fatalf("expected HTML-escaped watch id, got: %q", last)
+    }
+}
+
+// TestWatchLimit seeds a chat up to maxSubscriptionsPerChat and checks that a new
+// /watch is rejected with the polite limit message instead of being stored.
+func TestWatchLimit(t *testing.T) {
+    var sent []string
+    var server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        var body struct {
+            Text string `json:"text"`
+        }
+        json.NewDecoder(r.Body).Decode(&body)
+        sent = append(sent, body.Text)
+        json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": true})
+    }))
+    defer server.Close()
+    var b = newBot("TESTTOKEN", server.URL)
+    core = nil
+    stopNotify()
+    defer stopNotify()
+    txwatches.Reset()
+    defer txwatches.Reset()
+    openDB(filepath.Join(t.TempDir(), "watches.db"))
+    defer closeDB()
+    // seed the chat exactly at the limit
+    for i := 0; i < maxSubscriptionsPerChat; i++ {
+        if err := watches.Add(42, fmt.Sprintf("addr%d", i), ""); err != nil {
+            t.Fatalf("seed watch %d: %v", i, err)
+        }
+    }
+    var addr = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
+    watchCmd(b, 42, addr)
+    if last := sent[len(sent)-1]; !strings.Contains(last, "limit") {
+        t.Fatalf("expected a limit rejection, got %q", last)
+    }
+    // the rejected watch must not have been stored
+    var records, _ = watches.List()
+    for _, r := range records {
+        if r.Chat == 42 && r.Address == addr {
+            t.Fatalf("the rejected watch was stored anyway")
+        }
     }
 }
 
