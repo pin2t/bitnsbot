@@ -61,6 +61,22 @@ func Add(chatID int64, address, alias string) error {
     })
 }
 
+// Count returns how many address watches chatID currently has.
+func Count(chatID int64) (int, error) {
+    logging.Db("count chat=%d", chatID)
+    var count int
+    var err = db.View(func(tx *bbolt.Tx) error {
+        return tx.Bucket(bucket).ForEach(func(k, v []byte) error {
+            var r watchRecord
+            if err := json.Unmarshal(v, &r); err != nil { return err }
+            if r.Chat == chatID { count++ }
+            return nil
+        })
+    })
+    if err != nil { return 0, err }
+    return count, nil
+}
+
 // List returns every stored watch, oldest first.
 func List() ([]Watch, error) {
     logging.Db("list")
