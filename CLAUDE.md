@@ -77,6 +77,23 @@ Packages:
 - `txwatches/` — the in-memory one-shot confirmation-watch list (never persisted). Public API: `Add`/`AddAddrConfirm` (register, deduped by chat+addr), `Remove`/`For` (direct `/watch <txid>` entries only), `RemoveAddrConfirms`, `Confirms(txids) []Confirmed` (removes+returns the watches whose txid is in a new block, for the caller to message), `Any`, `Reset`. See Watch notifications below.
 - `miners/` — mining-pool attribution and per-miner statistics, DB-backed (`miners` maps coinbase-output address → pool name, `miners-tag` coinbase tag → pool name, `miners-stat` pool name → aggregate, `miners-cursor` the collector's cursor). Public API: `Init(db)`, `Start()` (background definitions refresher), `Name(address) string` (address key lookup, "" when unknown), `Attribute(addresses, coinbaseHex) string` (address then tag, "" when unknown), `StartStats(Source)` (the statistics collector) and `Top(n) []Stat`. `miners.go` holds attribution, `stats.go` the collector. See Block info cache and Miner statistics below.
 
+### Amounts are satoshi
+
+**Every Bitcoin amount and every fee inside the bot is an `int64` of whole satoshi.** `float64` survives in exactly three places, and nowhere else:
+
+1. **The parse structs** in `core.go` and `rates/`, because BTC-as-a-JSON-number is what the wire format is. Nothing downstream keeps it: values are converted on the way in.
+2. **Quantities that are genuinely fractional** — fee *rates* in sat/vB (`fees.go`, `notify.go`'s `feeRate`), block difficulty, the miners package's `Work`/`LastWork`/`ConsumptionGW`, mempool flow in tx/sec, and every USD figure (`usd`, `price`, `money`, `change`, the `rates` package).
+3. **The final formatting step**, via `btcFloat`, when a number is about to be printed with decimals.
+
+`toSat(btc float64) int64` is the one boundary between the two, and `btcFloat(sat int64) float64` converts back **for display only, never for arithmetic**. `btcFloat` is exact for every real amount: the 21M-coin supply is 2.1e15 satoshi, well inside float64's 2^53 integer range.
+
+The reason is accumulation, not representation. 0.1 BTC has no exact float64 value, so summing outputs, inputs and fees drifts — which is why `addrstats_test.go` used to assert a *range* (`balance > 0.0998 && balance < 0.1`) where it now asserts the exact `9990000`. Integer satoshi is also what the protocol actually uses; BTC is only ever a display unit.
+
+Two things to know when changing this:
+
+- **`feeStats` rounds its average deliberately** — `(total + count/2) / count`, not plain integer division. It used to be `math.Round` of a float mean, and truncating instead would shift the displayed average down by up to a satoshi.
+- **The persisted records changed type but kept their JSON keys.** `blockInfo`'s `minFee`/`avgFee`/`maxFee`/`reward`/`total` and the miners package's `reward`/`fees` are now integers. Keeping the keys is what makes the change safe: a record written before this reads as `{"reward":6.25}`, which now **fails to decode** — and `loadBlock` already treats a decode failure as a cache miss and recomputes. Renaming the keys instead would have decoded cleanly to a silent **zero**. Deployment consequence: previously cached blocks are recomputed on demand rather than served from the cache, and miner aggregates restart from the collector's cursor.
+
 ### Logging
 
 Everything logs through the `logging` package — never `fmt.Print*` or the `log` package directly. Its verbosity is set once from `-verbose` via `logging.SetVerbosity(*verbose)` in `main()` (after the `-config` file is parsed, so it's also `-config`-settable), which gates emission:

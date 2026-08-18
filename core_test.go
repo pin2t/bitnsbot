@@ -118,13 +118,13 @@ func TestCoreGetRawTransactionPrevouts(t *testing.T) {
     if !ok {
         t.Fatal("txInputs failed on a transaction carrying its own prevouts")
     }
-    if fee != 0.0001 {
-        t.Fatalf("fee = %v, want the node's own 0.0001", fee)
+    if fee != 10000 {
+        t.Fatalf("fee = %v, want the node's own 10000 sats", fee)
     }
     if len(addrs) != 1 || addrs[0] != "bc1qsender" {
         t.Fatalf("input addresses = %v, want [bc1qsender]", addrs)
     }
-    if spent["bc1qsender"] != 1.5 {
-        t.Fatalf("spent = %v, want 1.5 from bc1qsender", spent)
+    if spent["bc1qsender"] != 150000000 {
+        t.Fatalf("spent = %v, want 150000000 sats from bc1qsender", spent)
     }
 }

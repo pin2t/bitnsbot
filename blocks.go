@@ -10,7 +10,6 @@ import "time"
 import "go.etcd.io/bbolt"
 import "bitnsbot/logging"
 import "bitnsbot/miners"
-import "math"
 
 var blocksBucket = []byte("blocks-stat")
 var blocksCursorBucket = []byte("blocks-cursor")
@@ -31,14 +30,14 @@ type blockInfo struct {
     NumTx      int      `json:"txCount"`
     Miner      string   `json:"miner"`
     FeesOK     bool     `json:"feesOk"`
-    FeeMin     float64  `json:"minFee"`
-    FeeAvg     float64  `json:"avgFee"`
-    FeeMax     float64  `json:"maxFee"`
+    FeeMin     int64    `json:"minFee"`
+    FeeAvg     int64    `json:"avgFee"`
+    FeeMax     int64    `json:"maxFee"`
     TxSizeMin  int32    `json:"txSizeMin"`
     TxSizeAvg  int32    `json:"txSizeAvg"`
     TxSizeMax  int32    `json:"txSizeMax"`
-    Reward     float64  `json:"reward"`
-    Total      float64  `json:"total"`
+    Reward     int64    `json:"reward"`
+    Total      int64    `json:"total"`
     Difficulty float64  `json:"difficulty"`
 }
 
@@ -81,10 +80,10 @@ func loadBlock(height int64) (*blockInfo, bool) {
 
 // subsidy returns the block reward in BTC for a height from the halving schedule
 // — 50 BTC, halving every 210000 blocks.
-func subsidy(height int64) float64 {
+func subsidy(height int64) int64 {
     var halvings = height / 210000
     if halvings >= 64 { return 0 }
-    return float64(int64(5000000000)>>uint(halvings)) / 1e8
+    return int64(5000000000) >> uint(halvings)
 }
 
 // computeBlockInfo builds the cached record from core: general fields from
@@ -106,10 +105,10 @@ func computeBlockInfo(ctx context.Context, hash string) (*blockInfo, error) {
     }
     var low, avg, high, _ = feeStats(blk.Tx)
     var coinbase = blk.Tx[0]
-    var coinbaseOut float64
+    var coinbaseOut int64
     var addrs []string
     for _, v := range coinbase.Vout {
-        coinbaseOut += v.Value
+        coinbaseOut += toSat(v.Value)
         if v.ScriptPubKey.Address != "" { addrs = append(addrs, v.ScriptPubKey.Address) }
     }
     var script string
@@ -253,9 +252,9 @@ func formatBlock(bi *blockInfo, chat int64) string {
     case !bi.FeesOK:     pairs = append(pairs, [2]string{i18n(chat).String("Fees"), i18n(chat).String("unavailable")})
     case bi.NumTx <= 1:  pairs = append(pairs, [2]string{i18n(chat).String("Fees"), i18n(chat).String("none (coinbase only)")})
     default:
-        var feeLine = func (fee float64, sz int32) string {
-            return sats(fee) + " " + i18n(chat).String("sats") +
-                " (" + strings.TrimSuffix(strconv.FormatFloat(math.Round(fee*1e8) / float64(sz), 'f', 1, 64), ".0") + " " + i18n(chat).String("sat/vB") + ")"
+        var feeLine = func (fee int64, sz int32) string {
+            return group(fee) + " " + i18n(chat).String("sats") +
+                " (" + strings.TrimSuffix(strconv.FormatFloat(float64(fee) / float64(sz), 'f', 1, 64), ".0") + " " + i18n(chat).String("sat/vB") + ")"
         }
         pairs = append(pairs,
             [2]string{i18n(chat).String("Fees"), ""},
@@ -296,10 +295,10 @@ func (minerSource) Block(ctx context.Context, height int64) (miners.Block, error
     if len(blk.Tx) == 0 { return miners.Block{}, fmt.Errorf("block %d has no transactions", height) }
     var cb, cerr = core.getRawTransaction(ctx, blk.Tx[0])
     if cerr != nil { return miners.Block{}, cerr }
-    var total float64
+    var total int64
     var addrs []string
     for _, v := range cb.Vout {
-        total += v.Value
+        total += toSat(v.Value)
         if v.ScriptPubKey.Address != "" { addrs = append(addrs, v.ScriptPubKey.Address) }
     }
     var script string

@@ -23,7 +23,7 @@ type watch struct {
 // the confirmation message can restate it ("10 000 sats sent to …") without
 // refetching and re-deriving the transaction when the block arrives.
 type Summary struct {
-    Amount     float64  // BTC — received, or for a spend what left for other addresses
+    Amount     int64    // satoshi — received, or for a spend what left for other addresses
     Recipients []string // where a spend went; empty for an incoming payment
     Outgoing   bool
 }

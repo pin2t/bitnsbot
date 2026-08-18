@@ -62,6 +62,14 @@ func setCooldown(t *testing.T, p time.Duration) {
     cooldownPeriod = p
 }
 
+// Satoshi amounts are exact integers, so they compare exactly — the float
+// tolerance below exists for Work and ConsumptionGW, which genuinely are floats.
+func equalSat(t *testing.T, label string, got, want int64) {
+    if got != want {
+        t.Fatalf("%s = %d, want %d", label, got, want)
+    }
+}
+
 func equal(t *testing.T, label string, got, want float64) {
     if math.Abs(got-want) > 1e-6*math.Max(1, math.Abs(want)) {
         t.Fatalf("%s = %g, want %g", label, got, want)
@@ -80,11 +88,11 @@ func chainFixture() *fakeSource {
     return &fakeSource{
         tip: 5,
         blocks: map[int64]Block{
-            1: {CoinbaseAddresses: []string{"aA"}, Reward: 6.5, Fees: 0.25, Difficulty: lo},
-            2: {CoinbaseAddresses: []string{"aB"}, Reward: 6.4, Fees: 0.15, Difficulty: lo},
-            3: {CoinbaseAddresses: []string{"unrelated", "aA2"}, Reward: 6.3, Fees: 0.05, Difficulty: lo},
-            4: {CoinbaseAddresses: []string{"nobody"}, Reward: 6.2, Fees: 0.10, Difficulty: lo},
-            5: {CoinbaseAddresses: []string{"aA"}, Reward: 6.6, Fees: 0.30, Difficulty: hi},
+            1: {CoinbaseAddresses: []string{"aA"}, Reward: 650000000, Fees: 25000000, Difficulty: lo},
+            2: {CoinbaseAddresses: []string{"aB"}, Reward: 640000000, Fees: 15000000, Difficulty: lo},
+            3: {CoinbaseAddresses: []string{"unrelated", "aA2"}, Reward: 630000000, Fees: 5000000, Difficulty: lo},
+            4: {CoinbaseAddresses: []string{"nobody"}, Reward: 620000000, Fees: 10000000, Difficulty: lo},
+            5: {CoinbaseAddresses: []string{"aA"}, Reward: 660000000, Fees: 30000000, Difficulty: hi},
         },
     }
 }
@@ -101,13 +109,13 @@ func TestCollectStats(t *testing.T) {
     collect(src)
     var a = statOf(t, "PoolA")
     if a.Blocks != 3 { t.Fatalf("PoolA blocks = %d, want 3", a.Blocks) }
-    equal(t, "PoolA reward", a.Reward, 6.5+6.3+6.6)
-    equal(t, "PoolA fees", a.Fees, 0.25+0.05+0.30)
+    equalSat(t, "PoolA reward", a.Reward, 650000000+630000000+660000000)
+    equalSat(t, "PoolA fees", a.Fees, 25000000+5000000+30000000)
     equal(t, "PoolA work", a.Work, (1.0e14+1.0e14+1.4e14)*workPerDifficulty)
     equal(t, "PoolA last work", a.LastWork, 1.4e14*workPerDifficulty)
     var b = statOf(t, "PoolB")
     if b.Blocks != 1 { t.Fatalf("PoolB blocks = %d, want 1", b.Blocks) }
-    equal(t, "PoolB reward", b.Reward, 6.4)
+    equalSat(t, "PoolB reward", b.Reward, 640000000)
     equal(t, "PoolB last work", b.LastWork, 1.0e14*workPerDifficulty)
     // the unknown miner's block is not attributed to anyone
     if s := statOf(t, "Unknown"); s.Blocks != 0 { t.Fatalf("unknown miner was stored: %+v", s) }
@@ -170,16 +178,16 @@ func TestCollectResumes(t *testing.T) {
     collect(src)
     src.fetched = nil
     src.tip = 7
-    src.blocks[6] = Block{CoinbaseAddresses: []string{"aB"}, Reward: 6.1, Fees: 0.20, Difficulty: 1.4e14}
-    src.blocks[7] = Block{CoinbaseAddresses: []string{"aB"}, Reward: 6.2, Fees: 0.10, Difficulty: 1.4e14}
+    src.blocks[6] = Block{CoinbaseAddresses: []string{"aB"}, Reward: 610000000, Fees: 20000000, Difficulty: 1.4e14}
+    src.blocks[7] = Block{CoinbaseAddresses: []string{"aB"}, Reward: 620000000, Fees: 10000000, Difficulty: 1.4e14}
     collect(src)
     if !reflect.DeepEqual(src.fetched, []int64{6, 7}) {
         t.Fatalf("second run fetched %v, want only 6 and 7", src.fetched)
     }
     var b = statOf(t, "PoolB")
     if b.Blocks != 3 { t.Fatalf("PoolB blocks = %d, want 3", b.Blocks) }
-    equal(t, "PoolB reward", b.Reward, 6.4+6.1+6.2)
-    equal(t, "PoolB fees", b.Fees, 0.15+0.20+0.10)
+    equalSat(t, "PoolB reward", b.Reward, 640000000+610000000+620000000)
+    equalSat(t, "PoolB fees", b.Fees, 15000000+20000000+10000000)
     var last, _ = cursor()
     if last != 7 { t.Fatalf("cursor = %d, want 7", last) }
     // the window is over the total attributed blocks now (pool A 3 + pool B 3 = 6)

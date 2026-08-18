@@ -36,8 +36,8 @@ const joulesPerHash = 1.0e-11
 type Block struct {
     CoinbaseAddresses []string // every coinbase output address — the first known one attributes the block
     CoinbaseScript    string   // the coinbase input's scriptSig (hex), carrying the pool tag
-    Reward            float64  // block subsidy + fees (BTC) — the total coinbase output
-    Fees              float64  // fees only (BTC)
+    Reward            int64    // block subsidy + fees (satoshi) — the total coinbase output
+    Fees              int64    // fees only (satoshi)
     Difficulty        float64
 }
 
@@ -50,8 +50,8 @@ type Source interface {
 // stat is the stored per-miner aggregate (keyed by miner name in miners-stat).
 type stat struct {
     Blocks   int64   `json:"blocks"`
-    Reward   float64 `json:"reward"`   // BTC (subsidy + fees)
-    Fees     float64 `json:"fees"`     // BTC
+    Reward   int64   `json:"reward"`   // satoshi (subsidy + fees)
+    Fees     int64   `json:"fees"`     // satoshi
     Work     float64 `json:"work"`     // Σ per-block work (difficulty × 2^32 hashes)
     LastWork float64 `json:"lastWork"` // work of this miner's most recent block
 }
@@ -166,8 +166,8 @@ func cursor() (last int64, ok bool) {
 type Stat struct {
     Name          string
     Blocks        int64
-    Reward        float64 // BTC (subsidy + fees)
-    Fees          float64 // BTC
+    Reward        int64   // satoshi (subsidy + fees)
+    Fees          int64   // satoshi
     ConsumptionGW float64 // estimated power draw, gigawatts
     lastWork      float64 // work of this miner's most recent block
 }

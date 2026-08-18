@@ -3,7 +3,6 @@ package main
 import "context"
 import "fmt"
 import "html"
-import "math"
 import "strconv"
 import "slices"
 import "sort"
@@ -17,9 +16,9 @@ import "bitnsbot/watches"
 
 type notification struct {
     txid         string
-    received     map[string]float64 // address → value paid to it by this tx's outputs
-    sent         map[string]float64 // address → value spent from it by this tx's inputs
-    fee          float64            // BTC
+    received     map[string]int64   // address → value paid to it by this tx's outputs
+    sent         map[string]int64   // address → value spent from it by this tx's inputs
+    fee          int64              // satoshi
     feeRate      float64            // sat/vB
     confEstimate string             // confETAXXX, "" if unavailable
     feeOK        bool               // whether fee/feeRate are populated
@@ -85,15 +84,15 @@ func addressNotification(chat int64, n notification, watchID, alias string) (str
     var header string
     var summary txwatches.Summary
     if gotOut {
-        type pair struct {a string; b int}
+        type pair struct {a string; b int64}
         var recipients []pair
-        var total int
+        var total int64
         var addrs = make([]string, 0)
         for addr, value := range n.received {
             if addr == watchID { continue }
-            recipients = append(recipients, pair{addr, int(value * 1e8)})
+            recipients = append(recipients, pair{addr, value})
             addrs = append(addrs, addr)
-            total += int(value * 1e8)
+            total += value
         }
         sort.Slice(recipients, func(i, j int) bool {
             if n.received[recipients[i].a] != n.received[recipients[j].a] {
@@ -105,7 +104,7 @@ func addressNotification(chat int64, n notification, watchID, alias string) (str
         header = i18n(chat).Sprintf("%s is sending %s to\n", label, amountLine(out, time.Time{}, true, chat))
         if len(recipients) == 0 { header += i18n(chat).String("none") + "\n" }
         for i := 0; i < min(len(recipients), shownAddrs); i++ {
-            header += fmt.Sprintf("%s: %s\n", short(recipients[i].a), amountLine(float64(recipients[i].b)/1e8, time.Now(), true, chat))
+            header += fmt.Sprintf("%s: %s\n", short(recipients[i].a), amountLine(recipients[i].b, time.Now(), true, chat))
             ids = append(ids, recipients[i].a)
         }
         if len(recipients) > shownAddrs { header += "...\n" }
@@ -121,7 +120,7 @@ func addressNotification(chat int64, n notification, watchID, alias string) (str
         if n.feeOK {
             pairs = append(pairs, [2]string{
                 i18n(chat).String("Fee"),
-                sats(n.fee) + " " + i18n(chat).Sprintf("sats") + " (" + strings.TrimSuffix(strconv.FormatFloat(n.feeRate, 'f', 1, 64), ".0") + " " + i18n(chat).String("sat/vB") + ")"})
+                group(n.fee) + " " + i18n(chat).Sprintf("sats") + " (" + strings.TrimSuffix(strconv.FormatFloat(n.feeRate, 'f', 1, 64), ".0") + " " + i18n(chat).String("sat/vB") + ")"})
             if n.confEstimate != "" {
                 pairs = append(pairs, [2]string{i18n(chat).String("ETA"), estimates[n.confEstimate]})
             }
@@ -214,10 +213,10 @@ func broadcast(txHex string) {
         logging.Info("skipping already-notified transaction %s", short(tx.Txid))
         return
     }
-    var n = notification{txid: tx.Txid, received: make(map[string]float64), sent: make(map[string]float64)}
+    var n = notification{txid: tx.Txid, received: make(map[string]int64), sent: make(map[string]int64)}
     for _, vout := range tx.Vout {
         if a := vout.ScriptPubKey.Address; a != "" {
-            n.received[a] += vout.Value
+            n.received[a] += toSat(vout.Value)
         }
     }
     // record the outpoints this transaction creates for watched addresses, so a
@@ -234,8 +233,8 @@ func broadcast(txHex string) {
             n.sent = spent
         }
         if entry, eerr := core.getMempoolEntry(ctx, tx.Txid); eerr == nil && entry.Vsize > 0 {
-            n.fee = entry.Fees.Base
-            n.feeRate = math.Round(entry.Fees.Base*1e8) / float64(entry.Vsize)
+            n.fee = toSat(entry.Fees.Base)
+            n.feeRate = float64(toSat(entry.Fees.Base)) / float64(entry.Vsize)
             n.confEstimate = confEstimate(n.feeRate)
             n.feeOK = true
         }

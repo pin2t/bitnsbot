@@ -80,10 +80,10 @@ type recommendedFees struct {
 // so this reduces to fee ÷ vsize.
 func effectiveRate(e coreMempoolEntry) float64 {
     if e.AncestorSize > 0 && e.Fees.Ancestor > 0 {
-        return e.Fees.Ancestor * 1e8 / float64(e.AncestorSize)
+        return float64(toSat(e.Fees.Ancestor)) / float64(e.AncestorSize)
     }
     if e.Vsize > 0 {
-        return e.Fees.Base * 1e8 / float64(e.Vsize)
+        return float64(toSat(e.Fees.Base)) / float64(e.Vsize)
     }
     return 0
 }
