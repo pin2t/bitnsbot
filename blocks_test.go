@@ -116,7 +116,7 @@ func TestFormatBlock(t *testing.T) {
         "average:       18 500 sats (41.6 sat/vB)",
         "highest:       2 500 000 sats (25.5 sat/vB)",
         "Reward:        3.125 BTC",
-        "Reward + fees: 3.125 BTC</pre>",
+        "Reward + fees: 3.755 BTC</pre>",
     } {
         if !strings.Contains(s, want) {
             t.Fatalf("formatBlock missing %q in:\n%s", want, s)

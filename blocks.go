@@ -269,7 +269,7 @@ func formatBlock(bi *blockInfo, chat int64) string {
         [2]string{i18n(chat).String("average"), group(int64(bi.TxSizeAvg)) + " " + i18n(chat).String("B")},
         [2]string{i18n(chat).String("maximum"), group(int64(bi.TxSizeMax)) + " " + i18n(chat).String("B")},
         [2]string{i18n(chat).String("Reward"), amountLine(bi.Reward, time.Unix(bi.Time, 0), false, chat)},
-        [2]string{i18n(chat).String("Reward + fees"), amountLine(bi.Reward, time.Unix(bi.Time, 0), false, chat)},
+        [2]string{i18n(chat).String("Reward + fees"), amountLine(bi.Total, time.Unix(bi.Time, 0), false, chat)},
     )
     return i18n(chat).Sprintf("Block #%d\n\n<pre>%s</pre>", bi.Height, joinAlign(pairs))
 }
