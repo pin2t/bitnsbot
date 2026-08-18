@@ -52,7 +52,7 @@ The bot is designed to run behind a self-hosted `telegram-bot-api` proxy (https:
 
 ## Architecture
 
-The bot lives in `package main` in the repo root; five supporting packages sit in subdirectories (`logging/`, `rates/`, `watches/`, `txwatches/`, `miners/`), each with a small simplified API and its own unexported types. Cross-cutting state that used to be package-`main` globals with compound names (`storeRate`/`lastRate`, `addWatch`/`listWatches`, `addTxWatch`/`txWatches`) now reads as `rates.Add`/`rates.Last`, `watches.Add`/`watches.List`, `txwatches.Add`, etc.
+The bot lives in `package main` in the repo root; supporting packages sit in subdirectories (`logging/`, `rates/`, `watches/`, `txwatches/`, `miners/`, `addrindex/`, `dbui/`, `app/`), each with a small simplified API and its own unexported types. Cross-cutting state that used to be package-`main` globals with compound names (`storeRate`/`lastRate`, `addWatch`/`listWatches`, `addTxWatch`/`txWatches`) now reads as `rates.Add`/`rates.Last`, `watches.Add`/`watches.List`, `txwatches.Add`, etc.
 
 Root (`package main`):
 - `telegram.go` — the Bot API client: the unexported `bot` type, `newBot`, and `call`/`send`/`setWebhook` methods, plus the wire types (`Update`, `Message`, `User`, `Chat`) decoded from incoming webhook JSON.
@@ -62,6 +62,7 @@ Root (`package main`):
 - `blocks.go` — the `blocks` bucket: cached per-block info records (`blockInfo`), `computeBlockInfo` (builds a record from Core), the startup backfill goroutine, and `formatBlock` (the `/info` block reply). See Block info cache below.
 - `backup.go` — the periodic database backup goroutine (`startBackup`/`backup`). See Database backups below.
 - `dbui/` — the localhost database admin web UI (`Start`, plus the list/get/put HTTP handlers and one embedded HTML page). See The database UI below.
+- `app/` — the Telegram Mini App web server (`Start(addr, token, Source)`, the embedded page + HTMX, and the initData validation). It can't reach main's fee cache or formatters, so chain data arrives through the `app.Source` interface (`Fees() app.Fees`), implemented by `appSource` in main. See The Telegram Mini App below.
 - `i18n.go` — the translation tables and the per-chat language lookup (`trans`, `langTrans`, `SetChatLanguage`, `i18n`). See Internationalisation below.
 - `lru.go` — `lruCache`, a small generic LRU used to bound the chat→language map.
 - `addrindex_source.go` — `restSource`, which builds `addrindex.Block` values from Core's REST interface (see Address indexing).
@@ -317,6 +318,36 @@ The cost is that `i18n-vet` no longer sees those nine strings, since they are no
 Registration is **one call per language**: Telegram stores a separate list per `language_code` and falls back to the list registered without one, so English goes up with an empty code and each entry of `langTrans` gets its own. Failures are logged and skipped, never fatal — the menu is a convenience and the bot runs fine without it.
 
 It sits **inside the `-register-webhook` block**. `setMyCommands` is global to the bot token, so a second instance started with `-register-webhook=false` (which already means "do not touch the live bot's Telegram-side state") would otherwise overwrite the live bot's menu.
+
+### The Telegram Mini App
+
+The `app/` package serves a Mini App — a web page Telegram opens in its in-app webview — on `-app-listen` (default `127.0.0.1:8080`, empty disables it). `app.Start(addr, token, src)` builds the routes inline and returns the `*http.Server` so `shutdown` drains it before `closeDB`, exactly like the webhook and dbui servers. `app.html` and the HTMX library are embedded with `//go:embed`, the same self-contained approach `dbui` uses.
+
+Because it is its own package it cannot see main's fee cache or the display formatters (`trimNum`/`usd`/`group`), so the data it renders arrives through the **`app.Source`** interface — `Fees() app.Fees`, returning already-formatted `app.Tier` values — implemented by `appSource` in main. This is the same seam `miners.Source` uses, and it keeps all the amount/price formatting on the main side where the rest of it lives; the app package only arranges strings into HTML.
+
+**Adding this moved the webhook.** `-listen` now defaults to **`:8082`**, freeing `:8080` for the app, because that is the port the Cloudflare tunnel's public hostname is routed to.
+
+**It binds to localhost on purpose.** Nothing here faces the network directly — a Cloudflare Tunnel (`cloudflared`) holds outbound connections to Cloudflare's edge and proxies requests back down them, so the Pi needs no port forwarding, no public IP and no inbound firewall rule. Telegram requires valid public HTTPS for a Mini App, and the tunnel supplies it.
+
+One operational constraint, learned the hard way and not obvious: **cloudflared's default QUIC transport cannot work over the AmneziaWG tunnel.** The link is MTU 1280, leaving 1252 usable bytes against QUIC's 1200-byte floor — only 52 bytes of headroom, which is not enough for cloudflared's handshake, so it crash-loops. The fix is `TUNNEL_TRANSPORT_PROTOCOL=http2` (Cloudflare's own precheck reports `suggested_protocol=http2`). TCP connectivity to the edge is fine throughout; only QUIC fails.
+
+The page is four tabs — Home, Blocks, Addresses, Miners — with the tab bar at the **bottom**, where a thumb reaches it on a phone, and padded with `env(safe-area-inset-bottom)` for notched devices. Home carries a network-fees card above a centred search field; the other three are placeholders. Colours come from Telegram's `--tg-theme-*` CSS variables with fallbacks, so the page is also usable in an ordinary browser, which is how it gets developed.
+
+**The server renders HTML, not JSON** — the HTMX shape. `/fees` returns the fee card's *contents* as a fragment and the page swaps it in with `hx-get`; there is no client-side templating, so the Go formatters the bot already has (`trimNum`, `usd`, `group`) produce exactly what the user sees. HTMX itself is **embedded and served from the binary** at `/htmx.min.js` rather than a CDN, keeping the page self-contained apart from Telegram's own SDK (which must come from telegram.org and should not be vendored).
+
+The three tiers are the ones `/fees` prints, read from the **`cachedFees` background cache** rather than the mempool, so opening the app costs no node round trip. A cold cache renders "fees unavailable" rather than zeros dressed up as estimates.
+
+**`initData` validation** (`checkInitData`) is what stands between this server and anyone who knows the URL. Telegram signs the payload it hands the webview; the page forwards it on every HTMX request as `X-Telegram-Init-Data` (attached via an `htmx:configRequest` listener registered on `document` — not `body`, which does not exist yet in `head` — so the very first request already carries it), and `requireInitData` rejects anything unsigned, tampered, or stale with a 401.
+
+The scheme, which is easy to get subtly wrong:
+- secret = `HMAC-SHA256(key: "WebAppData", msg: bot token)` — **not** the Login Widget's `SHA256(token)`; the two look interchangeable and are not
+- the signature covers every field except `hash`, sorted by key, joined with newlines
+- compare with `hmac.Equal`, never `==`
+- `auth_date` must be within `initDataTTL` (24h, a var for tests): a signature is otherwise valid forever, so a payload lifted from a log or a shared link would keep working
+
+`initDataUnsafe` must never be trusted. The shell page at `/` is deliberately *not* behind the check — it carries no data, and the webview must load it before any script can read `initData` at all. Outside Telegram there is no `initData`, so the page says so instead of firing a request guaranteed to 401.
+
+Tests cover the parts that matter: a payload signed with a different token, a tampered `user` field, and a 48h-old `auth_date` are each rejected, and a valid one renders the fragment. The signature was additionally cross-checked against an independent Python implementation, and against the real bot token on the Pi.
 
 ### Command dispatch and the "pending argument" pattern
 
