@@ -318,6 +318,24 @@ Registration is **one call per language**: Telegram stores a separate list per `
 
 It sits **inside the `-register-webhook` block**. `setMyCommands` is global to the bot token, so a second instance started with `-register-webhook=false` (which already means "do not touch the live bot's Telegram-side state") would otherwise overwrite the live bot's menu.
 
+### The Telegram Mini App
+
+`app.go` serves a Mini App — a web page Telegram opens in its in-app webview — on `-app-listen` (default `127.0.0.1:8080`, empty disables it). `app.html` is embedded with `//go:embed`, the same self-contained approach `dbui` uses. `startApp` returns the `*http.Server` so `shutdown` drains it before `closeDB`, exactly like the webhook and dbui servers.
+
+**Adding this moved the webhook.** `-listen` now defaults to **`:8082`**, freeing `:8080` for the app, because that is the port the Cloudflare tunnel's public hostname is routed to.
+
+**It binds to localhost on purpose.** Nothing here faces the network directly — a Cloudflare Tunnel (`cloudflared`) holds outbound connections to Cloudflare's edge and proxies requests back down them, so the Pi needs no port forwarding, no public IP and no inbound firewall rule. Telegram requires valid public HTTPS for a Mini App, and the tunnel supplies it.
+
+One operational constraint, learned the hard way and not obvious: **cloudflared's default QUIC transport cannot work over the AmneziaWG tunnel.** The link is MTU 1280, leaving 1252 usable bytes against QUIC's 1200-byte floor — only 52 bytes of headroom, which is not enough for cloudflared's handshake, so it crash-loops. The fix is `TUNNEL_TRANSPORT_PROTOCOL=http2` (Cloudflare's own precheck reports `suggested_protocol=http2`). TCP connectivity to the edge is fine throughout; only QUIC fails.
+
+The page is four tabs — Home, Blocks, Addresses, Miners — with the tab bar at the **bottom**, where a thumb reaches it on a phone, and padded with `env(safe-area-inset-bottom)` for notched devices. Home carries a network-fees card above a centred search field; the other three are placeholders. Colours come from Telegram's `--tg-theme-*` CSS variables with fallbacks, so the page is also usable in an ordinary browser, which is how it gets developed.
+
+`/api/fees` serves the same three tiers `/fees` prints (fastest, hour, minimum), read from the **`cachedFees` background cache** rather than the mempool — opening the app costs no node round trip. A cold cache reports `ok:false` and the card says "fees unavailable" rather than rendering zeros as if they were real estimates (`TestAppFeesColdCache` pins that).
+
+`telegram-web-app.js` is loaded from `telegram.org`; it is the one script that should not be vendored, so the page is self-contained apart from that.
+
+**Not yet implemented: `initData` validation.** The page is currently unauthenticated — everything it serves is public, read-only network data, so that is acceptable today. Before anything per-user (a chat's watches, say) is exposed, the `initData` query string Telegram hands the webview must be verified server-side with HMAC-SHA256 — secret key = `HMAC(key: "WebAppData", msg: bot token)`, then the hash over the sorted `key=value` pairs minus `hash`, plus an `auth_date` freshness check. Note this differs from the Login Widget scheme (`SHA256(token)`); confusing the two is the classic bug. `initDataUnsafe` must never be trusted.
+
 ### Command dispatch and the "pending argument" pattern
 
 `update()` in `main.go` is the single entry point for every incoming Telegram update: pull `Update.Message`, log it (`logMessage`), split it into a command and argument (`parseCommand`), then switch on the command. `/start`, `/watches`, `/fees`, `/mempool`, `/miners` (see Miner statistics) and `/market` (see The /market command) take no argument and act immediately (`/start` sends a fixed `<b>`-formatted bulleted help listing the commands; `/watches` (`watchesCmd`, renamed off the `watches` package) lists the calling chat's watches — Addresses from `watches.List()` filtered by `chatID`, Transactions from `txwatches.For(chatID)` — and prints each id **un-shortened** inside `<code>…</code>` for Telegram tap-to-copy; ids are `html.EscapeString`'d because address watch ids are arbitrary unvalidated user input, unlike txids).

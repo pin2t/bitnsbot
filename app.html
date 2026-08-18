@@ -1,0 +1,134 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>bitnsbot</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  /* Telegram supplies these at runtime; the fallbacks keep the page usable in a
+     plain browser, which is how it gets developed and tested. */
+  :root {
+    --bg:     var(--tg-theme-bg-color, #ffffff);
+    --fg:     var(--tg-theme-text-color, #1c1c1e);
+    --hint:   var(--tg-theme-hint-color, #8e8e93);
+    --card:   var(--tg-theme-secondary-bg-color, #f2f2f7);
+    --accent: var(--tg-theme-button-color, #2481cc);
+    --line:   rgba(128,128,128,.22);
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    display: flex; flex-direction: column;
+    background: var(--bg); color: var(--fg);
+    font: 15px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  main { flex: 1; overflow-y: auto; padding: 16px 16px 8px; }
+  .panel { display: none; height: 100%; }
+  .panel.active { display: flex; flex-direction: column; }
+
+  /* Home: fees pinned at the top, search centred in what remains. */
+  .fees { background: var(--card); border-radius: 14px; padding: 14px 12px; }
+  .fees h2 { margin: 0 0 10px; font-size: 12px; font-weight: 600;
+             letter-spacing: .06em; text-transform: uppercase; color: var(--hint); }
+  .tiers { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; text-align: center; }
+  .tier + .tier { border-left: 1px solid var(--line); }
+  .tier .label { font-size: 11px; color: var(--hint); }
+  .tier .rate  { font-size: 19px; font-weight: 600; margin: 3px 0 1px; }
+  .tier .unit  { font-size: 11px; font-weight: 400; color: var(--hint); }
+  .tier .usd   { font-size: 11px; color: var(--hint); }
+  .fees .note  { margin: 10px 0 0; font-size: 11px; color: var(--hint); text-align: center; }
+
+  .searchwrap { flex: 1; display: flex; flex-direction: column;
+                align-items: center; justify-content: center; gap: 10px; }
+  .searchwrap p { margin: 0; font-size: 13px; color: var(--hint); text-align: center; }
+  #q { width: 100%; max-width: 420px; padding: 13px 15px; font-size: 16px;
+       color: var(--fg); background: var(--card);
+       border: 1px solid var(--line); border-radius: 12px; outline: none; }
+  #q:focus { border-color: var(--accent); }
+
+  .empty { flex: 1; display: flex; align-items: center; justify-content: center;
+           color: var(--hint); font-size: 14px; }
+
+  /* Bottom tab bar: thumb-reachable on a phone, and padded for the home
+     indicator on notched devices. */
+  nav { display: flex; border-top: 1px solid var(--line); background: var(--bg);
+        padding-bottom: env(safe-area-inset-bottom, 0); }
+  nav button { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 3px;
+               padding: 8px 0 7px; border: 0; background: none; cursor: pointer;
+               font-size: 10px; color: var(--hint); font-family: inherit; }
+  nav button.active { color: var(--accent); }
+  nav svg { width: 22px; height: 22px; fill: none; stroke: currentColor;
+            stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+</style>
+</head>
+<body>
+
+<main>
+  <section id="home" class="panel active">
+    <div class="fees">
+      <h2>Network fees</h2>
+      <div class="tiers">
+        <div class="tier"><div class="label">Fast</div>
+          <div class="rate" id="fastRate">–</div><div class="usd" id="fastUsd"></div></div>
+        <div class="tier"><div class="label">1 hour</div>
+          <div class="rate" id="hourRate">–</div><div class="usd" id="hourUsd"></div></div>
+        <div class="tier"><div class="label">2+ hours</div>
+          <div class="rate" id="slowRate">–</div><div class="usd" id="slowUsd"></div></div>
+      </div>
+      <p class="note" id="feesNote">loading…</p>
+    </div>
+    <div class="searchwrap">
+      <input id="q" type="search" enterkeyhint="search" autocapitalize="off"
+             autocorrect="off" spellcheck="false"
+             placeholder="Transaction, block or address">
+      <p>Paste a txid, block height or hash, or an address</p>
+    </div>
+  </section>
+
+  <section id="blocks" class="panel"><div class="empty">Blocks — coming soon</div></section>
+  <section id="addresses" class="panel"><div class="empty">Addresses — coming soon</div></section>
+  <section id="miners" class="panel"><div class="empty">Miners — coming soon</div></section>
+</main>
+
+<nav>
+  <button class="active" data-panel="home">
+    <svg viewBox="0 0 24 24"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/></svg>
+    Home</button>
+  <button data-panel="blocks">
+    <svg viewBox="0 0 24 24"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M12 12l8-4.5M12 12v9M12 12L4 7.5"/></svg>
+    Blocks</button>
+  <button data-panel="addresses">
+    <svg viewBox="0 0 24 24"><path d="M4 7h16v13H4z"/><path d="M4 7l8 6 8-6"/></svg>
+    Addresses</button>
+  <button data-panel="miners">
+    <svg viewBox="0 0 24 24"><path d="M4 20h16"/><path d="M7 20V11M12 20V5M17 20v-6"/></svg>
+    Miners</button>
+</nav>
+
+<script>
+  var tg = window.Telegram && window.Telegram.WebApp;
+  if (tg) { tg.ready(); tg.expand(); }
+
+  document.querySelectorAll("nav button").forEach(function(b) {
+    b.addEventListener("click", function() {
+      document.querySelectorAll("nav button").forEach(function(x) { x.classList.toggle("active", x === b); });
+      document.querySelectorAll(".panel").forEach(function(p) { p.classList.toggle("active", p.id === b.dataset.panel); });
+      if (tg && tg.HapticFeedback) { tg.HapticFeedback.selectionChanged(); }
+    });
+  });
+
+  function setTier(key, t) {
+    document.getElementById(key + "Rate").innerHTML =
+      t.rate + ' <span class="unit">sat/vB</span>';
+    document.getElementById(key + "Usd").textContent = t.usd || "";
+  }
+  fetch("api/fees").then(function(r) { return r.json(); }).then(function(d) {
+    if (!d.ok) { document.getElementById("feesNote").textContent = "fees unavailable"; return; }
+    setTier("fast", d.fast); setTier("hour", d.hour); setTier("slow", d.slow);
+    document.getElementById("feesNote").textContent =
+      "projected from " + d.txs + " mempool transactions";
+  }).catch(function() { document.getElementById("feesNote").textContent = "fees unavailable"; });
+</script>
+</body>
+</html>

@@ -29,7 +29,7 @@ import "math"
 var configPath      = flag.String("config", "", "path to a properties file (name=value lines) with flag values; command-line flags take precedence")
 var verbose         = flag.Int("verbose", 0, "log verbosity: 0=ERR/WARN/status, 1=+INFO, 2=+NET/DB (raw external traffic and storage requests)")
 var botToken        = flag.String("bot-token", "", "Telegram bot token authenticating outbound Bot API calls (required)")
-var listenAddr      = flag.String("listen", ":8080", "listen address")
+var listenAddr      = flag.String("listen", ":8082", "address the Telegram webhook server binds to")
 var webhookPath     = flag.String("webhook-path", "/bot", "path the Bot API server will POST updates to")
 var webhookURL      = flag.String("webhook-url", "", "URL the Bot API server should send updates to, e.g. http://localhost:8080/bot")
 var apiBaseURL      = flag.String("api-base-url", "http://localhost:8081", "base URL of the local telegram-bot-api server")
@@ -46,11 +46,13 @@ var backupPath      = flag.String("backup", "", "path to copy the database to pe
 var backupInterval  = flag.Duration("backup-interval", 24*time.Hour, "how often to back up the database")
 var backupScript    = flag.String("backup-script", "", "command run after each backup, with the backup's path as $1 and in $BACKUP_FILE (empty runs nothing)")
 var logNoTs         = flag.Bool("log-no-ts", false, "omit the date and time prefix from each log line")
+var appListen       = flag.String("app-listen", "127.0.0.1:8080", "address the Telegram Mini App web server binds to (empty disables it; bind to localhost — the Cloudflare tunnel is what faces the network)")
 var dbuiListen      = flag.String("dbui-listen", "", "address for the database admin web UI, e.g. 127.0.0.1:8090 (empty disables it; bind to localhost only — it can write any bucket)")
 var historyFile     = flag.String("history-file", "", "path to a JSON file containing historical BTC/USD rates (same format as blockchain.info/charts/market-price); backfilled from this file on first run instead of fetching over the network")
 
 var core *coreConn
 var dbuiSrv *http.Server
+var appSrv *http.Server
 var ver = "1.0"
 var commit = ""
 
@@ -87,6 +89,9 @@ func main() {
     rates.Start()
     if *dbuiListen != "" {
         dbuiSrv = dbui.Start(db, *dbuiListen)
+    }
+    if *appListen != "" {
+        appSrv = startApp(*appListen)
     }
     if *backupPath != "" {
         startBackup(*backupPath, *backupInterval, *backupScript)
@@ -160,6 +165,11 @@ func shutdown(bot *bot, srv *http.Server) {
     if dbuiSrv != nil {
         if err := dbuiSrv.Shutdown(ctx); err != nil {
             logging.Err("database UI shutdown: %v", err)
+        }
+    }
+    if appSrv != nil {
+        if err := appSrv.Shutdown(ctx); err != nil {
+            logging.Err("mini app shutdown: %v", err)
         }
     }
     stopNotify()
