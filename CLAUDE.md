@@ -330,11 +330,21 @@ One operational constraint, learned the hard way and not obvious: **cloudflared'
 
 The page is four tabs — Home, Blocks, Addresses, Miners — with the tab bar at the **bottom**, where a thumb reaches it on a phone, and padded with `env(safe-area-inset-bottom)` for notched devices. Home carries a network-fees card above a centred search field; the other three are placeholders. Colours come from Telegram's `--tg-theme-*` CSS variables with fallbacks, so the page is also usable in an ordinary browser, which is how it gets developed.
 
-`/api/fees` serves the same three tiers `/fees` prints (fastest, hour, minimum), read from the **`cachedFees` background cache** rather than the mempool — opening the app costs no node round trip. A cold cache reports `ok:false` and the card says "fees unavailable" rather than rendering zeros as if they were real estimates (`TestAppFeesColdCache` pins that).
+**The server renders HTML, not JSON** — the HTMX shape. `/fees` returns the fee card's *contents* as a fragment and the page swaps it in with `hx-get`; there is no client-side templating, so the Go formatters the bot already has (`trimNum`, `usd`, `group`) produce exactly what the user sees. HTMX itself is **embedded and served from the binary** at `/htmx.min.js` rather than a CDN, keeping the page self-contained apart from Telegram's own SDK (which must come from telegram.org and should not be vendored).
 
-`telegram-web-app.js` is loaded from `telegram.org`; it is the one script that should not be vendored, so the page is self-contained apart from that.
+The three tiers are the ones `/fees` prints, read from the **`cachedFees` background cache** rather than the mempool, so opening the app costs no node round trip. A cold cache renders "fees unavailable" rather than zeros dressed up as estimates.
 
-**Not yet implemented: `initData` validation.** The page is currently unauthenticated — everything it serves is public, read-only network data, so that is acceptable today. Before anything per-user (a chat's watches, say) is exposed, the `initData` query string Telegram hands the webview must be verified server-side with HMAC-SHA256 — secret key = `HMAC(key: "WebAppData", msg: bot token)`, then the hash over the sorted `key=value` pairs minus `hash`, plus an `auth_date` freshness check. Note this differs from the Login Widget scheme (`SHA256(token)`); confusing the two is the classic bug. `initDataUnsafe` must never be trusted.
+**`initData` validation** (`checkInitData`) is what stands between this server and anyone who knows the URL. Telegram signs the payload it hands the webview; the page forwards it on every HTMX request as `X-Telegram-Init-Data` (attached via an `htmx:configRequest` listener registered on `document` — not `body`, which does not exist yet in `head` — so the very first request already carries it), and `requireInitData` rejects anything unsigned, tampered, or stale with a 401.
+
+The scheme, which is easy to get subtly wrong:
+- secret = `HMAC-SHA256(key: "WebAppData", msg: bot token)` — **not** the Login Widget's `SHA256(token)`; the two look interchangeable and are not
+- the signature covers every field except `hash`, sorted by key, joined with newlines
+- compare with `hmac.Equal`, never `==`
+- `auth_date` must be within `initDataTTL` (24h, a var for tests): a signature is otherwise valid forever, so a payload lifted from a log or a shared link would keep working
+
+`initDataUnsafe` must never be trusted. The shell page at `/` is deliberately *not* behind the check — it carries no data, and the webview must load it before any script can read `initData` at all. Outside Telegram there is no `initData`, so the page says so instead of firing a request guaranteed to 401.
+
+Tests cover the parts that matter: a payload signed with a different token, a tampered `user` field, and a 48h-old `auth_date` are each rejected, and a valid one renders the fragment. The signature was additionally cross-checked against an independent Python implementation, and against the real bot token on the Pi.
 
 ### Command dispatch and the "pending argument" pattern
 

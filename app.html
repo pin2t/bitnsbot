@@ -5,6 +5,17 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>bitnsbot</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
+<script src="htmx.min.js"></script>
+<script>
+  // Every HTMX request carries Telegram's signed payload; the server rejects
+  // anything without it. Registered on document (not body, which does not exist
+  // yet in head) and before HTMX processes the DOM, so the first request already
+  // has the header.
+  document.addEventListener("htmx:configRequest", function(e) {
+    var tg = window.Telegram && window.Telegram.WebApp;
+    if (tg && tg.initData) { e.detail.headers["X-Telegram-Init-Data"] = tg.initData; }
+  });
+</script>
 <style>
   /* Telegram supplies these at runtime; the fallbacks keep the page usable in a
      plain browser, which is how it gets developed and tested. */
@@ -29,7 +40,7 @@
 
   /* Home: fees pinned at the top, search centred in what remains. */
   .fees { background: var(--card); border-radius: 14px; padding: 14px 12px; }
-  .fees h2 { margin: 0 0 10px; font-size: 12px; font-weight: 600;
+  .fees h2 { margin: 0 0 10px; font-size: 12px; font-weight: 600; text-align: center;
              letter-spacing: .06em; text-transform: uppercase; color: var(--hint); }
   .tiers { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; text-align: center; }
   .tier + .tier { border-left: 1px solid var(--line); }
@@ -66,17 +77,9 @@
 
 <main>
   <section id="home" class="panel active">
-    <div class="fees">
+    <div id="fees" class="fees" hx-get="fees" hx-trigger="loadfees" hx-swap="innerHTML">
       <h2>Network fees</h2>
-      <div class="tiers">
-        <div class="tier"><div class="label">Fast</div>
-          <div class="rate" id="fastRate">–</div><div class="usd" id="fastUsd"></div></div>
-        <div class="tier"><div class="label">1 hour</div>
-          <div class="rate" id="hourRate">–</div><div class="usd" id="hourUsd"></div></div>
-        <div class="tier"><div class="label">2+ hours</div>
-          <div class="rate" id="slowRate">–</div><div class="usd" id="slowUsd"></div></div>
-      </div>
-      <p class="note" id="feesNote">loading…</p>
+      <p class="note">loading…</p>
     </div>
     <div class="searchwrap">
       <input id="q" type="search" enterkeyhint="search" autocapitalize="off"
@@ -114,21 +117,16 @@
     b.addEventListener("click", function() {
       document.querySelectorAll("nav button").forEach(function(x) { x.classList.toggle("active", x === b); });
       document.querySelectorAll(".panel").forEach(function(p) { p.classList.toggle("active", p.id === b.dataset.panel); });
-      if (tg && tg.HapticFeedback) { tg.HapticFeedback.selectionChanged(); }
     });
   });
 
-  function setTier(key, t) {
-    document.getElementById(key + "Rate").innerHTML =
-      t.rate + ' <span class="unit">sat/vB</span>';
-    document.getElementById(key + "Usd").textContent = t.usd || "";
+  // Only ask for data we can authenticate. Outside Telegram there is no
+  // initData, so the request would be a guaranteed 401 — say so instead.
+  if (tg && tg.initData) {
+    htmx.trigger("#fees", "loadfees");
+  } else {
+    document.querySelector("#fees .note").textContent = "open this in Telegram to see live fees";
   }
-  fetch("api/fees").then(function(r) { return r.json(); }).then(function(d) {
-    if (!d.ok) { document.getElementById("feesNote").textContent = "fees unavailable"; return; }
-    setTier("fast", d.fast); setTier("hour", d.hour); setTier("slow", d.slow);
-    document.getElementById("feesNote").textContent =
-      "projected from " + d.txs + " mempool transactions";
-  }).catch(function() { document.getElementById("feesNote").textContent = "fees unavailable"; });
 </script>
 </body>
 </html>
