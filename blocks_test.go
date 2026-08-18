@@ -10,7 +10,7 @@ import "time"
 import "go.etcd.io/bbolt"
 
 func TestSubsidy(t *testing.T) {
-    var cases = map[int64]float64{0: 50, 209999: 50, 210000: 25, 420000: 12.5, 630000: 6.25, 840000: 3.125}
+    var cases = map[int64]int64{0: 5000000000, 209999: 5000000000, 210000: 2500000000, 420000: 1250000000, 630000: 625000000, 840000: 312500000}
     for h, want := range cases {
         if got := subsidy(h); got != want {
             t.Fatalf("subsidy(%d) = %v, want %v", h, got, want)
@@ -23,7 +23,7 @@ func TestStoreLoadBlock(t *testing.T) {
         t.Fatalf("openDB: %v", err)
     }
     defer closeDB()
-    var bi = &blockInfo{Height: 700000, Hash: "abc", Miner: "PoolX", NumTx: 5, Reward: 6.25}
+    var bi = &blockInfo{Height: 700000, Hash: "abc", Miner: "PoolX", NumTx: 5, Reward: 625000000}
     if err := storeBlock(bi); err != nil {
         t.Fatalf("store: %v", err)
     }
@@ -86,13 +86,13 @@ func TestComputeBlockInfo(t *testing.T) {
         t.Fatalf("miner = %q, want TestPool", bi.Miner)
     }
     // Core supplies each fee directly, so no prevout fetching happens at all
-    if !bi.FeesOK || sats(bi.FeeMin) != "50 000" || sats(bi.FeeAvg) != "75 000" || sats(bi.FeeMax) != "100 000" {
+    if !bi.FeesOK || group(bi.FeeMin) != "50 000" || group(bi.FeeAvg) != "75 000" || group(bi.FeeMax) != "100 000" {
         t.Fatalf("fees: ok=%v min=%v avg=%v max=%v", bi.FeesOK, bi.FeeMin, bi.FeeAvg, bi.FeeMax)
     }
     if bi.TxSizeMin != 100 || bi.TxSizeAvg != 183 || bi.TxSizeMax != 250 { // (100+200+250)/3 = 183
         t.Fatalf("tx sizes: min=%d avg=%d max=%d", bi.TxSizeMin, bi.TxSizeAvg, bi.TxSizeMax)
     }
-    if sats(bi.Reward) != "5 000 000 000" || sats(bi.Total) != "5 000 150 000" { // 50 BTC and 50.0015 BTC
+    if group(bi.Reward) != "5 000 000 000" || group(bi.Total) != "5 000 150 000" { // 50 BTC and 50.0015 BTC
         t.Fatalf("reward=%v total=%v", bi.Reward, bi.Total)
     }
 }
@@ -101,9 +101,9 @@ func TestFormatBlock(t *testing.T) {
     var bi = &blockInfo{
         Height: 800000, Hash: "00000000000000000000abcdef1122334455667788fedcba", Time: 1700000000,
         Size: 1523456, NumTx: 2, Miner: "Foundry USA", FeesOK: true,
-        FeeMin: 0.0000013, FeeAvg: 0.000185, FeeMax: 0.025,
+        FeeMin: 130, FeeAvg: 18500, FeeMax: 2500000,
         TxSizeMin: 110, TxSizeAvg: 445, TxSizeMax: 98000,
-        Reward: 3.125, Total: 3.755, Difficulty: 79000000000000,
+        Reward: 312500000, Total: 375500000, Difficulty: 79000000000000,
     }
     var s = formatBlock(bi, 1)
     for _, want := range []string{
@@ -116,7 +116,7 @@ func TestFormatBlock(t *testing.T) {
         "average:       18 500 sats (41.6 sat/vB)",
         "highest:       2 500 000 sats (25.5 sat/vB)",
         "Reward:        3.125 BTC",
-        "Reward + fees: 3.125 BTC</pre>",
+        "Reward + fees: 3.755 BTC</pre>",
     } {
         if !strings.Contains(s, want) {
             t.Fatalf("formatBlock missing %q in:\n%s", want, s)

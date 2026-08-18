@@ -24,6 +24,7 @@ import "bitnsbot/txwatches"
 import "bitnsbot/watches"
 import "unicode/utf8"
 import "sort"
+import "math"
 
 var configPath      = flag.String("config", "", "path to a properties file (name=value lines) with flag values; command-line flags take precedence")
 var verbose         = flag.Int("verbose", 0, "log verbosity: 0=ERR/WARN/status, 1=+INFO, 2=+NET/DB (raw external traffic and storage requests)")
@@ -514,7 +515,7 @@ func fees(bot *bot, chat int64) {
     for _, t := range tiers {
         var cell = trimNum(t.rate, 2) + i18n(chat).String(" sat/vB")
         if havePrice {
-            cell += "  (≈ " + usd(t.rate*typicalTxVsize/1e8, price) + ")"
+            cell += "  (≈ " + usd(int64(math.Round(t.rate*typicalTxVsize)), price) + ")"
         }
         lines = append(lines, fmt.Sprintf("%-*s %s", pad, t.label, cell))
     }
@@ -544,8 +545,8 @@ var flowHaveCount bool
 // mempool, recomputed every 10 minutes in the background and printed by /mempool
 // with a tilde prefix to mark them as cached, not fresh.
 var summaryMu sync.Mutex
-var summaryAmount float64
-var summaryFee float64
+var summaryAmount int64
+var summaryFee int64
 var summaryOK bool
 
 // cached fees recommendation, recomputed every 10 minutes alongside
@@ -715,12 +716,12 @@ func mempoolCmd(bot *bot, chat int64) {
 // mempool. Individual tx churn — a tx confirmed or replaced between the two
 // passes — is tolerated (its outputs are just skipped); a context timeout means
 // the mempool was too large and returns ok=false so the reply shows "unavailable".
-func mempoolTotals(ctx context.Context) (amount, fee float64, ok bool) {
+func mempoolTotals(ctx context.Context) (amount, fee int64, ok bool) {
     var mp, err = core.rawMempoolVerbose(ctx)
     if err != nil { return 0, 0, false }
     var txids = make([]string, 0, len(mp))
     for id, e := range mp {
-        fee += e.Fees.Base
+        fee += toSat(e.Fees.Base)
         txids = append(txids, id)
     }
     var mu sync.Mutex
@@ -734,8 +735,8 @@ func mempoolTotals(ctx context.Context) (amount, fee float64, ok bool) {
             defer func() { <-sem }()
             var tx, e = core.getRawTransaction(ctx, id)
             if e != nil { return }
-            var out float64
-            for _, v := range tx.Vout { out += v.Value }
+            var out int64
+            for _, v := range tx.Vout { out += toSat(v.Value) }
             mu.Lock()
             amount += out
             mu.Unlock()
@@ -760,7 +761,7 @@ func minersCmd(bot *bot, chat int64) {
         var blocks = i18n(chat).Sprintf("%d blocks", m.Blocks)
         if m.Blocks == 1 { blocks = i18n(chat).String("1 block") }
         lines = append(lines, i18n(chat).Sprintf("%d. %s. %s mined, reward %s BTC, fees %s BTC, consumption %s GW",
-            i+1, m.Name, blocks, trimNum(m.Reward, 2), trimNum(m.Fees, 2), trimNum(m.ConsumptionGW, 1)))
+            i+1, m.Name, blocks, trimNum(toBTC(m.Reward), 2), trimNum(toBTC(m.Fees), 2), trimNum(m.ConsumptionGW, 1)))
     }
     send(bot, chat, i18n(chat).String("Top miners by blocks mined:") + "\n\n" + strings.Join(lines, "\n"), nil)
 }

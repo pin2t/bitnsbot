@@ -57,10 +57,10 @@ func transaction(ctx context.Context, bot *bot, chat int64, txid string) {
         send(bot, chat, i18n(chat).Sprintf("Couldn't find transaction %s", short(txid)), nil)
         return
     }
-    var total float64
-    for _, vout := range tx.Vout { total += vout.Value }
+    var total int64
+    for _, vout := range tx.Vout { total += toSat(vout.Value) }
     var coinbase = len(tx.Vin) > 0 && tx.Vin[0].Coinbase != ""
-    var fee float64
+    var fee int64
     var inputs []string
     var feeOK bool
     if !coinbase { fee, inputs, _, feeOK = txInputs(ctx, tx) }
@@ -71,7 +71,7 @@ func transaction(ctx context.Context, bot *bot, chat int64, txid string) {
     if tx.Confirmations == 0 {
         var confText = i18n(chat).String("none (confirms in ~10-20 min)")
         if feeOK && tx.Vsize > 0 {
-            confText = i18n(chat).String("none (confirms in") + " " + estimates[confEstimate(fee * 1e8 / float64(tx.Vsize))] + ")"
+            confText = i18n(chat).String("none (confirms in") + " " + estimates[confEstimate(float64(fee) / float64(tx.Vsize))] + ")"
         }
         pairs = append(pairs, [2]string{i18n(chat).String("Confirmations"), confText})
     } else {
@@ -83,9 +83,9 @@ func transaction(ctx context.Context, bot *bot, chat int64, txid string) {
     }
     pairs = append(pairs, [2]string{i18n(chat).String("Amount"), amountLine(total, at, current, chat)})
     if feeOK {
-        var feeStr = sats(fee) + " " + i18n(chat).String("sats")
+        var feeStr = group(fee) + " " + i18n(chat).String("sats")
         if tx.Vsize > 0 {
-            var feeRate = fee * 1e8 / float64(tx.Vsize)
+            var feeRate = float64(fee) / float64(tx.Vsize)
             feeStr += " (" + trimNum(feeRate, 1) + i18n(chat).String(" sat/vB") + ")"
         }
         pairs = append(pairs, [2]string{i18n(chat).String("Fee"), feeStr})
@@ -122,19 +122,19 @@ func transaction(ctx context.Context, bot *bot, chat int64, txid string) {
 // prevout there and each input's previous transaction still has to be fetched.
 // A fetch failure yields ok=false, so the reply degrades to "unavailable"
 // rather than showing a wrong fee.
-func txInputs(ctx context.Context, tx *coreTransaction) (fee float64, addrs []string, spent map[string]float64, ok bool) {
-    spent = make(map[string]float64)
-    var inSum float64
+func txInputs(ctx context.Context, tx *coreTransaction) (fee int64, addrs []string, spent map[string]int64, ok bool) {
+    spent = make(map[string]int64)
+    var inSum int64
     var complete = true
     for _, vin := range tx.Vin {
         if vin.PrevOut == nil { complete = false; break }
-        inSum += vin.PrevOut.Value
+        inSum += toSat(vin.PrevOut.Value)
         var a = addressOfScript(vin.PrevOut.ScriptPubKey)
         addrs = append(addrs, a)
-        spent[a] += vin.PrevOut.Value
+        spent[a] += toSat(vin.PrevOut.Value)
     }
     if complete {
-        if tx.Fee > 0 { return tx.Fee, addrs, spent, true }
+        if tx.Fee > 0 { return toSat(tx.Fee), addrs, spent, true }
         return inputsMinusOutputs(inSum, tx), addrs, spent, true
     }
     return fetchInputs(ctx, tx)
@@ -143,7 +143,7 @@ func txInputs(ctx context.Context, tx *coreTransaction) (fee float64, addrs []st
 // fetchInputs is the mempool path: without undo data Core cannot supply prevouts,
 // so they are fetched concurrently (bounded, the same pattern the btcd client
 // used) and the fee derived from inputs − outputs.
-func fetchInputs(ctx context.Context, tx *coreTransaction) (fee float64, addrs []string, spent map[string]float64, ok bool) {
+func fetchInputs(ctx context.Context, tx *coreTransaction) (fee int64, addrs []string, spent map[string]int64, ok bool) {
     var ids = map[string]bool{}
     for _, in := range tx.Vin {
         ids[in.Txid] = true
@@ -173,25 +173,25 @@ func fetchInputs(ctx context.Context, tx *coreTransaction) (fee float64, addrs [
     if fetchErr != nil {
         return 0, nil, nil, false
     }
-    var inSum float64
-    spent = make(map[string]float64)
+    var inSum int64
+    spent = make(map[string]int64)
     for _, vin := range tx.Vin {
         var p = prevouts[vin.Txid]
         if p == nil || int(vin.Vout) >= len(p.Vout) {
             return 0, nil, nil, false
         }
-        inSum += p.Vout[vin.Vout].Value
+        inSum += toSat(p.Vout[vin.Vout].Value)
         var a = addressOf(p.Vout[vin.Vout])
         addrs = append(addrs, a)
-        spent[a] += p.Vout[vin.Vout].Value
+        spent[a] += toSat(p.Vout[vin.Vout].Value)
     }
     return inputsMinusOutputs(inSum, tx), addrs, spent, true
 }
 
-func inputsMinusOutputs(inSum float64, tx *coreTransaction) float64 {
-    var outSum float64
+func inputsMinusOutputs(inSum int64, tx *coreTransaction) int64 {
+    var outSum int64
     for _, v := range tx.Vout {
-        outSum += v.Value
+        outSum += toSat(v.Value)
     }
     if fee := inSum - outSum; fee > 0 { return fee }
     return 0
@@ -267,18 +267,18 @@ func block(ctx context.Context, bot *bot, chat int64, height int64) {
 // this needs no prevout fetching at all — the bounded 16-way fan-out that used
 // to be here existed only because btcd made callers compute fees themselves.
 // The coinbase has no fee and is skipped.
-func feeStats(txs []coreTransaction) (low, avg, high float64, count int) {
-    var total float64
+func feeStats(txs []coreTransaction) (low, avg, high int64, count int) {
+    var total int64
     for i, t := range txs {
         if i == 0 { continue } // coinbase
-        var fee = t.Fee
+        var fee = toSat(t.Fee)
         if count == 0 || fee < low { low = fee }
         if fee > high { high = fee }
         total += fee
         count++
     }
     if count == 0 { return 0, 0, 0, 0 }
-    return low, total / float64(count), high, count
+    return low, (total + int64(count)/2) / int64(count), high, count
 }
 
 // addrTxLimit bounds how many of an address's transactions are resolved for the
@@ -352,19 +352,19 @@ func addressHistory(ctx context.Context, script []byte) (txs []*coreTransaction,
 // outgoing transactions, and the earliest/latest confirmed transaction times.
 // Confirmed transactions carry their prevouts and fee from Core directly, so both
 // the sending side and the fee read straight off the transaction.
-func addressStats(txs []*coreTransaction, addr string) (received, sent, fees float64, firstT, lastT int64) {
+func addressStats(txs []*coreTransaction, addr string) (received, sent, fees int64, firstT, lastT int64) {
     for _, tx := range txs {
         for _, v := range tx.Vout {
-            if v.ScriptPubKey.Address == addr { received += v.Value }
+            if v.ScriptPubKey.Address == addr { received += toSat(v.Value) }
         }
         var fromAddr bool
         for _, in := range tx.Vin {
             if in.PrevOut != nil && in.PrevOut.ScriptPubKey.Address == addr {
-                sent += in.PrevOut.Value
+                sent += toSat(in.PrevOut.Value)
                 fromAddr = true
             }
         }
-        if fromAddr { fees += tx.Fee }
+        if fromAddr { fees += toSat(tx.Fee) }
         if tx.Time > 0 {
             if firstT == 0 || tx.Time < firstT { firstT = tx.Time }
             if tx.Time > lastT { lastT = tx.Time }
@@ -405,11 +405,11 @@ func address(ctx context.Context, bot *bot, chat int64, addr string) {
         var count = group(int64(len(txs)))
         if !complete { count += "+" }
         pairs = append(pairs,
-            [2]string{i18n(chat).String("Balance"), compactBtc(received - sent, chat)},
-            [2]string{i18n(chat).String("Total received"), compactBtc(received, chat)},
-            [2]string{i18n(chat).String("Total sent"), compactBtc(sent, chat)},
-            [2]string{i18n(chat).String("Total flow"), compactBtc(received + sent, chat)},
-            [2]string{i18n(chat).String("Total fees"), compactBtc(fees, chat)},
+            [2]string{i18n(chat).String("Balance"), compactBTC(received - sent, chat)},
+            [2]string{i18n(chat).String("Total received"), compactBTC(received, chat)},
+            [2]string{i18n(chat).String("Total sent"), compactBTC(sent, chat)},
+            [2]string{i18n(chat).String("Total flow"), compactBTC(received + sent, chat)},
+            [2]string{i18n(chat).String("Total fees"), compactBTC(fees, chat)},
             [2]string{i18n(chat).String("Transactions"), count},
         )
         if firstT > 0 { pairs = append(pairs, [2]string{i18n(chat).String("First tx"), when(firstT, chat)}) }

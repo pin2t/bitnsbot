@@ -49,9 +49,18 @@ func group(n int64) string {
     return sign + s
 }
 
-func sats(btc float64) string {
-    return group(int64(math.Round(btc * 1e8)))
-}
+// toSat converts a BTC amount as Bitcoin Core and the price APIs report it into
+// whole satoshi, the unit every amount is carried and calculated in once inside
+// the bot. This rounding is the one boundary between the two representations:
+// JSON hands us BTC as a float, 0.1 BTC has no exact float64 value, and summing
+// such floats accumulates error that integer satoshi cannot. Parse structs keep
+// float64 because that is what the wire format is; nothing downstream does.
+func toSat(btc float64) int64 { return int64(math.Round(btc * 1e8)) }
+
+// toBTC converts satoshi back to BTC for *display only* — never for
+// arithmetic. Exact for every real amount: the 21M-coin supply is 2.1e15 sats,
+// well inside float64's 2^53 integer range.
+func toBTC(sat int64) float64 { return float64(sat) / 1e8 }
 
 // metric renders a large number with a metric suffix, scaling by 1000 —
 // e.g. metric(3299245, 1) → "3.3 M", metric(6719, 1) → "6.7 k", and (used for
@@ -77,14 +86,14 @@ func humSize(s int64, chat int64) string {
     return strings.TrimRight(strings.TrimRight(strconv.FormatFloat(f, 'f', 2, 64), "0"), ".") + unit
 }
 
-// compactBtc renders a BTC amount compactly with a USD approximation at the
+// compactBTC renders a BTC amount compactly with a USD approximation at the
 // latest rate: as BTC once it reaches 0.05 BTC ("0.5 BTC"), otherwise in sats
 // ("100 000 sats"), so large and small amounts each read naturally.
-func compactBtc(btc float64, chat int64) string {
-    if btc >= 0.05 {
-        return btcAmount(btc)
+func compactBTC(sat int64, chat int64) string {
+    if sat >= notifyBTCThreshold {
+        return btcAmount(sat)
     }
-    return amountLine(btc, time.Time{}, true, chat)
+    return amountLine(sat, time.Time{}, true, chat)
 }
 
 // periodText renders a duration as its two most-significant non-zero units among
@@ -123,8 +132,8 @@ func periodText(d time.Duration, chat int64) string {
 // as noise ("$90,000"); below $100 they're kept, where they matter ("$5.99"). The
 // sign is pulled out before either decision so a negative amount (the net move of
 // an address that just spent) reads "-$29,450", not "$-29450.00".
-func usd(btc, rate float64) string {
-    var value = btc * rate
+func usd(sat int64, rate float64) string {
+    var value = toBTC(sat) * rate
     var sign = ""
     if value < 0 {
         sign, value = "-", -value
@@ -145,8 +154,8 @@ func usd(btc, rate float64) string {
 // rate nearest the transaction's time otherwise — falling back to the last
 // stored rate for confirmed times that predate our rate history, so an old
 // transaction still shows its value at today's rate rather than nothing.
-func amountLine(btc float64, at time.Time, current bool, chat int64) string {
-    var s = amountText(btc, chat)
+func amountLine(sat int64, at time.Time, current bool, chat int64) string {
+    var s = amountText(sat, chat)
     var rate float64
     var ok bool
     if current {
@@ -155,7 +164,7 @@ func amountLine(btc float64, at time.Time, current bool, chat int64) string {
         rate, ok = rates.At(at)
         if !ok { rate, ok = rates.Last() }
     }
-    if ok { s += " (≈ " + usd(btc, rate) + ")" }
+    if ok { s += " (≈ " + usd(sat, rate) + ")" }
     return s
 }
 
@@ -163,16 +172,16 @@ func amountLine(btc float64, at time.Time, current bool, chat int64) string {
 // used for the large /mempool totals, where sats would be unwieldy. Values ≥ 1
 // BTC show two decimals ("9449.72 BTC"); smaller ones keep sats precision
 // (trailing zeros trimmed) so a fraction of a BTC doesn't round away to nothing.
-func btcAmount(btc float64) string {
+func btcAmount(sat int64) string {
     var num string
-    if btc >= 1 || btc <= -1 {
-        num = strconv.FormatFloat(btc, 'f', 2, 64)
+    if sat >= 1e8 || sat <= -1e8 {
+        num = strconv.FormatFloat(toBTC(sat), 'f', 2, 64)
     } else {
-        num = strings.TrimRight(strings.TrimRight(strconv.FormatFloat(btc, 'f', 8, 64), "0"), ".")
+        num = strings.TrimRight(strings.TrimRight(strconv.FormatFloat(toBTC(sat), 'f', 8, 64), "0"), ".")
     }
     var s = num + " BTC"
     if rate, ok := rates.Last(); ok {
-        s += " (≈ " + usd(btc, rate) + ")"
+        s += " (≈ " + usd(sat, rate) + ")"
     }
     return s
 }
@@ -256,12 +265,11 @@ const notifyBTCThreshold = 5_000_000
 
 // amountText renders an amount for a notification headline: sats up to
 // notifyBTCThreshold, BTC above it, trailing zeros trimmed either way.
-func amountText(btc float64, chat int64) string {
-    var sats = int64(math.Round(btc * 1e8))
-    if sats >= notifyBTCThreshold || sats <= -notifyBTCThreshold {
-        return trimNum(btc, 8) + " BTC"
+func amountText(sat int64, chat int64) string {
+    if sat >= notifyBTCThreshold || sat <= -notifyBTCThreshold {
+        return trimNum(toBTC(sat), 8) + " BTC"
     }
-    return group(sats) + " " + i18n(chat).String("sats")
+    return group(sat) + " " + i18n(chat).String("sats")
 }
 
 func joinAlign(pairs [][2]string) string {

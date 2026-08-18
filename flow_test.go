@@ -455,7 +455,7 @@ func TestMempoolFlow(t *testing.T) {
     defer func() { core = nil }()
     // set cached totals so /mempool can read them (background goroutine not running)
     summaryMu.Lock()
-    summaryAmount, summaryFee, summaryOK = 3.5, 0.0003, true
+    summaryAmount, summaryFee, summaryOK = 350000000, 30000, true
     summaryMu.Unlock()
     update(bot, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/mempool"}})
     if len(sent) != 2 {
@@ -693,13 +693,13 @@ func TestMinersFlow(t *testing.T) {
     var pools = []struct {
         name     string
         blocks   int
-        reward   float64
-        fees     float64
+        reward   int64
+        fees     int64
         lastWork float64
     }{
-        {"ViaBTC", 3, 9.75, 0.1, 6.0e23},
-        {"AntPool", 6, 19.5, 0.4, 6.0e23},
-        {"F2Pool", 1, 3.25, 0.02, 5.6e23},
+        {"ViaBTC", 3, 975000000, 10000000, 6.0e23},
+        {"AntPool", 6, 1950000000, 40000000, 6.0e23},
+        {"F2Pool", 1, 325000000, 2000000, 5.6e23},
     }
     if err := db.Update(func(tx *bbolt.Tx) error {
         var b = tx.Bucket([]byte("miners-stat"))

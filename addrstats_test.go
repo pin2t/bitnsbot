@@ -24,20 +24,20 @@ func TestAddressStats(t *testing.T) {
         },
     }
     var received, sent, fees, firstT, lastT = addressStats(txs, addr)
-    if received != 1.0999 {
-        t.Fatalf("received = %v, want 1.0999 (1.0 in, 0.0999 change back)", received)
+    if received != 109990000 {
+        t.Fatalf("received = %v, want 109990000 sats (1.0 in, 0.0999 change back)", received)
     }
-    if sent != 1.0 {
-        t.Fatalf("sent = %v, want 1.0", sent)
+    if sent != 100000000 {
+        t.Fatalf("sent = %v, want 100000000 sats", sent)
     }
     // only the transaction the address actually spends from contributes a fee
-    if fees != 0.0001 {
-        t.Fatalf("fees = %v, want 0.0001", fees)
+    if fees != 10000 {
+        t.Fatalf("fees = %v, want 10000 sats", fees)
     }
     if firstT != 1420070400 || lastT != 1451606400 {
         t.Fatalf("times = %d..%d, want 1420070400..1451606400", firstT, lastT)
     }
-    if balance := received - sent; balance < 0.0998 || balance > 0.1 {
-        t.Fatalf("balance = %v, want ~0.0999", balance)
+    if balance := received - sent; balance != 9990000 {
+        t.Fatalf("balance = %v, want exactly 9990000 sats", balance)
     }
 }
