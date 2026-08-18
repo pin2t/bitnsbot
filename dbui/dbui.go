@@ -50,7 +50,6 @@ func handler(db *bbolt.DB) http.Handler {
         w.Write(indexHTML)
     })
     mux.HandleFunc("/api/buckets", func(w http.ResponseWriter, r *http.Request) { buckets(db, w) })
-    mux.HandleFunc("/api/bucketstats", func(w http.ResponseWriter, r *http.Request) { bucketStats(db, w) })
     mux.HandleFunc("/api/view", func(w http.ResponseWriter, r *http.Request) { view(db, w, r) })
     mux.HandleFunc("/api/get", func(w http.ResponseWriter, r *http.Request) { get(db, w, r) })
     mux.HandleFunc("/api/put", func(w http.ResponseWriter, r *http.Request) { put(db, w, r) })
@@ -70,37 +69,6 @@ func buckets(db *bbolt.DB, w http.ResponseWriter) {
         })
     })
     writeJSON(w, map[string]any{"buckets": names})
-}
-
-type bucketStat struct {
-    Name string `json:"name"`
-    Keys int    `json:"keys"`
-    Size string `json:"size"`
-}
-
-func bucketStats(db *bbolt.DB, w http.ResponseWriter) {
-    var stats = []bucketStat{}
-    db.View(func(tx *bbolt.Tx) error {
-        return tx.ForEach(func(name []byte, b *bbolt.Bucket) error {
-            var s = b.Stats()
-            stats = append(stats, bucketStat{
-                Name: string(name),
-                Keys: s.KeyN,
-                Size: sizeStr(s.LeafInuse + s.BranchInuse),
-            })
-            return nil
-        })
-    })
-    writeJSON(w, map[string]any{"buckets": stats})
-}
-
-func sizeStr(n int) string {
-    switch {
-    case n >= 1<<30: return strconv.FormatFloat(float64(n)/(1<<30), 'f', 1, 64) + " G"
-    case n >= 1<<20: return strconv.FormatFloat(float64(n)/(1<<20), 'f', 1, 64) + " M"
-    case n >= 1<<10: return strconv.FormatFloat(float64(n)/(1<<10), 'f', 1, 64) + " K"
-    default: return strconv.Itoa(n) + " B"
-    }
 }
 
 type kvRow struct {
