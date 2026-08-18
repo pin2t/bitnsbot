@@ -761,7 +761,7 @@ func minersCmd(bot *bot, chat int64) {
         var blocks = i18n(chat).Sprintf("%d blocks", m.Blocks)
         if m.Blocks == 1 { blocks = i18n(chat).String("1 block") }
         lines = append(lines, i18n(chat).Sprintf("%d. %s. %s mined, reward %s BTC, fees %s BTC, consumption %s GW",
-            i+1, m.Name, blocks, trimNum(btcFloat(m.Reward), 2), trimNum(btcFloat(m.Fees), 2), trimNum(m.ConsumptionGW, 1)))
+            i+1, m.Name, blocks, trimNum(toBTC(m.Reward), 2), trimNum(toBTC(m.Fees), 2), trimNum(m.ConsumptionGW, 1)))
     }
     send(bot, chat, i18n(chat).String("Top miners by blocks mined:") + "\n\n" + strings.Join(lines, "\n"), nil)
 }

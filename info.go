@@ -405,11 +405,11 @@ func address(ctx context.Context, bot *bot, chat int64, addr string) {
         var count = group(int64(len(txs)))
         if !complete { count += "+" }
         pairs = append(pairs,
-            [2]string{i18n(chat).String("Balance"), compactBtc(received - sent, chat)},
-            [2]string{i18n(chat).String("Total received"), compactBtc(received, chat)},
-            [2]string{i18n(chat).String("Total sent"), compactBtc(sent, chat)},
-            [2]string{i18n(chat).String("Total flow"), compactBtc(received + sent, chat)},
-            [2]string{i18n(chat).String("Total fees"), compactBtc(fees, chat)},
+            [2]string{i18n(chat).String("Balance"), compactBTC(received - sent, chat)},
+            [2]string{i18n(chat).String("Total received"), compactBTC(received, chat)},
+            [2]string{i18n(chat).String("Total sent"), compactBTC(sent, chat)},
+            [2]string{i18n(chat).String("Total flow"), compactBTC(received + sent, chat)},
+            [2]string{i18n(chat).String("Total fees"), compactBTC(fees, chat)},
             [2]string{i18n(chat).String("Transactions"), count},
         )
         if firstT > 0 { pairs = append(pairs, [2]string{i18n(chat).String("First tx"), when(firstT, chat)}) }
