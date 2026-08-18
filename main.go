@@ -16,6 +16,7 @@ import "syscall"
 import "time"
 import "runtime/debug"
 import "github.com/pin2t/flagex"
+import "bitnsbot/app"
 import "bitnsbot/dbui"
 import "bitnsbot/logging"
 import "bitnsbot/miners"
@@ -53,6 +54,25 @@ var historyFile     = flag.String("history-file", "", "path to a JSON file conta
 var core *coreConn
 var dbuiSrv *http.Server
 var appSrv *http.Server
+
+// appSource adapts main's fee cache and formatters to app.Source, so the app
+// package stays unaware of Bitcoin Core, the price feeds and the cache.
+type appSource struct{}
+
+func (appSource) Fees() app.Fees {
+    feesMu.Lock()
+    var rec, ok, count = cachedFees, cachedFeesOK, cachedFeesCount
+    feesMu.Unlock()
+    if !ok { return app.Fees{OK: false} }
+    var price, havePrice = rates.Last()
+    var tier = func(rate float64) app.Tier {
+        var t = app.Tier{Rate: trimNum(rate, 2)}
+        if havePrice { t.USD = usd(int64(math.Round(rate*typicalTxVsize)), price) }
+        return t
+    }
+    return app.Fees{OK: true, Fast: tier(rec.fastest), Hour: tier(rec.hour),
+        Slow: tier(rec.minimum), TxCount: group(int64(count))}
+}
 var ver = "1.0"
 var commit = ""
 
@@ -91,7 +111,7 @@ func main() {
         dbuiSrv = dbui.Start(db, *dbuiListen)
     }
     if *appListen != "" {
-        appSrv = startApp(*appListen)
+        appSrv = app.Start(*appListen, *botToken, appSource{})
     }
     if *backupPath != "" {
         startBackup(*backupPath, *backupInterval, *backupScript)

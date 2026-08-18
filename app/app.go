@@ -1,11 +1,19 @@
-package main
+// Package app serves the Telegram Mini App — a web page Telegram opens in its
+// in-app webview. It renders HTML fragments that HTMX swaps into the page (no
+// JSON, no client-side templating), and validates the signed initData Telegram
+// hands the webview so the data endpoints are not open to anyone who knows the
+// URL.
+//
+// It cannot reach package main's fee cache or formatters, so the chain data it
+// needs arrives through the small Source interface, implemented in main — the
+// same seam the miners package uses for its own collector.
+package app
 
 import _ "embed"
 import "crypto/hmac"
 import "crypto/sha256"
 import "encoding/hex"
 import "fmt"
-import "math"
 import "net/http"
 import "net/url"
 import "sort"
@@ -13,7 +21,6 @@ import "strconv"
 import "strings"
 import "time"
 import "bitnsbot/logging"
-import "bitnsbot/rates"
 
 //go:embed app.html
 var appHTML []byte
@@ -26,29 +33,35 @@ var htmxJS []byte
 // shared URL would keep working; a var so tests can shrink it.
 var initDataTTL = 24 * time.Hour
 
-// startApp serves the Telegram Mini App on addr and returns the server so
-// shutdown can drain it. Bind to localhost: the page reaches the outside world
-// through the Cloudflare tunnel, which is what faces the network — nothing here
-// should be exposed directly.
-//
-// The shape is HTMX's: the server renders HTML, the page swaps it in. There is
-// no JSON API and no client-side rendering, which suits a UI that is mostly
-// server-side data in tables — and lets the Go formatters the bot already has
-// (trimNum, usd, group) produce exactly what the page displays.
-func startApp(addr string) *http.Server {
-    var srv = &http.Server{Addr: addr, Handler: appHandler()}
-    go func() {
-        logging.Status("mini app listening on %s", addr)
-        if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-            logging.Err("mini app: %v", err)
-        }
-    }()
-    return srv
+// Tier is one fee estimate, already formatted for display: the sat/vB rate and
+// the USD cost of a typical transaction (empty when no price is known).
+type Tier struct {
+    Rate string
+    USD  string
 }
 
-// appHandler builds the routes, separately from binding a port, so tests drive
-// the same mux the server serves rather than a copy that can drift.
-func appHandler() http.Handler {
+// Fees is the fee card's data. OK is false when the background cache is cold, in
+// which case the tiers are ignored and the card says so.
+type Fees struct {
+    OK      bool
+    Fast    Tier
+    Hour    Tier
+    Slow    Tier
+    TxCount string
+}
+
+// Source supplies the chain data the app renders. main implements it; the app
+// package stays unaware of the fee cache, Bitcoin Core and the price feeds.
+type Source interface {
+    Fees() Fees
+}
+
+// Start serves the Mini App on addr and returns the server so the caller can
+// drain it before closing anything it depends on. token is the bot token, used
+// only to verify initData. Bind addr to localhost: the page reaches the outside
+// world through the Cloudflare tunnel, which is what faces the network — nothing
+// here should be exposed directly.
+func Start(addr, token string, src Source) *http.Server {
     var mux = http.NewServeMux()
     mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
         if r.URL.Path != "/" {
@@ -63,8 +76,17 @@ func appHandler() http.Handler {
         w.Header().Set("Cache-Control", "public, max-age=86400")
         w.Write(htmxJS)
     })
-    mux.HandleFunc("/fees", requireInitData(appFees))
-    return mux
+    mux.HandleFunc("/fees", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
+        fees(src, w)
+    }))
+    var srv = &http.Server{Addr: addr, Handler: mux}
+    go func() {
+        logging.Status("mini app listening on %s", addr)
+        if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+            logging.Err("mini app: %v", err)
+        }
+    }()
+    return srv
 }
 
 // checkInitData verifies the signed payload Telegram hands the Mini App's
@@ -100,9 +122,9 @@ func checkInitData(initData, token string) (url.Values, bool) {
 // requireInitData rejects anything without a currently-valid signature. The
 // shell page at / is deliberately not behind this: it carries no data, and the
 // webview must load it before any script can read initData at all.
-func requireInitData(h http.HandlerFunc) http.HandlerFunc {
+func requireInitData(token string, h http.HandlerFunc) http.HandlerFunc {
     return func(w http.ResponseWriter, r *http.Request) {
-        if _, ok := checkInitData(r.Header.Get("X-Telegram-Init-Data"), *botToken); !ok {
+        if _, ok := checkInitData(r.Header.Get("X-Telegram-Init-Data"), token); !ok {
             logging.Info("mini app: rejected %s without valid initData", r.URL.Path)
             http.Error(w, "open this from Telegram", http.StatusUnauthorized)
             return
@@ -111,28 +133,21 @@ func requireInitData(h http.HandlerFunc) http.HandlerFunc {
     }
 }
 
-// appFees renders the fees card's contents as HTML for HTMX to swap in. The
-// three tiers are the ones /fees prints, read from the cachedFees background
-// cache rather than the mempool, so opening the app costs no node round trip.
-func appFees(w http.ResponseWriter, r *http.Request) {
-    feesMu.Lock()
-    var rec, ok, count = cachedFees, cachedFeesOK, cachedFeesCount
-    feesMu.Unlock()
+// fees renders the fee card's contents as HTML for HTMX to swap in.
+func fees(src Source, w http.ResponseWriter) {
+    var f = src.Fees()
     w.Header().Set("Content-Type", "text/html; charset=utf-8")
-    if !ok {
+    if !f.OK {
         fmt.Fprint(w, `<h2>Network fees</h2><p class="note">fees unavailable</p>`)
         return
     }
-    var price, havePrice = rates.Last()
-    var tier = func(label string, rate float64) string {
-        var usdCell string
-        if havePrice { usdCell = usd(int64(math.Round(rate*typicalTxVsize)), price) }
+    var tier = func(label string, t Tier) string {
         return fmt.Sprintf(`<div class="tier"><div class="label">%s</div>`+
             `<div class="rate">%s <span class="unit">sat/vB</span></div>`+
-            `<div class="usd">%s</div></div>`, label, trimNum(rate, 2), usdCell)
+            `<div class="usd">%s</div></div>`, label, t.Rate, t.USD)
     }
     fmt.Fprintf(w, `<h2>Network fees</h2><div class="tiers">%s%s%s</div>`+
         `<p class="note">projected from %s mempool transactions</p>`,
-        tier("Fast", rec.fastest), tier("1 hour", rec.hour), tier("2+ hours", rec.minimum),
-        group(int64(count)))
+        tier("Fast", f.Fast), tier("1 hour", f.Hour), tier("2+ hours", f.Slow),
+        f.TxCount)
 }

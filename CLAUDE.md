@@ -52,7 +52,7 @@ The bot is designed to run behind a self-hosted `telegram-bot-api` proxy (https:
 
 ## Architecture
 
-The bot lives in `package main` in the repo root; five supporting packages sit in subdirectories (`logging/`, `rates/`, `watches/`, `txwatches/`, `miners/`), each with a small simplified API and its own unexported types. Cross-cutting state that used to be package-`main` globals with compound names (`storeRate`/`lastRate`, `addWatch`/`listWatches`, `addTxWatch`/`txWatches`) now reads as `rates.Add`/`rates.Last`, `watches.Add`/`watches.List`, `txwatches.Add`, etc.
+The bot lives in `package main` in the repo root; supporting packages sit in subdirectories (`logging/`, `rates/`, `watches/`, `txwatches/`, `miners/`, `addrindex/`, `dbui/`, `app/`), each with a small simplified API and its own unexported types. Cross-cutting state that used to be package-`main` globals with compound names (`storeRate`/`lastRate`, `addWatch`/`listWatches`, `addTxWatch`/`txWatches`) now reads as `rates.Add`/`rates.Last`, `watches.Add`/`watches.List`, `txwatches.Add`, etc.
 
 Root (`package main`):
 - `telegram.go` — the Bot API client: the unexported `bot` type, `newBot`, and `call`/`send`/`setWebhook` methods, plus the wire types (`Update`, `Message`, `User`, `Chat`) decoded from incoming webhook JSON.
@@ -62,6 +62,7 @@ Root (`package main`):
 - `blocks.go` — the `blocks` bucket: cached per-block info records (`blockInfo`), `computeBlockInfo` (builds a record from Core), the startup backfill goroutine, and `formatBlock` (the `/info` block reply). See Block info cache below.
 - `backup.go` — the periodic database backup goroutine (`startBackup`/`backup`). See Database backups below.
 - `dbui/` — the localhost database admin web UI (`Start`, plus the list/get/put HTTP handlers and one embedded HTML page). See The database UI below.
+- `app/` — the Telegram Mini App web server (`Start(addr, token, Source)`, the embedded page + HTMX, and the initData validation). It can't reach main's fee cache or formatters, so chain data arrives through the `app.Source` interface (`Fees() app.Fees`), implemented by `appSource` in main. See The Telegram Mini App below.
 - `i18n.go` — the translation tables and the per-chat language lookup (`trans`, `langTrans`, `SetChatLanguage`, `i18n`). See Internationalisation below.
 - `lru.go` — `lruCache`, a small generic LRU used to bound the chat→language map.
 - `addrindex_source.go` — `restSource`, which builds `addrindex.Block` values from Core's REST interface (see Address indexing).
@@ -320,7 +321,9 @@ It sits **inside the `-register-webhook` block**. `setMyCommands` is global to t
 
 ### The Telegram Mini App
 
-`app.go` serves a Mini App — a web page Telegram opens in its in-app webview — on `-app-listen` (default `127.0.0.1:8080`, empty disables it). `app.html` is embedded with `//go:embed`, the same self-contained approach `dbui` uses. `startApp` returns the `*http.Server` so `shutdown` drains it before `closeDB`, exactly like the webhook and dbui servers.
+The `app/` package serves a Mini App — a web page Telegram opens in its in-app webview — on `-app-listen` (default `127.0.0.1:8080`, empty disables it). `app.Start(addr, token, src)` builds the routes inline and returns the `*http.Server` so `shutdown` drains it before `closeDB`, exactly like the webhook and dbui servers. `app.html` and the HTMX library are embedded with `//go:embed`, the same self-contained approach `dbui` uses.
+
+Because it is its own package it cannot see main's fee cache or the display formatters (`trimNum`/`usd`/`group`), so the data it renders arrives through the **`app.Source`** interface — `Fees() app.Fees`, returning already-formatted `app.Tier` values — implemented by `appSource` in main. This is the same seam `miners.Source` uses, and it keeps all the amount/price formatting on the main side where the rest of it lives; the app package only arranges strings into HTML.
 
 **Adding this moved the webhook.** `-listen` now defaults to **`:8082`**, freeing `:8080` for the app, because that is the port the Cloudflare tunnel's public hostname is routed to.
 

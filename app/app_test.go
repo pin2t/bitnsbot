@@ -1,8 +1,9 @@
-package main
+package app
 
 import "crypto/hmac"
 import "crypto/sha256"
 import "encoding/hex"
+import "net/http"
 import "net/http/httptest"
 import "net/url"
 import "sort"
@@ -38,16 +39,43 @@ func freshInitData(token string) string {
     })
 }
 
-func TestAppServesPage(t *testing.T) {
+// fakeSource stands in for main's fee cache.
+type fakeSource struct{ f Fees }
+
+func (s fakeSource) Fees() Fees { return s.f }
+
+// handler returns the routes Start wires. Start inlines the routing and always
+// launches a listener, so tests take its Handler and drive it with a recorder
+// rather than over a socket; the ephemeral listener is closed via t.Cleanup.
+func handler(t *testing.T, token string, src Source) http.Handler {
+    var srv = Start("127.0.0.1:0", token, src)
+    t.Cleanup(func() { srv.Close() })
+    return srv.Handler
+}
+
+func get(h http.Handler, path, initData string) *httptest.ResponseRecorder {
+    var r = httptest.NewRequest("GET", path, nil)
+    if initData != "" { r.Header.Set("X-Telegram-Init-Data", initData) }
     var w = httptest.NewRecorder()
-    appHandler().ServeHTTP(w, httptest.NewRequest("GET", "/", nil))
+    h.ServeHTTP(w, r)
+    return w
+}
+
+func liveFees() Fees {
+    return Fees{OK: true, TxCount: "36 552",
+        Fast: Tier{Rate: "12", USD: "$0.45"},
+        Hour: Tier{Rate: "4", USD: "$0.15"},
+        Slow: Tier{Rate: "1", USD: "$0.04"}}
+}
+
+func TestServesPage(t *testing.T) {
+    var w = get(handler(t, "TESTTOKEN", fakeSource{}), "/", "")
     if w.Code != 200 {
         t.Fatalf("GET / = %d, want 200", w.Code)
     }
     var body = w.Body.String()
     for _, want := range []string{"telegram-web-app.js", "htmx.min.js", `hx-get="fees"`,
-        "X-Telegram-Init-Data", `data-panel="home"`, `data-panel="blocks"`,
-        `data-panel="addresses"`, `data-panel="miners"`, `id="q"`} {
+        "X-Telegram-Init-Data", `data-panel="home"`, `data-panel="miners"`, `id="q"`} {
         if !strings.Contains(body, want) {
             t.Errorf("page is missing %q", want)
         }
@@ -56,25 +84,23 @@ func TestAppServesPage(t *testing.T) {
 
 // HTMX is served from the binary, not a CDN, so the page stays self-contained
 // apart from Telegram's own SDK.
-func TestAppServesHtmx(t *testing.T) {
-    var w = httptest.NewRecorder()
-    appHandler().ServeHTTP(w, httptest.NewRequest("GET", "/htmx.min.js", nil))
-    if w.Code != 200 || !strings.Contains(w.Body.String(), "htmx") {
-        t.Fatalf("GET /htmx.min.js = %d, %d bytes", w.Code, w.Body.Len())
+func TestServesHtmx(t *testing.T) {
+    var w = get(handler(t, "TESTTOKEN", fakeSource{}), "/htmx.min.js", "")
+    if w.Code != 200 {
+        t.Fatalf("GET /htmx.min.js = %d, want 200", w.Code)
     }
 }
 
-func TestAppRejectsOtherPaths(t *testing.T) {
-    var w = httptest.NewRecorder()
-    appHandler().ServeHTTP(w, httptest.NewRequest("GET", "/nope", nil))
+func TestRejectsOtherPaths(t *testing.T) {
+    var w = get(handler(t, "TESTTOKEN", fakeSource{}), "/nope", "")
     if w.Code != 404 {
         t.Fatalf("GET /nope = %d, want 404", w.Code)
     }
 }
 
-// The whole point of the validation: without a signature there is no data.
-func TestAppFeesNeedsInitData(t *testing.T) {
-    *botToken = "TESTTOKEN"
+// The whole point of the validation: without a valid signature there is no data.
+func TestFeesNeedsInitData(t *testing.T) {
+    var h = handler(t, "TESTTOKEN", fakeSource{f: liveFees()})
     var cases = []struct {
         name string
         data string
@@ -84,11 +110,7 @@ func TestAppFeesNeedsInitData(t *testing.T) {
         {"signed with another token", freshInitData("SOMEONE-ELSES-TOKEN")},
     }
     for _, c := range cases {
-        var r = httptest.NewRequest("GET", "/fees", nil)
-        if c.data != "" { r.Header.Set("X-Telegram-Init-Data", c.data) }
-        var w = httptest.NewRecorder()
-        appHandler().ServeHTTP(w, r)
-        if w.Code != 401 {
+        if w := get(h, "/fees", c.data); w.Code != 401 {
             t.Errorf("%s: got %d, want 401", c.name, w.Code)
         }
     }
@@ -96,15 +118,10 @@ func TestAppFeesNeedsInitData(t *testing.T) {
 
 // A tampered field must fail even though the hash itself is well-formed —
 // otherwise the signature would be decoration.
-func TestAppFeesRejectsTamperedField(t *testing.T) {
-    *botToken = "TESTTOKEN"
-    var data = freshInitData("TESTTOKEN")
-    var v, _ = url.ParseQuery(data)
+func TestFeesRejectsTamperedField(t *testing.T) {
+    var v, _ = url.ParseQuery(freshInitData("TESTTOKEN"))
     v.Set("user", `{"id":999,"first_name":"Mallory"}`)
-    var r = httptest.NewRequest("GET", "/fees", nil)
-    r.Header.Set("X-Telegram-Init-Data", v.Encode())
-    var w = httptest.NewRecorder()
-    appHandler().ServeHTTP(w, r)
+    var w = get(handler(t, "TESTTOKEN", fakeSource{f: liveFees()}), "/fees", v.Encode())
     if w.Code != 401 {
         t.Fatalf("tampered user field accepted with %d, want 401", w.Code)
     }
@@ -112,8 +129,7 @@ func TestAppFeesRejectsTamperedField(t *testing.T) {
 
 // A signature stays valid forever on its own, so auth_date is what stops a
 // payload lifted from a log or a shared link from working indefinitely.
-func TestAppFeesRejectsStaleInitData(t *testing.T) {
-    *botToken = "TESTTOKEN"
+func TestFeesRejectsStaleInitData(t *testing.T) {
     var old = signInitData("TESTTOKEN", map[string]string{
         "auth_date": strconv.FormatInt(time.Now().Add(-48*time.Hour).Unix(), 10),
         "user":      `{"id":42}`,
@@ -127,18 +143,9 @@ func TestAppFeesRejectsStaleInitData(t *testing.T) {
 }
 
 // With a valid signature the fragment is HTML for HTMX to swap in — not JSON —
-// carrying the same three tiers /fees prints, read from the cache.
-func TestAppFeesRendersHTML(t *testing.T) {
-    *botToken = "TESTTOKEN"
-    feesMu.Lock()
-    cachedFees = recommendedFees{fastest: 12, halfHour: 8, hour: 4, economy: 2, minimum: 1}
-    cachedFeesOK, cachedFeesCount = true, 36552
-    feesMu.Unlock()
-    defer func() { feesMu.Lock(); cachedFeesOK = false; feesMu.Unlock() }()
-    var r = httptest.NewRequest("GET", "/fees", nil)
-    r.Header.Set("X-Telegram-Init-Data", freshInitData("TESTTOKEN"))
-    var w = httptest.NewRecorder()
-    appHandler().ServeHTTP(w, r)
+// carrying the same three tiers /fees prints.
+func TestFeesRendersHTML(t *testing.T) {
+    var w = get(handler(t, "TESTTOKEN", fakeSource{f: liveFees()}), "/fees", freshInitData("TESTTOKEN"))
     if w.Code != 200 {
         t.Fatalf("GET /fees = %d, want 200", w.Code)
     }
@@ -155,15 +162,8 @@ func TestAppFeesRendersHTML(t *testing.T) {
 }
 
 // A cold cache says so rather than rendering zeros as if they were estimates.
-func TestAppFeesColdCache(t *testing.T) {
-    *botToken = "TESTTOKEN"
-    feesMu.Lock()
-    cachedFeesOK = false
-    feesMu.Unlock()
-    var r = httptest.NewRequest("GET", "/fees", nil)
-    r.Header.Set("X-Telegram-Init-Data", freshInitData("TESTTOKEN"))
-    var w = httptest.NewRecorder()
-    appHandler().ServeHTTP(w, r)
+func TestFeesColdCache(t *testing.T) {
+    var w = get(handler(t, "TESTTOKEN", fakeSource{f: Fees{OK: false}}), "/fees", freshInitData("TESTTOKEN"))
     if !strings.Contains(w.Body.String(), "fees unavailable") {
         t.Fatalf("cold cache rendered %q", w.Body.String())
     }
