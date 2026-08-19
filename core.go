@@ -290,6 +290,17 @@ type coreChainInfo struct {
     SizeOnDisk int64 `json:"size_on_disk"`
 }
 
+type coreChainTxStats struct {
+    TxCount int64 `json:"txcount"`
+}
+
+func (c *coreConn) getChainTxStats(ctx context.Context) (*coreChainTxStats, error) {
+    var stats coreChainTxStats
+    var err = c.call(ctx, "getchaintxstats", nil, &stats)
+    if err != nil { return nil, err }
+    return &stats, nil
+}
+
 func (c *coreConn) getBlockchainInfo(ctx context.Context) (*coreChainInfo, error) {
     var info coreChainInfo
     var err = c.call(ctx, "getblockchaininfo", nil, &info)

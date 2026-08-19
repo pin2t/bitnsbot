@@ -66,12 +66,13 @@ type Fees struct {
 // recently. Every field is already formatted; OK is false while the background
 // cache is still cold.
 type Network struct {
-    OK      bool
-    Coins   string
-    Cap     string
-    Blocks  string
-    Size    string
-    Nodes   string
+    OK     bool
+    Coins  string
+    Cap    string
+    Blocks string
+    Size   string
+    Nodes  string
+    Txs    string
 }
 
 // Source supplies the chain data the app renders. main implements it; the app

@@ -692,8 +692,16 @@ func startNetworkStats() {
                 return
             }
             networkMu.Lock()
-            var nodes = cachedNetwork.Nodes
+            var nodes, txs = cachedNetwork.Nodes, cachedNetwork.Txs
             networkMu.Unlock()
+            // Same rule as the peer count: a failure here keeps the last known
+            // figure rather than blanking the field.
+            if stats, serr := core.getChainTxStats(ctx); serr == nil {
+                txs = bigCount(stats.TxCount)
+            } else {
+                logging.Warn("network stats: chain tx stats: %v", serr)
+                if txs == "" { txs = "—" }
+            }
             // A failed peer count must not blank the field or, worse, report 0
             // active nodes — keep whatever we last knew.
             if addrs, aerr := core.getNodeAddresses(ctx); aerr == nil {
@@ -714,6 +722,7 @@ func startNetworkStats() {
                 Blocks: group(info.Blocks),
                 Size:   humSize(info.SizeOnDisk, 0, 0),
                 Nodes:  nodes,
+                Txs:    txs,
             }
             networkMu.Unlock()
         }

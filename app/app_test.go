@@ -50,7 +50,7 @@ func (s fakeSource) Network() Network { return s.n }
 
 func liveNetwork() Network {
     return Network{OK: true, Coins: "20.1 M", Cap: "21 M",
-        Blocks: "963 166", Size: "869 GB", Nodes: "31 751"}
+        Blocks: "963 166", Size: "869 GB", Nodes: "31 751", Txs: "1.4 B"}
 }
 
 // handler returns the routes Start wires. Start inlines the routing and always
@@ -122,7 +122,8 @@ func TestPageRendersColdCacheInline(t *testing.T) {
 func TestPageRendersNetworkInline(t *testing.T) {
     var body = get(handler(t, "TESTTOKEN", fakeSource{f: liveFees(), n: liveNetwork()}), "/", "").Body.String()
     for _, want := range []string{"<h2>Blockchain</h2>", ">Coins<", ">Blocks<", ">Size<",
-        ">Active nodes<", "20.1 M", "/ 21 M", "963 166", "869 GB", "31 751"} {
+        ">Active nodes<", ">Transactions<", ">Addresses<",
+        "20.1 M", "/ 21 M", "963 166", "869 GB", "31 751", "1.4 B", "coming soon"} {
         if !strings.Contains(body, want) {
             t.Errorf("page did not render %q inline", want)
         }
@@ -133,6 +134,24 @@ func TestPageRendersNetworkInline(t *testing.T) {
     if !(fees < net && net < search) {
         t.Errorf("wrong order: fees at %d, network at %d, search at %d — network belongs between them",
             fees, net, search)
+    }
+}
+
+// html/template executes actions wherever they appear — including inside a CSS
+// comment. A stray {{...}} referencing a field that does not exist fails the
+// render mid-page, and because the writer has already emitted everything above
+// it, the response is a silently truncated page rather than an error. Assert the
+// page is whole.
+func TestPageRendersToCompletion(t *testing.T) {
+    var body = get(handler(t, "TESTTOKEN", fakeSource{f: liveFees(), n: liveNetwork()}), "/", "").Body.String()
+    if !strings.HasSuffix(strings.TrimSpace(body), "</html>") {
+        t.Fatalf("page is truncated — a template action probably failed mid-render; tail: %q",
+            body[max(0, len(body)-120):])
+    }
+    for _, want := range []string{"</style>", `id="q"`, `data-panel="miners"`, "</nav>", "</body>"} {
+        if !strings.Contains(body, want) {
+            t.Errorf("page is missing %q, so it did not render to the end", want)
+        }
     }
 }
 
