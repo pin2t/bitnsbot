@@ -19,7 +19,11 @@
   // would otherwise read "loading…" forever. 401 means we are outside Telegram
   // (or the signature expired), which is worth saying plainly.
   function feesFailed(status) {
-    var note = document.querySelector("#fees .note");
+    var card = document.getElementById("fees");
+    // The card is server-rendered, so a failed *refresh* must leave the fees
+    // already on screen alone — stale numbers beat an error message.
+    if (!card || card.querySelector(".tier")) { return; }
+    var note = card.querySelector(".note");
     if (note) {
       note.textContent = status === 401 ? "open this in Telegram to see live fees"
                                         : "fees unavailable";
@@ -93,9 +97,8 @@
 
 <main>
   <section id="home" class="panel active">
-    <div id="fees" class="fees" hx-get="fees" hx-trigger="load" hx-swap="innerHTML">
-      <h2>Network fees</h2>
-      <p class="note">loading…</p>
+    <div id="fees" class="fees" hx-get="fees" hx-trigger="every 60s" hx-swap="innerHTML">
+      {{template "fees" .}}
     </div>
     <div class="searchwrap">
       <input id="q" type="search" enterkeyhint="search" autocapitalize="off"
@@ -138,3 +141,15 @@
 </script>
 </body>
 </html>
+
+{{define "fees"}}<h2>Network fees</h2>
+{{- if .OK}}
+<div class="tiers">
+  <div class="tier"><div class="label">Fast</div><div class="rate">{{.Fast.Rate}} <span class="unit">sat/vB</span></div><div class="usd">{{.Fast.USD}}</div></div>
+  <div class="tier"><div class="label">1 hour</div><div class="rate">{{.Hour.Rate}} <span class="unit">sat/vB</span></div><div class="usd">{{.Hour.USD}}</div></div>
+  <div class="tier"><div class="label">2+ hours</div><div class="rate">{{.Slow.Rate}} <span class="unit">sat/vB</span></div><div class="usd">{{.Slow.USD}}</div></div>
+</div>
+<p class="note">projected from {{.TxCount}} mempool transactions</p>
+{{- else}}
+<p class="note">fees unavailable</p>
+{{- end}}{{end}}

@@ -13,7 +13,7 @@ import _ "embed"
 import "crypto/hmac"
 import "crypto/sha256"
 import "encoding/hex"
-import "fmt"
+import "html/template"
 import "net/http"
 import "net/url"
 import "sort"
@@ -27,6 +27,11 @@ var appHTML []byte
 
 //go:embed htmx.min.js
 var htmxJS []byte
+
+// appTmpl is the page and, inside it, the "fees" block. Both the initial render
+// and the every-60s refresh execute that one block, so the card the page ships
+// with and the card that replaces it cannot drift apart.
+var appTmpl = template.Must(template.New("app").Parse(string(appHTML)))
 
 // initDataTTL bounds how old Telegram's signed payload may be. A valid
 // signature is forever valid without it, so a payload lifted from a log or a
@@ -69,7 +74,9 @@ func Start(addr, token string, src Source) *http.Server {
             return
         }
         w.Header().Set("Content-Type", "text/html; charset=utf-8")
-        w.Write(appHTML)
+        if err := appTmpl.Execute(w, src.Fees()); err != nil {
+            logging.Err("mini app: render page: %v", err)
+        }
     })
     mux.HandleFunc("/htmx.min.js", func(w http.ResponseWriter, r *http.Request) {
         w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
@@ -133,21 +140,12 @@ func requireInitData(token string, h http.HandlerFunc) http.HandlerFunc {
     }
 }
 
-// fees renders the fee card's contents as HTML for HTMX to swap in.
+// fees renders just the card's contents, for the periodic refresh to swap in.
+// The page ships the same block already rendered, so this is only ever an
+// update — never the first paint.
 func fees(src Source, w http.ResponseWriter) {
-    var f = src.Fees()
     w.Header().Set("Content-Type", "text/html; charset=utf-8")
-    if !f.OK {
-        fmt.Fprint(w, `<h2>Network fees</h2><p class="note">fees unavailable</p>`)
-        return
+    if err := appTmpl.ExecuteTemplate(w, "fees", src.Fees()); err != nil {
+        logging.Err("mini app: render fees: %v", err)
     }
-    var tier = func(label string, t Tier) string {
-        return fmt.Sprintf(`<div class="tier"><div class="label">%s</div>`+
-            `<div class="rate">%s <span class="unit">sat/vB</span></div>`+
-            `<div class="usd">%s</div></div>`, label, t.Rate, t.USD)
-    }
-    fmt.Fprintf(w, `<h2>Network fees</h2><div class="tiers">%s%s%s</div>`+
-        `<p class="note">projected from %s mempool transactions</p>`,
-        tier("Fast", f.Fast), tier("1 hour", f.Hour), tier("2+ hours", f.Slow),
-        f.TxCount)
 }

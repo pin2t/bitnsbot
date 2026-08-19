@@ -69,7 +69,7 @@ func liveFees() Fees {
 }
 
 func TestServesPage(t *testing.T) {
-    var w = get(handler(t, "TESTTOKEN", fakeSource{}), "/", "")
+    var w = get(handler(t, "TESTTOKEN", fakeSource{f: liveFees()}), "/", "")
     if w.Code != 200 {
         t.Fatalf("GET / = %d, want 200", w.Code)
     }
@@ -79,6 +79,43 @@ func TestServesPage(t *testing.T) {
         if !strings.Contains(body, want) {
             t.Errorf("page is missing %q", want)
         }
+    }
+}
+
+// The card must arrive already rendered: the page carries the fees, rather than
+// shipping a placeholder and fetching them in a second round trip.
+func TestPageRendersFeesInline(t *testing.T) {
+    var body = get(handler(t, "TESTTOKEN", fakeSource{f: liveFees()}), "/", "").Body.String()
+    for _, want := range []string{"<h2>Network fees</h2>", ">Fast<", ">1 hour<", ">2+ hours<",
+        ">12 <", ">4 <", ">1 <", "36 552"} {
+        if !strings.Contains(body, want) {
+            t.Errorf("page did not render %q inline", want)
+        }
+    }
+    if strings.Contains(body, "loading…") {
+        t.Error(`page still ships a "loading…" placeholder; fees should be rendered server-side`)
+    }
+}
+
+// A cold cache is reported in the page itself, not left blank until a fetch.
+func TestPageRendersColdCacheInline(t *testing.T) {
+    var body = get(handler(t, "TESTTOKEN", fakeSource{f: Fees{OK: false}}), "/", "").Body.String()
+    if !strings.Contains(body, "fees unavailable") {
+        t.Error("cold cache should render \"fees unavailable\" into the page")
+    }
+    if strings.Contains(body, `class="tier"`) {
+        t.Error("cold cache rendered fee tiers; there are no numbers to show")
+    }
+}
+
+// The template block the page renders and the one the refresh returns must be
+// the same block, or the card would change shape when it updates.
+func TestInlineAndRefreshMatch(t *testing.T) {
+    var h = handler(t, "TESTTOKEN", fakeSource{f: liveFees()})
+    var fragment = strings.TrimSpace(get(h, "/fees", freshInitData("TESTTOKEN")).Body.String())
+    var page = get(h, "/", "").Body.String()
+    if !strings.Contains(page, fragment) {
+        t.Errorf("the page does not embed the exact refresh fragment:\n--- fragment ---\n%s", fragment)
     }
 }
 
@@ -92,8 +129,8 @@ func TestServesPage(t *testing.T) {
 // response, so without them any failure also leaves "loading…" on screen.
 func TestFeesTriggerIsNotRacy(t *testing.T) {
     var body = get(handler(t, "TESTTOKEN", fakeSource{}), "/", "").Body.String()
-    if !strings.Contains(body, `hx-trigger="load"`) {
-        t.Error(`the fees card must use hx-trigger="load" so HTMX owns the timing`)
+    if !strings.Contains(body, `hx-trigger="every 60s"`) {
+        t.Error(`the fees card must refresh itself with hx-trigger="every 60s"`)
     }
     if strings.Contains(body, "htmx.trigger(") {
         t.Error("an inline htmx.trigger() races HTMX's DOM processing and is lost")
