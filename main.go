@@ -59,6 +59,12 @@ var appSrv *http.Server
 // package stays unaware of Bitcoin Core, the price feeds and the cache.
 type appSource struct{}
 
+func (appSource) Network() app.Network {
+    networkMu.Lock()
+    defer networkMu.Unlock()
+    return cachedNetwork
+}
+
 func (appSource) Fees() app.Fees {
     feesMu.Lock()
     var rec, ok, count = cachedFees, cachedFeesOK, cachedFeesCount
@@ -73,6 +79,7 @@ func (appSource) Fees() app.Fees {
     return app.Fees{OK: true, Fast: tier(rec.fastest), Hour: tier(rec.hour),
         Slow: tier(rec.minimum), TxCount: group(int64(count))}
 }
+
 var ver = "1.0"
 var commit = ""
 
@@ -139,6 +146,7 @@ func main() {
     startMempoolFlow()
     startMempoolSummary()
     startMempoolFees()
+    startNetworkStats()
     if core != nil && *coreZMQ != "" {
         if err := startZMQ(context.Background(), strings.Split(*coreZMQ, ","), bot); err != nil {
             logging.Fatal("subscribe to Bitcoin Core ZMQ: %v", err)
@@ -662,6 +670,71 @@ func startMempoolSummary() {
 // recommended fees) every 10 minutes and stores them so /fees can reply
 // instantly and confEstimate can use current mempool-based rates instead of
 // core's slow-to-react estimatesmartfee.
+// activeNodeWindow is how recently the node must have seen a peer for it to
+// count as active. A var so tests can shrink it.
+var activeNodeWindow = 48 * time.Hour
+
+var networkMu sync.Mutex
+var cachedNetwork app.Network
+
+// startNetworkStats keeps the Mini App's Network card fresh. getnodeaddresses
+// returns every address the node knows — 65k entries and several megabytes on
+// mainnet — so this must never run in a request path.
+func startNetworkStats() {
+    if core == nil { return }
+    go func() {
+        var refresh = func() {
+            var ctx, cancel = context.WithTimeout(context.Background(), 60*time.Second)
+            defer cancel()
+            var info, err = core.getBlockchainInfo(ctx)
+            if err != nil {
+                logging.Warn("network stats: %v", err)
+                return
+            }
+            networkMu.Lock()
+            var nodes, txs = cachedNetwork.Nodes, cachedNetwork.Txs
+            networkMu.Unlock()
+            // Same rule as the peer count: a failure here keeps the last known
+            // figure rather than blanking the field.
+            if stats, serr := core.getChainTxStats(ctx); serr == nil {
+                txs = bigCount(stats.TxCount)
+            } else {
+                logging.Warn("network stats: chain tx stats: %v", serr)
+                if txs == "" { txs = "—" }
+            }
+            // A failed peer count must not blank the field or, worse, report 0
+            // active nodes — keep whatever we last knew.
+            if addrs, aerr := core.getNodeAddresses(ctx); aerr == nil {
+                var cutoff = time.Now().Add(-activeNodeWindow).Unix()
+                var active int64
+                for _, a := range addrs {
+                    if a.Time >= cutoff { active++ }
+                }
+                nodes = group(active)
+            } else {
+                logging.Warn("network stats: node addresses: %v", aerr)
+                if nodes == "" { nodes = "—" }
+            }
+            networkMu.Lock()
+            cachedNetwork = app.Network{OK: true,
+                Coins:  metric(toBTC(circulatingSupply(info.Blocks)), 1),
+                Cap:    "21 M",
+                Blocks: group(info.Blocks),
+                Size:   humSize(info.SizeOnDisk, 0, 0),
+                Nodes:  nodes,
+                Txs:    txs,
+            }
+            networkMu.Unlock()
+        }
+        refresh()
+        var t = time.NewTicker(10 * time.Minute)
+        defer t.Stop()
+        for range t.C {
+            refresh()
+        }
+    }()
+}
+
 func startMempoolFees() {
     if core == nil { return }
     go func() {
@@ -714,7 +787,7 @@ func mempoolCmd(bot *bot, chat int64) {
         return
     }
     var pairs = [][2]string{
-        {i18n(chat).String("Size"),         humSize(info.Bytes, chat)},
+        {i18n(chat).String("Size"),         humSize(info.Bytes, 2, chat)},
         {i18n(chat).String("Transactions"), group(int64(info.Size))},
     }
     flowMu.Lock()

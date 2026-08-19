@@ -18,6 +18,30 @@ func TestSubsidy(t *testing.T) {
     }
 }
 
+// Supply is summed per halving epoch, so the epoch boundaries are where it can
+// go wrong. Values are the issuance schedule, in satoshi.
+func TestCirculatingSupply(t *testing.T) {
+    var cases = []struct {
+        height int64
+        want   int64
+    }{
+        {0, 5000000000},                  // genesis alone: 50 BTC
+        {1, 10000000000},                 // two blocks at 50
+        {209999, 1050000000000000},       // all of epoch 0: 210000 x 50 = 10.5M BTC
+        {210000, 1050002500000000},       // first block of epoch 1 pays 25
+        {629999, 1837500000000000},       // 10.5M + 5.25M + 2.625M = 18.375M BTC
+    }
+    for _, c := range cases {
+        if got := circulatingSupply(c.height); got != c.want {
+            t.Errorf("circulatingSupply(%d) = %d, want %d", c.height, got, c.want)
+        }
+    }
+    // and it must never exceed the 21M cap, however far out we look
+    if got := circulatingSupply(100000000); got > 2100000000000000 {
+        t.Errorf("supply at a far-future height = %d, above the 21M cap", got)
+    }
+}
+
 func TestStoreLoadBlock(t *testing.T) {
     if err := openDB(filepath.Join(t.TempDir(), "watches.db")); err != nil {
         t.Fatalf("openDB: %v", err)

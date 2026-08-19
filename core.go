@@ -285,6 +285,47 @@ type coreMempoolInfo struct {
     MempoolMinFee float64 `json:"mempoolminfee"`
 }
 
+type coreChainInfo struct {
+    Blocks     int64 `json:"blocks"`
+    SizeOnDisk int64 `json:"size_on_disk"`
+}
+
+type coreChainTxStats struct {
+    TxCount int64 `json:"txcount"`
+}
+
+func (c *coreConn) getChainTxStats(ctx context.Context) (*coreChainTxStats, error) {
+    var stats coreChainTxStats
+    var err = c.call(ctx, "getchaintxstats", nil, &stats)
+    if err != nil { return nil, err }
+    return &stats, nil
+}
+
+func (c *coreConn) getBlockchainInfo(ctx context.Context) (*coreChainInfo, error) {
+    var info coreChainInfo
+    var err = c.call(ctx, "getblockchaininfo", nil, &info)
+    if err != nil { return nil, err }
+    return &info, nil
+}
+
+// coreNodeAddress is one entry of the node's address manager. Time is when the
+// node was last seen — gossiped, not verified, so this is the node's own view of
+// the network rather than a reachability scan.
+type coreNodeAddress struct {
+    Time    int64  `json:"time"`
+    Network string `json:"network"`
+}
+
+// getNodeAddresses asks for every address the node knows (count 0 means all).
+// On mainnet that is tens of thousands of entries and several megabytes, so it
+// belongs in a background refresh, never in a request path.
+func (c *coreConn) getNodeAddresses(ctx context.Context) ([]coreNodeAddress, error) {
+    var addrs []coreNodeAddress
+    var err = c.call(ctx, "getnodeaddresses", []interface{}{0}, &addrs)
+    if err != nil { return nil, err }
+    return addrs, nil
+}
+
 func (c *coreConn) getMempoolInfo(ctx context.Context) (*coreMempoolInfo, error) {
     var info coreMempoolInfo
     var err = c.call(ctx, "getmempoolinfo", nil, &info)

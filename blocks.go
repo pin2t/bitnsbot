@@ -80,6 +80,25 @@ func loadBlock(height int64) (*blockInfo, bool) {
 
 // subsidy returns the block reward in BTC for a height from the halving schedule
 // — 50 BTC, halving every 210000 blocks.
+// circulatingSupply is the total mined at this height, in satoshi, summed one
+// halving epoch at a time (at most 33 iterations rather than one per block).
+//
+// It is the issuance schedule, not a UTXO-set total: coins burned or lost, and
+// the handful of blocks whose miners under-claimed their subsidy, are all still
+// counted. `gettxoutsetinfo` would be exact but walks the whole UTXO set, which
+// takes minutes — far too slow for a card that refreshes every ten.
+func circulatingSupply(height int64) int64 {
+    var total int64
+    for epoch := int64(0); epoch < 64; epoch++ {
+        var start = epoch * 210000
+        if start > height { break }
+        var end = start + 210000 - 1
+        if end > height { end = height }
+        total += (end - start + 1) * subsidy(start)
+    }
+    return total
+}
+
 func subsidy(height int64) int64 {
     var halvings = height / 210000
     if halvings >= 64 { return 0 }
@@ -243,7 +262,7 @@ func formatBlock(bi *blockInfo, chat int64) string {
     var pairs = [][2]string{
         {i18n(chat).String("Hash"), short(bi.Hash)},
         {i18n(chat).String("Time"), when(bi.Time, chat)},
-        {i18n(chat).String("Size"), humSize(int64(bi.Size), chat)},
+        {i18n(chat).String("Size"), humSize(int64(bi.Size), 2, chat)},
         {i18n(chat).String("Transactions"), strconv.Itoa(bi.NumTx)},
         {i18n(chat).String("Miner"), bi.Miner},
         {i18n(chat).String("Difficulty"), difficulty},
