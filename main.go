@@ -712,7 +712,7 @@ func startNetworkStats() {
                 Coins:  metric(toBTC(circulatingSupply(info.Blocks)), 1),
                 Cap:    "21 M",
                 Blocks: group(info.Blocks),
-                Size:   humSize(info.SizeOnDisk, 0),
+                Size:   humSize(info.SizeOnDisk, 0, 0),
                 Nodes:  nodes,
             }
             networkMu.Unlock()
@@ -778,7 +778,7 @@ func mempoolCmd(bot *bot, chat int64) {
         return
     }
     var pairs = [][2]string{
-        {i18n(chat).String("Size"),         humSize(info.Bytes, chat)},
+        {i18n(chat).String("Size"),         humSize(info.Bytes, 2, chat)},
         {i18n(chat).String("Transactions"), group(int64(info.Size))},
     }
     flowMu.Lock()

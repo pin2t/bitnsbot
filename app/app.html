@@ -76,7 +76,6 @@
   .net .stats { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px 8px; text-align: center; }
   .net .stat .label { font-size: 11px; color: var(--hint); }
   .net .stat .value { font-size: 17px; font-weight: 600; margin-top: 3px; }
-  .net .stat .value .cap { font-size: 11px; font-weight: 400; color: var(--hint); }
 
   .searchwrap { flex: 1; display: flex; flex-direction: column;
                 align-items: center; justify-content: center; gap: 10px; }
@@ -165,10 +164,10 @@
 <p class="note">fees unavailable</p>
 {{- end}}{{end}}
 
-{{define "network"}}<h2>Network</h2>
+{{define "network"}}<h2>Blockchain</h2>
 {{- if .OK}}
 <div class="stats">
-  <div class="stat"><div class="label">Coins</div><div class="value">{{.Coins}} <span class="cap">/ {{.Cap}}</span></div></div>
+  <div class="stat"><div class="label">Coins</div><div class="value">{{.Coins}} / {{.Cap}}</div></div>
   <div class="stat"><div class="label">Blocks</div><div class="value">{{.Blocks}}</div></div>
   <div class="stat"><div class="label">Size</div><div class="value">{{.Size}}</div></div>
   <div class="stat"><div class="label">Active nodes</div><div class="value">{{.Nodes}}</div></div>

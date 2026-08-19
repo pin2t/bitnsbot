@@ -72,10 +72,20 @@ func metric(f float64, decimals int) string {
         f /= 1000
         unit = u
     }
-    return strings.TrimRight(strings.TrimRight(strconv.FormatFloat(f, 'f', decimals, 64), "0"), ".") + unit
+    return trimZeros(strconv.FormatFloat(f, 'f', decimals, 64)) + unit
 }
 
-func humSize(s int64, chat int64) string {
+// trimZeros drops a trailing ".500" down to ".5" and ".000" to nothing. It must
+// leave an integer alone: trimming "870" as a plain string would strip the zero
+// and yield "87".
+func trimZeros(s string) string {
+    if !strings.Contains(s, ".") { return s }
+    return strings.TrimRight(strings.TrimRight(s, "0"), ".")
+}
+
+// humSize renders a byte count with a 1000-scaled unit. decimals is per call
+// site: the bot's messages want two, the Mini App's card wants none.
+func humSize(s int64, decimals int, chat int64) string {
     var f = float64(s)
     var unit = i18n(chat).String(" B")
     for _, u := range []string{i18n(chat).String(" KB"), i18n(chat).String(" MB"), i18n(chat).String(" GB"), i18n(chat).String(" TB"), i18n(chat).String(" PB"), i18n(chat).String(" EB")} {
@@ -83,7 +93,7 @@ func humSize(s int64, chat int64) string {
         f /= 1000
         unit = u
     }
-    return strings.TrimRight(strings.TrimRight(strconv.FormatFloat(f, 'f', 2, 64), "0"), ".") + unit
+    return trimZeros(strconv.FormatFloat(f, 'f', decimals, 64)) + unit
 }
 
 // compactBTC renders a BTC amount compactly with a USD approximation at the

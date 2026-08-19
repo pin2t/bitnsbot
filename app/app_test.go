@@ -121,7 +121,7 @@ func TestPageRendersColdCacheInline(t *testing.T) {
 // fetched, and sits between the fees card and the search field.
 func TestPageRendersNetworkInline(t *testing.T) {
     var body = get(handler(t, "TESTTOKEN", fakeSource{f: liveFees(), n: liveNetwork()}), "/", "").Body.String()
-    for _, want := range []string{"<h2>Network</h2>", ">Coins<", ">Blocks<", ">Size<",
+    for _, want := range []string{"<h2>Blockchain</h2>", ">Coins<", ">Blocks<", ">Size<",
         ">Active nodes<", "20.1 M", "/ 21 M", "963 166", "869 GB", "31 751"} {
         if !strings.Contains(body, want) {
             t.Errorf("page did not render %q inline", want)

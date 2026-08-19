@@ -100,3 +100,37 @@ func TestDateTime(t *testing.T) {
         t.Fatalf("es: expected '15 junio 2023 10:30', got %q", got)
     }
 }
+
+// trimZeros must not touch an integer. With decimals=0 the old inline trim
+// turned "870" into "87", silently dropping an order of magnitude — the reason
+// humSize takes a decimals argument rather than reusing metric for whole units.
+func TestMetricWholeUnits(t *testing.T) {
+    var cases = []struct {
+        in       float64
+        decimals int
+        want     string
+    }{
+        {870e9, 0, "870 G"},
+        {869e9, 0, "869 G"},
+        {868934901021, 0, "869 G"},
+        {3299245, 1, "3.3 M"},
+        {79000000000000, 2, "79 T"},
+    }
+    for _, c := range cases {
+        if got := metric(c.in, c.decimals); got != c.want {
+            t.Errorf("metric(%v, %d) = %q, want %q", c.in, c.decimals, got, c.want)
+        }
+    }
+}
+
+func TestHumSizeDecimals(t *testing.T) {
+    if got := humSize(868934901021, 2, 0); got != "868.93 GB" {
+        t.Errorf("humSize(.., 2) = %q, want 868.93 GB", got)
+    }
+    if got := humSize(868934901021, 0, 0); got != "869 GB" {
+        t.Errorf("humSize(.., 0) = %q, want 869 GB", got)
+    }
+    if got := humSize(870000000000, 0, 0); got != "870 GB" {
+        t.Errorf("humSize(870 GB, 0) = %q, want 870 GB — a trailing zero must survive", got)
+    }
+}
