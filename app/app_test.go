@@ -82,6 +82,29 @@ func TestServesPage(t *testing.T) {
     }
 }
 
+// The fees card must let HTMX own its trigger. Firing a custom event from an
+// inline script races HTMX's own DOMContentLoaded processing: the event is
+// dispatched before HTMX has registered a listener for it, so it is lost and the
+// card sits on "loading…" forever. Verified in a browser — with the custom-event
+// version, zero requests were made; with hx-trigger="load", the request fires.
+//
+// The error handlers matter for the same symptom: HTMX does not swap a failed
+// response, so without them any failure also leaves "loading…" on screen.
+func TestFeesTriggerIsNotRacy(t *testing.T) {
+    var body = get(handler(t, "TESTTOKEN", fakeSource{}), "/", "").Body.String()
+    if !strings.Contains(body, `hx-trigger="load"`) {
+        t.Error(`the fees card must use hx-trigger="load" so HTMX owns the timing`)
+    }
+    if strings.Contains(body, "htmx.trigger(") {
+        t.Error("an inline htmx.trigger() races HTMX's DOM processing and is lost")
+    }
+    for _, want := range []string{"htmx:responseError", "htmx:sendError"} {
+        if !strings.Contains(body, want) {
+            t.Errorf("missing %s handler: a failed request would leave \"loading…\" on screen", want)
+        }
+    }
+}
+
 // HTMX is served from the binary, not a CDN, so the page stays self-contained
 // apart from Telegram's own SDK.
 func TestServesHtmx(t *testing.T) {

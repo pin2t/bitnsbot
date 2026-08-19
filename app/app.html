@@ -15,6 +15,22 @@
     var tg = window.Telegram && window.Telegram.WebApp;
     if (tg && tg.initData) { e.detail.headers["X-Telegram-Init-Data"] = tg.initData; }
   });
+  // HTMX leaves the element untouched on a failed request, so the placeholder
+  // would otherwise read "loading…" forever. 401 means we are outside Telegram
+  // (or the signature expired), which is worth saying plainly.
+  function feesFailed(status) {
+    var note = document.querySelector("#fees .note");
+    if (note) {
+      note.textContent = status === 401 ? "open this in Telegram to see live fees"
+                                        : "fees unavailable";
+    }
+  }
+  document.addEventListener("htmx:responseError", function(e) {
+    if (e.detail.target && e.detail.target.id === "fees") { feesFailed(e.detail.xhr.status); }
+  });
+  document.addEventListener("htmx:sendError", function(e) {
+    if (e.detail.target && e.detail.target.id === "fees") { feesFailed(0); }
+  });
 </script>
 <style>
   /* Telegram supplies these at runtime; the fallbacks keep the page usable in a
@@ -77,7 +93,7 @@
 
 <main>
   <section id="home" class="panel active">
-    <div id="fees" class="fees" hx-get="fees" hx-trigger="loadfees" hx-swap="innerHTML">
+    <div id="fees" class="fees" hx-get="fees" hx-trigger="load" hx-swap="innerHTML">
       <h2>Network fees</h2>
       <p class="note">loading…</p>
     </div>
@@ -119,14 +135,6 @@
       document.querySelectorAll(".panel").forEach(function(p) { p.classList.toggle("active", p.id === b.dataset.panel); });
     });
   });
-
-  // Only ask for data we can authenticate. Outside Telegram there is no
-  // initData, so the request would be a guaranteed 401 — say so instead.
-  if (tg && tg.initData) {
-    htmx.trigger("#fees", "loadfees");
-  } else {
-    document.querySelector("#fees .note").textContent = "open this in Telegram to see live fees";
-  }
 </script>
 </body>
 </html>
