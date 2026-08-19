@@ -337,6 +337,10 @@ The page is four tabs — Home, Blocks, Addresses, Miners — with the tab bar a
 
 The three tiers are the ones `/fees` prints, read from the **`cachedFees` background cache** rather than the mempool, so opening the app costs no node round trip. A cold cache renders "fees unavailable" rather than zeros dressed up as estimates.
 
+**The fees card lets HTMX own its trigger** (`hx-trigger="load"`). An earlier version fired a custom event from an inline script at the end of `<body>`, which is a race: HTMX processes the DOM on `DOMContentLoaded`, *after* that script runs, so the event was dispatched before HTMX had registered a listener for it and was simply lost — the card sat on "loading…" forever, with **no request ever made**. Verified in a browser both ways: zero requests with the custom event, and the request firing on its own once HTMX owned the trigger. `TestFeesTriggerIsNotRacy` guards it.
+
+**A failed request must never leave "loading…" on screen.** HTMX does not swap error responses, so the placeholder survives untouched; `htmx:responseError` and `htmx:sendError` handlers replace it instead — a 401 means the page is outside Telegram (or the signature expired), which is worth saying plainly.
+
 **`initData` validation** (`checkInitData`) is what stands between this server and anyone who knows the URL. Telegram signs the payload it hands the webview; the page forwards it on every HTMX request as `X-Telegram-Init-Data` (attached via an `htmx:configRequest` listener registered on `document` — not `body`, which does not exist yet in `head` — so the very first request already carries it), and `requireInitData` rejects anything unsigned, tampered, or stale with a 401.
 
 The scheme, which is easy to get subtly wrong:
