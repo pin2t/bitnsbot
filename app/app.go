@@ -28,10 +28,16 @@ var appHTML []byte
 //go:embed htmx.min.js
 var htmxJS []byte
 
-// appTmpl is the page and, inside it, the "fees" block. Both the initial render
-// and the every-60s refresh execute that one block, so the card the page ships
-// with and the card that replaces it cannot drift apart.
+// appTmpl is the page and, inside it, the "fees" and "network" blocks. The
+// initial render and each refresh execute those same blocks, so the card the
+// page ships with and the card that replaces it cannot drift apart.
 var appTmpl = template.Must(template.New("app").Parse(string(appHTML)))
+
+// page is what the whole template renders from: one field per card.
+type page struct {
+    Fees    Fees
+    Network Network
+}
 
 // initDataTTL bounds how old Telegram's signed payload may be. A valid
 // signature is forever valid without it, so a payload lifted from a log or a
@@ -55,10 +61,24 @@ type Fees struct {
     TxCount string
 }
 
+// Network is the chain-at-a-glance card: circulating supply against the 21M cap,
+// chain height, on-disk size and how many peers the node has heard from
+// recently. Every field is already formatted; OK is false while the background
+// cache is still cold.
+type Network struct {
+    OK      bool
+    Coins   string
+    Cap     string
+    Blocks  string
+    Size    string
+    Nodes   string
+}
+
 // Source supplies the chain data the app renders. main implements it; the app
 // package stays unaware of the fee cache, Bitcoin Core and the price feeds.
 type Source interface {
     Fees() Fees
+    Network() Network
 }
 
 // Start serves the Mini App on addr and returns the server so the caller can
@@ -74,7 +94,7 @@ func Start(addr, token string, src Source) *http.Server {
             return
         }
         w.Header().Set("Content-Type", "text/html; charset=utf-8")
-        if err := appTmpl.Execute(w, src.Fees()); err != nil {
+        if err := appTmpl.Execute(w, page{Fees: src.Fees(), Network: src.Network()}); err != nil {
             logging.Err("mini app: render page: %v", err)
         }
     })
@@ -84,7 +104,10 @@ func Start(addr, token string, src Source) *http.Server {
         w.Write(htmxJS)
     })
     mux.HandleFunc("/fees", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
-        fees(src, w)
+        render(w, "fees", src.Fees())
+    }))
+    mux.HandleFunc("/network", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
+        render(w, "network", src.Network())
     }))
     var srv = &http.Server{Addr: addr, Handler: mux}
     go func() {
@@ -140,12 +163,12 @@ func requireInitData(token string, h http.HandlerFunc) http.HandlerFunc {
     }
 }
 
-// fees renders just the card's contents, for the periodic refresh to swap in.
-// The page ships the same block already rendered, so this is only ever an
-// update — never the first paint.
-func fees(src Source, w http.ResponseWriter) {
+// render writes one card's block, for the periodic refresh to swap in. The page
+// ships the same blocks already rendered, so this is only ever an update — never
+// the first paint.
+func render(w http.ResponseWriter, block string, data any) {
     w.Header().Set("Content-Type", "text/html; charset=utf-8")
-    if err := appTmpl.ExecuteTemplate(w, "fees", src.Fees()); err != nil {
-        logging.Err("mini app: render fees: %v", err)
+    if err := appTmpl.ExecuteTemplate(w, block, data); err != nil {
+        logging.Err("mini app: render %s: %v", block, err)
     }
 }

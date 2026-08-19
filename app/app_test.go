@@ -39,10 +39,19 @@ func freshInitData(token string) string {
     })
 }
 
-// fakeSource stands in for main's fee cache.
-type fakeSource struct{ f Fees }
+// fakeSource stands in for main's caches.
+type fakeSource struct {
+    f Fees
+    n Network
+}
 
-func (s fakeSource) Fees() Fees { return s.f }
+func (s fakeSource) Fees() Fees       { return s.f }
+func (s fakeSource) Network() Network { return s.n }
+
+func liveNetwork() Network {
+    return Network{OK: true, Coins: "20.1 M", Cap: "21 M",
+        Blocks: "963 166", Size: "869 GB", Nodes: "31 751"}
+}
 
 // handler returns the routes Start wires. Start inlines the routing and always
 // launches a listener, so tests take its Handler and drive it with a recorder
@@ -108,14 +117,58 @@ func TestPageRendersColdCacheInline(t *testing.T) {
     }
 }
 
+// The network card carries the four fields, rendered into the page rather than
+// fetched, and sits between the fees card and the search field.
+func TestPageRendersNetworkInline(t *testing.T) {
+    var body = get(handler(t, "TESTTOKEN", fakeSource{f: liveFees(), n: liveNetwork()}), "/", "").Body.String()
+    for _, want := range []string{"<h2>Network</h2>", ">Coins<", ">Blocks<", ">Size<",
+        ">Active nodes<", "20.1 M", "/ 21 M", "963 166", "869 GB", "31 751"} {
+        if !strings.Contains(body, want) {
+            t.Errorf("page did not render %q inline", want)
+        }
+    }
+    var fees = strings.Index(body, `id="fees"`)
+    var net = strings.Index(body, `id="network"`)
+    var search = strings.Index(body, `id="q"`)
+    if !(fees < net && net < search) {
+        t.Errorf("wrong order: fees at %d, network at %d, search at %d — network belongs between them",
+            fees, net, search)
+    }
+}
+
+// A cold cache says so rather than rendering an empty card or zeroed counts.
+func TestNetworkColdCache(t *testing.T) {
+    var body = get(handler(t, "TESTTOKEN", fakeSource{f: liveFees()}), "/", "").Body.String()
+    if !strings.Contains(body, "network stats unavailable") {
+        t.Error("a cold network cache should say so in the page")
+    }
+    if strings.Contains(body, `class="stat"`) {
+        t.Error("cold cache rendered stat cells; there are no numbers to show")
+    }
+}
+
+// /network is data, so it needs a signature like /fees does.
+func TestNetworkNeedsInitData(t *testing.T) {
+    var h = handler(t, "TESTTOKEN", fakeSource{n: liveNetwork()})
+    if w := get(h, "/network", ""); w.Code != 401 {
+        t.Errorf("unauthenticated /network = %d, want 401", w.Code)
+    }
+    var w = get(h, "/network", freshInitData("TESTTOKEN"))
+    if w.Code != 200 || !strings.Contains(w.Body.String(), "31 751") {
+        t.Errorf("signed /network = %d: %s", w.Code, w.Body.String())
+    }
+}
+
 // The template block the page renders and the one the refresh returns must be
 // the same block, or the card would change shape when it updates.
 func TestInlineAndRefreshMatch(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{f: liveFees()})
-    var fragment = strings.TrimSpace(get(h, "/fees", freshInitData("TESTTOKEN")).Body.String())
+    var h = handler(t, "TESTTOKEN", fakeSource{f: liveFees(), n: liveNetwork()})
     var page = get(h, "/", "").Body.String()
-    if !strings.Contains(page, fragment) {
-        t.Errorf("the page does not embed the exact refresh fragment:\n--- fragment ---\n%s", fragment)
+    for _, path := range []string{"/fees", "/network"} {
+        var fragment = strings.TrimSpace(get(h, path, freshInitData("TESTTOKEN")).Body.String())
+        if !strings.Contains(page, fragment) {
+            t.Errorf("the page does not embed the exact %s fragment:\n--- fragment ---\n%s", path, fragment)
+        }
     }
 }
 
