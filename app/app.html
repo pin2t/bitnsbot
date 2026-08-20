@@ -52,7 +52,7 @@
   body {
     display: flex; flex-direction: column;
     background: var(--bg); color: var(--fg);
-    font: 15px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font: 17px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   }
   main { flex: 1; overflow-y: auto; padding: 16px 16px 8px; }
   .panel { display: none; height: 100%; }
@@ -60,36 +60,36 @@
 
   /* Home: fees pinned at the top, search centred in what remains. */
   .fees { background: var(--card); border-radius: 14px; padding: 14px 12px; }
-  .fees h2 { margin: 0 0 10px; font-size: 12px; font-weight: 600; text-align: center;
+  .fees h2 { margin: 0 0 11px; font-size: 13px; font-weight: 600; text-align: center;
              letter-spacing: .06em; text-transform: uppercase; color: var(--hint); }
   .tiers { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; text-align: center; }
   .tier + .tier { border-left: 1px solid var(--line); }
-  .tier .label { font-size: 11px; color: var(--hint); }
-  .tier .rate  { font-size: 19px; font-weight: 600; margin: 3px 0 1px; }
-  .tier .unit  { font-size: 11px; font-weight: 400; color: var(--hint); }
-  .tier .usd   { font-size: 11px; color: var(--hint); }
-  .fees .note  { margin: 10px 0 0; font-size: 11px; color: var(--hint); text-align: center; }
+  .tier .label { font-size: 12px; color: var(--hint); }
+  .tier .rate  { font-size: 22px; font-weight: 600; margin: 3px 0 1px; }
+  .tier .unit  { font-size: 12px; font-weight: 400; color: var(--hint); }
+  .tier .usd   { font-size: 12px; color: var(--hint); }
+  .fees .note  { margin: 11px 0 0; font-size: 12px; color: var(--hint); text-align: center; }
 
   /* Four fields across is unreadable at 375px ("19.7 M / 21 M" alone needs the
      width), so the network card is a 2x2 grid of the same cells. */
   .net { margin-top: 10px; }
   .net .stats { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px 8px; text-align: center; }
-  .net .stat .label { font-size: 11px; color: var(--hint); }
-  .net .stat .value { font-size: 17px; font-weight: 600; margin-top: 3px; }
+  .net .stat .label { font-size: 12px; color: var(--hint); }
+  .net .stat .value { font-size: 20px; font-weight: 600; margin-top: 3px; }
   /* Addresses has no value yet: render the placeholder as a note so it never
      reads as a figure. Give the cell a real field once the index can count. */
-  .net .stat .value.soon { font-size: 12px; font-weight: 400; color: var(--hint); }
+  .net .stat .value.soon { font-size: 13px; font-weight: 400; color: var(--hint); }
 
   .searchwrap { flex: 1; display: flex; flex-direction: column;
                 align-items: center; justify-content: center; gap: 10px; }
-  .searchwrap p { margin: 0; font-size: 13px; color: var(--hint); text-align: center; }
-  #q { width: 100%; max-width: 420px; padding: 13px 15px; font-size: 16px;
+  .searchwrap p { margin: 0; font-size: 15px; color: var(--hint); text-align: center; }
+  #q { width: 100%; max-width: 420px; padding: 14px 16px; font-size: 17px;
        color: var(--fg); background: var(--card);
        border: 1px solid var(--line); border-radius: 12px; outline: none; }
   #q:focus { border-color: var(--accent); }
 
   .empty { flex: 1; display: flex; align-items: center; justify-content: center;
-           color: var(--hint); font-size: 14px; }
+           color: var(--hint); font-size: 16px; }
 
   /* Bottom tab bar: thumb-reachable on a phone, and padded for the home
      indicator on notched devices. */
@@ -97,9 +97,9 @@
         padding-bottom: env(safe-area-inset-bottom, 0); }
   nav button { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 3px;
                padding: 8px 0 7px; border: 0; background: none; cursor: pointer;
-               font-size: 10px; color: var(--hint); font-family: inherit; }
+               font-size: 11px; color: var(--hint); font-family: inherit; }
   nav button.active { color: var(--accent); }
-  nav svg { width: 22px; height: 22px; fill: none; stroke: currentColor;
+  nav svg { width: 24px; height: 24px; fill: none; stroke: currentColor;
             stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
 </style>
 </head>
