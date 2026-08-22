@@ -729,6 +729,7 @@ func startNetworkStats() {
                 Addresses: "1.5 B",
             }
             networkMu.Unlock()
+            app.Notify("network")
         }
         refresh()
         var t = time.NewTicker(10 * time.Minute)
@@ -758,6 +759,7 @@ func startMempoolFees() {
             feesMu.Lock()
             cachedFees, cachedFeesOK, cachedFeesCount = rec, true, len(entries)
             feesMu.Unlock()
+            app.Notify("fees")
         }
         calc()
         var t = time.NewTicker(10 * time.Minute)

@@ -1,5 +1,6 @@
 package app
 
+import "context"
 import "crypto/hmac"
 import "crypto/sha256"
 import "encoding/hex"
@@ -201,8 +202,19 @@ func TestInlineAndRefreshMatch(t *testing.T) {
 // response, so without them any failure also leaves "loading…" on screen.
 func TestFeesTriggerIsNotRacy(t *testing.T) {
     var body = get(handler(t, "TESTTOKEN", fakeSource{}), "/", "").Body.String()
-    if !strings.Contains(body, `hx-trigger="every 60s"`) {
-        t.Error(`the fees card must refresh itself with hx-trigger="every 60s"`)
+    if !strings.Contains(body, `hx-trigger="sse:fees, every 10m"`) {
+        t.Error(`the fees card must refresh on sse:fees, with a slow poll as a fallback`)
+    }
+    if strings.Contains(body, `hx-trigger="every 60s"`) {
+        t.Error("the 60s poll should be gone: the server pushes now")
+    }
+    // The fallback exists because a proxy that buffers the stream would
+    // otherwise leave the cards frozen with no sign anything is wrong.
+    if !strings.Contains(body, "every 10m") {
+        t.Error("no polling fallback: a silently broken SSE stream would freeze the cards")
+    }
+    if !strings.Contains(body, `sse-connect="events"`) {
+        t.Error("nothing opens the event stream")
     }
     if strings.Contains(body, "htmx.trigger(") {
         t.Error("an inline htmx.trigger() races HTMX's DOM processing and is lost")
@@ -298,5 +310,84 @@ func TestFeesColdCache(t *testing.T) {
     var w = get(handler(t, "TESTTOKEN", fakeSource{f: Fees{OK: false}}), "/fees", freshInitData("TESTTOKEN"))
     if !strings.Contains(w.Body.String(), "fees unavailable") {
         t.Fatalf("cold cache rendered %q", w.Body.String())
+    }
+}
+
+// The stream carries event names only. That is what lets it sit outside
+// requireInitData — EventSource cannot set headers — so it must never leak a
+// figure that the authenticated endpoints are there to protect.
+func TestEventStreamCarriesNoData(t *testing.T) {
+    var h = handler(t, "TESTTOKEN", fakeSource{f: liveFees(), n: liveNetwork()})
+    var r = httptest.NewRequest("GET", "/events", nil)
+    var ctx, cancel = context.WithCancel(r.Context())
+    r = r.WithContext(ctx)
+    var w = httptest.NewRecorder()
+    var done = make(chan struct{})
+    go func() { h.ServeHTTP(w, r); close(done) }()
+    // let the handler subscribe before notifying
+    var deadline = time.Now().Add(2 * time.Second)
+    for subscriberCount() == 0 && time.Now().Before(deadline) {
+        time.Sleep(5 * time.Millisecond)
+    }
+    Notify("fees")
+    Notify("network")
+    time.Sleep(150 * time.Millisecond)
+    cancel()
+    <-done
+    var body = w.Body.String()
+    if !strings.Contains(body, "event: fees\ndata: 1\n\n") {
+        t.Errorf("fees event not framed correctly; got %q", body)
+    }
+    if !strings.Contains(body, "event: network\ndata: 1\n\n") {
+        t.Errorf("network event not framed correctly; got %q", body)
+    }
+    for _, leak := range []string{"31 751", "1.4 B", "869 GB", "sat/vB", "<div"} {
+        if strings.Contains(body, leak) {
+            t.Errorf("the stream leaked %q — it must carry names only", leak)
+        }
+    }
+    if ct := w.Header().Get("Content-Type"); ct != "text/event-stream" {
+        t.Errorf("Content-Type = %q, want text/event-stream", ct)
+    }
+}
+
+// A disconnected client must not be left in the subscriber set, or every page
+// load would leak a channel for the life of the process.
+func TestEventStreamUnsubscribesOnDisconnect(t *testing.T) {
+    var before = subscriberCount()
+    var h = handler(t, "TESTTOKEN", fakeSource{})
+    var r = httptest.NewRequest("GET", "/events", nil)
+    var ctx, cancel = context.WithCancel(r.Context())
+    r = r.WithContext(ctx)
+    var done = make(chan struct{})
+    go func() { h.ServeHTTP(httptest.NewRecorder(), r); close(done) }()
+    var deadline = time.Now().Add(2 * time.Second)
+    for subscriberCount() == before && time.Now().Before(deadline) {
+        time.Sleep(5 * time.Millisecond)
+    }
+    if subscriberCount() != before+1 {
+        t.Fatalf("subscriber not registered: %d, want %d", subscriberCount(), before+1)
+    }
+    cancel()
+    <-done
+    if subscriberCount() != before {
+        t.Fatalf("subscriber left behind after disconnect: %d, want %d", subscriberCount(), before)
+    }
+}
+
+// Notify must not block when a client is not reading, or a background refresh
+// goroutine in main would stall behind a stuck page.
+func TestNotifyDoesNotBlockOnSlowClient(t *testing.T) {
+    var ch = subscribe()
+    defer unsubscribe(ch)
+    var done = make(chan struct{})
+    go func() {
+        for i := 0; i < 100; i++ { Notify("fees") }
+        close(done)
+    }()
+    select {
+    case <-done:
+    case <-time.After(2 * time.Second):
+        t.Fatal("Notify blocked on a client that is not reading")
     }
 }
