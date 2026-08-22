@@ -202,11 +202,16 @@ func TestInlineAndRefreshMatch(t *testing.T) {
 // response, so without them any failure also leaves "loading…" on screen.
 func TestFeesTriggerIsNotRacy(t *testing.T) {
     var body = get(handler(t, "TESTTOKEN", fakeSource{}), "/", "").Body.String()
-    if !strings.Contains(body, `hx-trigger="sse:fees"`) {
-        t.Error(`the fees card must refresh on the sse:fees event`)
+    if !strings.Contains(body, `hx-trigger="sse:fees, every 10m"`) {
+        t.Error(`the fees card must refresh on sse:fees, with a slow poll as a fallback`)
     }
     if strings.Contains(body, `hx-trigger="every 60s"`) {
         t.Error("the 60s poll should be gone: the server pushes now")
+    }
+    // The fallback exists because a proxy that buffers the stream would
+    // otherwise leave the cards frozen with no sign anything is wrong.
+    if !strings.Contains(body, "every 10m") {
+        t.Error("no polling fallback: a silently broken SSE stream would freeze the cards")
     }
     if !strings.Contains(body, `sse-connect="events"`) {
         t.Error("nothing opens the event stream")

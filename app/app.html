@@ -105,10 +105,10 @@
 
 <main>
   <section id="home" class="panel active">
-    <div id="fees" class="fees" hx-get="fees" hx-trigger="sse:fees" hx-swap="innerHTML">
+    <div id="fees" class="fees" hx-get="fees" hx-trigger="sse:fees, every 10m" hx-swap="innerHTML">
       {{template "fees" .Fees}}
     </div>
-    <div id="network" class="fees net" hx-get="network" hx-trigger="sse:network" hx-swap="innerHTML">
+    <div id="network" class="fees net" hx-get="network" hx-trigger="sse:network, every 10m" hx-swap="innerHTML">
       {{template "network" .Network}}
     </div>
     <div class="searchwrap">
