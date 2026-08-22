@@ -155,7 +155,7 @@ func isValid(initData, token string) bool {
 // webview must load it before any script can read initData at all.
 func requireInitData(token string, h http.HandlerFunc) http.HandlerFunc {
     return func(w http.ResponseWriter, r *http.Request) {
-        if isValid(r.Header.Get("X-Telegram-Init-Data"), token) {
+        if !isValid(r.Header.Get("X-Telegram-Init-Data"), token) {
             logging.Info("mini app: rejected %s without valid initData", r.URL.Path)
             http.Error(w, "open this from Telegram", http.StatusUnauthorized)
             return
