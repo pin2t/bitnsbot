@@ -6,6 +6,7 @@
 <title>bitnsbot</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <script src="htmx.min.js"></script>
+<script src="htmx-ext-sse.js"></script>
 <script>
   // Every HTMX request carries Telegram's signed payload; the server rejects
   // anything without it. Registered on document (not body, which does not exist
@@ -100,14 +101,14 @@
             stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
 </style>
 </head>
-<body>
+<body hx-ext="sse" sse-connect="events">
 
 <main>
   <section id="home" class="panel active">
-    <div id="fees" class="fees" hx-get="fees" hx-trigger="every 60s" hx-swap="innerHTML">
+    <div id="fees" class="fees" hx-get="fees" hx-trigger="sse:fees" hx-swap="innerHTML">
       {{template "fees" .Fees}}
     </div>
-    <div id="network" class="fees net" hx-get="network" hx-trigger="every 60s" hx-swap="innerHTML">
+    <div id="network" class="fees net" hx-get="network" hx-trigger="sse:network" hx-swap="innerHTML">
       {{template "network" .Network}}
     </div>
     <div class="searchwrap">

@@ -341,7 +341,19 @@ The three tiers are the ones `/fees` prints, read from the **`cachedFees` backgr
 
 **The page is rendered server-side, fees included.** `app.html` is an `html/template`, and `/` executes it with the current `Fees` — so the card is painted in the first response and there is no second round trip, no placeholder and no first-paint flicker. The card's markup lives in one `{{define "fees"}}` block that both the page and the refresh endpoint execute, so the version that ships and the version that replaces it cannot drift (`TestInlineAndRefreshMatch` asserts the page literally embeds the fragment `/fees` returns).
 
-**It then refreshes itself in place every 60s** via `hx-trigger="every 60s"` against `/fees`, which returns just that block for HTMX to swap. Two consequences worth knowing:
+**Each card then refreshes when its data actually changes**, not on a timer. `main` calls `app.Notify("fees")` / `app.Notify("network")` right after a background cache is refreshed; the app fans that out over an **SSE stream** at `/events`, and the cards carry `hx-trigger="sse:fees"` / `hx-trigger="sse:network"` so HTMX re-issues its ordinary `hx-get`. Since both caches refresh every 10 minutes, the old 60s poll was re-fetching identical values roughly ten times per change.
+
+**The stream carries event names only — never data.** That is what lets `/events` sit outside `requireInitData`: `EventSource` cannot set custom headers, so a stream that needed the signature could not be opened at all. The signal is worthless on its own ("the fee cache moved"), and the figures still come from `/fees` and `/network`, which remain authenticated because HTMX attaches the header to those. `TestEventStreamCarriesNoData` asserts no figure or markup ever appears in the stream.
+
+Three details the implementation depends on:
+
+- **SSE is a separate extension in HTMX 2** (`htmx-ext-sse.js`), embedded and served from the binary like `htmx.min.js`.
+- **A keepalive comment every 30s** (`keepAlive`). An idle SSE connection is dropped by proxies well before two cache refreshes are 10 minutes apart, so without it the stream would die between updates.
+- **`Notify` sends non-blocking.** The caller is a background refresh goroutine in main; a page that has stopped reading must never stall it. Same `select`/`default` pattern the watch fan-out uses.
+
+Verified in a browser end to end: firing a server-side event updated the card (3 → 5 sat/vB, blocks 963268 → 963271) via an authenticated GET, and after killing and restarting the server the page **reconnected on its own** and swapped again with no reload — `EventSource` handles that, where a WebSocket would need reconnect logic written by hand. Choosing SSE over WebSockets also kept the dependency list at three: SSE is `net/http` plus `http.NewResponseController(w).Flush()`, whereas Go's stdlib has no WebSocket server.
+
+Two further consequences worth knowing:
 
 - A failed refresh must **not** wipe fees already on screen. HTMX does not swap error responses, but the `htmx:responseError` handler would have replaced the note, so it now bails out when the card already contains a `.tier` — stale numbers beat an error message. Verified in a browser against real data: a 401 refresh left all three tiers and the note untouched.
 - The trigger must stay HTMX's own. An earlier version fired a custom event from an inline script, which races HTMX's `DOMContentLoaded` processing: the event was dispatched before HTMX had registered a listener and was lost, leaving the card on "loading…" with **no request ever made**. `TestFeesTriggerIsNotRacy` guards against reintroducing an inline `htmx.trigger()`.

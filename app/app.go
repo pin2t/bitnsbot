@@ -13,10 +13,12 @@ import _ "embed"
 import "crypto/hmac"
 import "crypto/sha256"
 import "encoding/hex"
+import "fmt"
 import "html/template"
 import "net/http"
 import "net/url"
 import "sort"
+import "sync"
 import "strconv"
 import "strings"
 import "time"
@@ -28,6 +30,9 @@ var appHTML []byte
 //go:embed htmx.min.js
 var htmxJS []byte
 
+//go:embed htmx-ext-sse.js
+var sseJS []byte
+
 // appTmpl is the page and, inside it, the "fees" and "network" blocks. The
 // initial render and each refresh execute those same blocks, so the card the
 // page ships with and the card that replaces it cannot drift apart.
@@ -37,6 +42,88 @@ var appTmpl = template.Must(template.New("app").Parse(string(appHTML)))
 type page struct {
     Fees    Fees
     Network Network
+}
+
+// keepAlive is how often the event stream emits a comment line. An idle SSE
+// connection is dropped by proxies — Cloudflare's own idle timeout is well under
+// the gap between two cache refreshes — so without this the stream would die
+// between updates and rely on the browser reconnecting.
+var keepAlive = 30 * time.Second
+
+var subsMu sync.Mutex
+var subs = map[chan string]struct{}{}
+
+// Notify tells every connected page that a card's data changed. main calls it
+// when a cache is actually refreshed, so the page updates when the numbers move
+// rather than on a timer that mostly re-fetches the same values.
+//
+// Sends are non-blocking: a slow or dead client must not stall the caller, which
+// is a background refresh goroutine.
+func Notify(event string) {
+    subsMu.Lock()
+    defer subsMu.Unlock()
+    for ch := range subs {
+        select {
+        case ch <- event:
+        default:
+        }
+    }
+}
+
+// subscriberCount reports how many streams are connected; used by the tests to
+// wait for a handler to register rather than sleeping a fixed time.
+func subscriberCount() int {
+    subsMu.Lock()
+    defer subsMu.Unlock()
+    return len(subs)
+}
+
+func subscribe() chan string {
+    var ch = make(chan string, 4)
+    subsMu.Lock()
+    subs[ch] = struct{}{}
+    subsMu.Unlock()
+    return ch
+}
+
+func unsubscribe(ch chan string) {
+    subsMu.Lock()
+    delete(subs, ch)
+    subsMu.Unlock()
+}
+
+// events is the SSE stream. It carries only event *names* — never data — which
+// is what lets it sit outside requireInitData: EventSource cannot set custom
+// headers, so a stream that needed the signature could not be opened at all. The
+// cards react by issuing their ordinary hx-get, and those still go through
+// requireInitData with the header attached.
+func events(w http.ResponseWriter, r *http.Request) {
+    var rc = http.NewResponseController(w)
+    w.Header().Set("Content-Type", "text/event-stream")
+    w.Header().Set("Cache-Control", "no-cache")
+    w.Header().Set("Connection", "keep-alive")
+    w.Header().Set("X-Accel-Buffering", "no")
+    w.WriteHeader(http.StatusOK)
+    if err := rc.Flush(); err != nil {
+        logging.Err("mini app: event stream needs a flushable writer: %v", err)
+        return
+    }
+    var ch = subscribe()
+    defer unsubscribe(ch)
+    var t = time.NewTicker(keepAlive)
+    defer t.Stop()
+    for {
+        select {
+        case <-r.Context().Done():
+            return
+        case name := <-ch:
+            fmt.Fprintf(w, "event: %s\ndata: 1\n\n", name)
+            if rc.Flush() != nil { return }
+        case <-t.C:
+            fmt.Fprint(w, ": keepalive\n\n")
+            if rc.Flush() != nil { return }
+        }
+    }
 }
 
 // initDataTTL bounds how old Telegram's signed payload may be. A valid
@@ -105,6 +192,12 @@ func Start(addr, token string, src Source) *http.Server {
         w.Header().Set("Cache-Control", "public, max-age=86400")
         w.Write(htmxJS)
     })
+    mux.HandleFunc("/htmx-ext-sse.js", func(w http.ResponseWriter, r *http.Request) {
+        w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
+        w.Header().Set("Cache-Control", "public, max-age=86400")
+        w.Write(sseJS)
+    })
+    mux.HandleFunc("/events", events)
     mux.HandleFunc("/fees", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
         render(w, "fees", src.Fees())
     }))
