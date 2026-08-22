@@ -723,6 +723,10 @@ func startNetworkStats() {
                 Size:   humSize(info.SizeOnDisk, 0, 0),
                 Nodes:  nodes,
                 Txs:    txs,
+                // A fixed figure: nothing counts distinct addresses yet. The
+                // addrindex package records touches per address but keeps no
+                // distinct total, so this stands in until it can.
+                Addresses: "1.5 B",
             }
             networkMu.Unlock()
         }
