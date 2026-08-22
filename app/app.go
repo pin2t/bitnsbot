@@ -120,7 +120,7 @@ func Start(addr, token string, src Source) *http.Server {
     return srv
 }
 
-// checkInitData verifies the signed payload Telegram hands the Mini App's
+// isValid verifies the signed payload Telegram hands the Mini App's
 // webview, and is the only thing standing between this server and anyone who
 // knows the URL. The scheme: the secret is HMAC-SHA256 of the bot token keyed by
 // the literal "WebAppData", and the signature covers every field except `hash`,
@@ -128,11 +128,11 @@ func Start(addr, token string, src Source) *http.Server {
 //
 // Note this is NOT the Login Widget scheme, which keys the secret as
 // SHA256(token) — the two look interchangeable and are not.
-func checkInitData(initData, token string) (url.Values, bool) {
+func isValid(initData, token string) bool {
     var v, err = url.ParseQuery(initData)
-    if err != nil { return nil, false }
+    if err != nil { return false }
     var want = v.Get("hash")
-    if want == "" { return nil, false }
+    if want == "" { return false }
     v.Del("hash")
     var keys = make([]string, 0, len(v))
     for k := range v { keys = append(keys, k) }
@@ -144,10 +144,10 @@ func checkInitData(initData, token string) (url.Values, bool) {
     var secret = mac.Sum(nil)
     mac = hmac.New(sha256.New, secret)
     mac.Write([]byte(strings.Join(pairs, "\n")))
-    if !hmac.Equal([]byte(hex.EncodeToString(mac.Sum(nil))), []byte(want)) { return nil, false }
+    if !hmac.Equal([]byte(hex.EncodeToString(mac.Sum(nil))), []byte(want)) { return false }
     var ts, terr = strconv.ParseInt(v.Get("auth_date"), 10, 64)
-    if terr != nil || time.Since(time.Unix(ts, 0)) > initDataTTL { return nil, false }
-    return v, true
+    if terr != nil || time.Since(time.Unix(ts, 0)) > initDataTTL { return false }
+    return true
 }
 
 // requireInitData rejects anything without a currently-valid signature. The
@@ -155,7 +155,7 @@ func checkInitData(initData, token string) (url.Values, bool) {
 // webview must load it before any script can read initData at all.
 func requireInitData(token string, h http.HandlerFunc) http.HandlerFunc {
     return func(w http.ResponseWriter, r *http.Request) {
-        if _, ok := checkInitData(r.Header.Get("X-Telegram-Init-Data"), token); !ok {
+        if !isValid(r.Header.Get("X-Telegram-Init-Data"), token) {
             logging.Info("mini app: rejected %s without valid initData", r.URL.Path)
             http.Error(w, "open this from Telegram", http.StatusUnauthorized)
             return
