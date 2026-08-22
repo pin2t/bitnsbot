@@ -50,7 +50,7 @@ func (s fakeSource) Network() Network { return s.n }
 
 func liveNetwork() Network {
     return Network{OK: true, Coins: "20.1 M", Cap: "21 M",
-        Blocks: "963 166", Size: "869 GB", Nodes: "31 751", Txs: "1.4 B"}
+        Blocks: "963 166", Size: "869 GB", Nodes: "31 751", Txs: "1.4 B", Addresses: "1.5 B"}
 }
 
 // handler returns the routes Start wires. Start inlines the routing and always
@@ -123,7 +123,7 @@ func TestPageRendersNetworkInline(t *testing.T) {
     var body = get(handler(t, "TESTTOKEN", fakeSource{f: liveFees(), n: liveNetwork()}), "/", "").Body.String()
     for _, want := range []string{"<h2>Blockchain</h2>", ">Coins<", ">Blocks<", ">Size<",
         ">Active nodes<", ">Transactions<", ">Addresses<",
-        "20.1 M", "/ 21 M", "963 166", "869 GB", "31 751", "1.4 B", "coming soon"} {
+        "20.1 M", "/ 21 M", "963 166", "869 GB", "31 751", "1.4 B", "1.5 B"} {
         if !strings.Contains(body, want) {
             t.Errorf("page did not render %q inline", want)
         }
