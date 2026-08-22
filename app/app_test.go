@@ -99,7 +99,7 @@ func TestServesPage(t *testing.T) {
     }
     var body = w.Body.String()
     for _, want := range []string{"telegram-web-app.js", "htmx.min.js", `hx-get="fees"`,
-        "X-Telegram-Init-Data", `data-panel="home"`, `data-panel="miners"`, `id="q"`} {
+        "X-Telegram-Init-Data", `data-panel="home"`, `data-panel="watches"`, `id="q"`} {
         if !strings.Contains(body, want) {
             t.Errorf("page is missing %q", want)
         }
@@ -163,7 +163,7 @@ func TestPageRendersToCompletion(t *testing.T) {
         t.Fatalf("page is truncated — a template action probably failed mid-render; tail: %q",
             body[max(0, len(body)-120):])
     }
-    for _, want := range []string{"</style>", `id="q"`, `data-panel="miners"`, "</nav>", "</body>"} {
+    for _, want := range []string{"</style>", `id="q"`, `data-panel="watches"`, "</nav>", "</body>"} {
         if !strings.Contains(body, want) {
             t.Errorf("page is missing %q, so it did not render to the end", want)
         }
