@@ -73,10 +73,32 @@
 
   /* Four fields across is unreadable at 375px ("19.7 M / 21 M" alone needs the
      width), so the network card is a 2x2 grid of the same cells. */
-  .net { margin-top: 6px; }
+  /* Gap between stacked cards. One rule, so Blockchain sits the same distance
+     below Network fees as Market does below Blockchain. */
+  .net { margin-top: 12px; }
   .net .stats { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px 6px; text-align: center; }
   .net .stat .label { font-size: 14px; line-height: 1.2; color: var(--hint); }
   .net .stat .value { font-size: 20px; font-weight: 600; margin-top: 1px; line-height: 1.15; }
+
+  /* Six periods across a phone leaves ~50px each, so the percentages are the
+     only thing in a column — no absolute prices. Green up, red down, chosen to
+     stay legible on Telegram's light and dark themes alike. */
+  .mkt .price { text-align: center; font-size: 22px; font-weight: 600; line-height: 1.15; }
+  .mkt .changes { display: grid; grid-template-columns: repeat(6, 1fr); gap: 2px; margin-top: 8px; text-align: center; }
+  .mkt .chg .label { font-size: 11px; line-height: 1.2; color: var(--hint); }
+  .mkt .chg .pct { font-size: 12px; font-weight: 600; line-height: 1.2; margin-top: 1px; white-space: nowrap; }
+  .mkt .chg .pct.up { color: #1a9e4b; }
+  .mkt .chg .pct.down { color: #d92d20; }
+  .mkt .chg .pct.flat { color: var(--hint); font-weight: 400; }
+
+  /* Six columns fit from 360px up, which is every current phone. On a 320px
+     screen an extreme 5y figure would overflow the row, so shrink the type
+     there rather than drop a period. */
+  @media (max-width: 359px) {
+    .mkt .chg .pct   { font-size: 11px; }
+    .mkt .chg .label { font-size: 10px; }
+    .mkt .changes    { gap: 1px; }
+  }
 
   .searchwrap { flex: 1; display: flex; flex-direction: column;
                 align-items: center; justify-content: center; gap: 10px; }
@@ -110,6 +132,9 @@
     </div>
     <div id="network" class="fees net" hx-get="network" hx-trigger="sse:network, every 10m" hx-swap="innerHTML">
       {{template "network" .Network}}
+    </div>
+    <div id="market" class="fees net mkt" hx-get="market" hx-trigger="sse:market, every 10m" hx-swap="innerHTML">
+      {{template "market" .Market}}
     </div>
     <div class="searchwrap">
       <input id="q" type="search" enterkeyhint="search" autocapitalize="off"
@@ -177,4 +202,16 @@
 </div>
 {{- else}}
 <p class="note">network stats unavailable</p>
+{{- end}}{{end}}
+
+{{define "market"}}<h2>Market</h2>
+{{- if .OK}}
+<div class="price">{{.Price}}</div>
+<div class="changes">
+{{- range .Changes}}
+  <div class="chg"><div class="label">{{.Label}}</div><div class="pct {{if .Neutral}}flat{{else if .Up}}up{{else}}down{{end}}">{{.Pct}}</div></div>
+{{- end}}
+</div>
+{{- else}}
+<p class="note">market data unavailable</p>
 {{- end}}{{end}}

@@ -65,6 +65,39 @@ func (appSource) Network() app.Network {
     return cachedNetwork
 }
 
+// Market reads the rate history straight from the database — cheap enough that
+// the card needs no cache of its own, unlike fees and the chain stats.
+func (appSource) Market() app.Market {
+    var now, ok = rates.Last()
+    if !ok { return app.Market{} }
+    var m = app.Market{OK: true, Price: price(now)}
+    var periods = []struct {
+        label string
+        back  time.Duration
+    }{
+        {"1d", 24 * time.Hour},
+        {"1w", 7 * 24 * time.Hour},
+        {"1mo", 30 * 24 * time.Hour},
+        {"3mo", 90 * 24 * time.Hour},
+        {"1y", 365 * 24 * time.Hour},
+        {"5y", 5 * 365 * 24 * time.Hour},
+    }
+    for _, p := range periods {
+        // A gap in the history leaves a placeholder rather than dropping the
+        // column: the grid keeps its shape on a fresh install, where the older
+        // periods have no baseline until the backfill lands.
+        var then, have = rates.At(time.Now().Add(-p.back))
+        if !have || then <= 0 {
+            m.Changes = append(m.Changes, app.Change{Label: p.label, Pct: "—", Neutral: true})
+            continue
+        }
+        var pct = (now - then) / then * 100
+        m.Changes = append(m.Changes, app.Change{Label: p.label,
+            Pct: fmt.Sprintf("%+.1f%%", pct), Up: pct >= 0})
+    }
+    return m
+}
+
 func (appSource) Fees() app.Fees {
     feesMu.Lock()
     var rec, ok, count = cachedFees, cachedFeesOK, cachedFeesCount
@@ -147,6 +180,7 @@ func main() {
     startMempoolSummary()
     startMempoolFees()
     startNetworkStats()
+    startMarketUpdates()
     if core != nil && *coreZMQ != "" {
         if err := startZMQ(context.Background(), strings.Split(*coreZMQ, ","), bot); err != nil {
             logging.Fatal("subscribe to Bitcoin Core ZMQ: %v", err)
@@ -680,6 +714,19 @@ var cachedNetwork app.Network
 // startNetworkStats keeps the Mini App's Network card fresh. getnodeaddresses
 // returns every address the node knows — 65k entries and several megabytes on
 // mainnet — so this must never run in a request path.
+// startMarketUpdates pushes the Market card on a ticker. There is nothing to
+// recompute in the background — the card reads the rate history per request —
+// so this only sends the signal that tells open pages to re-fetch.
+func startMarketUpdates() {
+    go func() {
+        var t = time.NewTicker(10 * time.Minute)
+        defer t.Stop()
+        for range t.C {
+            app.Notify("market")
+        }
+    }()
+}
+
 func startNetworkStats() {
     if core == nil { return }
     go func() {

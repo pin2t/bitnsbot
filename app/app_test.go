@@ -1,6 +1,7 @@
 package app
 
 import "context"
+import "html"
 import "crypto/hmac"
 import "crypto/sha256"
 import "encoding/hex"
@@ -44,10 +45,23 @@ func freshInitData(token string) string {
 type fakeSource struct {
     f Fees
     n Network
+    m Market
 }
 
 func (s fakeSource) Fees() Fees       { return s.f }
 func (s fakeSource) Network() Network { return s.n }
+func (s fakeSource) Market() Market   { return s.m }
+
+func liveMarket() Market {
+    return Market{OK: true, Price: "$66,202.00", Changes: []Change{
+        {Label: "1d", Pct: "+2.5%", Up: true},
+        {Label: "1w", Pct: "-3.1%"},
+        {Label: "1mo", Pct: "+12.4%", Up: true},
+        {Label: "3mo", Pct: "-8.7%"},
+        {Label: "1y", Pct: "+64.2%", Up: true},
+        {Label: "5y", Pct: "+512.9%", Up: true},
+    }}
+}
 
 func liveNetwork() Network {
     return Network{OK: true, Coins: "20.1 M", Cap: "21 M",
@@ -179,12 +193,75 @@ func TestNetworkNeedsInitData(t *testing.T) {
     }
 }
 
+// The Market card carries the price and one column per period, rendered into
+// the page, and sits between the Blockchain card and the search field.
+func TestPageRendersMarketInline(t *testing.T) {
+    var src = fakeSource{f: liveFees(), n: liveNetwork(), m: liveMarket()}
+    var body = html.UnescapeString(get(handler(t, "TESTTOKEN", src), "/", "").Body.String())
+    for _, want := range []string{"<h2>Market</h2>", "$66,202.00",
+        ">1d<", ">1w<", ">1mo<", ">3mo<", ">1y<", ">5y<",
+        "+2.5%", "-3.1%", "+512.9%"} {
+        if !strings.Contains(body, want) {
+            t.Errorf("page did not render %q inline", want)
+        }
+    }
+    if n := strings.Count(body, `class="chg"`); n != 6 {
+        t.Errorf("rendered %d change columns, want 6", n)
+    }
+    var net = strings.Index(body, `id="network"`)
+    var mkt = strings.Index(body, `id="market"`)
+    var search = strings.Index(body, `id="q"`)
+    if !(net < mkt && mkt < search) {
+        t.Errorf("wrong order: network at %d, market at %d, search at %d — market belongs between them",
+            net, mkt, search)
+    }
+}
+
+// A rise is green and a fall is red; a period with no baseline is neither.
+func TestMarketColoursDirection(t *testing.T) {
+    var src = fakeSource{m: Market{OK: true, Price: "$1.00", Changes: []Change{
+        {Label: "1d", Pct: "+2.5%", Up: true},
+        {Label: "1w", Pct: "-3.1%"},
+        {Label: "5y", Pct: "—", Neutral: true},
+    }}}
+    var body = html.UnescapeString(get(handler(t, "TESTTOKEN", src), "/", "").Body.String())
+    for _, want := range []string{`class="pct up">+2.5%`, `class="pct down">-3.1%`, `class="pct flat">—`} {
+        if !strings.Contains(body, want) {
+            t.Errorf("missing %q — direction must drive the colour", want)
+        }
+    }
+}
+
+// The card updates on its own event, with the same slow poll as a fallback.
+func TestMarketRefreshesOnSSE(t *testing.T) {
+    var body = get(handler(t, "TESTTOKEN", fakeSource{m: liveMarket()}), "/", "").Body.String()
+    if !strings.Contains(body, `hx-trigger="sse:market, every 10m"`) {
+        t.Error(`the market card must refresh on sse:market with a 10m fallback`)
+    }
+    var h = handler(t, "TESTTOKEN", fakeSource{m: liveMarket()})
+    if w := get(h, "/market", ""); w.Code != 401 {
+        t.Errorf("unauthenticated /market = %d, want 401", w.Code)
+    }
+    var w = get(h, "/market", freshInitData("TESTTOKEN"))
+    if w.Code != 200 || !strings.Contains(w.Body.String(), "$66,202.00") {
+        t.Errorf("signed /market = %d: %s", w.Code, w.Body.String())
+    }
+}
+
+// A cold rate history says so rather than rendering an empty card.
+func TestMarketColdCache(t *testing.T) {
+    var body = get(handler(t, "TESTTOKEN", fakeSource{f: liveFees()}), "/", "").Body.String()
+    if !strings.Contains(body, "market data unavailable") {
+        t.Error("with no rates the card should say so")
+    }
+}
+
 // The template block the page renders and the one the refresh returns must be
 // the same block, or the card would change shape when it updates.
 func TestInlineAndRefreshMatch(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{f: liveFees(), n: liveNetwork()})
+    var h = handler(t, "TESTTOKEN", fakeSource{f: liveFees(), n: liveNetwork(), m: liveMarket()})
     var page = get(h, "/", "").Body.String()
-    for _, path := range []string{"/fees", "/network"} {
+    for _, path := range []string{"/fees", "/network", "/market"} {
         var fragment = strings.TrimSpace(get(h, path, freshInitData("TESTTOKEN")).Body.String())
         if !strings.Contains(page, fragment) {
             t.Errorf("the page does not embed the exact %s fragment:\n--- fragment ---\n%s", path, fragment)
