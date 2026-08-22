@@ -49,6 +49,7 @@
     --line:   rgba(128,128,128,.22);
   }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
   html, body { height: 100%; margin: 0; }
   body {
     display: flex; flex-direction: column;
@@ -61,7 +62,7 @@
 
   /* Home: fees pinned at the top, search centred in what remains. */
   .fees { background: var(--card); border-radius: 14px; padding: 10px 12px; }
-  .fees h2 { margin: 0 0 6px; font-size: 13px; font-weight: 600; text-align: center; line-height: 1.2;
+  .fees h2 { margin: 0 0 7px; font-size: 15px; font-weight: 600; text-align: center; line-height: 1.2;
              letter-spacing: .06em; text-transform: uppercase; color: var(--hint); }
   .tiers { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; text-align: center; }
   .tier + .tier { border-left: 1px solid var(--line); }
@@ -69,7 +70,7 @@
   .tier .rate  { font-size: 20px; font-weight: 600; margin: 1px 0 0; line-height: 1.15; }
   .tier .unit  { font-size: 14px; font-weight: 400; color: var(--hint); }
   .tier .usd   { font-size: 14px; line-height: 1.2; color: var(--hint); }
-  .fees .note  { margin: 6px 0 0; font-size: 12px; line-height: 1.3; color: var(--hint); text-align: center; }
+  .fees .note  { margin: 7px 0 0; font-size: 13px; line-height: 1.3; color: var(--hint); text-align: center; }
 
   /* Four fields across is unreadable at 375px ("19.7 M / 21 M" alone needs the
      width), so the network card is a 2x2 grid of the same cells. */
@@ -118,11 +119,11 @@
          background: var(--card); border-radius: 12px; padding: 9px 10px; }
   .blk + .blk { margin-top: 6px; }
   .blk .h  { font-size: 14px; font-weight: 600; white-space: nowrap; }
-  .blk .sz, .blk .tx { font-size: 12px; color: var(--hint); white-space: nowrap; }
+  .blk .sz, .blk .tx { font-size: 13px; color: var(--hint); white-space: nowrap; }
   /* The miner takes the slack and truncates: pool names vary from "F2Pool" to
      "SBI Crypto", and it is the one field that can be cut without losing a
      number. min-width:0 is what lets a flex item shrink below its content. */
-  .blk .mn { flex: 1; min-width: 0; font-size: 12px; text-align: right;
+  .blk .mn { flex: 1; min-width: 0; font-size: 13px; text-align: right;
              overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .blk .go { flex: none; display: flex; color: var(--hint); }
   .blk .go svg { width: 16px; height: 16px; fill: none; stroke: currentColor;
