@@ -43,6 +43,7 @@ type page struct {
     Fees    Fees
     Network Network
     Market  Market
+    Blocks  Blocks
 }
 
 // keepAlive is how often the event stream emits a comment line. An idle SSE
@@ -183,12 +184,34 @@ type Market struct {
     Changes []Change
 }
 
+// Block is one row of the Blocks tab, already formatted: height, size,
+// transaction count and the pool that mined it.
+type Block struct {
+    Height string
+    Size   string
+    Txs    string
+    Miner  string
+}
+
+// Blocks is one page of the recent-block list, newest first. Prev and Next carry
+// the page numbers the buttons link to, so the template does no arithmetic.
+type Blocks struct {
+    OK      bool
+    Rows    []Block
+    Page    int
+    Prev    int
+    Next    int
+    HasPrev bool
+    HasNext bool
+}
+
 // Source supplies the chain data the app renders. main implements it; the app
 // package stays unaware of the fee cache, Bitcoin Core and the price feeds.
 type Source interface {
     Fees() Fees
     Network() Network
     Market() Market
+    Blocks(page int) Blocks
 }
 
 // Start serves the Mini App on addr and returns the server so the caller can
@@ -204,7 +227,8 @@ func Start(addr, token string, src Source) *http.Server {
             return
         }
         w.Header().Set("Content-Type", "text/html; charset=utf-8")
-        if err := appTmpl.Execute(w, page{Fees: src.Fees(), Network: src.Network(), Market: src.Market()}); err != nil {
+        if err := appTmpl.Execute(w, page{Fees: src.Fees(), Network: src.Network(),
+            Market: src.Market(), Blocks: src.Blocks(0)}); err != nil {
             logging.Err("mini app: render page: %v", err)
         }
     })
@@ -227,6 +251,13 @@ func Start(addr, token string, src Source) *http.Server {
     }))
     mux.HandleFunc("/market", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
         render(w, "market", src.Market())
+    }))
+    mux.HandleFunc("/blocks", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
+        // A bad or negative page is page 0 rather than an error: the parameter
+        // comes from a URL a user can edit.
+        var page, err = strconv.Atoi(r.URL.Query().Get("page"))
+        if err != nil || page < 0 { page = 0 }
+        render(w, "blocks", src.Blocks(page))
     }))
     var srv = &http.Server{Addr: addr, Handler: mux}
     go func() {

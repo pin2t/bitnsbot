@@ -111,6 +111,30 @@
   .empty { flex: 1; display: flex; align-items: center; justify-content: center;
            color: var(--hint); font-size: 16px; }
 
+  /* Blocks tab: the list scrolls, the pager stays pinned above the tab bar. */
+  .blocklist { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+  .blocklist .rows { flex: 1; overflow-y: auto; }
+  .blk { display: flex; align-items: center; gap: 8px;
+         background: var(--card); border-radius: 12px; padding: 9px 10px; }
+  .blk + .blk { margin-top: 6px; }
+  .blk .h  { font-size: 14px; font-weight: 600; white-space: nowrap; }
+  .blk .sz, .blk .tx { font-size: 12px; color: var(--hint); white-space: nowrap; }
+  /* The miner takes the slack and truncates: pool names vary from "F2Pool" to
+     "SBI Crypto", and it is the one field that can be cut without losing a
+     number. min-width:0 is what lets a flex item shrink below its content. */
+  .blk .mn { flex: 1; min-width: 0; font-size: 12px; text-align: right;
+             overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .blk .go { flex: none; display: flex; color: var(--hint); }
+  .blk .go svg { width: 16px; height: 16px; fill: none; stroke: currentColor;
+                 stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+  .pager { display: flex; gap: 8px; justify-content: center; align-items: center;
+           padding: 8px 0 2px; }
+  .pager button { padding: 7px 18px; font-size: 14px; font-family: inherit;
+                  color: var(--fg); background: var(--card);
+                  border: 1px solid var(--line); border-radius: 10px; cursor: pointer; }
+  .pager button[disabled] { color: var(--hint); opacity: .5; cursor: default; }
+  .pager .page { font-size: 12px; color: var(--hint); min-width: 54px; text-align: center; }
+
   /* Bottom tab bar: thumb-reachable on a phone, and padded for the home
      indicator on notched devices. */
   nav { display: flex; border-top: 1px solid var(--line); background: var(--bg);
@@ -144,7 +168,9 @@
     </div>
   </section>
 
-  <section id="blocks" class="panel"><div class="empty">Blocks — coming soon</div></section>
+  <section id="blocks" class="panel">
+    {{template "blocks" .Blocks}}
+  </section>
   <section id="addresses" class="panel"><div class="empty">Addresses — coming soon</div></section>
   <section id="watches" class="panel"><div class="empty">Watches — coming soon</div></section>
 </main>
@@ -215,3 +241,29 @@
 {{- else}}
 <p class="note">market data unavailable</p>
 {{- end}}{{end}}
+
+{{define "blocks"}}<div id="blocklist" class="blocklist" hx-get="blocks?page={{.Page}}"
+     hx-trigger="sse:blocks" hx-target="#blocklist" hx-swap="outerHTML">
+{{- if .OK}}
+  <div class="rows">
+  {{- range .Rows}}
+    <div class="blk">
+      <span class="h">{{.Height}}</span>
+      <span class="sz">{{.Size}}</span>
+      <span class="tx">{{.Txs}}</span>
+      <span class="mn">{{.Miner}}</span>
+      <span class="go"><svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></span>
+    </div>
+  {{- end}}
+  </div>
+  <div class="pager">
+    <button hx-get="blocks?page={{.Prev}}" hx-target="#blocklist" hx-swap="outerHTML"
+            {{if not .HasPrev}}disabled{{end}}>Prev</button>
+    <span class="page">page {{.Page}}</span>
+    <button hx-get="blocks?page={{.Next}}" hx-target="#blocklist" hx-swap="outerHTML"
+            {{if not .HasNext}}disabled{{end}}>Next</button>
+  </div>
+{{- else}}
+  <div class="empty">no blocks cached yet</div>
+{{- end}}
+</div>{{end}}

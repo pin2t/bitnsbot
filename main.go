@@ -15,6 +15,7 @@ import "sync"
 import "syscall"
 import "time"
 import "runtime/debug"
+import "go.etcd.io/bbolt"
 import "github.com/pin2t/flagex"
 import "bitnsbot/app"
 import "bitnsbot/dbui"
@@ -63,6 +64,49 @@ func (appSource) Network() app.Network {
     networkMu.Lock()
     defer networkMu.Unlock()
     return cachedNetwork
+}
+
+// blocksPerPage is how many rows the Blocks tab shows at once.
+const blocksPerPage = 10
+
+// Blocks reads a page of the recent-block list straight out of the blocks-stat
+// bucket. The keys are big-endian heights, so walking the cursor backwards from
+// the end yields newest-first order with no sorting and no node round trip —
+// everything the row needs is already in the cached record.
+func (appSource) Blocks(page int) app.Blocks {
+    var out = app.Blocks{Page: page, Prev: page - 1, Next: page + 1, HasPrev: page > 0}
+    if db == nil { return out }
+    db.View(func(tx *bbolt.Tx) error {
+        var b = tx.Bucket(blocksBucket)
+        if b == nil { return nil }
+        var skipped = 0
+        var c = b.Cursor()
+        for k, v := c.Last(); k != nil; k, v = c.Prev() {
+            var bi blockInfo
+            // A record written before a schema change fails to decode; skip it
+            // rather than letting one bad row end the page early.
+            if json.Unmarshal(v, &bi) != nil { continue }
+            if skipped < page*blocksPerPage {
+                skipped++
+                continue
+            }
+            if len(out.Rows) == blocksPerPage {
+                out.HasNext = true
+                break
+            }
+            var miner = bi.Miner
+            if miner == "" { miner = "Unknown" }
+            out.Rows = append(out.Rows, app.Block{
+                Height: group(bi.Height),
+                Size:   humSize(int64(bi.Size), 2, 0),
+                Txs:    group(int64(bi.NumTx)) + " txs",
+                Miner:  miner,
+            })
+        }
+        return nil
+    })
+    out.OK = len(out.Rows) > 0
+    return out
 }
 
 // Market reads the rate history straight from the database — cheap enough that

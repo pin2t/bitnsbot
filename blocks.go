@@ -8,6 +8,7 @@ import "strings"
 import "time"
 
 import "go.etcd.io/bbolt"
+import "bitnsbot/app"
 import "bitnsbot/logging"
 import "bitnsbot/miners"
 
@@ -160,6 +161,9 @@ func processBlock(hash string) {
         return
     }
     logging.Info("cached block %d mined by %s", bi.Height, bi.Miner)
+    // Notify only once the block is actually stored: the Blocks tab reads the
+    // cache, so announcing earlier would have the page re-fetch the old list.
+    app.Notify("blocks")
 }
 
 // startBlockCache runs a goroutine that catches up from the last processed block
