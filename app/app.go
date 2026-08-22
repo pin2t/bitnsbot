@@ -196,9 +196,13 @@ type Block struct {
 // Blocks is one page of the recent-block list, newest first. Prev and Next carry
 // the page numbers the buttons link to, so the template does no arithmetic.
 type Blocks struct {
-    OK      bool
-    Rows    []Block
+    OK   bool
+    Rows []Block
+    // Page is the zero-based index the URL uses; Num is the same page as a
+    // reader counts them, from 1. Keeping both means the URL contract does not
+    // change just because the label does.
     Page    int
+    Num     int
     Prev    int
     Next    int
     HasPrev bool

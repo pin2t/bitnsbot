@@ -376,7 +376,7 @@ Size uses `humSize`, which now takes a **decimals** argument: the bot's `/info` 
 - **Addresses is a hardcoded figure** (`"1.5 B"`, set in `startNetworkStats`), not something the node reports. Nothing counts distinct addresses yet: the `addrindex` package records touches per address but keeps no distinct-address total. It renders like the other values, so nothing on the page marks it as an estimate — it will drift from reality until the index can compute it.
 - **Active nodes is the node's own address manager, not a reachability scan.** `getnodeaddresses 0` returns every address the node knows — measured on mainnet, **65 007 entries in 0.65s**, several megabytes — filtered to those seen within `activeNodeWindow` (48h), which gave **31 751**. That is gossip the node has heard, so it runs higher than a "reachable nodes" crawl like bitnodes. It is far too heavy for a request path, hence the background cache; and if that one call fails the previous count is carried forward rather than showing a misleading `0`.
 
-**The Blocks tab** lists recent blocks newest first, ten to a page, each row carrying height, size, transaction count, the pool that mined it, and a chevron marking it tappable.
+**The Blocks tab** lists recent blocks newest first, twelve to a page (measured: twelve rows fill a 360x800 screen exactly, without the list needing to scroll), each row carrying height, size, transaction count, the pool that mined it, and a chevron marking it tappable.
 
 It reads the **`blocks-stat` bucket directly** — no node round trip. The keys are big-endian heights, so walking a bbolt cursor backwards from the end yields descending order with no sorting, and the cached record already holds every field the row needs. A record that fails to decode is skipped rather than ending the page early.
 
@@ -386,6 +386,8 @@ Two details the pagination depends on:
 - **`app.Notify("blocks")` fires from `processBlock`, after `storeBlock` succeeds** — not from `onNewBlock`. The tab reads the cache, and `processBlock` runs in its own goroutine, so announcing from the ZMQ handler would race and have the page re-fetch the list the new block is not yet in.
 
 The `page` parameter comes from a URL a user can edit, so a missing, non-numeric or negative value falls back to page 0 rather than erroring.
+
+The pager reads `Prev < 1 > Next`. The label counts from 1 the way a reader does, while `Page` — and therefore the URL — stays zero-based, so changing the label did not change the contract the buttons and the SSE refresh rely on. `Blocks.Num` carries the display value so the template does no arithmetic.
 
 **The Market card** sits between the Blockchain card and the search field: the current rate under the title, then one narrow column per period — 1d, 1w, 1mo, 3mo, 1y, 5y — showing only the signed percentage, green up and red down. It refreshes on `sse:market` with the same `every 10m` fallback, and `startMarketUpdates` sends that signal on a ticker.
 
