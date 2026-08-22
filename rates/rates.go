@@ -33,7 +33,7 @@ const historyHorizon = 3 * 365 * 24 * time.Hour
 // a stored sample: a USD/BTC price at a point in time.  Time is not stored in the
 // JSON value — the key already encodes the Unix timestamp.  Price is in cents to
 // avoid floating-point drift in the database.
-type rateRecord struct {
+type rate struct {
     Time  time.Time `json:"-"`
     Cents int64     `json:"cents"`
 }
@@ -55,7 +55,7 @@ func itob(v uint64) []byte {
     return buf
 }
 
-func store(r rateRecord) error {
+func store(r rate) error {
     logging.Db("store rate $%.2f", float64(r.Cents)/100)
     var data, err = json.Marshal(r)
     if err != nil { return err }
@@ -66,7 +66,7 @@ func store(r rateRecord) error {
 
 // storeRates writes many records in one transaction — used for the historical
 // backfill, where per-record transactions would mean thousands of fsyncs.
-func storeRates(rates []rateRecord) error {
+func storeRates(rates []rate) error {
     logging.Db("store %d rates", len(rates))
     return db.Update(func(tx *bbolt.Tx) error {
         var b = tx.Bucket(bucket)
@@ -81,7 +81,7 @@ func storeRates(rates []rateRecord) error {
 
 // Add stores a current BTC/USD rate (assumed USD), timestamped now.
 func Add(usd float64) error {
-    return store(rateRecord{Time: time.Now(), Cents: int64(math.Round(usd * 100))})
+    return store(rate{Time: time.Now(), Cents: int64(math.Round(usd * 100))})
 }
 
 // Last returns the most recently stored USD rate, reading only from the database
@@ -94,7 +94,7 @@ func Last() (float64, bool) {
     db.View(func(tx *bbolt.Tx) error {
         var k, v = tx.Bucket(bucket).Cursor().Last()
         if k != nil {
-            var r rateRecord
+            var r rate
             if err := json.Unmarshal(v, &r); err != nil {
                 logging.Err("error json unmarshal %v: %v", v, err)
                 return err
@@ -112,14 +112,14 @@ func At(t time.Time) (float64, bool) {
     if db == nil { return 0, false }
     logging.Db("rate at %d", t.Unix())
     var target = t.Unix()
-    var best rateRecord
+    var best rate
     var found bool
     var bestDiff int64 = 1 << 62
     db.View(func(tx *bbolt.Tx) error {
         var c = tx.Bucket(bucket).Cursor()
         var consider = func(k, v []byte) {
             if k == nil { return }
-            var r rateRecord
+            var r rate
             if err := json.Unmarshal(v, &r); err != nil {
                 logging.Err("error json unmarshal %v: %v", v, err)
                 return
@@ -153,7 +153,7 @@ func hasHistory() bool {
     db.View(func(tx *bbolt.Tx) error {
         var k, v = tx.Bucket(bucket).Cursor().First()
         if k == nil { return nil }
-        var r rateRecord
+        var r rate
         if json.Unmarshal(v, &r) == nil && time.Since(time.Unix(int64(binary.BigEndian.Uint64(k)), 0)) > historyHorizon {
             deep = true
         }
@@ -238,7 +238,7 @@ func fetch(s source) (float64, error) {
     return rate, nil
 }
 
-func parseHistory(body []byte) ([]rateRecord, error) {
+func parseHistory(body []byte) ([]rate, error) {
     var v struct {
         Values []struct {
             X int64   `json:"x"`
@@ -246,15 +246,15 @@ func parseHistory(body []byte) ([]rateRecord, error) {
         } `json:"values"`
     }
     if err := json.Unmarshal(body, &v); err != nil { return nil, err }
-    var records []rateRecord
+    var records []rate
     for _, p := range v.Values {
         if p.Y <= 0 { continue }
-        records = append(records, rateRecord{Time: time.Unix(p.X, 0), Cents: int64(math.Round(p.Y * 100))})
+        records = append(records, rate{Time: time.Unix(p.X, 0), Cents: int64(math.Round(p.Y * 100))})
     }
     return records, nil
 }
 
-func fetchHistory() ([]rateRecord, error) {
+func fetchHistory() ([]rate, error) {
     for attempt := 1; ; attempt++ {
         logging.Net("rates → GET %s (attempt %d/3)", historyURL, attempt)
         var resp, err = httpClient.Get(historyURL)
@@ -285,7 +285,7 @@ func fetchHistory() ([]rateRecord, error) {
 
 // loadHistoryFromFile reads the JSON file at historyFile and returns the parsed
 // records. The file must have the same shape as the blockchain.info history API.
-func loadHistoryFromFile() ([]rateRecord, error) {
+func loadHistoryFromFile() ([]rate, error) {
     var data, err = os.ReadFile(historyFile)
     if err != nil { return nil, err }
     return parseHistory(data)
@@ -298,7 +298,7 @@ func loadHistoryFromFile() ([]rateRecord, error) {
 // fetches over the network.
 func backfill() {
     if hasHistory() { return }
-    var records []rateRecord
+    var records []rate
     var err error
     if historyFile != "" {
         records, err = loadHistoryFromFile()
@@ -435,9 +435,9 @@ func Snapshot() (Market, bool) {
     return m, true
 }
 
-// marketRecord is one stored market snapshot, keyed by Unix timestamp like the
+// market is one stored market snapshot, keyed by Unix timestamp like the
 // rate records so the newest is the last key in the bucket.
-type marketRecord struct {
+type market struct {
     Timestamp int64   `json:"timestamp"`
     Price     float64 `json:"price"`
     MarketCap float64 `json:"marketCap"`
@@ -446,7 +446,7 @@ type marketRecord struct {
 
 func storeMarket(m Market) error {
     if db == nil { return nil }
-    var rec = marketRecord{Timestamp: time.Now().Unix(), Price: m.Price, MarketCap: m.MarketCap, Volume24h: m.Volume24h}
+    var rec = market{Timestamp: time.Now().Unix(), Price: m.Price, MarketCap: m.MarketCap, Volume24h: m.Volume24h}
     logging.Db("store market cap %.0f volume %.0f", m.MarketCap, m.Volume24h)
     var data, err = json.Marshal(rec)
     if err != nil {
@@ -469,7 +469,7 @@ func LastMarket() (Market, bool) {
     db.View(func(tx *bbolt.Tx) error {
         var k, v = tx.Bucket(marketBucket).Cursor().Last()
         if k == nil { return nil }
-        var rec marketRecord
+        var rec market
         if err := json.Unmarshal(v, &rec); err != nil {
             logging.Err("last market json unmarshal %v: %v", v, err)
             return nil

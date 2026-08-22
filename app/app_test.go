@@ -266,10 +266,10 @@ func TestFeesRejectsStaleInitData(t *testing.T) {
         "auth_date": strconv.FormatInt(time.Now().Add(-48*time.Hour).Unix(), 10),
         "user":      `{"id":42}`,
     })
-    if _, ok := checkInitData(old, "TESTTOKEN"); ok {
+    if isValid(old, "TESTTOKEN") {
         t.Fatal("a 48h-old payload was accepted; auth_date is not being checked")
     }
-    if _, ok := checkInitData(freshInitData("TESTTOKEN"), "TESTTOKEN"); !ok {
+    if !isValid(freshInitData("TESTTOKEN"), "TESTTOKEN") {
         t.Fatal("a fresh payload was rejected")
     }
 }

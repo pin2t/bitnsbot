@@ -69,9 +69,9 @@ func TestBackfillRates(t *testing.T) {
 func TestRateStorage(t *testing.T) {
     openTestDB(t)
     var base = time.Now().Truncate(time.Second)
-    store(rateRecord{Time: base.Add(-10 * time.Minute), Cents: 10000})
-    store(rateRecord{Time: base.Add(-5 * time.Minute), Cents: 20000})
-    store(rateRecord{Time: base, Cents: 30000})
+    store(rate{Time: base.Add(-10 * time.Minute), Cents: 10000})
+    store(rate{Time: base.Add(-5 * time.Minute), Cents: 20000})
+    store(rate{Time: base, Cents: 30000})
     // Last returns the newest
     if r, ok := Last(); !ok || r != 300 {
         t.Fatalf("Last = %v %v", r, ok)
