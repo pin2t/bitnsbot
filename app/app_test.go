@@ -46,11 +46,28 @@ type fakeSource struct {
     f Fees
     n Network
     m Market
+    b map[int]Blocks
 }
 
 func (s fakeSource) Fees() Fees       { return s.f }
 func (s fakeSource) Network() Network { return s.n }
 func (s fakeSource) Market() Market   { return s.m }
+func (s fakeSource) Blocks(page int) Blocks { return s.b[page] }
+
+// two pages of ten, so pagination has something to move between
+func liveBlocks() map[int]Blocks {
+    var mk = func(page, from int, hasNext bool) Blocks {
+        var b = Blocks{OK: true, Page: page, Prev: page - 1, Next: page + 1,
+            HasPrev: page > 0, HasNext: hasNext}
+        for i := 0; i < 10; i++ {
+            b.Rows = append(b.Rows, Block{
+                Height: strconv.Itoa(from - i), Size: "1.56 MB",
+                Txs: "4 000 txs", Miner: "AntPool"})
+        }
+        return b
+    }
+    return map[int]Blocks{0: mk(0, 963268, true), 1: mk(1, 963258, false)}
+}
 
 func liveMarket() Market {
     return Market{OK: true, Price: "$66,202.00", Changes: []Change{
@@ -253,6 +270,88 @@ func TestMarketColdCache(t *testing.T) {
     var body = get(handler(t, "TESTTOKEN", fakeSource{f: liveFees()}), "/", "").Body.String()
     if !strings.Contains(body, "market data unavailable") {
         t.Error("with no rates the card should say so")
+    }
+}
+
+// The Blocks tab lists recent blocks newest first, each row carrying the four
+// fields and a chevron, with the pager below.
+func TestBlocksListRenders(t *testing.T) {
+    var src = fakeSource{f: liveFees(), b: liveBlocks()}
+    var body = get(handler(t, "TESTTOKEN", src), "/", "").Body.String()
+    if n := strings.Count(body, `class="blk"`); n != 10 {
+        t.Errorf("rendered %d block rows, want 10", n)
+    }
+    for _, want := range []string{"963268", "1.56 MB", "4 000 txs", "AntPool", ">Prev<", ">Next<"} {
+        if !strings.Contains(body, want) {
+            t.Errorf("block list is missing %q", want)
+        }
+    }
+    // descending: the newest height must appear before the one below it
+    if strings.Index(body, "963268") > strings.Index(body, "963267") {
+        t.Error("blocks are not in descending order")
+    }
+    if !strings.Contains(body, `class="go"`) {
+        t.Error("rows have no chevron, so nothing signals they are tappable")
+    }
+}
+
+// Paging moves the window and flips the buttons at the ends.
+func TestBlocksPagination(t *testing.T) {
+    var h = handler(t, "TESTTOKEN", fakeSource{b: liveBlocks()})
+    var first = get(h, "/blocks?page=0", freshInitData("TESTTOKEN")).Body.String()
+    if !strings.Contains(first, "963268") || strings.Contains(first, "963258") {
+        t.Error("page 0 should hold the newest ten")
+    }
+    if !strings.Contains(first, `>Prev</button>`) || !strings.Contains(first, "disabled") {
+        t.Error("Prev must be disabled on the first page")
+    }
+    var second = get(h, "/blocks?page=1", freshInitData("TESTTOKEN")).Body.String()
+    if !strings.Contains(second, "963258") {
+        t.Error("page 1 should hold the next ten")
+    }
+    if !strings.Contains(second, `hx-get="blocks?page=0"`) {
+        t.Error("Prev on page 1 must link back to page 0")
+    }
+}
+
+// The page number comes from a URL a user can edit, so nonsense must land on
+// page 0 rather than erroring or panicking.
+func TestBlocksBadPageFallsBackToFirst(t *testing.T) {
+    var h = handler(t, "TESTTOKEN", fakeSource{b: liveBlocks()})
+    for _, q := range []string{"", "?page=", "?page=abc", "?page=-3"} {
+        var w = get(h, "/blocks"+q, freshInitData("TESTTOKEN"))
+        if w.Code != 200 || !strings.Contains(w.Body.String(), "963268") {
+            t.Errorf("%q gave %d; want page 0", q, w.Code)
+        }
+    }
+}
+
+// The list re-fetches on a new block, and keeps whichever page is showing —
+// re-rendering the container is what carries the page number across the swap.
+func TestBlocksRefreshKeepsPage(t *testing.T) {
+    var h = handler(t, "TESTTOKEN", fakeSource{b: liveBlocks()})
+    var second = get(h, "/blocks?page=1", freshInitData("TESTTOKEN")).Body.String()
+    if !strings.Contains(second, `hx-trigger="sse:blocks"`) {
+        t.Error("the list must refresh on the sse:blocks event")
+    }
+    if !strings.Contains(second, `hx-get="blocks?page=1"`) {
+        t.Error("the refreshed container must ask for the page it is showing, not page 0")
+    }
+}
+
+// /blocks is data, so it needs a signature like the cards do.
+func TestBlocksNeedsInitData(t *testing.T) {
+    var h = handler(t, "TESTTOKEN", fakeSource{b: liveBlocks()})
+    if w := get(h, "/blocks?page=0", ""); w.Code != 401 {
+        t.Errorf("unauthenticated /blocks = %d, want 401", w.Code)
+    }
+}
+
+// An empty cache says so rather than rendering an empty list with a pager.
+func TestBlocksEmptyCache(t *testing.T) {
+    var body = get(handler(t, "TESTTOKEN", fakeSource{f: liveFees()}), "/", "").Body.String()
+    if !strings.Contains(body, "no blocks cached yet") {
+        t.Error("with no cached blocks the tab should say so")
     }
 }
 
