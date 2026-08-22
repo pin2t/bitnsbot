@@ -376,6 +376,17 @@ Size uses `humSize`, which now takes a **decimals** argument: the bot's `/info` 
 - **Addresses is a hardcoded figure** (`"1.5 B"`, set in `startNetworkStats`), not something the node reports. Nothing counts distinct addresses yet: the `addrindex` package records touches per address but keeps no distinct-address total. It renders like the other values, so nothing on the page marks it as an estimate — it will drift from reality until the index can compute it.
 - **Active nodes is the node's own address manager, not a reachability scan.** `getnodeaddresses 0` returns every address the node knows — measured on mainnet, **65 007 entries in 0.65s**, several megabytes — filtered to those seen within `activeNodeWindow` (48h), which gave **31 751**. That is gossip the node has heard, so it runs higher than a "reachable nodes" crawl like bitnodes. It is far too heavy for a request path, hence the background cache; and if that one call fails the previous count is carried forward rather than showing a misleading `0`.
 
+**The Market card** sits between the Blockchain card and the search field: the current rate under the title, then one narrow column per period — 1d, 1w, 1mo, 3mo, 1y, 5y — showing only the signed percentage, green up and red down. It refreshes on `sse:market` with the same `every 10m` fallback, and `startMarketUpdates` sends that signal on a ticker.
+
+Unlike the other two cards it keeps **no cache**: the change figures are `rates.Last()` and `rates.At()`, plain database reads, so `appSource.Market()` computes them per request and the ticker only has to send the signal.
+
+Two details:
+
+- **A period with no baseline renders a placeholder, not a missing column.** On a fresh install the older periods have no rate to compare against until the backfill lands; dropping them would reflow the grid from six columns to fewer. The cell shows an em dash in the neutral colour instead.
+- **Six columns fit from 360px up**, which covers every current phone. At 320px an extreme five-year figure would overflow the row, so a media query shrinks the type there rather than dropping a period — measured at 320, 360 and 375.
+
+**`html/template` escapes `+` as `&#43;`** (a defence against UTF-7 attacks), so a signed percentage is `&#43;2.5%` in the served HTML even though the browser shows `+2.5%`. Tests that assert on rendered figures must unescape first, or a raw substring search silently fails on every positive change.
+
 **Rendering fees into `/` makes them public**, because `/` cannot be authenticated — Telegram passes `initData` in the URL *fragment*, which is never sent to the server, so there is nothing to verify on the initial load. That is acceptable only because fee estimates are public network data. Anything per-user (a chat's watches) must **not** be rendered into the page; it belongs behind `/fees`-style endpoints that `requireInitData` protects.
 
 **`initData` validation** (`isValid`) is what stands between this server and anyone who knows the URL. Telegram signs the payload it hands the webview; the page forwards it on every HTMX request as `X-Telegram-Init-Data` (attached via an `htmx:configRequest` listener registered on `document` — not `body`, which does not exist yet in `head` — so the very first request already carries it), and `requireInitData` rejects anything unsigned, tampered, or stale with a 401.

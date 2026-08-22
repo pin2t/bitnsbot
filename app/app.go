@@ -42,6 +42,7 @@ var appTmpl = template.Must(template.New("app").Parse(string(appHTML)))
 type page struct {
     Fees    Fees
     Network Network
+    Market  Market
 }
 
 // keepAlive is how often the event stream emits a comment line. An idle SSE
@@ -163,11 +164,31 @@ type Network struct {
     Addresses string
 }
 
+// Change is one period's price move, already formatted: a short label, the
+// signed percentage, and which way it went so the template can colour it. Up is
+// meaningless when Pct is the placeholder — see Neutral.
+type Change struct {
+    Label   string
+    Pct     string
+    Up      bool
+    Neutral bool
+}
+
+// Market is the price card: the current rate and how it has moved over each
+// period. Changes always has one entry per period, so a gap in the rate history
+// leaves a placeholder rather than collapsing the columns.
+type Market struct {
+    OK      bool
+    Price   string
+    Changes []Change
+}
+
 // Source supplies the chain data the app renders. main implements it; the app
 // package stays unaware of the fee cache, Bitcoin Core and the price feeds.
 type Source interface {
     Fees() Fees
     Network() Network
+    Market() Market
 }
 
 // Start serves the Mini App on addr and returns the server so the caller can
@@ -183,7 +204,7 @@ func Start(addr, token string, src Source) *http.Server {
             return
         }
         w.Header().Set("Content-Type", "text/html; charset=utf-8")
-        if err := appTmpl.Execute(w, page{Fees: src.Fees(), Network: src.Network()}); err != nil {
+        if err := appTmpl.Execute(w, page{Fees: src.Fees(), Network: src.Network(), Market: src.Market()}); err != nil {
             logging.Err("mini app: render page: %v", err)
         }
     })
@@ -203,6 +224,9 @@ func Start(addr, token string, src Source) *http.Server {
     }))
     mux.HandleFunc("/network", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
         render(w, "network", src.Network())
+    }))
+    mux.HandleFunc("/market", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
+        render(w, "market", src.Market())
     }))
     var srv = &http.Server{Addr: addr, Handler: mux}
     go func() {
