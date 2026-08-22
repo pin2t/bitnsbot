@@ -331,6 +331,12 @@ Because it is its own package it cannot see main's fee cache or the display form
 
 One operational constraint, learned the hard way and not obvious: **cloudflared's default QUIC transport cannot work over the AmneziaWG tunnel.** The link is MTU 1280, leaving 1252 usable bytes against QUIC's 1200-byte floor — only 52 bytes of headroom, which is not enough for cloudflared's handshake, so it crash-loops. The fix is `TUNNEL_TRANSPORT_PROTOCOL=http2` (Cloudflare's own precheck reports `suggested_protocol=http2`). TCP connectivity to the edge is fine throughout; only QUIC fails.
 
+**Card titles are 15px, above the 14px labels.** They were 13px — the *smallest* text in a card while also being uppercase, letter-spaced and in the muted hint colour, three things that each cost legibility. That read fine on a desktop preview and too small on a real phone, where the page is physically smaller and held further away. The tab labels, at 14px in normal case, were the giveaway: they looked fine while the titles did not, which pointed at a relative typographic problem rather than a scaling bug (the viewport meta was correct all along).
+
+`html { text-size-adjust: 100% }` is set so a mobile browser renders what the desktop preview shows rather than auto-adjusting.
+
+**The Market percentages are the one thing that cannot grow.** Six columns are width-bound: at 13px the row overflows at 360px, which is Pixel-class, so they stay at 12px (11px below 360px). Any change there must be measured at 320, 360 and 375 — raising them is what broke it.
+
 Type sizes were raised roughly 15% across the page after the first mobile test — the original 10-12px labels read too small on a phone. Two constraints hold them in place: the search field must stay **at or above 16px**, below which iOS WebKit zooms the whole page whenever the field is focused; and "20.1 M / 21 M" is the widest value on the Blockchain card, measuring exactly its cell at 320px, so it is what caps any further increase.
 
 The page is four tabs — Home, Blocks, Addresses, Watches (named to match the bot's /watch commands) — with the tab bar at the **bottom**, where a thumb reaches it on a phone, and padded with `env(safe-area-inset-bottom)` for notched devices. Home carries a network-fees card above a centred search field; the other three are placeholders. Colours come from Telegram's `--tg-theme-*` CSS variables with fallbacks, so the page is also usable in an ordinary browser, which is how it gets developed.
