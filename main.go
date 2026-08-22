@@ -683,91 +683,114 @@ var cachedNetwork app.Network
 func startNetworkStats() {
     if core == nil { return }
     go func() {
-        var refresh = func() {
-            var ctx, cancel = context.WithTimeout(context.Background(), 60*time.Second)
-            defer cancel()
-            var info, err = core.getBlockchainInfo(ctx)
-            if err != nil {
-                logging.Warn("network stats: %v", err)
-                return
-            }
-            networkMu.Lock()
-            var nodes, txs = cachedNetwork.Nodes, cachedNetwork.Txs
-            networkMu.Unlock()
-            // Same rule as the peer count: a failure here keeps the last known
-            // figure rather than blanking the field.
-            if stats, serr := core.getChainTxStats(ctx); serr == nil {
-                txs = bigCount(stats.TxCount)
-            } else {
-                logging.Warn("network stats: chain tx stats: %v", serr)
-                if txs == "" { txs = "—" }
-            }
-            // A failed peer count must not blank the field or, worse, report 0
-            // active nodes — keep whatever we last knew.
-            if addrs, aerr := core.getNodeAddresses(ctx); aerr == nil {
-                var cutoff = time.Now().Add(-activeNodeWindow).Unix()
-                var active int64
-                for _, a := range addrs {
-                    if a.Time >= cutoff { active++ }
-                }
-                nodes = group(active)
-            } else {
-                logging.Warn("network stats: node addresses: %v", aerr)
-                if nodes == "" { nodes = "—" }
-            }
-            networkMu.Lock()
-            cachedNetwork = app.Network{OK: true,
-                Coins:  metric(toBTC(circulatingSupply(info.Blocks)), 1),
-                Cap:    "21 M",
-                Blocks: group(info.Blocks),
-                Size:   humSize(info.SizeOnDisk, 0, 0),
-                Nodes:  nodes,
-                Txs:    txs,
-                // A fixed figure: nothing counts distinct addresses yet. The
-                // addrindex package records touches per address but keeps no
-                // distinct total, so this stands in until it can.
-                Addresses: "1.5 B",
-            }
-            networkMu.Unlock()
-            app.Notify("network")
-        }
-        refresh()
+        refreshNetwork(true)
         var t = time.NewTicker(10 * time.Minute)
         defer t.Stop()
         for range t.C {
-            refresh()
+            refreshNetwork(true)
         }
     }()
+}
+
+// refreshNetwork rebuilds the Blockchain card and pushes it to any open page.
+//
+// withNodes gates the one expensive call: getnodeaddresses returns every address
+// the node knows — tens of thousands of entries and several megabytes on mainnet
+// — and the count it produces barely moves between blocks. The ticker asks for
+// it; a new block does not, and carries the last known count forward instead.
+func refreshNetwork(withNodes bool) {
+    if core == nil { return }
+    var ctx, cancel = context.WithTimeout(context.Background(), 60*time.Second)
+    defer cancel()
+    var info, err = core.getBlockchainInfo(ctx)
+    if err != nil {
+        logging.Warn("network stats: %v", err)
+        return
+    }
+    networkMu.Lock()
+    var nodes, txs = cachedNetwork.Nodes, cachedNetwork.Txs
+    networkMu.Unlock()
+    // Same rule as the peer count: a failure here keeps the last known figure
+    // rather than blanking the field.
+    if stats, serr := core.getChainTxStats(ctx); serr == nil {
+        txs = bigCount(stats.TxCount)
+    } else {
+        logging.Warn("network stats: chain tx stats: %v", serr)
+        if txs == "" { txs = "—" }
+    }
+    // A failed peer count must not blank the field or, worse, report 0 active
+    // nodes — keep whatever we last knew.
+    if withNodes {
+        if addrs, aerr := core.getNodeAddresses(ctx); aerr == nil {
+            var cutoff = time.Now().Add(-activeNodeWindow).Unix()
+            var active int64
+            for _, a := range addrs {
+                if a.Time >= cutoff { active++ }
+            }
+            nodes = group(active)
+        } else {
+            logging.Warn("network stats: node addresses: %v", aerr)
+        }
+    }
+    if nodes == "" { nodes = "—" }
+    networkMu.Lock()
+    cachedNetwork = app.Network{OK: true,
+        Coins:  metric(toBTC(circulatingSupply(info.Blocks)), 1),
+        Cap:    "21 M",
+        Blocks: group(info.Blocks),
+        Size:   humSize(info.SizeOnDisk, 0, 0),
+        Nodes:  nodes,
+        Txs:    txs,
+        // A fixed figure: nothing counts distinct addresses yet. The addrindex
+        // package records touches per address but keeps no distinct total, so
+        // this stands in until it can.
+        Addresses: "1.5 B",
+    }
+    networkMu.Unlock()
+    app.Notify("network")
 }
 
 func startMempoolFees() {
     if core == nil { return }
     go func() {
-        var calc = func() {
-            var ctx, cancel = context.WithTimeout(context.Background(), 60*time.Second)
-            defer cancel()
-            var entries, err = core.rawMempoolVerbose(ctx)
-            if err != nil {
-                logging.Warn("mempool fees: %v", err)
-                return
-            }
-            var minFee float64
-            if info, ierr := core.getMempoolInfo(ctx); ierr == nil {
-                minFee = info.MempoolMinFee
-            }
-            var rec = calculateRecommendedFee(buildProjectedBlocks(entries), minFee)
-            feesMu.Lock()
-            cachedFees, cachedFeesOK, cachedFeesCount = rec, true, len(entries)
-            feesMu.Unlock()
-            app.Notify("fees")
-        }
-        calc()
+        refreshFees()
         var t = time.NewTicker(10 * time.Minute)
         defer t.Stop()
         for range t.C {
-            calc()
+            refreshFees()
         }
     }()
+}
+
+// refreshFees recomputes the projection and pushes it to any open page.
+func refreshFees() {
+    if core == nil { return }
+    var ctx, cancel = context.WithTimeout(context.Background(), 60*time.Second)
+    defer cancel()
+    var entries, err = core.rawMempoolVerbose(ctx)
+    if err != nil {
+        logging.Warn("mempool fees: %v", err)
+        return
+    }
+    var minFee float64
+    if info, ierr := core.getMempoolInfo(ctx); ierr == nil {
+        minFee = info.MempoolMinFee
+    }
+    var rec = calculateRecommendedFee(buildProjectedBlocks(entries), minFee)
+    feesMu.Lock()
+    cachedFees, cachedFeesOK, cachedFeesCount = rec, true, len(entries)
+    feesMu.Unlock()
+    app.Notify("fees")
+}
+
+// onNewBlock refreshes what a block actually changes, so the Mini App updates
+// within seconds of one being mined rather than waiting out a ten-minute ticker.
+// A block moves the height and, by clearing the mempool, the fee projection —
+// which is at its most stale right after one. The peer count is left to the
+// ticker; it is the expensive call and it barely moves block to block.
+func onNewBlock() {
+    refreshNetwork(false)
+    refreshFees()
 }
 
 // mempoolSummaryLimit caps how many transactions /mempool will total up — above

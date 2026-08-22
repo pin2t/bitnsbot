@@ -233,6 +233,7 @@ func startZMQ(ctx context.Context, endpoints []string, b *bot) error {
                 var hash = hex.EncodeToString(msg.Frames[1])
                 go processBlock(hash)
                 go processConfirms(b, hash)
+                go onNewBlock()
             case "rawtx":
                 if !anyWatched() { continue }
                 var tx, ok = parseTx(msg.Frames[1])
