@@ -67,14 +67,14 @@ func (appSource) Network() app.Network {
 }
 
 // blocksPerPage is how many rows the Blocks tab shows at once.
-const blocksPerPage = 10
+const blocksPerPage = 12
 
 // Blocks reads a page of the recent-block list straight out of the blocks-stat
 // bucket. The keys are big-endian heights, so walking the cursor backwards from
 // the end yields newest-first order with no sorting and no node round trip —
 // everything the row needs is already in the cached record.
 func (appSource) Blocks(page int) app.Blocks {
-    var out = app.Blocks{Page: page, Prev: page - 1, Next: page + 1, HasPrev: page > 0}
+    var out = app.Blocks{Page: page, Num: page + 1, Prev: page - 1, Next: page + 1, HasPrev: page > 0}
     if db == nil { return out }
     db.View(func(tx *bbolt.Tx) error {
         var b = tx.Bucket(blocksBucket)

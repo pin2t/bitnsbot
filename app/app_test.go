@@ -57,16 +57,16 @@ func (s fakeSource) Blocks(page int) Blocks { return s.b[page] }
 // two pages of ten, so pagination has something to move between
 func liveBlocks() map[int]Blocks {
     var mk = func(page, from int, hasNext bool) Blocks {
-        var b = Blocks{OK: true, Page: page, Prev: page - 1, Next: page + 1,
+        var b = Blocks{OK: true, Page: page, Num: page + 1, Prev: page - 1, Next: page + 1,
             HasPrev: page > 0, HasNext: hasNext}
-        for i := 0; i < 10; i++ {
+        for i := 0; i < 12; i++ {
             b.Rows = append(b.Rows, Block{
                 Height: strconv.Itoa(from - i), Size: "1.56 MB",
                 Txs: "4 000 txs", Miner: "AntPool"})
         }
         return b
     }
-    return map[int]Blocks{0: mk(0, 963268, true), 1: mk(1, 963258, false)}
+    return map[int]Blocks{0: mk(0, 963268, true), 1: mk(1, 963256, false)}
 }
 
 func liveMarket() Market {
@@ -278,10 +278,10 @@ func TestMarketColdCache(t *testing.T) {
 func TestBlocksListRenders(t *testing.T) {
     var src = fakeSource{f: liveFees(), b: liveBlocks()}
     var body = get(handler(t, "TESTTOKEN", src), "/", "").Body.String()
-    if n := strings.Count(body, `class="blk"`); n != 10 {
-        t.Errorf("rendered %d block rows, want 10", n)
+    if n := strings.Count(body, `class="blk"`); n != 12 {
+        t.Errorf("rendered %d block rows, want 12", n)
     }
-    for _, want := range []string{"963268", "1.56 MB", "4 000 txs", "AntPool", ">Prev<", ">Next<"} {
+    for _, want := range []string{"963268", "1.56 MB", "4 000 txs", "AntPool", "Prev &lt;", "&gt; Next"} {
         if !strings.Contains(body, want) {
             t.Errorf("block list is missing %q", want)
         }
@@ -299,18 +299,23 @@ func TestBlocksListRenders(t *testing.T) {
 func TestBlocksPagination(t *testing.T) {
     var h = handler(t, "TESTTOKEN", fakeSource{b: liveBlocks()})
     var first = get(h, "/blocks?page=0", freshInitData("TESTTOKEN")).Body.String()
-    if !strings.Contains(first, "963268") || strings.Contains(first, "963258") {
-        t.Error("page 0 should hold the newest ten")
+    if !strings.Contains(first, "963268") || strings.Contains(first, "963256") {
+        t.Error("page 0 should hold the newest twelve")
     }
-    if !strings.Contains(first, `>Prev</button>`) || !strings.Contains(first, "disabled") {
+    // the disabled attribute sits immediately before the label, so this pins it
+    // to the Prev button rather than to "disabled" appearing anywhere on the page
+    if !strings.Contains(first, `disabled>Prev &lt;</button>`) {
         t.Error("Prev must be disabled on the first page")
     }
     var second = get(h, "/blocks?page=1", freshInitData("TESTTOKEN")).Body.String()
-    if !strings.Contains(second, "963258") {
-        t.Error("page 1 should hold the next ten")
+    if !strings.Contains(second, "963256") {
+        t.Error("page 1 should hold the next twelve")
     }
     if !strings.Contains(second, `hx-get="blocks?page=0"`) {
         t.Error("Prev on page 1 must link back to page 0")
+    }
+    if strings.Contains(second, `disabled>Prev &lt;</button>`) {
+        t.Error("Prev must be enabled once past the first page")
     }
 }
 
@@ -336,6 +341,27 @@ func TestBlocksRefreshKeepsPage(t *testing.T) {
     }
     if !strings.Contains(second, `hx-get="blocks?page=1"`) {
         t.Error("the refreshed container must ask for the page it is showing, not page 0")
+    }
+}
+
+// The pager reads "Prev < 1 > Next": the label counts from 1 the way a reader
+// does, while the URL keeps its zero-based page so the contract is unchanged.
+func TestPagerLabelsCountFromOne(t *testing.T) {
+    var h = handler(t, "TESTTOKEN", fakeSource{b: liveBlocks()})
+    var first = get(h, "/blocks?page=0", freshInitData("TESTTOKEN")).Body.String()
+    if !strings.Contains(first, `<span class="page">1</span>`) {
+        t.Error("the first page should be labelled 1, not 0")
+    }
+    if strings.Contains(first, "page 0") || strings.Contains(first, ">page ") {
+        t.Error(`the "page" word should be gone from the indicator`)
+    }
+    var second = get(h, "/blocks?page=1", freshInitData("TESTTOKEN")).Body.String()
+    if !strings.Contains(second, `<span class="page">2</span>`) {
+        t.Error("the second page should be labelled 2")
+    }
+    // the zero-based URL contract is unchanged
+    if !strings.Contains(second, `hx-get="blocks?page=0"`) {
+        t.Error("Prev on the second page must still link to page=0")
     }
 }
 

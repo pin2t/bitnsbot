@@ -134,7 +134,7 @@
                   color: var(--fg); background: var(--card);
                   border: 1px solid var(--line); border-radius: 10px; cursor: pointer; }
   .pager button[disabled] { color: var(--hint); opacity: .5; cursor: default; }
-  .pager .page { font-size: 13px; color: var(--hint); min-width: 54px; text-align: center; }
+  .pager .page { font-size: 14px; font-weight: 600; min-width: 24px; text-align: center; }
 
   /* Bottom tab bar: thumb-reachable on a phone, and padded for the home
      indicator on notched devices. */
@@ -259,10 +259,10 @@
   </div>
   <div class="pager">
     <button hx-get="blocks?page={{.Prev}}" hx-target="#blocklist" hx-swap="outerHTML"
-            {{if not .HasPrev}}disabled{{end}}>Prev</button>
-    <span class="page">page {{.Page}}</span>
+            {{if not .HasPrev}}disabled{{end}}>Prev &lt;</button>
+    <span class="page">{{.Num}}</span>
     <button hx-get="blocks?page={{.Next}}" hx-target="#blocklist" hx-swap="outerHTML"
-            {{if not .HasNext}}disabled{{end}}>Next</button>
+            {{if not .HasNext}}disabled{{end}}>&gt; Next</button>
   </div>
 {{- else}}
   <div class="empty">no blocks cached yet</div>
