@@ -280,12 +280,15 @@ type Market struct {
 }
 
 // Block is one row of the Blocks tab, already formatted: height, size,
-// transaction count and the pool that mined it.
+// transaction count and the pool that mined it. MinerKnown is false when
+// attribution failed and Miner is the "Unknown" placeholder, which is not a
+// link — main owns that string, so the template does not compare against it.
 type Block struct {
-    Height string
-    Size   string
-    Txs    string
-    Miner  string
+    Height     string
+    Size       string
+    Txs        string
+    Miner      string
+    MinerKnown bool
 }
 
 // Blocks is one page of the recent-block list, newest first. Prev and Next carry

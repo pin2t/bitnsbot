@@ -97,10 +97,11 @@ func (appSource) Blocks(page int) app.Blocks {
             var miner = bi.Miner
             if miner == "" { miner = "Unknown" }
             out.Rows = append(out.Rows, app.Block{
-                Height: group(bi.Height),
-                Size:   humSize(int64(bi.Size), 2, 0),
-                Txs:    group(int64(bi.NumTx)) + " txs",
-                Miner:  miner,
+                Height:     group(bi.Height),
+                Size:       humSize(int64(bi.Size), 2, 0),
+                Txs:        group(int64(bi.NumTx)) + " txs",
+                Miner:      miner,
+                MinerKnown: bi.Miner != "",
             })
         }
         return nil

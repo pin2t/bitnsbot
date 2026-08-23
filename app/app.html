@@ -46,6 +46,7 @@
     --hint:   var(--tg-theme-hint-color, #8e8e93);
     --card:   var(--tg-theme-secondary-bg-color, #f2f2f7);
     --accent: var(--tg-theme-button-color, #2481cc);
+    --link:   var(--tg-theme-link-color, #2481cc);
     --line:   rgba(128,128,128,.22);
   }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
@@ -125,9 +126,10 @@
      number. min-width:0 is what lets a flex item shrink below its content. */
   .blk .mn { flex: 1; min-width: 0; font-size: 13px; text-align: right;
              overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .blk .go { flex: none; display: flex; color: var(--hint); }
-  .blk .go svg { width: 16px; height: 16px; fill: none; stroke: currentColor;
-                 stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+  /* Height and miner are the tappable fields, so they carry the link colour
+     rather than the row carrying a chevron. An unattributed miner is not a
+     link, so it stays plain text. */
+  .blk .lnk { color: var(--link); cursor: pointer; }
   .pager { display: flex; gap: 8px; justify-content: center; align-items: center;
            padding: 8px 0 2px; }
   .pager button { padding: 7px 18px; font-size: 14px; font-family: inherit;
@@ -249,11 +251,10 @@
   <div class="rows">
   {{- range .Rows}}
     <div class="blk">
-      <span class="h">{{.Height}}</span>
+      <span class="h lnk">{{.Height}}</span>
       <span class="sz">{{.Size}}</span>
       <span class="tx">{{.Txs}}</span>
-      <span class="mn">{{.Miner}}</span>
-      <span class="go"><svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></span>
+      <span class="mn{{if .MinerKnown}} lnk{{end}}">{{.Miner}}</span>
     </div>
   {{- end}}
   </div>

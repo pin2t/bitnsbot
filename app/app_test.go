@@ -60,9 +60,12 @@ func liveBlocks() map[int]Blocks {
         var b = Blocks{OK: true, Page: page, Num: page + 1, Prev: page - 1, Next: page + 1,
             HasPrev: page > 0, HasNext: hasNext}
         for i := 0; i < 12; i++ {
-            b.Rows = append(b.Rows, Block{
-                Height: strconv.Itoa(from - i), Size: "1.56 MB",
-                Txs: "4 000 txs", Miner: "AntPool"})
+            // the last row of each page is unattributed, so every page carries
+            // both the linked and the plain form of the miner field
+            var row = Block{Height: strconv.Itoa(from - i), Size: "1.56 MB",
+                Txs: "4 000 txs", Miner: "AntPool", MinerKnown: true}
+            if i == 11 { row.Miner, row.MinerKnown = "Unknown", false }
+            b.Rows = append(b.Rows, row)
         }
         return b
     }
@@ -277,7 +280,7 @@ func TestMarketColdCache(t *testing.T) {
 }
 
 // The Blocks tab lists recent blocks newest first, each row carrying the four
-// fields and a chevron, with the pager below.
+// fields, with the pager below.
 func TestBlocksListRenders(t *testing.T) {
     var src = fakeSource{f: liveFees(), b: liveBlocks()}
     var body = get(handler(t, "TESTTOKEN", src), "/", "").Body.String()
@@ -293,8 +296,27 @@ func TestBlocksListRenders(t *testing.T) {
     if strings.Index(body, "963268") > strings.Index(body, "963267") {
         t.Error("blocks are not in descending order")
     }
-    if !strings.Contains(body, `class="go"`) {
-        t.Error("rows have no chevron, so nothing signals they are tappable")
+    if strings.Contains(body, `class="go"`) {
+        t.Error("the row chevron should be gone; the two link fields replace it")
+    }
+}
+
+// Height and miner are the tappable fields, so both carry the link class — but
+// an unattributed miner is not a link, since there is no pool to open.
+func TestBlockRowLinks(t *testing.T) {
+    var src = fakeSource{f: liveFees(), b: liveBlocks()}
+    var body = get(handler(t, "TESTTOKEN", src), "/", "").Body.String()
+    if n := strings.Count(body, `class="h lnk"`); n != 12 {
+        t.Errorf("%d heights are links, want all 12", n)
+    }
+    if n := strings.Count(body, `class="mn lnk"`); n != 11 {
+        t.Errorf("%d miners are links, want the 11 attributed ones", n)
+    }
+    if !strings.Contains(body, `<span class="mn">Unknown</span>`) {
+        t.Error(`an unattributed miner must render as plain text, not a link`)
+    }
+    if !strings.Contains(body, "--tg-theme-link-color") {
+        t.Error("links should take Telegram's link colour, not the button colour")
     }
 }
 
