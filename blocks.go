@@ -261,7 +261,10 @@ func flushBlocks(bis []*blockInfo, cursor int64) error {
 }
 
 // formatBlock renders a cached block record as the /info block reply.
-func formatBlock(bi *blockInfo, chat int64) string {
+// blockPairs builds the label/value lines a block is described by. Shared with
+// the Mini App's block details page, so the two cannot drift apart. A pair with
+// an empty value is a heading ("Fees", "Tx sizes"), not a field.
+func blockPairs(bi *blockInfo, chat int64) [][2]string {
     var difficulty = metric(bi.Difficulty, 2)
     var pairs = [][2]string{
         {i18n(chat).String("Hash"), short(bi.Hash)},
@@ -294,7 +297,11 @@ func formatBlock(bi *blockInfo, chat int64) string {
         [2]string{i18n(chat).String("Reward"), amountLine(bi.Reward, time.Unix(bi.Time, 0), false, chat)},
         [2]string{i18n(chat).String("Reward + fees"), amountLine(bi.Total, time.Unix(bi.Time, 0), false, chat)},
     )
-    return i18n(chat).Sprintf("Block #%d\n\n<pre>%s</pre>", bi.Height, joinAlign(pairs))
+    return pairs
+}
+
+func formatBlock(bi *blockInfo, chat int64) string {
+    return i18n(chat).Sprintf("Block #%d\n\n<pre>%s</pre>", bi.Height, joinAlign(blockPairs(bi, chat)))
 }
 
 // minerSource adapts the core connection to the miners package's stats collector:

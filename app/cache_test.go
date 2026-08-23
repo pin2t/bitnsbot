@@ -35,6 +35,12 @@ func (s *countingSource) Fees() Fees       { s.hit("fees"); return liveFees() }
 func (s *countingSource) Network() Network { s.hit("network"); return liveNetwork() }
 func (s *countingSource) Market() Market   { s.hit("market"); return liveMarket() }
 
+func (s *countingSource) BlockInfo(height int64) BlockInfo {
+    s.hit("blockinfo" + strconv.FormatInt(height, 10))
+    return BlockInfo{OK: true, Height: strconv.FormatInt(height, 10),
+        Rows: []Field{{Label: "Hash", Value: "0000ab...9f21cd"}}}
+}
+
 func (s *countingSource) Blocks(page int) Blocks {
     s.hit("blocks" + strconv.Itoa(page))
     if b, ok := s.b[page]; ok { return b }
