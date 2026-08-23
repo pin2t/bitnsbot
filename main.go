@@ -114,10 +114,10 @@ func (appSource) Blocks(page int) app.Blocks {
 // BlockInfo backs the Mini App's block details page. It loads or computes the
 // same record /info uses and renders the same lines from it, in English —
 // chat 0 has no language, so i18n falls through to the source strings.
-func (appSource) BlockInfo(height int64) app.BlockInfo {
-    // Height is set even when the lookup fails, so the page still titles itself
-    // with what was asked for rather than "Block ".
-    var out = app.BlockInfo{Height: group(height)}
+func (appSource) BlockInfo(height int64) app.Info {
+    // Title is set even when the lookup fails, so the page still names what was
+    // asked for rather than reading "Block ".
+    var out = app.Info{Title: "Block " + group(height)}
     var bi, ok = loadBlock(height)
     if !ok {
         if core == nil { return out }
@@ -133,9 +133,52 @@ func (appSource) BlockInfo(height int64) app.BlockInfo {
         storeBlock(bi)
     }
     out.OK = true
-    for _, p := range blockPairs(bi, 0) {
-        out.Rows = append(out.Rows, app.Field{Label: p[0], Value: p[1]})
+    out.Rows = appFields(blockPairs(bi, 0))
+    return out
+}
+
+// TxInfo backs the transaction details page. A block hash has the same 64-hex
+// shape as a txid and only the node can tell them apart, so — exactly as info()
+// does for the bot — an id the node has a block header for is shown as that
+// block instead. Both live on the Blocks tab, so the handoff is seamless.
+func (appSource) TxInfo(txid string) app.Info {
+    var out = app.Info{Title: short(txid)}
+    if core == nil { return out }
+    var ctx, cancel = context.WithTimeout(context.Background(), 60*time.Second)
+    defer cancel()
+    if header, err := core.getBlockHeader(ctx, txid); err == nil {
+        return appSource{}.BlockInfo(header.Height)
     }
+    var pairs, _, canonical, ok = txPairs(ctx, 0, txid)
+    if !ok { return out }
+    return app.Info{OK: true, Title: short(canonical), Rows: appFields(pairs)}
+}
+
+// AddrInfo backs the address details page. An input that is not an address at
+// all says so, rather than reporting an empty history as fact.
+func (appSource) AddrInfo(addr string) app.Info {
+    var out = app.Info{Title: short(addr)}
+    if core == nil { return out }
+    var ctx, cancel = context.WithTimeout(context.Background(), 60*time.Second)
+    defer cancel()
+    var pairs, valid, err = addrPairs(ctx, 0, addr)
+    if err != nil {
+        logging.Warn("mini app: address %s: %v", short(addr), err)
+        return out
+    }
+    if !valid {
+        out.Rows = []app.Field{{Label: "this does not look like a Bitcoin address"}}
+        return out
+    }
+    out.OK, out.Rows = true, appFields(pairs)
+    return out
+}
+
+// appFields turns the bot's label/value pairs into the app's rows. English only:
+// chat 0 has no language, so i18n falls through to the source strings.
+func appFields(pairs [][2]string) []app.Field {
+    var out = make([]app.Field, 0, len(pairs))
+    for _, p := range pairs { out = append(out, app.Field{Label: p[0], Value: p[1]}) }
     return out
 }
 

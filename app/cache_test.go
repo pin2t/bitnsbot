@@ -35,10 +35,20 @@ func (s *countingSource) Fees() Fees       { s.hit("fees"); return liveFees() }
 func (s *countingSource) Network() Network { s.hit("network"); return liveNetwork() }
 func (s *countingSource) Market() Market   { s.hit("market"); return liveMarket() }
 
-func (s *countingSource) BlockInfo(height int64) BlockInfo {
+func (s *countingSource) BlockInfo(height int64) Info {
     s.hit("blockinfo" + strconv.FormatInt(height, 10))
-    return BlockInfo{OK: true, Height: strconv.FormatInt(height, 10),
+    return Info{OK: true, Title: "Block " + strconv.FormatInt(height, 10),
         Rows: []Field{{Label: "Hash", Value: "0000ab...9f21cd"}}}
+}
+
+func (s *countingSource) TxInfo(txid string) Info {
+    s.hit("txinfo")
+    return Info{OK: true, Title: "Transaction " + txid, Rows: []Field{{Label: "Amount", Value: "1 sat"}}}
+}
+
+func (s *countingSource) AddrInfo(addr string) Info {
+    s.hit("addrinfo")
+    return Info{OK: true, Title: "Address " + addr, Rows: []Field{{Label: "Type", Value: "segwit (bech32)"}}}
 }
 
 func (s *countingSource) Blocks(page int) Blocks {

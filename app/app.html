@@ -137,10 +137,14 @@
      over, which would sit it off-centre by the button's width. Both sides are
      flex: 1 1 0 so they are equal regardless of the button, and the title
      between them lands on the true centre. */
-  .det .head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
-  .det .head .side { flex: 1 1 0; min-width: 0; display: flex; }
-  .det .head .side.right { justify-content: flex-end; }
-  .det .head h1 { flex: 0 1 auto; margin: 0; font-size: 19px; font-weight: 600;
+  .det .head { display: grid; grid-template-columns: auto minmax(0, 1fr) auto;
+               align-items: center; gap: 8px; margin-bottom: 10px; }
+  /* The right side is a hidden copy of the Back button. Nothing else makes the
+     two columns exactly equal — sized from content they differ by the button's
+     width, and equal fr columns push the button out of its own cell — and only
+     equal sides put the title on the true centre. */
+  .det .head .ghost { visibility: hidden; }
+  .det .head h1 { min-width: 0; margin: 0; font-size: 18px; font-weight: 600;
                   line-height: 1.2; text-align: center;
                   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   /* flex: 0 1 auto so the card ends after the last field rather than stretching
@@ -161,7 +165,7 @@
   .pager button, .det .head button { padding: 7px 18px; font-size: 14px; font-family: inherit;
                   color: var(--fg); background: var(--card);
                   border: 1px solid var(--line); border-radius: 10px; cursor: pointer; }
-  .det .head button { flex: none; }
+  .det .head button { padding: 6px 12px; }
   .pager button[disabled] { color: var(--hint); opacity: .5; cursor: default; }
   .pager .page { font-size: 14px; font-weight: 600; min-width: 24px; text-align: center; }
 
@@ -203,7 +207,7 @@
   <section id="blocks" class="panel">
     {{template "blocks" .Blocks}}
   </section>
-  <section id="addresses" class="panel"><div class="empty">Addresses — coming soon</div></section>
+  <section id="addresses" class="panel">{{template "addresses" .}}</section>
   <section id="watches" class="panel"><div class="empty">Watches — coming soon</div></section>
 </main>
 
@@ -233,9 +237,9 @@
   document.querySelectorAll("nav button").forEach(function(b) {
     b.addEventListener("click", function() { showPanel(b.dataset.panel); });
   });
-  // /block answers with HX-Trigger: showblocks, so a search made from Home
-  // lands on the Blocks tab with the details already swapped in.
-  document.body.addEventListener("showblocks", function() { showPanel("blocks"); });
+  // A details page answers with HX-Trigger: {"showtab":"<panel>"}, so a search
+  // made from Home lands on the right tab with the page already swapped in.
+  document.body.addEventListener("showtab", function(e) { showPanel(e.detail.value); });
 </script>
 </body>
 </html>
@@ -304,11 +308,13 @@
 {{- end}}
 </div>{{end}}
 
-{{define "block"}}<div id="blocklist" class="blocklist det">
+{{define "addresses"}}<div id="addrpanel" class="blocklist"><div class="empty">Addresses — coming soon</div></div>{{end}}
+
+{{define "details"}}<div id="{{.Slot}}" class="blocklist det">
   <div class="head">
-    <div class="side"><button hx-get="blocks?page={{.Page}}" hx-target="#blocklist" hx-swap="outerHTML">&lt; Back</button></div>
-    <h1>Block {{.Height}}</h1>
-    <div class="side right"></div>
+    <button hx-get="{{.Back}}" hx-target="#{{.Slot}}" hx-swap="outerHTML">&lt; Back</button>
+    <h1>{{.Title}}</h1>
+    <button class="ghost" tabindex="-1" aria-hidden="true">&lt; Back</button>
   </div>
 {{- if .OK}}
   <div class="fields">
@@ -317,6 +323,6 @@
   {{- end}}
   </div>
 {{- else}}
-  <div class="empty">no such block</div>
+  <div class="empty">{{if .Rows}}{{(index .Rows 0).Label}}{{else}}nothing found{{end}}</div>
 {{- end}}
 </div>{{end}}

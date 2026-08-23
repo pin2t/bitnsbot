@@ -46,17 +46,17 @@ func info(bot *bot, chat int64, arg string) {
     address(ctx, bot, chat, arg)
 }
 
-func transaction(ctx context.Context, bot *bot, chat int64, txid string) {
+// txPairs builds the lines a transaction is described by, plus the ids the bot
+// turns into buttons and the node's own spelling of the txid. Shared with the
+// Mini App's transaction page, so the two cannot drift apart.
+func txPairs(ctx context.Context, chat int64, txid string) ([][2]string, []string, string, bool) {
     var estimates = map[string]string{
         confETAFast:   i18n(chat).String("~10-20 min"),
         confETAMedium: i18n(chat).String("~1 hour"),
         confETASlow:   i18n(chat).String("2+ hours"),
     }
     var tx, err = core.getRawTransaction(ctx, txid)
-    if err != nil {
-        send(bot, chat, i18n(chat).Sprintf("Couldn't find transaction %s", short(txid)), nil)
-        return
-    }
+    if err != nil { return nil, nil, "", false }
     var total int64
     for _, vout := range tx.Vout { total += toSat(vout.Value) }
     var coinbase = len(tx.Vin) > 0 && tx.Vin[0].Coinbase != ""
@@ -107,7 +107,16 @@ func transaction(ctx context.Context, bot *bot, chat int64, txid string) {
     if tx.BlockHash != "" { ids = append(ids, tx.BlockHash) }
     ids = append(ids, firstN(inputs, shownAddrs)...)
     ids = append(ids, firstN(outputAddrs(tx), shownAddrs)...)
-    send(bot, chat, i18n(chat).Sprintf("Transaction <code>%s</code>\n\n<pre>%s</pre>", tx.Txid, joinAlign(pairs)), ids)
+    return pairs, ids, tx.Txid, true
+}
+
+func transaction(ctx context.Context, bot *bot, chat int64, txid string) {
+    var pairs, ids, canonical, ok = txPairs(ctx, chat, txid)
+    if !ok {
+        send(bot, chat, i18n(chat).Sprintf("Couldn't find transaction %s", short(txid)), nil)
+        return
+    }
+    send(bot, chat, i18n(chat).Sprintf("Transaction <code>%s</code>\n\n<pre>%s</pre>", canonical, joinAlign(pairs)), ids)
 }
 
 // txInputs reports a transaction's fee and the addresses it spends from — in
@@ -373,17 +382,13 @@ func addressStats(txs []*coreTransaction, addr string) (received, sent, fees int
     return
 }
 
-func address(ctx context.Context, bot *bot, chat int64, addr string) {
+// addrPairs builds the lines an address is described by. valid is false when the
+// node says it is not an address at all, which is a different answer from the
+// lookup itself failing. Shared with the Mini App's address page.
+func addrPairs(ctx context.Context, chat int64, addr string) ([][2]string, bool, error) {
     var addrInfo, err = core.validateAddress(ctx, addr)
-    if err != nil {
-        logging.Err("validate address: %v", err)
-        send(bot, chat, i18n(chat).String("Sorry, something went wrong looking up that address"), nil)
-        return
-    }
-    if !addrInfo.IsValid {
-        send(bot, chat, i18n(chat).Sprintf("%s doesn't look like a valid Bitcoin address", html.EscapeString(addr)), nil)
-        return
-    }
+    if err != nil { return nil, false, err }
+    if !addrInfo.IsValid { return nil, false, nil }
     var addrType = "standard (P2PKH)"
     if addrInfo.IsWitness {
         addrType = "segwit (bech32)"
@@ -417,6 +422,20 @@ func address(ctx context.Context, bot *bot, chat int64, addr string) {
         if firstT > 0 && lastT > firstT {
             pairs = append(pairs, [2]string{i18n(chat).String("Activity period"), periodText(time.Duration(lastT-firstT) * time.Second, chat)})
         }
+    }
+    return pairs, true, nil
+}
+
+func address(ctx context.Context, bot *bot, chat int64, addr string) {
+    var pairs, valid, err = addrPairs(ctx, chat, addr)
+    if err != nil {
+        logging.Err("validate address: %v", err)
+        send(bot, chat, i18n(chat).String("Sorry, something went wrong looking up that address"), nil)
+        return
+    }
+    if !valid {
+        send(bot, chat, i18n(chat).Sprintf("%s doesn't look like a valid Bitcoin address", html.EscapeString(addr)), nil)
+        return
     }
     send(bot, chat, i18n(chat).Sprintf("Address %s\n\n<pre>%s</pre>", short(addr), joinAlign(pairs)), nil)
 }
