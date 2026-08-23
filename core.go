@@ -11,6 +11,7 @@ import "sync"
 import "time"
 
 import "bitnsbot/logging"
+import "bitnsbot/lru"
 
 // coreConn talks to Bitcoin Core over HTTP JSON-RPC. Unlike btcd there is no
 // websocket interface and so no long-lived connection to supervise: every call
@@ -22,8 +23,8 @@ type coreConn struct {
     mu     sync.Mutex
     auth   string
 
-    blockTxidsCache   *lruCache[string, *coreBlockTxids]
-    blockVerboseCache *lruCache[string, *coreVerboseBlock]
+    blockTxidsCache   *lru.Cache[string, *coreBlockTxids]
+    blockVerboseCache *lru.Cache[string, *coreVerboseBlock]
 }
 
 func newCoreConn(url, user, pass, cookie string) (*coreConn, error) {
@@ -38,8 +39,8 @@ func newCoreConn(url, user, pass, cookie string) (*coreConn, error) {
                 DisableKeepAlives:   false,
             },
         },
-        blockTxidsCache:   newLRU[string, *coreBlockTxids](100),
-        blockVerboseCache: newLRU[string, *coreVerboseBlock](100),
+        blockTxidsCache:   lru.New[string, *coreBlockTxids](100),
+        blockVerboseCache: lru.New[string, *coreVerboseBlock](100),
     }
     if err := c.refreshAuth(); err != nil { return nil, err }
     return c, nil

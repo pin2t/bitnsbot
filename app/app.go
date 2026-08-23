@@ -59,9 +59,13 @@ var subs = map[chan string]struct{}{}
 // when a cache is actually refreshed, so the page updates when the numbers move
 // rather than on a timer that mostly re-fetches the same values.
 //
+// The rendered card is dropped before the event goes out, or a page reacting to
+// it would race the invalidation and be handed the copy it was told to replace.
+//
 // Sends are non-blocking: a slow or dead client must not stall the caller, which
 // is a background refresh goroutine.
 func Notify(event string) {
+    invalidate(event)
     subsMu.Lock()
     defer subsMu.Unlock()
     for ch := range subs {
@@ -248,20 +252,24 @@ func Start(addr, token string, src Source) *http.Server {
     })
     mux.HandleFunc("/events", events)
     mux.HandleFunc("/fees", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
-        render(w, "fees", src.Fees())
+        card(w, &feesCache, "fees", func() any { return src.Fees() })
     }))
     mux.HandleFunc("/network", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
-        render(w, "network", src.Network())
+        card(w, &networkCache, "network", func() any { return src.Network() })
     }))
+    // The market card is not cached: it is the one whose Source reads the rate
+    // history per request rather than serving a background cache, so there is no
+    // refresh to hang an invalidation on.
     mux.HandleFunc("/market", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
-        render(w, "market", src.Market())
+        var b, _ = execute("market", src.Market())
+        write(w, b)
     }))
     mux.HandleFunc("/blocks", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
         // A bad or negative page is page 0 rather than an error: the parameter
         // comes from a URL a user can edit.
         var page, err = strconv.Atoi(r.URL.Query().Get("page"))
         if err != nil || page < 0 { page = 0 }
-        render(w, "blocks", src.Blocks(page))
+        blocksPage(w, page, func() any { return src.Blocks(page) })
     }))
     var srv = &http.Server{Addr: addr, Handler: mux}
     go func() {
@@ -314,15 +322,5 @@ func requireInitData(token string, h http.HandlerFunc) http.HandlerFunc {
             return
         }
         h(w, r)
-    }
-}
-
-// render writes one card's block, for the periodic refresh to swap in. The page
-// ships the same blocks already rendered, so this is only ever an update — never
-// the first paint.
-func render(w http.ResponseWriter, block string, data any) {
-    w.Header().Set("Content-Type", "text/html; charset=utf-8")
-    if err := appTmpl.ExecuteTemplate(w, block, data); err != nil {
-        logging.Err("mini app: render %s: %v", block, err)
     }
 }
