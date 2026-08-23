@@ -60,21 +60,20 @@ var cacheTTL = 10 * time.Minute
 // bounding what an edited page= parameter can make the process hold.
 const blocksCached = 20
 
-// cardsCached is exactly the number of single-valued renders — the three cards
+// cardsCached is exactly the number of single-valued renders — the three cardsCache
 // plus the shell page — so nothing is ever evicted for space. This cache is
 // keyed and expiring, not bounded; blocksCache is the one that needs the bound.
 const cardsCached = 4
 
 var cacheMu sync.Mutex
 
-// cards holds the single-valued renders, keyed by the template block each comes
+// cardsCache holds the single-valued renders, keyed by the template block each comes
 // from. "app" is the whole shell page: one copy serves everyone, which is only
 // sound because / carries no per-user data — the rule that already keeps it
 // servable without a signature at all. Anything per-chat must stay behind the
 // requireInitData endpoints, and caching here is a second reason why.
-var cards = lru.New[string, []byte](cardsCached)
-
-var blocksCache = lru.New[int, []byte](blocksCached)
+var cardsCache = lru.New[string, []byte](cardsCached)
+var blocksCache = lru.New[string, []byte](blocksCached)
 
 // invalidate drops one card's rendered HTML. Notify calls it *before* announcing
 // the event, so a page reacting immediately cannot be handed the very copy it
@@ -84,21 +83,22 @@ func invalidate(event string) {
     defer cacheMu.Unlock()
     switch event {
     case "fees", "network", "market":
-        cards.Delete(event)
+        cardsCache.Clear()
     case "blocks":
         blocksCache.Clear()
+        cardsCache.Clear()
     default:
         return
     }
     // The page embeds every card, so whichever one moved, the page it would
     // serve to the next visitor is stale.
-    cards.Delete("app")
+    cardsCache.Delete("app")
 }
 
 // resetCache empties every cache, for tests that share this package state.
 func resetCache() {
     cacheMu.Lock()
-    cards.Clear()
+    cardsCache.Clear()
     blocksCache.Clear()
     cacheMu.Unlock()
 }
@@ -107,42 +107,33 @@ func resetCache() {
 // outside cacheMu because it reaches into main's Source, which holds locks of
 // its own; two concurrent misses simply render the same bytes twice, which is
 // cheaper than serialising every request behind one mutex.
-func serve[K comparable](w http.ResponseWriter, c *lru.Cache[K, []byte], key K, block string, data func() any) {
+func serveCached(c *lru.Cache[string, []byte], w http.ResponseWriter, r *http.Request, render func() []byte) {
     cacheMu.Lock()
-    var b, hit = c.Get(key)
+    var b, hit = c.Get(r.RequestURI)
     cacheMu.Unlock()
+    logging.Info("serving cached request for %s: hit = %v", r.RequestURI, hit)
     if !hit {
-        var ok bool
-        b, ok = execute(block, data())
-        if ok {
-            cacheMu.Lock()
-            c.PutTTL(key, b, cacheTTL)
-            cacheMu.Unlock()
+        b = render()
+        if b == nil {
+            http.Error(w, "internal server error", http.StatusInternalServerError)
+            return
         }
+        cacheMu.Lock()
+        c.PutTTL(r.RequestURI, b, cacheTTL)
+        cacheMu.Unlock()
     }
-    write(w, b)
-}
-
-// card serves one of the single-valued renders, whose cache key is the name of
-// the template block it comes from.
-func card(w http.ResponseWriter, block string, data func() any) {
-    serve(w, cards, block, block, data)
-}
-
-// execute renders one of the template's blocks to bytes so the result can be
-// cached and written to many responses. A failed render reports false and is not
-// cached: caching a half-rendered card would persist the breakage for the life
-// of the entry.
-func execute(name string, data any) ([]byte, bool) {
-    var buf bytes.Buffer
-    var err = appTmpl.ExecuteTemplate(&buf, name, data)
-    if err != nil { logging.Err("mini app: render %s: %v", name, err) }
-    return buf.Bytes(), err == nil
-}
-
-func write(w http.ResponseWriter, b []byte) {
     w.Header().Set("Content-Type", "text/html; charset=utf-8")
     w.Write(b)
+}
+
+func execute(name string, data any) []byte {
+    var buf bytes.Buffer
+    var err = appTmpl.ExecuteTemplate(&buf, name, data)
+    if err != nil {
+        logging.Err("mini app: render %s: %v", name, err)
+        return nil
+    }
+    return buf.Bytes()
 }
 
 // keepAlive is how often the event stream emits a comment line. An idle SSE
@@ -200,7 +191,7 @@ func unsubscribe(ch chan string) {
 // events is the SSE stream. It carries only event *names* — never data — which
 // is what lets it sit outside requireInitData: EventSource cannot set custom
 // headers, so a stream that needed the signature could not be opened at all. The
-// cards react by issuing their ordinary hx-get, and those still go through
+// cardsCache react by issuing their ordinary hx-get, and those still go through
 // requireInitData with the header attached.
 func events(w http.ResponseWriter, r *http.Request) {
     var rc = http.NewResponseController(w)
@@ -333,11 +324,8 @@ func Start(addr, token string, src Source) *http.Server {
             http.NotFound(w, r)
             return
         }
-        // "app" is the root template — the whole page — so the shell is cached
-        // like the cards it embeds, and any Notify drops it.
-        card(w, "app", func() any {
-            return page{Fees: src.Fees(), Network: src.Network(),
-                Market: src.Market(), Blocks: src.Blocks(0)}
+        serveCached(cardsCache, w, r, func() []byte {
+            return execute("app", page{Fees: src.Fees(), Network: src.Network(), Market: src.Market(), Blocks: src.Blocks(0)})
         })
     })
     mux.HandleFunc("/htmx.min.js", func(w http.ResponseWriter, r *http.Request) {
@@ -352,23 +340,18 @@ func Start(addr, token string, src Source) *http.Server {
     })
     mux.HandleFunc("/events", events)
     mux.HandleFunc("/fees", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
-        card(w, "fees", func() any { return src.Fees() })
+        serveCached(cardsCache, w, r, func() []byte { return  execute("fees", src.Fees()) })
     }))
     mux.HandleFunc("/network", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
-        card(w, "network", func() any { return src.Network() })
+        serveCached(cardsCache, w, r, func() []byte { return  execute("network", src.Network()) })
     }))
     mux.HandleFunc("/market", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
-        card(w, "market", func() any { return src.Market() })
+        serveCached(cardsCache, w, r, func() []byte { return  execute("market", src.Market()) })
     }))
     mux.HandleFunc("/blocks", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
-        // A bad or negative page is page 0 rather than an error: the parameter
-        // comes from a URL a user can edit.
         var page, err = strconv.Atoi(r.URL.Query().Get("page"))
         if err != nil || page < 0 { page = 0 }
-        // Keyed by page because a deep page costs more to build than a shallow
-        // one — Source.Blocks walks the bucket from the tip — so paging back and
-        // forth is what the key buys.
-        serve(w, blocksCache, page, "blocks", func() any { return src.Blocks(page) })
+        serveCached(blocksCache, w, r, func() []byte { return  execute("blocks", src.Blocks(page)) })
     }))
     var srv = &http.Server{Addr: addr, Handler: mux}
     go func() {
