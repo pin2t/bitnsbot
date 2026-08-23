@@ -303,14 +303,17 @@ type Field struct {
     Value string
 }
 
-// BlockInfo is the block details page: the same lines /info prints for a block,
-// plus the list page Back returns to. OK is false when there is no such block,
-// or the node is not configured to look one up.
-type BlockInfo struct {
-    OK     bool
-    Height string
-    Rows   []Field
-    Page   int
+// Info is a details page — a block, a transaction or an address. Title and Rows
+// come from main, and are the same lines /info prints. Slot and Back are filled
+// in by the handler: which container the fragment replaces, and where Back
+// returns to, are the app's business rather than main's. OK is false when there
+// is no such thing to show, or the node is not configured to look one up.
+type Info struct {
+    OK    bool
+    Title string
+    Rows  []Field
+    Slot  string
+    Back  string
 }
 // Blocks is one page of the recent-block list, newest first. Prev and Next carry
 // the page numbers the buttons link to, so the template does no arithmetic.
@@ -335,7 +338,57 @@ type Source interface {
     Network() Network
     Market() Market
     Blocks(page int) Blocks
-    BlockInfo(height int64) BlockInfo
+    BlockInfo(height int64) Info
+    TxInfo(txid string) Info
+    AddrInfo(address string) Info
+}
+
+// The two containers a details page can replace, each the content of one tab.
+const blocksSlot = "blocklist"
+const addressSlot = "addrpanel"
+
+// tabTrigger is the HX-Trigger that moves the reader to the tab a slot lives in.
+// The JSON form carries the panel name, so one listener handles every tab.
+func tabTrigger(slot string) string {
+    if slot == addressSlot { return `{"showtab":"addresses"}` }
+    return `{"showtab":"blocks"}`
+}
+
+// listPage is the block-list page a Back button should return to. It rides along
+// in the URL because only the list knows which page the reader came from; a
+// search arrives without one and lands on the first.
+func listPage(r *http.Request) string {
+    var p, err = strconv.Atoi(r.URL.Query().Get("page"))
+    if err != nil || p < 0 { p = 0 }
+    return strconv.Itoa(p)
+}
+
+// details renders one of the three detail pages. They differ only in which
+// container they replace and where Back goes, so they share a template.
+//
+// HX-Retarget is what lets one search field reach three tabs: the field cannot
+// know which container the answer belongs in — only the server, having
+// classified the query, does — so it names a target and the response corrects
+// it. Without this an address page lands in the Blocks tab, replacing the list.
+func details(w http.ResponseWriter, r *http.Request, slot, back string, load func() Info) {
+    w.Header().Set("HX-Retarget", "#"+slot)
+    w.Header().Set("HX-Trigger", tabTrigger(slot))
+    cached(blocksCache, w, r, func() []byte {
+        var info = load()
+        info.Slot, info.Back = slot, back
+        return render("details", info)
+    })
+}
+
+// isTxid reports the 64-hex shape a txid has. A block hash has exactly the same
+// shape, which only the node can tell apart — main's TxInfo resolves that, the
+// way info() does for the bot.
+func isTxid(s string) bool {
+    if len(s) != 64 { return false }
+    for _, c := range s {
+        if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F') { return false }
+    }
+    return true
 }
 
 // Start serves the Mini App on addr and returns the server so the caller can
@@ -379,35 +432,59 @@ func Start(addr, token string, src Source) *http.Server {
         if err != nil || page < 0 { page = 0 }
         cached(blocksCache, w, r, func() []byte { return  render("blocks", src.Blocks(page)) })
     }))
-    // The details page replaces the list in the same slot, so the Blocks tab
-    // stays selected. HX-Trigger fires the tab switch for the one caller that
-    // needs it — /search, which is issued from the Home tab; from the list the
-    // event lands on an already-active tab and does nothing.
+    // A details page replaces its tab's container in place, so the tab it
+    // belongs to stays selected and Back can swap the original straight back in.
+    // HX-Trigger moves the reader to that tab, which is what a search from Home
+    // needs; opened from within the tab it lands on an already-active one and
+    // does nothing.
     mux.HandleFunc("/block", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
         var height, err = strconv.ParseInt(r.URL.Query().Get("height"), 10, 64)
         if err != nil || height < 0 {
             http.Error(w, "no such block", http.StatusBadRequest)
             return
         }
-        var page, perr = strconv.Atoi(r.URL.Query().Get("page"))
-        if perr != nil || page < 0 { page = 0 }
-        w.Header().Set("HX-Trigger", "showblocks")
-        cached(blocksCache, w, r, func() []byte {
-            var bi = src.BlockInfo(height)
-            bi.Page = page
-            return render("block", bi)
-        })
+        details(w, r, blocksSlot, "blocks?page="+listPage(r), func() Info { return src.BlockInfo(height) })
     }))
-    // search classifies the query and hands off; only block heights are
-    // understood so far, so anything else answers 204 and HTMX leaves the page
-    // alone. Transactions and addresses have no view to open yet.
-    mux.HandleFunc("/search", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
-        var q = strings.TrimSpace(r.URL.Query().Get("q"))
-        if height, err := strconv.ParseInt(q, 10, 64); err == nil && height >= 0 {
-            http.Redirect(w, r, "block?height="+strconv.FormatInt(height, 10), http.StatusSeeOther)
+    mux.HandleFunc("/tx", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
+        var id = strings.TrimSpace(r.URL.Query().Get("id"))
+        if !isTxid(id) {
+            http.Error(w, "no such transaction", http.StatusBadRequest)
             return
         }
-        w.WriteHeader(http.StatusNoContent)
+        details(w, r, blocksSlot, "blocks?page="+listPage(r), func() Info { return src.TxInfo(id) })
+    }))
+    mux.HandleFunc("/address", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
+        var a = strings.TrimSpace(r.URL.Query().Get("a"))
+        if a == "" {
+            http.Error(w, "no address", http.StatusBadRequest)
+            return
+        }
+        details(w, r, addressSlot, "addresses", func() Info { return src.AddrInfo(a) })
+    }))
+    // what Back on an address page returns to: the tab's own content, which is
+    // still a placeholder
+    mux.HandleFunc("/addresses", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
+        w.Header().Set("HX-Retarget", "#"+addressSlot)
+        w.Header().Set("HX-Trigger", tabTrigger(addressSlot))
+        cached(cardsCache, w, r, func() []byte { return render("addresses", nil) })
+    }))
+    // search classifies the query and hands off, in the same order info() does:
+    // the 64-hex shape first, because a string of 64 digits is also a valid
+    // height, then a height, then an address as the catch-all.
+    mux.HandleFunc("/search", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
+        var q = strings.TrimSpace(r.URL.Query().Get("q"))
+        switch {
+        case q == "":
+            w.WriteHeader(http.StatusNoContent)
+        case isTxid(q):
+            http.Redirect(w, r, "tx?id="+url.QueryEscape(q), http.StatusSeeOther)
+        default:
+            if height, err := strconv.ParseInt(q, 10, 64); err == nil && height >= 0 {
+                http.Redirect(w, r, "block?height="+strconv.FormatInt(height, 10), http.StatusSeeOther)
+                return
+            }
+            http.Redirect(w, r, "address?a="+url.QueryEscape(q), http.StatusSeeOther)
+        }
     }))
     var srv = &http.Server{Addr: addr, Handler: mux}
     go func() {

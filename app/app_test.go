@@ -47,7 +47,9 @@ type fakeSource struct {
     n Network
     m Market
     b map[int]Blocks
-    d map[int64]BlockInfo
+    d map[int64]Info
+    t map[string]Info
+    a map[string]Info
 }
 
 func (s fakeSource) Fees() Fees       { return s.f }
@@ -55,15 +57,56 @@ func (s fakeSource) Network() Network { return s.n }
 func (s fakeSource) Market() Market   { return s.m }
 func (s fakeSource) Blocks(page int) Blocks { return s.b[page] }
 
-func (s fakeSource) BlockInfo(height int64) BlockInfo {
+func (s fakeSource) BlockInfo(height int64) Info {
     if d, ok := s.d[height]; ok { return d }
-    return BlockInfo{Height: strconv.FormatInt(height, 10)}
+    return Info{Title: "Block " + strconv.FormatInt(height, 10)}
 }
+
+func (s fakeSource) TxInfo(txid string) Info {
+    if d, ok := s.t[txid]; ok { return d }
+    return Info{Title: txid[:6] + "..." + txid[58:]}
+}
+
+func (s fakeSource) AddrInfo(addr string) Info {
+    if d, ok := s.a[addr]; ok { return d }
+    return Info{Title: addr}
+}
+
+// liveTx and liveAddr mirror what main builds from txPairs and addrPairs.
+func liveTx() map[string]Info {
+    return map[string]Info{liveTxid: {OK: true, Title: "32e43e...870b16", Rows: []Field{
+        {Label: "Confirmations", Value: "412 (block #963268)"},
+        {Label: "Amount", Value: "9 990 000 sats (≈ $6,614)"},
+        {Label: "Fee", Value: "1 410 sats (10.0 sat/vB)"},
+        {Label: "Size", Value: "223 B (141 vB)"},
+        {Label: "Inputs", Value: "bc1qxy...dayd2g"},
+        {Label: "Outputs", Value: "1A1zP1...DivfNa, bc1qxy...dayd2g"},
+    }}}
+}
+
+func liveAddr() map[string]Info {
+    return map[string]Info{liveAddress: {OK: true, Title: "bc1qxy...dayd2g", Rows: []Field{
+        {Label: "Type", Value: "segwit (bech32)"},
+        {Label: "Balance", Value: "0.09990000 BTC"},
+        {Label: "Total received", Value: "1.20000000 BTC"},
+        {Label: "Total sent", Value: "1.10010000 BTC"},
+        {Label: "Total flow", Value: "2.30010000 BTC"},
+        {Label: "Total fees", Value: "0.00014100 BTC"},
+        {Label: "Transactions", Value: "42"},
+        {Label: "First tx", Value: "14 november 2023 22:13"},
+        {Label: "Last tx", Value: "2 days ago"},
+        {Label: "Activity period", Value: "1 year 8 months"},
+    }}}
+}
+
+const liveTxid = "32e43e6f2b1c4d5a8f9e0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b870b16"
+const liveAddress = "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh"
+
 
 // liveBlockInfo mirrors what main builds from blockPairs: capitalised fields,
 // with "Fees" and "Tx sizes" as headings whose value is empty.
-func liveBlockInfo() map[int64]BlockInfo {
-    return map[int64]BlockInfo{963268: {OK: true, Height: "963 268", Rows: []Field{
+func liveBlockInfo() map[int64]Info {
+    return map[int64]Info{963268: {OK: true, Title: "Block 963 268", Rows: []Field{
         {Label: "Hash", Value: "0000ab...9f21cd"},
         {Label: "Time", Value: "2 hours ago"},
         {Label: "Size", Value: "1.56 MB"},
@@ -671,6 +714,9 @@ func TestBlockDetailsRender(t *testing.T) {
     if !strings.Contains(body, "<h1>Block 963 268</h1>") {
         t.Errorf("missing the title: %s", body)
     }
+    if !strings.Contains(body, `<div id="blocklist" class="blocklist det">`) {
+        t.Error("the block page must replace the list container, so the Blocks tab stays selected")
+    }
     for _, want := range []string{">Hash<", ">Miner<", ">Difficulty<", ">Reward + fees<",
         "0000ab...9f21cd", "AntPool", "142.34 T", "325 118 004 sats"} {
         if !strings.Contains(body, want) {
@@ -690,8 +736,8 @@ func TestBlockDetailsRender(t *testing.T) {
     if strings.Index(head, "< Back") > strings.Index(head, "<h1>") {
         t.Errorf("Back should come before the title: %s", head)
     }
-    if strings.Count(head, `class="side`) != 2 {
-        t.Errorf("the title needs an empty side opposite Back to stay centred: %s", head)
+    if !strings.Contains(head, `class="ghost"`) {
+        t.Errorf("the title needs a hidden button opposite Back to stay centred: %s", head)
     }
 }
 
@@ -716,7 +762,7 @@ func TestBlockDetailsMarksHeadings(t *testing.T) {
 func TestBlockDetailsNotFound(t *testing.T) {
     var h = handler(t, "TESTTOKEN", fakeSource{d: liveBlockInfo()})
     var body = get(h, "/block?height=99999999", freshInitData("TESTTOKEN")).Body.String()
-    if !strings.Contains(body, "no such block") {
+    if !strings.Contains(body, "nothing found") {
         t.Errorf("an unknown height should say so: %s", body)
     }
     if !strings.Contains(body, "<h1>Block 99999999</h1>") {
@@ -748,7 +794,7 @@ func TestSearchOpensBlock(t *testing.T) {
     if loc := w.Header().Get("Location"); loc != "/block?height=963268" {
         t.Errorf("Location = %q, want /block?height=963268", loc)
     }
-    if trig := get(h, "/block?height=963268", freshInitData("TESTTOKEN")).Header().Get("HX-Trigger"); trig != "showblocks" {
+    if trig := get(h, "/block?height=963268", freshInitData("TESTTOKEN")).Header().Get("HX-Trigger"); trig != `{"showtab":"blocks"}` {
         t.Errorf("HX-Trigger = %q; without it a search from Home leaves the Home tab showing", trig)
     }
 }
@@ -764,15 +810,136 @@ func TestSearchTrimsQuery(t *testing.T) {
 
 // Only block heights are understood so far. Anything else answers 204, which
 // HTMX does not swap, so the page is left alone rather than being wiped.
-func TestSearchIgnoresUnsupportedQueries(t *testing.T) {
+func TestSearchIgnoresEmptyQuery(t *testing.T) {
     var h = handler(t, "TESTTOKEN", fakeSource{d: liveBlockInfo()})
-    for _, q := range []string{"", "bc1qxyz", "32e43e...870b16", "not a block"} {
-        var w = get(h, "/search?q="+url.QueryEscape(q), freshInitData("TESTTOKEN"))
-        if w.Code != http.StatusNoContent {
-            t.Errorf("/search?q=%q = %d, want 204", q, w.Code)
+    var w = get(h, "/search?q=", freshInitData("TESTTOKEN"))
+    if w.Code != http.StatusNoContent {
+        t.Errorf("an empty search = %d, want 204 so HTMX leaves the page alone", w.Code)
+    }
+    if w.Body.Len() != 0 {
+        t.Error("an empty search returned a body; HTMX would swap it in")
+    }
+}
+
+// The three kinds are told apart in the order info() uses: the 64-hex shape
+// first, because a string of 64 digits is also a valid height, then a height,
+// then an address as the catch-all.
+func TestSearchClassifiesQuery(t *testing.T) {
+    var h = handler(t, "TESTTOKEN", fakeSource{})
+    var cases = []struct{ q, want string }{
+        {liveTxid, "tx?id=" + liveTxid},
+        {strings.Repeat("0", 64), "tx?id=" + strings.Repeat("0", 64)},
+        {"963268", "block?height=963268"},
+        {liveAddress, "address?a=" + liveAddress},
+        {"not a block", "address?a=not+a+block"},
+    }
+    for _, c := range cases {
+        var w = get(h, "/search?q="+url.QueryEscape(c.q), freshInitData("TESTTOKEN"))
+        if w.Code != http.StatusSeeOther {
+            t.Errorf("/search?q=%q = %d, want a redirect", c.q, w.Code)
         }
-        if w.Body.Len() != 0 {
-            t.Errorf("/search?q=%q returned a body; HTMX would swap it in", q)
+        if loc := w.Header().Get("Location"); loc != "/"+c.want {
+            t.Errorf("/search?q=%q went to %q, want /%s", c.q, loc, c.want)
+        }
+    }
+}
+
+// A transaction opens on the Blocks tab, titled with the short txid and with
+// Back to the block list.
+func TestTxDetailsRender(t *testing.T) {
+    var h = handler(t, "TESTTOKEN", fakeSource{b: liveBlocks(), t: liveTx()})
+    var body = get(h, "/tx?id="+liveTxid, freshInitData("TESTTOKEN")).Body.String()
+    if !strings.Contains(body, "<h1>32e43e...870b16</h1>") {
+        t.Errorf("missing the short-txid title: %s", body)
+    }
+    if !strings.Contains(body, `<div id="blocklist" class="blocklist det">`) {
+        t.Error("a transaction belongs in the Blocks tab's container")
+    }
+    if rt := get(h, "/tx?id="+liveTxid, freshInitData("TESTTOKEN")).Header().Get("HX-Retarget"); rt != "#blocklist" {
+        t.Errorf("HX-Retarget = %q, want #blocklist", rt)
+    }
+    for _, want := range []string{">Confirmations<", ">Amount<", ">Fee<", ">Size<",
+        ">Inputs<", ">Outputs<", "412 (block #963268)", "9 990 000 sats"} {
+        if !strings.Contains(body, want) {
+            t.Errorf("transaction page is missing %q", want)
+        }
+    }
+    var head = body[strings.Index(body, `class="head"`):strings.Index(body, `class="fields"`)]
+    if !strings.Contains(head, `hx-get="blocks?page=0"`) {
+        t.Errorf("Back should return to the block list: %s", head)
+    }
+    if strings.Index(head, "&lt; Back") > strings.Index(head, "<h1>") {
+        t.Errorf("Back should come before the title: %s", head)
+    }
+}
+
+// An address opens on the Addresses tab, titled with the short address and with
+// Back to that tab's own content.
+func TestAddressDetailsRender(t *testing.T) {
+    var h = handler(t, "TESTTOKEN", fakeSource{a: liveAddr()})
+    var w = get(h, "/address?a="+liveAddress, freshInitData("TESTTOKEN"))
+    var body = w.Body.String()
+    if !strings.Contains(body, "<h1>bc1qxy...dayd2g</h1>") {
+        t.Errorf("missing the short-address title: %s", body)
+    }
+    if !strings.Contains(body, `<div id="addrpanel" class="blocklist det">`) {
+        t.Error("an address belongs in the Addresses tab's container, not the block list")
+    }
+    if trig := w.Header().Get("HX-Trigger"); trig != `{"showtab":"addresses"}` {
+        t.Errorf("HX-Trigger = %q; a searched address must move the reader to Addresses", trig)
+    }
+    // the one search field names #blocklist as its target, so the response has
+    // to correct it or an address page replaces the block list
+    if rt := w.Header().Get("HX-Retarget"); rt != "#addrpanel" {
+        t.Errorf("HX-Retarget = %q; without it the address page lands in the Blocks tab", rt)
+    }
+    for _, want := range []string{">Type<", ">Balance<", ">Total received<", ">Total fees<",
+        ">Activity period<", "segwit (bech32)", "0.09990000 BTC"} {
+        if !strings.Contains(body, want) {
+            t.Errorf("address page is missing %q", want)
+        }
+    }
+    var head = body[strings.Index(body, `class="head"`):strings.Index(body, `class="fields"`)]
+    if !strings.Contains(head, `hx-get="addresses"`) {
+        t.Errorf("Back should return to the Addresses tab: %s", head)
+    }
+}
+
+// Back from an address restores the tab's own content in the same slot.
+func TestAddressesBackTarget(t *testing.T) {
+    var h = handler(t, "TESTTOKEN", fakeSource{})
+    var w = get(h, "/addresses", freshInitData("TESTTOKEN"))
+    if w.Code != 200 {
+        t.Fatalf("GET /addresses = %d, want 200", w.Code)
+    }
+    if !strings.Contains(w.Body.String(), `id="addrpanel"`) {
+        t.Errorf("the fragment must carry the slot it replaces: %s", w.Body.String())
+    }
+    if !strings.Contains(w.Body.String(), "Addresses — coming soon") {
+        t.Error("Back should restore the tab's placeholder")
+    }
+}
+
+// Something that is not an address at all says so, rather than presenting an
+// empty history as fact.
+func TestAddressDetailsRejectsNonAddress(t *testing.T) {
+    var h = handler(t, "TESTTOKEN", fakeSource{a: map[string]Info{
+        "nonsense": {Title: "nonsense", Rows: []Field{{Label: "this does not look like a Bitcoin address"}}}}})
+    var body = get(h, "/address?a=nonsense", freshInitData("TESTTOKEN")).Body.String()
+    if !strings.Contains(body, "this does not look like a Bitcoin address") {
+        t.Errorf("a non-address should say so: %s", body)
+    }
+    if strings.Contains(body, `class="fields"`) {
+        t.Error("nothing to show, so there should be no field list")
+    }
+}
+
+// Both new ids come from URLs a user can edit.
+func TestDetailsRejectBadIds(t *testing.T) {
+    var h = handler(t, "TESTTOKEN", fakeSource{})
+    for _, p := range []string{"/tx", "/tx?id=", "/tx?id=abc", "/tx?id=" + strings.Repeat("z", 64), "/address", "/address?a="} {
+        if w := get(h, p, freshInitData("TESTTOKEN")); w.Code != 400 {
+            t.Errorf("%s = %d, want 400", p, w.Code)
         }
     }
 }
@@ -797,7 +964,7 @@ func TestSearchFieldIsWired(t *testing.T) {
             t.Errorf("the search field is missing %q", want)
         }
     }
-    if !strings.Contains(body, `document.body.addEventListener("showblocks"`) {
-        t.Error("nothing listens for showblocks, so a search would not switch tabs")
+    if !strings.Contains(body, `document.body.addEventListener("showtab"`) {
+        t.Error("nothing listens for showtab, so a search would not switch tabs")
     }
 }
