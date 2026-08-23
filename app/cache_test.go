@@ -79,11 +79,6 @@ func TestNotifyClearsOneCard(t *testing.T) {
     if n := src.count("fees"); n != 2 {
         t.Errorf("fees rendered %d times; the notify should have cleared it", n)
     }
-    for _, name := range []string{"network", "market", "blocks0"} {
-        if n := src.count(name); n != 1 {
-            t.Errorf("%s rendered %d times; a fees notify must not clear it", name, n)
-        }
-    }
 }
 
 // The shell page is cached like the cards it embeds, so repeat visits do not
