@@ -3,6 +3,7 @@ package main
 import "fmt"
 import "strings"
 import "time"
+import "bitnsbot/lru"
 
 // trans holds translations for a single language, mapping English source strings
 // to translated strings. A nil or empty trans is valid and falls back to the
@@ -345,7 +346,7 @@ var langTrans = map[string]trans{
 
 // chatLangs is an LRU cache of chat ID → language code, bounded to prevent
 // unbounded growth from one-off chats.
-var chatLangs = newLRU[int64, string](10000)
+var chatLangs = lru.New[int64, string](10000)
 
 // SetChatLanguage sets the language for a specific chat.
 func SetChatLanguage(chatID int64, lang string) {

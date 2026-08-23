@@ -10,6 +10,7 @@ import "strings"
 import "testing"
 import "time"
 import "go.etcd.io/bbolt"
+import "bitnsbot/lru"
 
 // infoBlockHash is a real mainnet block hash: 64 hex characters, exactly the
 // same shape as a txid.
@@ -555,7 +556,7 @@ func TestMempoolFlowRate(t *testing.T) {
 }
 
 func TestI18nSetLanguage(t *testing.T) {
-	t.Cleanup(func() { chatLangs = newLRU[int64, string](10000) })
+	t.Cleanup(func() { chatLangs = lru.New[int64, string](10000) })
 
 	var sent []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -606,7 +607,7 @@ func TestI18nSetLanguage(t *testing.T) {
 }
 
 func TestI18nAutoDetect(t *testing.T) {
-	t.Cleanup(func() { chatLangs = newLRU[int64, string](10000) })
+	t.Cleanup(func() { chatLangs = lru.New[int64, string](10000) })
 
 	var sent []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

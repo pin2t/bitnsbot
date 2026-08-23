@@ -89,6 +89,9 @@ func liveNetwork() Network {
 // launches a listener, so tests take its Handler and drive it with a recorder
 // rather than over a socket; the ephemeral listener is closed via t.Cleanup.
 func handler(t *testing.T, token string, src Source) http.Handler {
+    // The rendered-card caches are package state shared across tests, so each
+    // test starts from empty rather than seeing the previous one's fixture.
+    resetCache()
     var srv = Start("127.0.0.1:0", token, src)
     t.Cleanup(func() { srv.Close() })
     return srv.Handler
