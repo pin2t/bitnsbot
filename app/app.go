@@ -36,7 +36,7 @@ var htmxJS []byte
 var sseJS []byte
 
 // appTmpl is the page and, inside it, the "fees" and "network" blocks. The
-// initial render and each refresh execute those same blocks, so the card the
+// initial render and each refresh render those same blocks, so the card the
 // page ships with and the card that replaces it cannot drift apart.
 var appTmpl = template.Must(template.New("app").Parse(string(appHTML)))
 
@@ -107,14 +107,15 @@ func resetCache() {
 // outside cacheMu because it reaches into main's Source, which holds locks of
 // its own; two concurrent misses simply render the same bytes twice, which is
 // cheaper than serialising every request behind one mutex.
-func serveCached(c *lru.Cache[string, []byte], w http.ResponseWriter, r *http.Request, render func() []byte) {
+func cached(c *lru.Cache[string, []byte], w http.ResponseWriter, r *http.Request, render func() []byte) {
     cacheMu.Lock()
     var b, hit = c.Get(r.RequestURI)
     cacheMu.Unlock()
-    logging.Info("serving cached request for %s: hit = %v", r.RequestURI, hit)
+    logging.Info("mini app: serving %s: cached = %v", r.RequestURI, hit)
     if !hit {
         b = render()
         if b == nil {
+            logging.Err("mini app: error rendering %s", r.RequestURI)
             http.Error(w, "internal server error", http.StatusInternalServerError)
             return
         }
@@ -126,7 +127,7 @@ func serveCached(c *lru.Cache[string, []byte], w http.ResponseWriter, r *http.Re
     w.Write(b)
 }
 
-func execute(name string, data any) []byte {
+func render(name string, data any) []byte {
     var buf bytes.Buffer
     var err = appTmpl.ExecuteTemplate(&buf, name, data)
     if err != nil {
@@ -324,8 +325,8 @@ func Start(addr, token string, src Source) *http.Server {
             http.NotFound(w, r)
             return
         }
-        serveCached(cardsCache, w, r, func() []byte {
-            return execute("app", page{Fees: src.Fees(), Network: src.Network(), Market: src.Market(), Blocks: src.Blocks(0)})
+        cached(cardsCache, w, r, func() []byte {
+            return render("app", page{Fees: src.Fees(), Network: src.Network(), Market: src.Market(), Blocks: src.Blocks(0)})
         })
     })
     mux.HandleFunc("/htmx.min.js", func(w http.ResponseWriter, r *http.Request) {
@@ -340,18 +341,18 @@ func Start(addr, token string, src Source) *http.Server {
     })
     mux.HandleFunc("/events", events)
     mux.HandleFunc("/fees", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
-        serveCached(cardsCache, w, r, func() []byte { return  execute("fees", src.Fees()) })
+        cached(cardsCache, w, r, func() []byte { return  render("fees", src.Fees()) })
     }))
     mux.HandleFunc("/network", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
-        serveCached(cardsCache, w, r, func() []byte { return  execute("network", src.Network()) })
+        cached(cardsCache, w, r, func() []byte { return  render("network", src.Network()) })
     }))
     mux.HandleFunc("/market", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
-        serveCached(cardsCache, w, r, func() []byte { return  execute("market", src.Market()) })
+        cached(cardsCache, w, r, func() []byte { return  render("market", src.Market()) })
     }))
     mux.HandleFunc("/blocks", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
         var page, err = strconv.Atoi(r.URL.Query().Get("page"))
         if err != nil || page < 0 { page = 0 }
-        serveCached(blocksCache, w, r, func() []byte { return  execute("blocks", src.Blocks(page)) })
+        cached(blocksCache, w, r, func() []byte { return  render("blocks", src.Blocks(page)) })
     }))
     var srv = &http.Server{Addr: addr, Handler: mux}
     go func() {
