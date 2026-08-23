@@ -86,6 +86,7 @@ func invalidate(event string) {
         cardsCache.Delete("/" + event)
     case "blocks":
         blocksCache.Clear()
+        cardsCache.Clear()
     default:
         return
     }
