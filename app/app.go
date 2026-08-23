@@ -234,11 +234,12 @@ func Start(addr, token string, src Source) *http.Server {
             http.NotFound(w, r)
             return
         }
-        w.Header().Set("Content-Type", "text/html; charset=utf-8")
-        if err := appTmpl.Execute(w, page{Fees: src.Fees(), Network: src.Network(),
-            Market: src.Market(), Blocks: src.Blocks(0)}); err != nil {
-            logging.Err("mini app: render page: %v", err)
-        }
+        // "app" is the root template — the whole page — so the shell is cached
+        // like the cards it embeds, and any Notify drops it.
+        card(w, &pageCache, "app", func() any {
+            return page{Fees: src.Fees(), Network: src.Network(),
+                Market: src.Market(), Blocks: src.Blocks(0)}
+        })
     })
     mux.HandleFunc("/htmx.min.js", func(w http.ResponseWriter, r *http.Request) {
         w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
@@ -257,12 +258,8 @@ func Start(addr, token string, src Source) *http.Server {
     mux.HandleFunc("/network", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
         card(w, &networkCache, "network", func() any { return src.Network() })
     }))
-    // The market card is not cached: it is the one whose Source reads the rate
-    // history per request rather than serving a background cache, so there is no
-    // refresh to hang an invalidation on.
     mux.HandleFunc("/market", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
-        var b, _ = execute("market", src.Market())
-        write(w, b)
+        card(w, &marketCache, "market", func() any { return src.Market() })
     }))
     mux.HandleFunc("/blocks", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
         // A bad or negative page is page 0 rather than an error: the parameter

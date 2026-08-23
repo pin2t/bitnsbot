@@ -50,7 +50,8 @@ func TestCardsServedFromCache(t *testing.T) {
     var src = newCounting()
     var h = handler(t, "TESTTOKEN", src)
     var data = freshInitData("TESTTOKEN")
-    for _, c := range []struct{ path, name string }{{"/fees", "fees"}, {"/network", "network"}} {
+    for _, c := range []struct{ path, name string }{
+        {"/fees", "fees"}, {"/network", "network"}, {"/market", "market"}} {
         var first = get(h, c.path, data).Body.String()
         var second = get(h, c.path, data).Body.String()
         if first != second {
@@ -71,21 +72,61 @@ func TestNotifyClearsOneCard(t *testing.T) {
     var src = newCounting()
     var h = handler(t, "TESTTOKEN", src)
     var data = freshInitData("TESTTOKEN")
-    get(h, "/fees", data)
-    get(h, "/network", data)
-    get(h, "/blocks?page=0", data)
+    var paths = []string{"/fees", "/network", "/market", "/blocks?page=0"}
+    for _, p := range paths { get(h, p, data) }
     Notify("fees")
-    get(h, "/fees", data)
-    get(h, "/network", data)
-    get(h, "/blocks?page=0", data)
+    for _, p := range paths { get(h, p, data) }
     if n := src.count("fees"); n != 2 {
         t.Errorf("fees rendered %d times; the notify should have cleared it", n)
     }
-    if n := src.count("network"); n != 1 {
-        t.Errorf("network rendered %d times; a fees notify must not clear it", n)
+    for _, name := range []string{"network", "market", "blocks0"} {
+        if n := src.count(name); n != 1 {
+            t.Errorf("%s rendered %d times; a fees notify must not clear it", name, n)
+        }
     }
-    if n := src.count("blocks0"); n != 1 {
-        t.Errorf("blocks rendered %d times; a fees notify must not clear it", n)
+}
+
+// The shell page is cached like the cards it embeds, so repeat visits do not
+// re-render the whole template or re-read every Source.
+func TestPageServedFromCache(t *testing.T) {
+    var src = newCounting()
+    var h = handler(t, "TESTTOKEN", src)
+    var first = get(h, "/", "").Body.String()
+    var second = get(h, "/", "").Body.String()
+    if first != second {
+        t.Error("the page changed between two visits with no data behind it moving")
+    }
+    if !strings.HasSuffix(strings.TrimSpace(second), "</html>") {
+        t.Errorf("the cached page is truncated; tail: %q", second[max(0, len(second)-120):])
+    }
+    for _, name := range []string{"fees", "network", "market", "blocks0"} {
+        if n := src.count(name); n != 1 {
+            t.Errorf("%s asked Source %d times for two page loads, want 1", name, n)
+        }
+    }
+}
+
+// The page embeds every card, so whichever one moved, the page is stale — a
+// visitor arriving after a new block must not be served the pre-block shell.
+func TestAnyNotifyClearsPage(t *testing.T) {
+    for _, event := range []string{"fees", "network", "market", "blocks"} {
+        var src = newCounting()
+        var h = handler(t, "TESTTOKEN", src)
+        get(h, "/", "")
+        Notify(event)
+        get(h, "/", "")
+        if n := src.count("fees"); n != 2 {
+            t.Errorf("after Notify(%q) the page rendered %d times, want 2", event, n)
+        }
+    }
+    // an event no card is keyed to must not throw the page away
+    var src = newCounting()
+    var h = handler(t, "TESTTOKEN", src)
+    get(h, "/", "")
+    Notify("something-else")
+    get(h, "/", "")
+    if n := src.count("fees"); n != 1 {
+        t.Errorf("an unknown event cleared the page (%d renders); only real cards should", n)
     }
 }
 
@@ -161,28 +202,38 @@ func TestCacheExpires(t *testing.T) {
     var src = newCounting()
     var h = handler(t, "TESTTOKEN", src)
     var data = freshInitData("TESTTOKEN")
-    get(h, "/fees", data)
-    get(h, "/blocks?page=0", data)
+    var paths = []string{"/network", "/market", "/blocks?page=0"}
+    for _, p := range paths { get(h, p, data) }
     time.Sleep(40 * time.Millisecond)
-    get(h, "/fees", data)
-    get(h, "/blocks?page=0", data)
-    if n := src.count("fees"); n != 2 {
-        t.Errorf("fees rendered %d times, want 2 — the entry should have aged out", n)
+    for _, p := range paths { get(h, p, data) }
+    for _, name := range []string{"network", "market", "blocks0"} {
+        if n := src.count(name); n != 2 {
+            t.Errorf("%s rendered %d times, want 2 — the entry should have aged out", name, n)
+        }
     }
-    if n := src.count("blocks0"); n != 2 {
-        t.Errorf("blocks rendered %d times, want 2 — the entry should have aged out", n)
+    // the page ages out on the same deadline
+    var psrc = newCounting()
+    var ph = handler(t, "TESTTOKEN", psrc)
+    get(ph, "/", "")
+    time.Sleep(40 * time.Millisecond)
+    get(ph, "/", "")
+    if n := psrc.count("fees"); n != 2 {
+        t.Errorf("the page rendered %d times, want 2 — it should have aged out too", n)
     }
 }
 
-// The page at / renders from Source directly, so it never serves a card the
-// caches are still holding from before the data moved.
-func TestPageIgnoresCache(t *testing.T) {
-    var src = newCounting()
-    var h = handler(t, "TESTTOKEN", src)
-    get(h, "/fees", freshInitData("TESTTOKEN"))
-    get(h, "/", "")
-    if n := src.count("fees"); n != 2 {
-        t.Errorf("the page asked Source %d times, want 2 — / must render live", n)
+// The page and the fragments are cached independently, so a hit on one is never
+// served as the other — / must come back as a whole document and /fees as a bare
+// card.
+func TestPageAndFragmentCachesAreSeparate(t *testing.T) {
+    var h = handler(t, "TESTTOKEN", newCounting())
+    var frag = get(h, "/fees", freshInitData("TESTTOKEN")).Body.String()
+    var body = get(h, "/", "").Body.String()
+    if strings.Contains(frag, "<html>") {
+        t.Errorf("/fees returned the whole page: %q", frag[:min(120, len(frag))])
+    }
+    if !strings.Contains(body, "<html>") || !strings.Contains(body, `id="fees"`) {
+        t.Error("/ did not return the whole page")
     }
 }
 

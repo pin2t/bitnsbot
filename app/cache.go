@@ -26,8 +26,14 @@ type cardCache struct {
 }
 
 var cacheMu sync.Mutex
-var feesCache, networkCache cardCache
+var feesCache, networkCache, marketCache cardCache
 var blocksCache = lru.New[int, []byte](blocksCached)
+
+// pageCache is the whole shell page. One copy serves everyone, which is only
+// sound because / carries no per-user data — the rule that already keeps it
+// servable without a signature at all. Anything per-chat must stay behind the
+// requireInitData endpoints, and caching here is a second reason why.
+var pageCache cardCache
 
 // blocksClearedAt is when the whole block cache was last dropped. One timestamp
 // for every page: they all go stale together, on the same new block.
@@ -44,17 +50,30 @@ func invalidate(event string) {
         feesCache = cardCache{}
     case "network":
         networkCache = cardCache{}
+    case "market":
+        marketCache = cardCache{}
     case "blocks":
         blocksCache.Clear()
         blocksClearedAt = time.Now()
+    default:
+        return
     }
+    // The page embeds every card, so whichever one moved, the page it would
+    // serve to the next visitor is stale.
+    pageCache = cardCache{}
 }
 
-// resetCache empties every card cache, for tests that share this package state.
+// resetCache empties every cache, for tests that share this package state. It
+// clears the page itself rather than relying on invalidate's side effect, so a
+// change to how the page is invalidated cannot quietly leak one test's fixture
+// into the next.
 func resetCache() {
-    invalidate("fees")
-    invalidate("network")
-    invalidate("blocks")
+    for _, e := range []string{"fees", "network", "market", "blocks"} {
+        invalidate(e)
+    }
+    cacheMu.Lock()
+    pageCache = cardCache{}
+    cacheMu.Unlock()
 }
 
 // card writes one single-valued card, rendering it only when nothing is cached
