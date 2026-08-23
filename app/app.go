@@ -312,7 +312,6 @@ type BlockInfo struct {
     Rows   []Field
     Page   int
 }
-
 // Blocks is one page of the recent-block list, newest first. Prev and Next carry
 // the page numbers the buttons link to, so the template does no arithmetic.
 type Blocks struct {
