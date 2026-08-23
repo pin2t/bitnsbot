@@ -236,7 +236,7 @@ func Start(addr, token string, src Source) *http.Server {
         }
         // "app" is the root template — the whole page — so the shell is cached
         // like the cards it embeds, and any Notify drops it.
-        card(w, &pageCache, "app", func() any {
+        card(w, "app", func() any {
             return page{Fees: src.Fees(), Network: src.Network(),
                 Market: src.Market(), Blocks: src.Blocks(0)}
         })
@@ -253,20 +253,23 @@ func Start(addr, token string, src Source) *http.Server {
     })
     mux.HandleFunc("/events", events)
     mux.HandleFunc("/fees", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
-        card(w, &feesCache, "fees", func() any { return src.Fees() })
+        card(w, "fees", func() any { return src.Fees() })
     }))
     mux.HandleFunc("/network", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
-        card(w, &networkCache, "network", func() any { return src.Network() })
+        card(w, "network", func() any { return src.Network() })
     }))
     mux.HandleFunc("/market", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
-        card(w, &marketCache, "market", func() any { return src.Market() })
+        card(w, "market", func() any { return src.Market() })
     }))
     mux.HandleFunc("/blocks", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
         // A bad or negative page is page 0 rather than an error: the parameter
         // comes from a URL a user can edit.
         var page, err = strconv.Atoi(r.URL.Query().Get("page"))
         if err != nil || page < 0 { page = 0 }
-        blocksPage(w, page, func() any { return src.Blocks(page) })
+        // Keyed by page because a deep page costs more to build than a shallow
+        // one — Source.Blocks walks the bucket from the tip — so paging back and
+        // forth is what the key buys.
+        serve(w, blocksCache, page, "blocks", func() any { return src.Blocks(page) })
     }))
     var srv = &http.Server{Addr: addr, Handler: mux}
     go func() {
