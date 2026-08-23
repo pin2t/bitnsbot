@@ -46,6 +46,7 @@
     --hint:   var(--tg-theme-hint-color, #8e8e93);
     --card:   var(--tg-theme-secondary-bg-color, #f2f2f7);
     --accent: var(--tg-theme-button-color, #2481cc);
+    --link:   var(--tg-theme-link-color, #2481cc);
     --line:   rgba(128,128,128,.22);
   }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
@@ -125,14 +126,42 @@
      number. min-width:0 is what lets a flex item shrink below its content. */
   .blk .mn { flex: 1; min-width: 0; font-size: 13px; text-align: right;
              overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .blk .go { flex: none; display: flex; color: var(--hint); }
-  .blk .go svg { width: 16px; height: 16px; fill: none; stroke: currentColor;
-                 stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+  /* Height and miner are the tappable fields, so they carry the link colour
+     rather than the row carrying a chevron. An unattributed miner is not a
+     link, so it stays plain text. */
+  .blk .lnk { color: var(--link); cursor: pointer; }
+  /* Block details: the title row, then the same label/value cells the cards
+     use. It reuses #blocklist as its slot so the Blocks tab stays selected and
+     Back can swap the list straight back in. */
+  /* Back on the left, title centred on the row — not merely in the space left
+     over, which would sit it off-centre by the button's width. Both sides are
+     flex: 1 1 0 so they are equal regardless of the button, and the title
+     between them lands on the true centre. */
+  .det .head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+  .det .head .side { flex: 1 1 0; min-width: 0; display: flex; }
+  .det .head .side.right { justify-content: flex-end; }
+  .det .head h1 { flex: 0 1 auto; margin: 0; font-size: 19px; font-weight: 600;
+                  line-height: 1.2; text-align: center;
+                  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* flex: 0 1 auto so the card ends after the last field rather than stretching
+     to the tab bar, while still shrinking and scrolling on a short screen. */
+  .det .fields { flex: 0 1 auto; overflow-y: auto; background: var(--card);
+                 border-radius: 14px; padding: 4px 12px; }
+  .det .f { display: flex; align-items: baseline; gap: 10px; padding: 5px 0; }
+  .det .f + .f { border-top: 1px solid var(--line); }
+  .det .f .lbl { flex: none; font-size: 14px; color: var(--hint); }
+  .det .f .val { flex: 1; min-width: 0; font-size: 14px; text-align: right;
+                 overflow-wrap: anywhere; }
+  /* A pair with no value is a heading for the lines under it. */
+  .det .f.hd { border-top: 1px solid var(--line); }
+  .det .f.hd .lbl { font-size: 14px; font-weight: 600; color: var(--fg); }
+
   .pager { display: flex; gap: 8px; justify-content: center; align-items: center;
            padding: 8px 0 2px; }
-  .pager button { padding: 7px 18px; font-size: 14px; font-family: inherit;
+  .pager button, .det .head button { padding: 7px 18px; font-size: 14px; font-family: inherit;
                   color: var(--fg); background: var(--card);
                   border: 1px solid var(--line); border-radius: 10px; cursor: pointer; }
+  .det .head button { flex: none; }
   .pager button[disabled] { color: var(--hint); opacity: .5; cursor: default; }
   .pager .page { font-size: 14px; font-weight: 600; min-width: 24px; text-align: center; }
 
@@ -162,9 +191,11 @@
       {{template "market" .Market}}
     </div>
     <div class="searchwrap">
-      <input id="q" type="search" enterkeyhint="search" autocapitalize="off"
+      <input id="q" name="q" type="search" enterkeyhint="search" autocapitalize="off"
              autocorrect="off" spellcheck="false"
-             placeholder="Transaction, block or address">
+             placeholder="Transaction, block or address"
+             hx-get="search" hx-trigger="keyup[key=='Enter']"
+             hx-target="#blocklist" hx-swap="outerHTML">
       <p>Paste a txid, block height or hash, or an address</p>
     </div>
   </section>
@@ -195,12 +226,16 @@
   var tg = window.Telegram && window.Telegram.WebApp;
   if (tg) { tg.ready(); tg.expand(); }
 
+  function showPanel(name) {
+    document.querySelectorAll("nav button").forEach(function(x) { x.classList.toggle("active", x.dataset.panel === name); });
+    document.querySelectorAll(".panel").forEach(function(p) { p.classList.toggle("active", p.id === name); });
+  }
   document.querySelectorAll("nav button").forEach(function(b) {
-    b.addEventListener("click", function() {
-      document.querySelectorAll("nav button").forEach(function(x) { x.classList.toggle("active", x === b); });
-      document.querySelectorAll(".panel").forEach(function(p) { p.classList.toggle("active", p.id === b.dataset.panel); });
-    });
+    b.addEventListener("click", function() { showPanel(b.dataset.panel); });
   });
+  // /block answers with HX-Trigger: showblocks, so a search made from Home
+  // lands on the Blocks tab with the details already swapped in.
+  document.body.addEventListener("showblocks", function() { showPanel("blocks"); });
 </script>
 </body>
 </html>
@@ -249,11 +284,11 @@
   <div class="rows">
   {{- range .Rows}}
     <div class="blk">
-      <span class="h">{{.Height}}</span>
+      <span class="h lnk" hx-get="block?height={{.Num}}&page={{$.Page}}"
+            hx-target="#blocklist" hx-swap="outerHTML">{{.Height}}</span>
       <span class="sz">{{.Size}}</span>
       <span class="tx">{{.Txs}}</span>
-      <span class="mn">{{.Miner}}</span>
-      <span class="go"><svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></span>
+      <span class="mn{{if .MinerKnown}} lnk{{end}}">{{.Miner}}</span>
     </div>
   {{- end}}
   </div>
@@ -266,5 +301,22 @@
   </div>
 {{- else}}
   <div class="empty">no blocks cached yet</div>
+{{- end}}
+</div>{{end}}
+
+{{define "block"}}<div id="blocklist" class="blocklist det">
+  <div class="head">
+    <div class="side"><button hx-get="blocks?page={{.Page}}" hx-target="#blocklist" hx-swap="outerHTML">&lt; Back</button></div>
+    <h1>Block {{.Height}}</h1>
+    <div class="side right"></div>
+  </div>
+{{- if .OK}}
+  <div class="fields">
+  {{- range .Rows}}
+    <div class="f{{if not .Value}} hd{{end}}"><span class="lbl">{{.Label}}</span><span class="val">{{.Value}}</span></div>
+  {{- end}}
+  </div>
+{{- else}}
+  <div class="empty">no such block</div>
 {{- end}}
 </div>{{end}}

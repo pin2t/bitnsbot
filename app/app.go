@@ -280,12 +280,37 @@ type Market struct {
 }
 
 // Block is one row of the Blocks tab, already formatted: height, size,
-// transaction count and the pool that mined it.
+// transaction count and the pool that mined it. MinerKnown is false when
+// attribution failed and Miner is the "Unknown" placeholder, which is not a
+// link — main owns that string, so the template does not compare against it.
 type Block struct {
+    // Height is the grouped display form ("963 268"); Num is the same height
+    // raw, because the display form has spaces in it and the details link needs
+    // something that survives a URL.
+    Height     string
+    Num        int64
+    Size       string
+    Txs        string
+    Miner      string
+    MinerKnown bool
+}
+
+// Field is one line of the block details page. An empty Value marks a heading
+// ("Fees", "Tx sizes") rather than a field, which is how the bot's own reply is
+// built — see blockPairs in main.
+type Field struct {
+    Label string
+    Value string
+}
+
+// BlockInfo is the block details page: the same lines /info prints for a block,
+// plus the list page Back returns to. OK is false when there is no such block,
+// or the node is not configured to look one up.
+type BlockInfo struct {
+    OK     bool
     Height string
-    Size   string
-    Txs    string
-    Miner  string
+    Rows   []Field
+    Page   int
 }
 
 // Blocks is one page of the recent-block list, newest first. Prev and Next carry
@@ -311,6 +336,7 @@ type Source interface {
     Network() Network
     Market() Market
     Blocks(page int) Blocks
+    BlockInfo(height int64) BlockInfo
 }
 
 // Start serves the Mini App on addr and returns the server so the caller can
@@ -353,6 +379,36 @@ func Start(addr, token string, src Source) *http.Server {
         var page, err = strconv.Atoi(r.URL.Query().Get("page"))
         if err != nil || page < 0 { page = 0 }
         cached(blocksCache, w, r, func() []byte { return  render("blocks", src.Blocks(page)) })
+    }))
+    // The details page replaces the list in the same slot, so the Blocks tab
+    // stays selected. HX-Trigger fires the tab switch for the one caller that
+    // needs it — /search, which is issued from the Home tab; from the list the
+    // event lands on an already-active tab and does nothing.
+    mux.HandleFunc("/block", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
+        var height, err = strconv.ParseInt(r.URL.Query().Get("height"), 10, 64)
+        if err != nil || height < 0 {
+            http.Error(w, "no such block", http.StatusBadRequest)
+            return
+        }
+        var page, perr = strconv.Atoi(r.URL.Query().Get("page"))
+        if perr != nil || page < 0 { page = 0 }
+        w.Header().Set("HX-Trigger", "showblocks")
+        cached(blocksCache, w, r, func() []byte {
+            var bi = src.BlockInfo(height)
+            bi.Page = page
+            return render("block", bi)
+        })
+    }))
+    // search classifies the query and hands off; only block heights are
+    // understood so far, so anything else answers 204 and HTMX leaves the page
+    // alone. Transactions and addresses have no view to open yet.
+    mux.HandleFunc("/search", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
+        var q = strings.TrimSpace(r.URL.Query().Get("q"))
+        if height, err := strconv.ParseInt(q, 10, 64); err == nil && height >= 0 {
+            http.Redirect(w, r, "block?height="+strconv.FormatInt(height, 10), http.StatusSeeOther)
+            return
+        }
+        w.WriteHeader(http.StatusNoContent)
     }))
     var srv = &http.Server{Addr: addr, Handler: mux}
     go func() {

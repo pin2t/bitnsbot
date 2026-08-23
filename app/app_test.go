@@ -47,6 +47,7 @@ type fakeSource struct {
     n Network
     m Market
     b map[int]Blocks
+    d map[int64]BlockInfo
 }
 
 func (s fakeSource) Fees() Fees       { return s.f }
@@ -54,15 +55,46 @@ func (s fakeSource) Network() Network { return s.n }
 func (s fakeSource) Market() Market   { return s.m }
 func (s fakeSource) Blocks(page int) Blocks { return s.b[page] }
 
+func (s fakeSource) BlockInfo(height int64) BlockInfo {
+    if d, ok := s.d[height]; ok { return d }
+    return BlockInfo{Height: strconv.FormatInt(height, 10)}
+}
+
+// liveBlockInfo mirrors what main builds from blockPairs: capitalised fields,
+// with "Fees" and "Tx sizes" as headings whose value is empty.
+func liveBlockInfo() map[int64]BlockInfo {
+    return map[int64]BlockInfo{963268: {OK: true, Height: "963 268", Rows: []Field{
+        {Label: "Hash", Value: "0000ab...9f21cd"},
+        {Label: "Time", Value: "2 hours ago"},
+        {Label: "Size", Value: "1.56 MB"},
+        {Label: "Transactions", Value: "4000"},
+        {Label: "Miner", Value: "AntPool"},
+        {Label: "Difficulty", Value: "142.34 T"},
+        {Label: "Fees"},
+        {Label: "lowest", Value: "141 sats (1.0 sat/vB)"},
+        {Label: "average", Value: "3 208 sats (12.4 sat/vB)"},
+        {Label: "highest", Value: "91 004 sats (204.1 sat/vB)"},
+        {Label: "Tx sizes"},
+        {Label: "minimum", Value: "141 B"},
+        {Label: "average", Value: "258 B"},
+        {Label: "maximum", Value: "84 122 B"},
+        {Label: "Reward", Value: "312 500 000 sats (≈ $206,881)"},
+        {Label: "Reward + fees", Value: "325 118 004 sats (≈ $215,235)"},
+    }}}
+}
+
 // two pages of ten, so pagination has something to move between
 func liveBlocks() map[int]Blocks {
     var mk = func(page, from int, hasNext bool) Blocks {
         var b = Blocks{OK: true, Page: page, Num: page + 1, Prev: page - 1, Next: page + 1,
             HasPrev: page > 0, HasNext: hasNext}
         for i := 0; i < 12; i++ {
-            b.Rows = append(b.Rows, Block{
-                Height: strconv.Itoa(from - i), Size: "1.56 MB",
-                Txs: "4 000 txs", Miner: "AntPool"})
+            // the last row of each page is unattributed, so every page carries
+            // both the linked and the plain form of the miner field
+            var row = Block{Height: strconv.Itoa(from - i), Num: int64(from - i),
+                Size: "1.56 MB", Txs: "4 000 txs", Miner: "AntPool", MinerKnown: true}
+            if i == 11 { row.Miner, row.MinerKnown = "Unknown", false }
+            b.Rows = append(b.Rows, row)
         }
         return b
     }
@@ -277,7 +309,7 @@ func TestMarketColdCache(t *testing.T) {
 }
 
 // The Blocks tab lists recent blocks newest first, each row carrying the four
-// fields and a chevron, with the pager below.
+// fields, with the pager below.
 func TestBlocksListRenders(t *testing.T) {
     var src = fakeSource{f: liveFees(), b: liveBlocks()}
     var body = get(handler(t, "TESTTOKEN", src), "/", "").Body.String()
@@ -293,8 +325,27 @@ func TestBlocksListRenders(t *testing.T) {
     if strings.Index(body, "963268") > strings.Index(body, "963267") {
         t.Error("blocks are not in descending order")
     }
-    if !strings.Contains(body, `class="go"`) {
-        t.Error("rows have no chevron, so nothing signals they are tappable")
+    if strings.Contains(body, `class="go"`) {
+        t.Error("the row chevron should be gone; the two link fields replace it")
+    }
+}
+
+// Height and miner are the tappable fields, so both carry the link class — but
+// an unattributed miner is not a link, since there is no pool to open.
+func TestBlockRowLinks(t *testing.T) {
+    var src = fakeSource{f: liveFees(), b: liveBlocks()}
+    var body = get(handler(t, "TESTTOKEN", src), "/", "").Body.String()
+    if n := strings.Count(body, `class="h lnk"`); n != 12 {
+        t.Errorf("%d heights are links, want all 12", n)
+    }
+    if n := strings.Count(body, `class="mn lnk"`); n != 11 {
+        t.Errorf("%d miners are links, want the 11 attributed ones", n)
+    }
+    if !strings.Contains(body, `<span class="mn">Unknown</span>`) {
+        t.Error(`an unattributed miner must render as plain text, not a link`)
+    }
+    if !strings.Contains(body, "--tg-theme-link-color") {
+        t.Error("links should take Telegram's link colour, not the button colour")
     }
 }
 
@@ -594,5 +645,159 @@ func TestNotifyDoesNotBlockOnSlowClient(t *testing.T) {
     case <-done:
     case <-time.After(2 * time.Second):
         t.Fatal("Notify blocked on a client that is not reading")
+    }
+}
+
+// A block height in the list links into the details page, swapping the whole
+// container so the Blocks tab stays selected — and carrying the page it was on,
+// which is what Back needs.
+func TestBlockHeightLinksToDetails(t *testing.T) {
+    var h = handler(t, "TESTTOKEN", fakeSource{b: liveBlocks(), d: liveBlockInfo()})
+    var list = get(h, "/blocks?page=1", freshInitData("TESTTOKEN")).Body.String()
+    if !strings.Contains(list, `hx-get="block?height=963256&page=1"`) {
+        t.Error("the height does not link to its details page, carrying the current page")
+    }
+    if !strings.Contains(list, `hx-target="#blocklist" hx-swap="outerHTML"`) {
+        t.Error("the link must replace the list container, not swap into it")
+    }
+}
+
+// The details page: the title, the Back button on the same row, and the same
+// lines the bot's /info prints for a block.
+func TestBlockDetailsRender(t *testing.T) {
+    var h = handler(t, "TESTTOKEN", fakeSource{b: liveBlocks(), d: liveBlockInfo()})
+    // html/template escapes "+" as &#43;, so "Reward + fees" needs unescaping
+    var body = html.UnescapeString(get(h, "/block?height=963268&page=2", freshInitData("TESTTOKEN")).Body.String())
+    if !strings.Contains(body, "<h1>Block 963 268</h1>") {
+        t.Errorf("missing the title: %s", body)
+    }
+    for _, want := range []string{">Hash<", ">Miner<", ">Difficulty<", ">Reward + fees<",
+        "0000ab...9f21cd", "AntPool", "142.34 T", "325 118 004 sats"} {
+        if !strings.Contains(body, want) {
+            t.Errorf("details page is missing %q", want)
+        }
+    }
+    // Back sits on the title row and returns to the page the reader came from
+    var head = body[strings.Index(body, `class="head"`):strings.Index(body, `class="fields"`)]
+    if !strings.Contains(head, "< Back") {
+        t.Errorf("no Back button on the title row: %s", head)
+    }
+    if !strings.Contains(head, `hx-get="blocks?page=2"`) {
+        t.Errorf("Back returns to the wrong page: %s", head)
+    }
+    // Back sits to the left of the title, which is centred between two equal
+    // sides rather than filling the space the button leaves
+    if strings.Index(head, "< Back") > strings.Index(head, "<h1>") {
+        t.Errorf("Back should come before the title: %s", head)
+    }
+    if strings.Count(head, `class="side`) != 2 {
+        t.Errorf("the title needs an empty side opposite Back to stay centred: %s", head)
+    }
+}
+
+// A pair with no value is a heading for the lines under it, not a field with a
+// blank value — that is how blockPairs builds "Fees" and "Tx sizes".
+func TestBlockDetailsMarksHeadings(t *testing.T) {
+    var h = handler(t, "TESTTOKEN", fakeSource{d: liveBlockInfo()})
+    var body = get(h, "/block?height=963268", freshInitData("TESTTOKEN")).Body.String()
+    if n := strings.Count(body, `class="f hd"`); n != 2 {
+        t.Errorf("%d headings, want 2 (Fees and Tx sizes)", n)
+    }
+    if !strings.Contains(body, `class="f hd"><span class="lbl">Fees</span>`) {
+        t.Error("Fees should be a heading")
+    }
+    if !strings.Contains(body, `class="f"><span class="lbl">lowest</span>`) {
+        t.Error("lowest should be an ordinary field")
+    }
+}
+
+// A height the node has no block for says so rather than rendering an empty
+// field list, and still titles itself with what was asked for.
+func TestBlockDetailsNotFound(t *testing.T) {
+    var h = handler(t, "TESTTOKEN", fakeSource{d: liveBlockInfo()})
+    var body = get(h, "/block?height=99999999", freshInitData("TESTTOKEN")).Body.String()
+    if !strings.Contains(body, "no such block") {
+        t.Errorf("an unknown height should say so: %s", body)
+    }
+    if !strings.Contains(body, "<h1>Block 99999999</h1>") {
+        t.Error("the title should still name the height that was asked for")
+    }
+    if strings.Contains(body, `class="fields"`) {
+        t.Error("nothing to show, so there should be no field list")
+    }
+}
+
+// The height comes from a URL a user can edit.
+func TestBlockDetailsRejectsBadHeight(t *testing.T) {
+    var h = handler(t, "TESTTOKEN", fakeSource{d: liveBlockInfo()})
+    for _, q := range []string{"", "?height=", "?height=abc", "?height=-4"} {
+        if w := get(h, "/block"+q, freshInitData("TESTTOKEN")); w.Code != 400 {
+            t.Errorf("/block%s = %d, want 400", q, w.Code)
+        }
+    }
+}
+
+// Searching a block height from Home opens its details, and HX-Trigger is what
+// moves the reader to the Blocks tab — the fragment lands in that panel.
+func TestSearchOpensBlock(t *testing.T) {
+    var h = handler(t, "TESTTOKEN", fakeSource{b: liveBlocks(), d: liveBlockInfo()})
+    var w = get(h, "/search?q=963268", freshInitData("TESTTOKEN"))
+    if w.Code != http.StatusSeeOther {
+        t.Fatalf("/search = %d, want a redirect to the block page", w.Code)
+    }
+    if loc := w.Header().Get("Location"); loc != "/block?height=963268" {
+        t.Errorf("Location = %q, want /block?height=963268", loc)
+    }
+    if trig := get(h, "/block?height=963268", freshInitData("TESTTOKEN")).Header().Get("HX-Trigger"); trig != "showblocks" {
+        t.Errorf("HX-Trigger = %q; without it a search from Home leaves the Home tab showing", trig)
+    }
+}
+
+// Whitespace around a pasted height must not defeat the lookup.
+func TestSearchTrimsQuery(t *testing.T) {
+    var h = handler(t, "TESTTOKEN", fakeSource{d: liveBlockInfo()})
+    var w = get(h, "/search?q=%20963268%20", freshInitData("TESTTOKEN"))
+    if w.Header().Get("Location") != "/block?height=963268" {
+        t.Errorf("a padded height did not resolve: %d %q", w.Code, w.Header().Get("Location"))
+    }
+}
+
+// Only block heights are understood so far. Anything else answers 204, which
+// HTMX does not swap, so the page is left alone rather than being wiped.
+func TestSearchIgnoresUnsupportedQueries(t *testing.T) {
+    var h = handler(t, "TESTTOKEN", fakeSource{d: liveBlockInfo()})
+    for _, q := range []string{"", "bc1qxyz", "32e43e...870b16", "not a block"} {
+        var w = get(h, "/search?q="+url.QueryEscape(q), freshInitData("TESTTOKEN"))
+        if w.Code != http.StatusNoContent {
+            t.Errorf("/search?q=%q = %d, want 204", q, w.Code)
+        }
+        if w.Body.Len() != 0 {
+            t.Errorf("/search?q=%q returned a body; HTMX would swap it in", q)
+        }
+    }
+}
+
+// Both are data endpoints, so both need a signature.
+func TestBlockAndSearchNeedInitData(t *testing.T) {
+    var h = handler(t, "TESTTOKEN", fakeSource{b: liveBlocks(), d: liveBlockInfo()})
+    for _, p := range []string{"/block?height=963268", "/search?q=963268"} {
+        if w := get(h, p, ""); w.Code != 401 {
+            t.Errorf("unauthenticated %s = %d, want 401", p, w.Code)
+        }
+    }
+}
+
+// The search field must actually be wired, and send its value under a name the
+// server reads.
+func TestSearchFieldIsWired(t *testing.T) {
+    var body = get(handler(t, "TESTTOKEN", fakeSource{}), "/", "").Body.String()
+    for _, want := range []string{`name="q"`, `hx-get="search"`,
+        `hx-trigger="keyup[key=='Enter']"`, `hx-target="#blocklist"`} {
+        if !strings.Contains(body, want) {
+            t.Errorf("the search field is missing %q", want)
+        }
+    }
+    if !strings.Contains(body, `document.body.addEventListener("showblocks"`) {
+        t.Error("nothing listens for showblocks, so a search would not switch tabs")
     }
 }

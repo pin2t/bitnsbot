@@ -97,15 +97,45 @@ func (appSource) Blocks(page int) app.Blocks {
             var miner = bi.Miner
             if miner == "" { miner = "Unknown" }
             out.Rows = append(out.Rows, app.Block{
-                Height: group(bi.Height),
-                Size:   humSize(int64(bi.Size), 2, 0),
-                Txs:    group(int64(bi.NumTx)) + " txs",
-                Miner:  miner,
+                Height:     group(bi.Height),
+                Num:        bi.Height,
+                Size:       humSize(int64(bi.Size), 2, 0),
+                Txs:        group(int64(bi.NumTx)) + " txs",
+                Miner:      miner,
+                MinerKnown: bi.Miner != "",
             })
         }
         return nil
     })
     out.OK = len(out.Rows) > 0
+    return out
+}
+
+// BlockInfo backs the Mini App's block details page. It loads or computes the
+// same record /info uses and renders the same lines from it, in English —
+// chat 0 has no language, so i18n falls through to the source strings.
+func (appSource) BlockInfo(height int64) app.BlockInfo {
+    // Height is set even when the lookup fails, so the page still titles itself
+    // with what was asked for rather than "Block ".
+    var out = app.BlockInfo{Height: group(height)}
+    var bi, ok = loadBlock(height)
+    if !ok {
+        if core == nil { return out }
+        var ctx, cancel = context.WithTimeout(context.Background(), 60*time.Second)
+        defer cancel()
+        var hash, err = core.getBlockHash(ctx, height)
+        if err != nil { return out }
+        bi, err = computeBlockInfo(ctx, hash)
+        if err != nil {
+            logging.Warn("mini app: compute block %d: %v", height, err)
+            return out
+        }
+        storeBlock(bi)
+    }
+    out.OK = true
+    for _, p := range blockPairs(bi, 0) {
+        out.Rows = append(out.Rows, app.Field{Label: p[0], Value: p[1]})
+    }
     return out
 }
 
