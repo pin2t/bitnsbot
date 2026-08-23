@@ -83,7 +83,7 @@ func invalidate(event string) {
     defer cacheMu.Unlock()
     switch event {
     case "fees", "network", "market":
-        cardsCache.Clear()
+        cardsCache.Delete("/" + event)
     case "blocks":
         blocksCache.Clear()
         cardsCache.Clear()
@@ -92,7 +92,7 @@ func invalidate(event string) {
     }
     // The page embeds every card, so whichever one moved, the page it would
     // serve to the next visitor is stale.
-    cardsCache.Delete("app")
+    cardsCache.Delete("/")
 }
 
 // resetCache empties every cache, for tests that share this package state.
