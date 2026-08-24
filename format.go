@@ -15,18 +15,30 @@ func ago(n int, unit string, chat int64) string {
 }
 
 func when(unix int64, chat int64) string {
+    if s := relative(unix, chat); s != "" { return s }
+    return strings.ToLower(i18n(chat).DateTime(time.Unix(unix, 0).UTC()))
+}
+
+// day is when without the clock time. An address's first and last activity is
+// read as a date — the hour of the day says nothing about it.
+func day(unix int64, chat int64) string {
+    if s := relative(unix, chat); s != "" { return s }
+    return strings.ToLower(i18n(chat).Date(time.Unix(unix, 0).UTC()))
+}
+
+// relative renders a time within the last three months as "2 days ago", and ""
+// for anything older, which belongs in absolute form.
+func relative(unix int64, chat int64) string {
     var t = time.Unix(unix, 0)
-    if t.After(time.Now().AddDate(0, -3, 0)) {
-        var since = time.Since(t)
-        switch {
-        case since < time.Minute:     return i18n(chat).String("just now")
-        case since < time.Hour:       return ago(int(since.Minutes()), i18n(chat).String("min"), chat)
-        case since < 24*time.Hour:    return ago(int(since.Hours()), i18n(chat).String("h"), chat)
-        case since < 31*24*time.Hour: return ago(int(since.Hours()/24), i18n(chat).String("d"), chat)
-        default:                      return ago(int(since.Hours()/24/30), i18n(chat).String("m"), chat)
-        }
+    if !t.After(time.Now().AddDate(0, -3, 0)) { return "" }
+    var since = time.Since(t)
+    switch {
+    case since < time.Minute:     return i18n(chat).String("just now")
+    case since < time.Hour:       return ago(int(since.Minutes()), i18n(chat).String("min"), chat)
+    case since < 24*time.Hour:    return ago(int(since.Hours()), i18n(chat).String("h"), chat)
+    case since < 31*24*time.Hour: return ago(int(since.Hours()/24), i18n(chat).String("d"), chat)
+    default:                      return ago(int(since.Hours()/24/30), i18n(chat).String("m"), chat)
     }
-    return strings.ToLower(i18n(chat).DateTime(t.UTC()))
 }
 
 func short(s string) string {

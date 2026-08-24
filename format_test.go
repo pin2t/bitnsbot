@@ -134,3 +134,45 @@ func TestHumSizeDecimals(t *testing.T) {
         t.Errorf("humSize(870 GB, 0) = %q, want 870 GB — a trailing zero must survive", got)
     }
 }
+
+// An address's First tx / Last tx read as dates: the hour of the day says
+// nothing about them, so day drops the clock time when is keeps.
+func TestDayDropsTheTime(t *testing.T) {
+    var old = time.Date(2025, time.April, 16, 17, 18, 42, 0, time.UTC).Unix()
+    if got, want := day(old, 0), "16 april 2025"; got != want {
+        t.Errorf("day = %q, want %q", got, want)
+    }
+    if got, want := when(old, 0), "16 april 2025 17:18"; got != want {
+        t.Errorf("when = %q, want %q — only the address dates lose the time", got, want)
+    }
+}
+
+// Both keep the relative form for anything recent, which never had a time in it.
+func TestDayKeepsTheRelativeForm(t *testing.T) {
+    var recent = time.Now().Add(-48 * time.Hour).Unix()
+    if got := day(recent, 0); got != when(recent, 0) {
+        t.Errorf("day = %q but when = %q; a recent date should read the same either way", got, when(recent, 0))
+    }
+    if got := day(recent, 0); !strings.Contains(got, "ago") {
+        t.Errorf("day = %q, want a relative form", got)
+    }
+}
+
+// The month is still translated, and dropping the time must not drop that.
+func TestDateTranslatesTheMonth(t *testing.T) {
+    var tm = time.Date(2025, time.April, 16, 17, 18, 0, 0, time.UTC)
+    var ru = langTrans["ru"]
+    if ru == nil {
+        t.Skip("no ru table")
+    }
+    var full, short = ru.DateTime(tm), ru.Date(tm)
+    if !strings.HasPrefix(full, strings.TrimSuffix(short, "")) {
+        t.Errorf("Date %q is not DateTime %q without the time", short, full)
+    }
+    if strings.Contains(short, "April") {
+        t.Errorf("Date %q left the month untranslated", short)
+    }
+    if strings.Contains(short, "17:18") {
+        t.Errorf("Date %q still carries the time", short)
+    }
+}
