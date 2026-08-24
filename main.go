@@ -174,6 +174,26 @@ func (appSource) AddrInfo(addr string) app.Info {
     return out
 }
 
+// Watches backs the Watches tab: the calling user's own watches, and nobody
+// else's. chat comes from the signed initData, and the same chat-scoping the bot
+// applies in watchesCmd is what keeps one user's list out of another's.
+func (appSource) Watches(chat int64) app.Watches {
+    var records, err = watches.List()
+    if err != nil {
+        logging.Err("mini app: list watches: %v", err)
+        return app.Watches{}
+    }
+    var out = app.Watches{OK: true}
+    for _, r := range records {
+        if r.Chat != chat { continue }
+        out.Addresses = append(out.Addresses, app.Watch{Short: short(r.Address), Id: r.Address, Alias: r.Alias})
+    }
+    for _, e := range txwatches.For(chat) {
+        out.Txs = append(out.Txs, app.Watch{Short: short(e.Txid), Id: e.Txid, Alias: e.Alias})
+    }
+    return out
+}
+
 // appFields turns the bot's label/value pairs into the app's rows. English only:
 // chat 0 has no language, so i18n falls through to the source strings.
 func appFields(pairs [][2]string) []app.Field {

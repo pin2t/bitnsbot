@@ -51,6 +51,11 @@ func (s *countingSource) AddrInfo(addr string) Info {
     return Info{OK: true, Title: "Address " + addr, Rows: []Field{{Label: "Type", Value: "segwit (bech32)"}}}
 }
 
+func (s *countingSource) Watches(chat int64) Watches {
+    s.hit("watches")
+    return Watches{OK: true}
+}
+
 func (s *countingSource) Blocks(page int) Blocks {
     s.hit("blocks" + strconv.Itoa(page))
     if b, ok := s.b[page]; ok { return b }

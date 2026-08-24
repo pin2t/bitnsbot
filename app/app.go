@@ -14,6 +14,7 @@ import "bytes"
 import "crypto/hmac"
 import "crypto/sha256"
 import "encoding/hex"
+import "encoding/json"
 import "fmt"
 import "html/template"
 import "net/http"
@@ -331,6 +332,24 @@ type Blocks struct {
     HasNext bool
 }
 
+// Watch is one watched id on the Watches tab: the shortened form the row shows,
+// the full id its link carries, and the alias the user gave it, if any.
+type Watch struct {
+    Short string
+    Id    string
+    Alias string
+}
+
+// Watches is one user's watch list. Alone among the Source calls this one is
+// per-user, which is why it is never cached and never rendered into the shell
+// page — both of those are shared by every visitor. OK is false when the lookup
+// failed, which is a different answer from watching nothing.
+type Watches struct {
+    OK        bool
+    Addresses []Watch
+    Txs       []Watch
+}
+
 // Source supplies the chain data the app renders. main implements it; the app
 // package stays unaware of the fee cache, Bitcoin Core and the price feeds.
 type Source interface {
@@ -341,6 +360,7 @@ type Source interface {
     BlockInfo(height int64) Info
     TxInfo(txid string) Info
     AddrInfo(address string) Info
+    Watches(chat int64) Watches
 }
 
 // The two containers a details page can replace, each the content of one tab.
@@ -378,6 +398,20 @@ func details(w http.ResponseWriter, r *http.Request, slot, back string, load fun
         info.Slot, info.Back = slot, back
         return render("details", info)
     })
+}
+
+// chatOf pulls the user id out of an initData payload. It is only meaningful on
+// a payload isValid has already accepted — the id is part of what Telegram
+// signs — and for the private chat a Mini App is opened from it is also the chat
+// id the bot files watches under.
+func chatOf(initData string) int64 {
+    var v, err = url.ParseQuery(initData)
+    if err != nil { return 0 }
+    var u struct {
+        ID int64 `json:"id"`
+    }
+    if json.Unmarshal([]byte(v.Get("user")), &u) != nil { return 0 }
+    return u.ID
 }
 
 // isTxid reports the 64-hex shape a txid has. A block hash has exactly the same
@@ -467,6 +501,19 @@ func Start(addr, token string, src Source) *http.Server {
         w.Header().Set("HX-Retarget", "#"+addressSlot)
         w.Header().Set("HX-Trigger", tabTrigger(addressSlot))
         cached(cardsCache, w, r, func() []byte { return render("addresses", nil) })
+    }))
+    // Never cached: every cache here is keyed by URL, which is identical for
+    // every user, so a cached watch list would be handed to the wrong person.
+    // This is also why the shell page ships an empty container rather than the
+    // rendered list — / is one copy shared by every visitor.
+    mux.HandleFunc("/watches", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
+        var b = render("watches", src.Watches(chatOf(r.Header.Get("X-Telegram-Init-Data"))))
+        if b == nil {
+            http.Error(w, "internal server error", http.StatusInternalServerError)
+            return
+        }
+        w.Header().Set("Content-Type", "text/html; charset=utf-8")
+        w.Write(b)
     }))
     // search classifies the query and hands off, in the same order info() does:
     // the 64-hex shape first, because a string of 64 digits is also a valid
