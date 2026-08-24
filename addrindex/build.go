@@ -46,7 +46,7 @@ var backfillInterval = 2 * time.Minute
 func StartBackfill(src Blockchain) {
     go func() {
         for {
-            if err := index(src); err != nil {
+            if err := Build(src); err != nil {
                 logging.Warn("addrindex: %v", err)
             }
             time.Sleep(backfillInterval)
@@ -54,7 +54,11 @@ func StartBackfill(src Blockchain) {
     }()
 }
 
-func index(src Blockchain) error {
+// Build walks the chain from the index's cursor to the tip once and returns.
+// StartBackfill is this on a loop; tools/addrindex calls it directly, so a
+// command-line build and the bot's own backfill advance the same cursor through
+// the same chunking.
+func Build(src Blockchain) error {
     var ctx, cancel = context.WithTimeout(context.Background(), 6*time.Hour)
     defer cancel()
     var tip, err = src.Tip(ctx)
