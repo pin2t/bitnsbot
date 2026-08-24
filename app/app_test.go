@@ -68,6 +68,16 @@ func (s fakeSource) TxInfo(txid string) Info {
     return Info{Title: txid[:6] + "..." + txid[58:]}
 }
 
+func (s fakeSource) MinerInfo(name string) Info {
+    if name != "AntPool" { return Info{Title: name} }
+    return Info{OK: true, Title: name, Rows: []Field{
+        {Label: "Blocks mined", Value: "22 blocks"},
+        {Label: "Reward", Value: "69.14 BTC"},
+        {Label: "Fees", Value: "0.39 BTC"},
+        {Label: "Consumption", Value: "2 GW"},
+    }}
+}
+
 func (s fakeSource) Watches(chat int64) Watches {
     if w, ok := s.w[chat]; ok { return w }
     return Watches{OK: true}
@@ -154,6 +164,8 @@ func liveBlocks() map[int]Blocks {
             var row = Block{Height: strconv.Itoa(from - i), Num: int64(from - i),
                 Size: "1.56 MB", Txs: "4 000 txs", Miner: "AntPool", MinerKnown: true}
             if i == 11 { row.Miner, row.MinerKnown = "Unknown", false }
+            // a pool name with a space, so the link's URL encoding is exercised
+            if i == 5 { row.Miner = "SBI Crypto" }
             b.Rows = append(b.Rows, row)
         }
         return b
@@ -748,7 +760,7 @@ func TestBlockDetailsRender(t *testing.T) {
     if !strings.Contains(head, "< Back") {
         t.Errorf("no Back button on the title row: %s", head)
     }
-    if !strings.Contains(head, `hx-get="blocks?page=2"`) {
+    if !strings.Contains(head, `hx-get="blocks?page=2&to=blocks"`) {
         t.Errorf("Back returns to the wrong page: %s", head)
     }
     // Back sits to the left of the title, which is centred between two equal
@@ -811,8 +823,8 @@ func TestSearchOpensBlock(t *testing.T) {
     if w.Code != http.StatusSeeOther {
         t.Fatalf("/search = %d, want a redirect to the block page", w.Code)
     }
-    if loc := w.Header().Get("Location"); loc != "/block?height=963268" {
-        t.Errorf("Location = %q, want /block?height=963268", loc)
+    if loc := w.Header().Get("Location"); loc != "/block?height=963268&from=home" {
+        t.Errorf("Location = %q, want /block?height=963268&from=home", loc)
     }
     if trig := get(h, "/block?height=963268", freshInitData("TESTTOKEN")).Header().Get("HX-Trigger"); trig != `{"showtab":"blocks"}` {
         t.Errorf("HX-Trigger = %q; without it a search from Home leaves the Home tab showing", trig)
@@ -823,7 +835,7 @@ func TestSearchOpensBlock(t *testing.T) {
 func TestSearchTrimsQuery(t *testing.T) {
     var h = handler(t, "TESTTOKEN", fakeSource{d: liveBlockInfo()})
     var w = get(h, "/search?q=%20963268%20", freshInitData("TESTTOKEN"))
-    if w.Header().Get("Location") != "/block?height=963268" {
+    if w.Header().Get("Location") != "/block?height=963268&from=home" {
         t.Errorf("a padded height did not resolve: %d %q", w.Code, w.Header().Get("Location"))
     }
 }
@@ -847,11 +859,11 @@ func TestSearchIgnoresEmptyQuery(t *testing.T) {
 func TestSearchClassifiesQuery(t *testing.T) {
     var h = handler(t, "TESTTOKEN", fakeSource{})
     var cases = []struct{ q, want string }{
-        {liveTxid, "tx?id=" + liveTxid},
-        {strings.Repeat("0", 64), "tx?id=" + strings.Repeat("0", 64)},
-        {"963268", "block?height=963268"},
-        {liveAddress, "address?a=" + liveAddress},
-        {"not a block", "address?a=not+a+block"},
+        {liveTxid, "tx?id=" + liveTxid + "&from=home"},
+        {strings.Repeat("0", 64), "tx?id=" + strings.Repeat("0", 64) + "&from=home"},
+        {"963268", "block?height=963268&from=home"},
+        {liveAddress, "address?a=" + liveAddress + "&from=home"},
+        {"not a block", "address?a=not+a+block&from=home"},
     }
     for _, c := range cases {
         var w = get(h, "/search?q="+url.QueryEscape(c.q), freshInitData("TESTTOKEN"))
@@ -885,7 +897,9 @@ func TestTxDetailsRender(t *testing.T) {
         }
     }
     var head = body[strings.Index(body, `class="head"`):strings.Index(body, `class="fields"`)]
-    if !strings.Contains(head, `hx-get="blocks?page=0"`) {
+    // Back comes from a template *value*, so html/template escapes its "&" —
+    // unlike the list's links, where the "&" is literal template text
+    if !strings.Contains(head, `hx-get="blocks?page=0&amp;to=blocks"`) {
         t.Errorf("Back should return to the block list: %s", head)
     }
     if strings.Index(head, "&lt; Back") > strings.Index(head, "<h1>") {
@@ -920,7 +934,7 @@ func TestAddressDetailsRender(t *testing.T) {
         }
     }
     var head = body[strings.Index(body, `class="head"`):strings.Index(body, `class="fields"`)]
-    if !strings.Contains(head, `hx-get="addresses"`) {
+    if !strings.Contains(head, `hx-get="addresses?to=addresses"`) {
         t.Errorf("Back should return to the Addresses tab: %s", head)
     }
 }
@@ -1001,11 +1015,13 @@ func TestWatchesListsBoth(t *testing.T) {
         }
     }
     // each row links to the details page for its kind, carrying the full id
-    if !strings.Contains(body, `hx-get="address?a=`+liveAddress+`"`) {
-        t.Error("a watched address must open the address page, with the full id")
+    // from=watches is what sends Back to the watch list rather than to the
+    // Addresses placeholder or the block list
+    if !strings.Contains(body, `hx-get="address?a=`+liveAddress+`&from=watches"`) {
+        t.Error("a watched address must open the address page, with the full id and its origin")
     }
-    if !strings.Contains(body, `hx-get="tx?id=`+liveTxid+`"`) {
-        t.Error("a watched transaction must open the transaction page, with the full id")
+    if !strings.Contains(body, `hx-get="tx?id=`+liveTxid+`&from=watches"`) {
+        t.Error("a watched transaction must open the transaction page, with the full id and its origin")
     }
 }
 
@@ -1094,5 +1110,148 @@ func TestWatchPanelWiringMatches(t *testing.T) {
     }
     if !strings.Contains(page, "Watches are only available inside Telegram") {
         t.Error("outside Telegram the tab must say so rather than failing silently")
+    }
+}
+
+// Back should put the reader where they started. A page opened from the search
+// field returns to Home, one opened from the watch list returns to Watches, and
+// one opened from the block list stays on Blocks.
+func TestBackReturnsToOrigin(t *testing.T) {
+    var h = handler(t, "TESTTOKEN", fakeSource{b: liveBlocks(), d: liveBlockInfo(),
+        t: liveTx(), a: liveAddr()})
+    var data = freshInitData("TESTTOKEN")
+    var cases = []struct{ name, path, wantBack, wantTo string }{
+        {"block from search", "/block?height=963268&from=home", "blocks?page=0&amp;to=home", "home"},
+        {"block from list", "/block?height=963268&page=2", "blocks?page=2&amp;to=blocks", "blocks"},
+        {"tx from search", "/tx?id=" + liveTxid + "&from=home", "blocks?page=0&amp;to=home", "home"},
+        {"tx from watches", "/tx?id=" + liveTxid + "&from=watches", "blocks?page=0&amp;to=watches", "watches"},
+        {"address from search", "/address?a=" + liveAddress + "&from=home", "addresses?to=home", "home"},
+        {"address from watches", "/address?a=" + liveAddress + "&from=watches", "addresses?to=watches", "watches"},
+        {"miner from list", "/miner?name=AntPool&page=1", "blocks?page=1&amp;to=blocks", "blocks"},
+    }
+    for _, c := range cases {
+        var body = get(h, c.path, data).Body.String()
+        if !strings.Contains(body, `hx-get="`+c.wantBack+`"`) {
+            var head = body[strings.Index(body, `class="head"`):]
+            t.Errorf("%s: Back is not %q: %s", c.name, c.wantBack, head[:min(200, len(head))])
+        }
+    }
+}
+
+// Following Back must actually land on that tab, which is the restoring
+// endpoint's job — it carries the reader on with HX-Trigger.
+func TestBackEndpointsSwitchTab(t *testing.T) {
+    var h = handler(t, "TESTTOKEN", fakeSource{b: liveBlocks()})
+    var data = freshInitData("TESTTOKEN")
+    for _, c := range []struct{ path, want string }{
+        {"/blocks?page=0&to=home", `{"showtab":"home"}`},
+        {"/blocks?page=0&to=watches", `{"showtab":"watches"}`},
+        {"/addresses?to=watches", `{"showtab":"watches"}`},
+        {"/addresses?to=home", `{"showtab":"home"}`},
+        {"/addresses", `{"showtab":"addresses"}`},
+    } {
+        if got := get(h, c.path, data).Header().Get("HX-Trigger"); got != c.want {
+            t.Errorf("%s: HX-Trigger = %q, want %q", c.path, got, c.want)
+        }
+    }
+}
+
+// The block list is also the pager and the SSE refresh target. Those must never
+// move a reader off whatever tab they are on, so /blocks stays silent unless
+// Back explicitly asked for a switch.
+func TestBlockListDoesNotHijackTheTab(t *testing.T) {
+    var h = handler(t, "TESTTOKEN", fakeSource{b: liveBlocks()})
+    var data = freshInitData("TESTTOKEN")
+    for _, p := range []string{"/blocks?page=0", "/blocks?page=1", "/blocks"} {
+        if got := get(h, p, data).Header().Get("HX-Trigger"); got != "" {
+            t.Errorf("%s set HX-Trigger %q; a refresh must not switch tabs", p, got)
+        }
+    }
+}
+
+// The origin arrives in a URL a user can edit and is interpolated into a JSON
+// header, so only known panel names may pass.
+func TestOriginIsValidated(t *testing.T) {
+    var h = handler(t, "TESTTOKEN", fakeSource{b: liveBlocks(), d: liveBlockInfo()})
+    var data = freshInitData("TESTTOKEN")
+    var body = get(h, `/block?height=963268&from="},"x":{"`, data).Body.String()
+    if !strings.Contains(body, `hx-get="blocks?page=0&amp;to=blocks"`) {
+        t.Error("an unknown origin should fall back to the page's own tab")
+    }
+    var trig = get(h, `/blocks?page=0&to="},"evil":{"`, data).Header().Get("HX-Trigger")
+    if trig != "" {
+        t.Errorf("an unknown tab reached the header: %q", trig)
+    }
+}
+
+// The miner name in the block list opens its own page.
+func TestMinerLinkAndPage(t *testing.T) {
+    var h = handler(t, "TESTTOKEN", fakeSource{b: liveBlocks()})
+    var data = freshInitData("TESTTOKEN")
+    var list = get(h, "/blocks?page=0", data).Body.String()
+    if !strings.Contains(list, `hx-get="miner?name=AntPool&page=0"`) {
+        t.Error("the miner name does not link to its page")
+    }
+    // pool names have spaces ("SBI Crypto", "Foundry USA"), so the link has to
+    // survive the URL — an unescaped space would truncate the name
+    if !strings.Contains(list, `hx-get="miner?name=SBI&#43;Crypto&page=0"`) {
+        t.Errorf("a pool name with a space is not url-escaped in its link")
+    }
+    // an unattributed miner is still plain text: there is no pool to open
+    if !strings.Contains(list, `<span class="mn">Unknown</span>`) {
+        t.Error("Unknown must not become a link")
+    }
+    if strings.Contains(list, `miner?name=Unknown`) {
+        t.Error("Unknown was linked")
+    }
+}
+
+// The miner page: the name as the title, Back on its left, and the same figures
+// /miners prints.
+func TestMinerDetailsRender(t *testing.T) {
+    var h = handler(t, "TESTTOKEN", fakeSource{b: liveBlocks()})
+    var body = get(h, "/miner?name=AntPool", freshInitData("TESTTOKEN")).Body.String()
+    if !strings.Contains(body, "<h1>AntPool</h1>") {
+        t.Errorf("missing the miner name as the title: %s", body)
+    }
+    for _, want := range []string{">Blocks mined<", ">Reward<", ">Fees<", ">Consumption<",
+        "22 blocks", "69.14 BTC", "0.39 BTC", "2 GW"} {
+        if !strings.Contains(body, want) {
+            t.Errorf("miner page is missing %q", want)
+        }
+    }
+    if !strings.Contains(body, `<div id="blocklist" class="blocklist det">`) {
+        t.Error("the miner page belongs in the Blocks tab's container")
+    }
+    var head = body[strings.Index(body, `class="head"`):strings.Index(body, `class="fields"`)]
+    if strings.Index(head, "&lt; Back") > strings.Index(head, "<h1>") {
+        t.Errorf("Back should come before the title: %s", head)
+    }
+}
+
+// A pool with no statistics yet says so rather than showing zeros as fact.
+func TestMinerDetailsUnknown(t *testing.T) {
+    var h = handler(t, "TESTTOKEN", fakeSource{})
+    var body = get(h, "/miner?name=NoSuchPool", freshInitData("TESTTOKEN")).Body.String()
+    if !strings.Contains(body, "nothing found") {
+        t.Errorf("an untracked pool should say so: %s", body)
+    }
+    if !strings.Contains(body, "<h1>NoSuchPool</h1>") {
+        t.Error("the title should still name the pool that was asked for")
+    }
+}
+
+// The name comes from a URL a user can edit, and pool names have spaces in them.
+func TestMinerNameHandling(t *testing.T) {
+    var h = handler(t, "TESTTOKEN", fakeSource{})
+    var data = freshInitData("TESTTOKEN")
+    for _, p := range []string{"/miner", "/miner?name="} {
+        if w := get(h, p, data); w.Code != 400 {
+            t.Errorf("%s = %d, want 400", p, w.Code)
+        }
+    }
+    var body = get(h, "/miner?name=SBI+Crypto", data).Body.String()
+    if !strings.Contains(body, "<h1>SBI Crypto</h1>") {
+        t.Errorf("a pool name with a space did not survive the URL: %s", body)
     }
 }

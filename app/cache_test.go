@@ -51,6 +51,11 @@ func (s *countingSource) AddrInfo(addr string) Info {
     return Info{OK: true, Title: "Address " + addr, Rows: []Field{{Label: "Type", Value: "segwit (bech32)"}}}
 }
 
+func (s *countingSource) MinerInfo(name string) Info {
+    s.hit("minerinfo")
+    return Info{OK: true, Title: name, Rows: []Field{{Label: "Blocks mined", Value: "22 blocks"}}}
+}
+
 func (s *countingSource) Watches(chat int64) Watches {
     s.hit("watches")
     return Watches{OK: true}

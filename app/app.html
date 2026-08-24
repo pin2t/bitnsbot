@@ -312,7 +312,12 @@
             hx-target="#blocklist" hx-swap="outerHTML">{{.Height}}</span>
       <span class="sz">{{.Size}}</span>
       <span class="tx">{{.Txs}}</span>
-      <span class="mn{{if .MinerKnown}} lnk{{end}}">{{.Miner}}</span>
+      {{- if .MinerKnown}}
+      <span class="mn lnk" hx-get="miner?name={{.Miner | urlquery}}&page={{$.Page}}"
+            hx-target="#blocklist" hx-swap="outerHTML">{{.Miner}}</span>
+      {{- else}}
+      <span class="mn">{{.Miner}}</span>
+      {{- end}}
     </div>
   {{- end}}
   </div>
@@ -342,7 +347,7 @@
     <div class="wsec">Addresses</div>
     {{- range .Addresses}}
     <div class="blk">
-      <span class="h lnk" hx-get="address?a={{.Id}}" hx-target="#watchpanel" hx-swap="outerHTML">{{.Short}}</span>
+      <span class="h lnk" hx-get="address?a={{.Id}}&from=watches" hx-target="#watchpanel" hx-swap="outerHTML">{{.Short}}</span>
       <span class="alias">{{.Alias}}</span>
     </div>
     {{- end}}
@@ -351,7 +356,7 @@
     <div class="wsec">Transactions</div>
     {{- range .Txs}}
     <div class="blk">
-      <span class="h lnk" hx-get="tx?id={{.Id}}" hx-target="#watchpanel" hx-swap="outerHTML">{{.Short}}</span>
+      <span class="h lnk" hx-get="tx?id={{.Id}}&from=watches" hx-target="#watchpanel" hx-swap="outerHTML">{{.Short}}</span>
       <span class="alias">{{.Alias}}</span>
     </div>
     {{- end}}

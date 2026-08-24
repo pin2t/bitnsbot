@@ -392,6 +392,17 @@ The rows are **literally the bot's**, not a parallel implementation: `blockPairs
 
 Records are loaded or computed exactly as `/info` does, so searching an uncached old block works rather than reporting it missing. A failed lookup still titles the page with what was asked for — `Title` is set before the lookup, so the reply reads `Block 99999999 / nothing found` instead of `Block `.
 
+**Back returns the reader where they started**, which the page it belongs to cannot know — so the link that opened it says, as `from=<panel>` in the URL, and the Back button carries that on as `to=<panel>`. Opened from the search field Back lands on **Home**; from the watch list, on **Watches**; from the block list, on **Blocks** at the page being read. Absent or unrecognised, `from` falls back to the tab the page itself lives in, which is the behaviour that predates this.
+
+Back is always *restore the slot, then switch tab*: `/blocks?page=N&to=X` and `/addresses?to=X` re-render the container and answer `HX-Trigger: {"showtab":"X"}`. Two things that took care:
+
+- **`/blocks` emits that header only when `to` is explicitly given.** It is also the pager and the SSE-refresh target, so triggering unconditionally would yank a reader off whatever tab they were on the moment a block arrived.
+- **The panel name is whitelisted** (`isPanel`). It arrives in a URL a user can edit and is interpolated straight into the JSON of a response header.
+
+**The miner page** opens from a pool name in the block list — `/miner?name=…` — and shows the `miners.Stat` fields with `/miners`' own formatting (`trimNum` at 2 decimals for BTC, 1 for GW). It needed `miners.Get(name)`, which builds the whole set rather than reading one record: the consumption estimate is a *share* of every tracked block, so it cannot be computed from one pool's row alone. `Top` and `Get` now both sit on a shared `all()`. An unattributed miner stays plain text — there is no pool to open — and a pool with no statistics yet says `nothing found` rather than showing zeros as fact.
+
+Pool names have spaces in them (`SBI Crypto`, `Foundry USA`), so the link runs the name through the template's **`urlquery`**. `html/template` then escapes the resulting `+` as `&#43;`, which the browser sends back as `+` and `r.URL.Query()` decodes as a space — verified end to end in a browser, since an unescaped space would truncate the name.
+
 **Two containers can hold a details page**: `#blocklist` (Blocks) and `#addrpanel` (Addresses). The Addresses tab's placeholder was wrapped in `#addrpanel` precisely so Back has something to restore, served by `/addresses`. Replacing a tab's container *in place* is what keeps that tab selected with no tab juggling.
 
 **`HX-Retarget` is what lets one search field reach three tabs.** The field must name some target, but only the server — having classified the query — knows where the answer belongs, so every details response corrects it. Without the header an address page is swapped into the Blocks tab, wiping the block list: not hypothetical, that is what happened before it was added, and only a browser run caught it.
