@@ -226,7 +226,7 @@ func TestCatchUp(t *testing.T) {
         1: syntheticBlock(t, []string{scriptB}, []string{scriptA}),
         2: syntheticBlock(t, nil, nil),
     }}
-    if err := index(src); err != nil { t.Fatalf("catchUp: %v", err) }
+    if err := Build(src); err != nil { t.Fatalf("catchUp: %v", err) }
     var rawA, _ = hex.DecodeString(scriptA)
     var rawB, _ = hex.DecodeString(scriptB)
     var touchesA, _ = Lookup(rawA, 10000)
@@ -243,7 +243,7 @@ func TestCatchUp(t *testing.T) {
     }
     // a second pass with nothing new fetches nothing
     src.fetched = nil
-    if err := index(src); err != nil { t.Fatalf("second catchUp: %v", err) }
+    if err := Build(src); err != nil { t.Fatalf("second catchUp: %v", err) }
     if len(src.fetched) != 0 {
         t.Fatalf("second catchUp refetched %v, want nothing (already at tip)", src.fetched)
     }
@@ -264,7 +264,7 @@ func TestCatchUpChunksAndRetries(t *testing.T) {
         blocks[h] = syntheticBlock(t, []string{script}, nil)
     }
     var src = &fakeSource{tip: 4, blocks: blocks, err: map[int]bool{3: true}}
-    if err := index(src); err == nil {
+    if err := Build(src); err == nil {
         t.Fatal("expected an error from the failing block")
     }
     // heights 0-1 (one full chunk) must have been flushed before the failure at 3
@@ -280,7 +280,7 @@ func TestCatchUpChunksAndRetries(t *testing.T) {
     // fixing the block and retrying picks up from where it stopped
     src.err = nil
     src.fetched = nil
-    if err := index(src); err != nil { t.Fatalf("retry: %v", err) }
+    if err := Build(src); err != nil { t.Fatalf("retry: %v", err) }
     var deepFetched = append([]int{}, src.fetched...)
     if len(deepFetched) != 3 || deepFetched[0] != 2 {
         t.Fatalf("retry fetched %v, want [2 3 4]", deepFetched)

@@ -30,7 +30,8 @@ Flags (all in `main.go`): `-config` (path to a `name=value` properties file to l
 - `advertise` — announces a Bitcoin node's address to btcd's known peers over the P2P protocol (detailed below).
 - `addresses` — scans the chain from genesis to tip and collects every address seen, resuming from its own cursor bucket.
 - `top-active` — the same scan, ranking addresses by activity.
-- `addrindex-scan` — looks one address up in the `addrindex` and prints what the index holds for it; the direct way to check the index without going through the bot.
+- `addrindex` — builds and queries the address index from the command line, driving the same `addrindex` package, buckets and cursor the bot does (detailed below).
+- `addrindex-scan` — an earlier, single-purpose version of `addrindex list`. Largely superseded by it; kept only because nothing has been said about removing it.
 - `dbui` — runs the database admin web UI (the `dbui` package) as its own process, so the database can be inspected without the bot running.
 - `i18n-vet` — the translation checker CI runs; see Internationalisation below.
 
@@ -160,6 +161,20 @@ Three existing implementations were read for their on-disk design before writing
 The short version: it follows electrs/`bindex-rs` — hash each `scriptPubKey`, keep an 8-byte prefix, record one entry per "touch" (an address in an output, or in a spent input) — but **shards** rather than keying per address, because bbolt is a B+tree with per-key page overhead and no compression, where bindex relies on RocksDB's LSM and Zstd. The key is `shard(2 bytes of the hash) + rangeIndex(4)` and the value is the packed run of every touch in that shard and 1000-block range, each `remainder(6) + heightOffset(2) + txIndex(2)` = 10 bytes.
 
 A first attempt keyed by address, expecting per-key overhead to amortize across repeated touches; measured on real mainnet blocks it did not, because **71% of addresses are touched exactly once and 96% at most twice**. That cost ~133 bytes per address and projected to 150–250 GB. Sharding measures **18.15 bytes/touch** over 900 real blocks, projecting to roughly 85–113 GB, and makes writes **append-only** — each shard-range value is written once and never rewritten, which is what let the write-side history cap go away. History is now complete on disk; only `Lookup` stops early (`maxLookup`) to bound a Telegram reply, flagged with the same trailing `+` the btcd path used.
+
+**`tools/addrindex`** is the same index, driven by hand. `addrindex build -db ai.db -url http://127.0.0.1:8332 -cookie ./cookie` catches the index up from its cursor to the tip and **exits**, where the bot's `StartBackfill` is the same call on a loop — both go through `addrindex.Build` (which was the unexported `index`), so both chunk identically and either can resume what the other started. `addrindex list … <address>` prints one line per transaction the index holds and then a summary:
+
+```
+21 oct 2021 21:00 bbbbbbbb..bbbbbbb1    20000 sat
+1 nov 2022 11:00  cccccccc..ccccccc1   -10000 sat
+Summary: Balance 10000 sats, Received 30000 sats, Sent 20000 sats, Transactions 2, Activity: from 21 oct 2021 till 1 nov 2022
+```
+
+Three things about it are deliberate. The per-line amount is the **net** effect on that address, signed, so the column reads as a ledger and sums to the balance — a transaction that spends from the address and pays change back shows only the difference, where the summary's Received and Sent are gross. **One `-url` covers both protocols**: the build reads REST and the lookups read JSON-RPC, and Core serves them on the same host:port (only the RPC half needs `-cookie`). And the timestamp column is **padded**, since a single-digit day is a character shorter and would otherwise step the listing in and out.
+
+The tool needs its own small JSON-RPC client — four methods against the bot's twenty — because `core.go` is package `main`'s and cannot be imported. The **REST source is shared**, though: it moved out of main into `addrindex.NewREST`, because the endpoints and their binary formats are *how this index is built*, and a second copy would have been free to drift from the parser that reads them.
+
+`tools/addrindex/addrindex_test.go` drives the whole tool against one `httptest` server that speaks both halves — REST for the build, JSON-RPC for the listing — over hand-serialized blocks. That is what makes it a real test of the format rather than of the formatting: it builds a genuine index through `addrindex.Build` and reads it back through `Lookup`. Two traps it caught, both worth knowing before writing another fixture: **a zero input count is the segwit marker**, so even a fixture coinbase must carry one input or the parser misreads the whole transaction; and the REST client **reverses** the bytes of `/rest/blockhashbyheight`, so a fake hash has to encode its height at the end to come back at the front.
 
 The backfill reads Core's **REST** interface, not RPC: `/rest/block/<hash>.bin` and `/rest/spenttxouts/<hash>.bin` are binary and need no authentication. Measured on mainnet, block + spent outputs is **1.95 MB in 28 ms**, where `getblock` verbosity 3 for the same block is **13.7 MB** of JSON. This is what makes indexing the whole chain tractable at all — roughly 7 hours at the measured rate. It is enabled by `-core-rest` and runs unattended; until it has a cursor, `/info <address>` reports "unavailable (address index is still building)" rather than presenting an empty history as fact.
 
