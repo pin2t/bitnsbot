@@ -386,8 +386,13 @@ func (t trans) String(s string) string {
 
 // DateTime formats tm as "2 January 2006 15:04" using the English month name,
 // then replaces it with the translation for this language if one exists.
-func (t trans) DateTime(tm time.Time) string {
-	formatted := tm.Format("2 January 2006 15:04")
+func (t trans) DateTime(tm time.Time) string { return t.date(tm, "2 January 2006 15:04") }
+
+// Date is DateTime without the clock time, for a field where the hour is noise.
+func (t trans) Date(tm time.Time) string { return t.date(tm, "2 January 2006") }
+
+func (t trans) date(tm time.Time, layout string) string {
+	formatted := tm.Format(layout)
 	if t == nil { return formatted }
 	month := tm.Month().String()
 	if translated, ok := t[month]; ok {

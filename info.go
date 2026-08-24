@@ -417,8 +417,8 @@ func addrPairs(ctx context.Context, chat int64, addr string) ([][2]string, bool,
             [2]string{i18n(chat).String("Total fees"), compactBTC(fees, chat)},
             [2]string{i18n(chat).String("Transactions"), count},
         )
-        if firstT > 0 { pairs = append(pairs, [2]string{i18n(chat).String("First tx"), when(firstT, chat)}) }
-        if lastT > 0 { pairs = append(pairs, [2]string{i18n(chat).String("Last tx"), when(lastT, chat)}) }
+        if firstT > 0 { pairs = append(pairs, [2]string{i18n(chat).String("First tx"), day(firstT, chat)}) }
+        if lastT > 0 { pairs = append(pairs, [2]string{i18n(chat).String("Last tx"), day(lastT, chat)}) }
         if firstT > 0 && lastT > firstT {
             pairs = append(pairs, [2]string{i18n(chat).String("Activity period"), periodText(time.Duration(lastT-firstT) * time.Second, chat)})
         }
