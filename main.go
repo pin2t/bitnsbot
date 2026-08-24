@@ -174,6 +174,24 @@ func (appSource) AddrInfo(addr string) app.Info {
     return out
 }
 
+// MinerInfo backs the miner details page, opened from a pool name in the block
+// list. The figures and their formatting are /miners', so the two agree.
+func (appSource) MinerInfo(name string) app.Info {
+    var out = app.Info{Title: name}
+    var s, ok = miners.Get(name)
+    if !ok { return out }
+    var blocks = i18n(0).Sprintf("%d blocks", s.Blocks)
+    if s.Blocks == 1 { blocks = i18n(0).String("1 block") }
+    out.OK = true
+    out.Rows = []app.Field{
+        {Label: "Blocks mined", Value: blocks},
+        {Label: "Reward", Value: trimNum(toBTC(s.Reward), 2) + " BTC"},
+        {Label: "Fees", Value: trimNum(toBTC(s.Fees), 2) + " BTC"},
+        {Label: "Consumption", Value: trimNum(s.ConsumptionGW, 1) + " GW"},
+    }
+    return out
+}
+
 // Watches backs the Watches tab: the calling user's own watches, and nobody
 // else's. chat comes from the signed initData, and the same chat-scoping the bot
 // applies in watchesCmd is what keeps one user's list out of another's.

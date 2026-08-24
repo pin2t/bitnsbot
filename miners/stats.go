@@ -180,6 +180,22 @@ type Stat struct {
 // difficulty in force now, where the accumulated Work would average in every
 // past difficulty epoch.
 func Top(n int) []Stat {
+    var out = all()
+    if len(out) > n { out = out[:n] }
+    return out
+}
+
+// Get returns one miner's statistics by name. It builds the whole set because
+// the consumption estimate is a *share* — a miner's blocks against every tracked
+// block — so one miner's figure cannot be computed from its own record alone.
+func Get(name string) (Stat, bool) {
+    for _, s := range all() {
+        if s.Name == name { return s, true }
+    }
+    return Stat{}, false
+}
+
+func all() []Stat {
     if db == nil { return nil }
     var out []Stat
     var totalBlocks int64
@@ -202,6 +218,5 @@ func Top(n int) []Stat {
         if out[i].Blocks != out[j].Blocks { return out[i].Blocks > out[j].Blocks }
         return out[i].Name < out[j].Name
     })
-    if len(out) > n { out = out[:n] }
     return out
 }

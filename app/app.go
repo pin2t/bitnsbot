@@ -360,6 +360,7 @@ type Source interface {
     BlockInfo(height int64) Info
     TxInfo(txid string) Info
     AddrInfo(address string) Info
+    MinerInfo(name string) Info
     Watches(chat int64) Watches
 }
 
@@ -367,11 +368,41 @@ type Source interface {
 const blocksSlot = "blocklist"
 const addressSlot = "addrpanel"
 
-// tabTrigger is the HX-Trigger that moves the reader to the tab a slot lives in.
-// The JSON form carries the panel name, so one listener handles every tab.
-func tabTrigger(slot string) string {
-    if slot == addressSlot { return `{"showtab":"addresses"}` }
-    return `{"showtab":"blocks"}`
+// tabOf is the panel a slot's content lives in.
+func tabOf(slot string) string {
+    if slot == addressSlot { return "addresses" }
+    return "blocks"
+}
+
+// showtab is the HX-Trigger that moves the reader to a panel. The JSON form
+// carries the name, so one listener handles every tab.
+func showtab(panel string) string { return `{"showtab":"` + panel + `"}` }
+
+// isPanel guards what may go into that header: the name arrives in a URL a user
+// can edit, and it is interpolated into JSON.
+func isPanel(name string) bool {
+    switch name {
+    case "home", "blocks", "addresses", "watches":
+        return true
+    }
+    return false
+}
+
+// origin is the tab the reader came from, which is where Back should put them —
+// the search field on Home, the list they were reading, or their watch list. It
+// rides in the URL because only the link that opened the page knows it. An
+// absent or unrecognised value falls back to the tab the page itself lives in,
+// which is the old behaviour.
+func origin(r *http.Request, slot string) string {
+    var from = r.URL.Query().Get("from")
+    if isPanel(from) { return from }
+    return tabOf(slot)
+}
+
+// backToList is the Back target for a page shown in the Blocks tab: restore the
+// list, then hand the reader to whichever tab they came from.
+func backToList(r *http.Request) string {
+    return "blocks?page=" + listPage(r) + "&to=" + origin(r, blocksSlot)
 }
 
 // listPage is the block-list page a Back button should return to. It rides along
@@ -392,7 +423,7 @@ func listPage(r *http.Request) string {
 // it. Without this an address page lands in the Blocks tab, replacing the list.
 func details(w http.ResponseWriter, r *http.Request, slot, back string, load func() Info) {
     w.Header().Set("HX-Retarget", "#"+slot)
-    w.Header().Set("HX-Trigger", tabTrigger(slot))
+    w.Header().Set("HX-Trigger", showtab(tabOf(slot)))
     cached(blocksCache, w, r, func() []byte {
         var info = load()
         info.Slot, info.Back = slot, back
@@ -464,6 +495,9 @@ func Start(addr, token string, src Source) *http.Server {
     mux.HandleFunc("/blocks", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
         var page, err = strconv.Atoi(r.URL.Query().Get("page"))
         if err != nil || page < 0 { page = 0 }
+        // Only when Back explicitly asked: this endpoint is also the pager and
+        // the SSE refresh, and those must never move a reader off their tab.
+        if to := r.URL.Query().Get("to"); isPanel(to) { w.Header().Set("HX-Trigger", showtab(to)) }
         cached(blocksCache, w, r, func() []byte { return  render("blocks", src.Blocks(page)) })
     }))
     // A details page replaces its tab's container in place, so the tab it
@@ -477,7 +511,7 @@ func Start(addr, token string, src Source) *http.Server {
             http.Error(w, "no such block", http.StatusBadRequest)
             return
         }
-        details(w, r, blocksSlot, "blocks?page="+listPage(r), func() Info { return src.BlockInfo(height) })
+        details(w, r, blocksSlot, backToList(r), func() Info { return src.BlockInfo(height) })
     }))
     mux.HandleFunc("/tx", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
         var id = strings.TrimSpace(r.URL.Query().Get("id"))
@@ -485,7 +519,15 @@ func Start(addr, token string, src Source) *http.Server {
             http.Error(w, "no such transaction", http.StatusBadRequest)
             return
         }
-        details(w, r, blocksSlot, "blocks?page="+listPage(r), func() Info { return src.TxInfo(id) })
+        details(w, r, blocksSlot, backToList(r), func() Info { return src.TxInfo(id) })
+    }))
+    mux.HandleFunc("/miner", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
+        var name = strings.TrimSpace(r.URL.Query().Get("name"))
+        if name == "" {
+            http.Error(w, "no miner", http.StatusBadRequest)
+            return
+        }
+        details(w, r, blocksSlot, backToList(r), func() Info { return src.MinerInfo(name) })
     }))
     mux.HandleFunc("/address", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
         var a = strings.TrimSpace(r.URL.Query().Get("a"))
@@ -493,13 +535,15 @@ func Start(addr, token string, src Source) *http.Server {
             http.Error(w, "no address", http.StatusBadRequest)
             return
         }
-        details(w, r, addressSlot, "addresses", func() Info { return src.AddrInfo(a) })
+        details(w, r, addressSlot, "addresses?to="+origin(r, addressSlot), func() Info { return src.AddrInfo(a) })
     }))
     // what Back on an address page returns to: the tab's own content, which is
     // still a placeholder
     mux.HandleFunc("/addresses", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
+        var to = r.URL.Query().Get("to")
+        if !isPanel(to) { to = "addresses" }
         w.Header().Set("HX-Retarget", "#"+addressSlot)
-        w.Header().Set("HX-Trigger", tabTrigger(addressSlot))
+        w.Header().Set("HX-Trigger", showtab(to))
         cached(cardsCache, w, r, func() []byte { return render("addresses", nil) })
     }))
     // Never cached: every cache here is keyed by URL, which is identical for
@@ -524,13 +568,13 @@ func Start(addr, token string, src Source) *http.Server {
         case q == "":
             w.WriteHeader(http.StatusNoContent)
         case isTxid(q):
-            http.Redirect(w, r, "tx?id="+url.QueryEscape(q), http.StatusSeeOther)
+            http.Redirect(w, r, "tx?id="+url.QueryEscape(q)+"&from=home", http.StatusSeeOther)
         default:
             if height, err := strconv.ParseInt(q, 10, 64); err == nil && height >= 0 {
-                http.Redirect(w, r, "block?height="+strconv.FormatInt(height, 10), http.StatusSeeOther)
+                http.Redirect(w, r, "block?height="+strconv.FormatInt(height, 10)+"&from=home", http.StatusSeeOther)
                 return
             }
-            http.Redirect(w, r, "address?a="+url.QueryEscape(q), http.StatusSeeOther)
+            http.Redirect(w, r, "address?a="+url.QueryEscape(q)+"&from=home", http.StatusSeeOther)
         }
     }))
     var srv = &http.Server{Addr: addr, Handler: mux}
