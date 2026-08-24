@@ -50,6 +50,7 @@ type fakeSource struct {
     d map[int64]Info
     t map[string]Info
     a map[string]Info
+    w map[int64]Watches
 }
 
 func (s fakeSource) Fees() Fees       { return s.f }
@@ -65,6 +66,22 @@ func (s fakeSource) BlockInfo(height int64) Info {
 func (s fakeSource) TxInfo(txid string) Info {
     if d, ok := s.t[txid]; ok { return d }
     return Info{Title: txid[:6] + "..." + txid[58:]}
+}
+
+func (s fakeSource) Watches(chat int64) Watches {
+    if w, ok := s.w[chat]; ok { return w }
+    return Watches{OK: true}
+}
+
+// two users with different lists, so a leak between them is visible
+func liveWatches() map[int64]Watches {
+    return map[int64]Watches{
+        42: {OK: true,
+            Addresses: []Watch{{Short: "bc1qxy...hx0wlh", Id: liveAddress, Alias: "John"}},
+            Txs:       []Watch{{Short: "32e43e...870b16", Id: liveTxid}}},
+        99: {OK: true,
+            Addresses: []Watch{{Short: "1A1zP1...DivfNa", Id: "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"}}},
+    }
 }
 
 func (s fakeSource) AddrInfo(addr string) Info {
@@ -211,8 +228,11 @@ func TestPageRendersFeesInline(t *testing.T) {
             t.Errorf("page did not render %q inline", want)
         }
     }
-    if strings.Contains(body, "loading…") {
-        t.Error(`page still ships a "loading…" placeholder; fees should be rendered server-side`)
+    // scoped to the fees card: the Watches panel legitimately ships a
+    // placeholder, since its content is per-user and cannot be in a shared page
+    var card = body[strings.Index(body, `id="fees"`):strings.Index(body, `id="network"`)]
+    if strings.Contains(card, "loading…") {
+        t.Error(`the fees card still ships a "loading…" placeholder; it should be rendered server-side`)
     }
 }
 
@@ -966,5 +986,113 @@ func TestSearchFieldIsWired(t *testing.T) {
     }
     if !strings.Contains(body, `document.body.addEventListener("showtab"`) {
         t.Error("nothing listens for showtab, so a search would not switch tabs")
+    }
+}
+
+// The Watches tab lists the caller's own watches, both kinds, shortened and
+// linked to the same pages a search opens.
+func TestWatchesListsBoth(t *testing.T) {
+    var h = handler(t, "TESTTOKEN", fakeSource{w: liveWatches()})
+    var body = get(h, "/watches", freshInitData("TESTTOKEN")).Body.String()
+    for _, want := range []string{">Addresses<", ">Transactions<",
+        ">bc1qxy...hx0wlh<", ">32e43e...870b16<", ">John<"} {
+        if !strings.Contains(body, want) {
+            t.Errorf("the watch list is missing %q: %s", want, body)
+        }
+    }
+    // each row links to the details page for its kind, carrying the full id
+    if !strings.Contains(body, `hx-get="address?a=`+liveAddress+`"`) {
+        t.Error("a watched address must open the address page, with the full id")
+    }
+    if !strings.Contains(body, `hx-get="tx?id=`+liveTxid+`"`) {
+        t.Error("a watched transaction must open the transaction page, with the full id")
+    }
+}
+
+// The one thing that must never break: a watch list is per-user, and the caches
+// are keyed by URL — identical for everyone. Two users must not see each other.
+func TestWatchesAreNotSharedBetweenUsers(t *testing.T) {
+    var h = handler(t, "TESTTOKEN", fakeSource{w: liveWatches()})
+    var mine = signInitData("TESTTOKEN", map[string]string{
+        "auth_date": strconv.FormatInt(time.Now().Unix(), 10),
+        "user":      `{"id":42,"first_name":"Pin"}`})
+    var theirs = signInitData("TESTTOKEN", map[string]string{
+        "auth_date": strconv.FormatInt(time.Now().Unix(), 10),
+        "user":      `{"id":99,"first_name":"Mallory"}`})
+    var a = get(h, "/watches", mine).Body.String()
+    var b = get(h, "/watches", theirs).Body.String()
+    if !strings.Contains(a, "bc1qxy...hx0wlh") || strings.Contains(a, "1A1zP1...DivfNa") {
+        t.Errorf("user 42 got the wrong list: %s", a)
+    }
+    if !strings.Contains(b, "1A1zP1...DivfNa") || strings.Contains(b, "bc1qxy...hx0wlh") {
+        t.Errorf("user 99 was served user 42's watches — the list must never be cached: %s", b)
+    }
+    // and back again, in case the first response was cached under the URL
+    if again := get(h, "/watches", mine).Body.String(); again != a {
+        t.Error("user 42's second request differed; something is caching per-URL")
+    }
+}
+
+// chatOf reads the id Telegram signs, which is what scopes the list.
+func TestChatOfReadsSignedUser(t *testing.T) {
+    if got := chatOf(freshInitData("TESTTOKEN")); got != 42 {
+        t.Errorf("chatOf = %d, want 42", got)
+    }
+    for _, bad := range []string{"", "user=notjson", "auth_date=1"} {
+        if got := chatOf(bad); got != 0 {
+            t.Errorf("chatOf(%q) = %d, want 0", bad, got)
+        }
+    }
+}
+
+// Watching nothing is a different answer from the lookup failing.
+func TestWatchesEmptyAndFailed(t *testing.T) {
+    var h = handler(t, "TESTTOKEN", fakeSource{w: map[int64]Watches{42: {OK: true}}})
+    if body := get(h, "/watches", freshInitData("TESTTOKEN")).Body.String(); !strings.Contains(body, "not watching anything yet") {
+        t.Errorf("an empty list should say so: %s", body)
+    }
+    var broken = handler(t, "TESTTOKEN", fakeSource{w: map[int64]Watches{42: {OK: false}}})
+    if body := get(broken, "/watches", freshInitData("TESTTOKEN")).Body.String(); !strings.Contains(body, "watches unavailable") {
+        t.Errorf("a failed lookup should say so, not claim an empty list: %s", body)
+    }
+}
+
+// The list is per-user, so it must need a signature and must never be rendered
+// into the shell page, which is one cached copy served to every visitor.
+func TestWatchesNeverInThePage(t *testing.T) {
+    var h = handler(t, "TESTTOKEN", fakeSource{f: liveFees(), w: liveWatches()})
+    if w := get(h, "/watches", ""); w.Code != 401 {
+        t.Errorf("unauthenticated /watches = %d, want 401", w.Code)
+    }
+    var body = get(h, "/", "").Body.String()
+    for _, leak := range []string{"bc1qxy...hx0wlh", "32e43e...870b16", "John", liveAddress} {
+        if strings.Contains(body, leak) {
+            t.Errorf("the shell page carries %q — it is cached and shared by every visitor", leak)
+        }
+    }
+    if !strings.Contains(body, `id="watchpanel"`) {
+        t.Error("the page needs the empty container for the fragment to replace")
+    }
+}
+
+// The container in the page and the one the fragment returns must ask for the
+// same thing, or the tab would stop refreshing after its first swap.
+func TestWatchPanelWiringMatches(t *testing.T) {
+    var h = handler(t, "TESTTOKEN", fakeSource{w: liveWatches()})
+    var page = get(h, "/", "").Body.String()
+    var frag = get(h, "/watches", freshInitData("TESTTOKEN")).Body.String()
+    for _, want := range []string{`hx-get="watches"`, `hx-trigger="watchtab from:body"`, `hx-swap="outerHTML"`} {
+        if !strings.Contains(page, want) {
+            t.Errorf("the page's container is missing %q", want)
+        }
+        if !strings.Contains(frag, want) {
+            t.Errorf("the fragment is missing %q, so the tab would stop refreshing", want)
+        }
+    }
+    if !strings.Contains(page, `dispatchEvent(new Event("watchtab"))`) {
+        t.Error("nothing fires watchtab, so opening the tab would never fetch")
+    }
+    if !strings.Contains(page, "Watches are only available inside Telegram") {
+        t.Error("outside Telegram the tab must say so rather than failing silently")
     }
 }
