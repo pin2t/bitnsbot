@@ -22,6 +22,7 @@ var payScript = mustHex("76a914000102030405060708090a0b0c0d0e0f1011121314ff88ac"
 var otherScript = mustHex("76a914aabbccddeeff00112233445566778899aabbccdd88ac")
 
 const address = "37QAiiRLSHEsMPu3SXT9AKWDoZsZxtfuRP"
+const otherAddress = "1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2"
 
 func mustHex(s string) []byte {
     var b, err = hex.DecodeString(s)
@@ -167,6 +168,17 @@ func rpcReply(t *testing.T, w http.ResponseWriter, r *http.Request) {
         reply(map[string]interface{}{"tx": ids})
     case "getrawtransaction":
         reply(txDetail(req.Params[0].(string)))
+    case "decodescript":
+        // the fixture's two scripts map to two addresses; anything else is
+        // nonstandard and has none
+        switch req.Params[0].(string) {
+        case hex.EncodeToString(payScript):
+            reply(map[string]interface{}{"address": address})
+        case hex.EncodeToString(otherScript):
+            reply(map[string]interface{}{"address": otherAddress})
+        default:
+            reply(map[string]interface{}{})
+        }
     default:
         t.Errorf("unexpected rpc method %s", req.Method)
     }
@@ -192,10 +204,25 @@ func txDetail(txid string) map[string]interface{} {
 }
 
 func openIndex(t *testing.T) {
-    var db, err = bbolt.Open(filepath.Join(t.TempDir(), "ai.db"), 0600, nil)
+    var handle, err = bbolt.Open(filepath.Join(t.TempDir(), "ai.db"), 0600, nil)
     if err != nil { t.Fatalf("open: %v", err) }
-    t.Cleanup(func() { db.Close() })
-    if err := addrindex.Init(db); err != nil { t.Fatalf("init: %v", err) }
+    db = handle
+    t.Cleanup(func() { handle.Close(); db = nil })
+    if err := addrindex.Init(handle); err != nil { t.Fatalf("init: %v", err) }
+}
+
+// activeAddresses reads back what actbuild recorded.
+func activeAddresses(t *testing.T) map[string]int {
+    var out = map[string]int{}
+    db.View(func(tx *bbolt.Tx) error {
+        var b = tx.Bucket(activeBucket)
+        if b == nil { return nil }
+        return b.ForEach(func(k, v []byte) error {
+            out[string(k)] = int(binary.BigEndian.Uint64(v))
+            return nil
+        })
+    })
+    return out
 }
 
 func capture(t *testing.T, f func()) string {
@@ -316,5 +343,190 @@ func TestTook(t *testing.T) {
         if got := took(c.d); got != c.want {
             t.Errorf("took(%s) = %q, want %q", c.d, got, c.want)
         }
+    }
+}
+
+// actbuild walks the chain, decides about each address once, and records the
+// ones whose history is longer than the threshold. The fixture's payScript has
+// two transactions and otherScript four, so a threshold of three separates them.
+func TestActbuildRecordsActiveAddresses(t *testing.T) {
+    openIndex(t)
+    var srv = fakeCore(t, 3)
+    var opt = &options{url: srv.URL, limit: 1000}
+    capture(t, func() { build(opt) })
+
+    var oldMin = activeMin
+    activeMin = 3
+    defer func() { activeMin = oldMin }()
+    var out = capture(t, func() { actbuild(opt) })
+    if !strings.Contains(out, "Scanning blocks 0..3") {
+        t.Errorf("actbuild did not report its range: %q", out)
+    }
+
+    var active = activeAddresses(t)
+    if _, ok := active[address]; ok {
+        t.Errorf("the address with 2 transactions was recorded as active: %v", active)
+    }
+    // 6 touches: a coinbase in each of the four blocks, plus a spend and a
+    // payment. The deciding lookup stops at the threshold, so this also pins
+    // that the recorded count is a real count and not that cap.
+    if n, ok := active[otherAddress]; !ok || n != 6 {
+        t.Errorf("active = %v; want %s with its 6 transactions", active, otherAddress)
+    }
+    if h, ok := addrindex.GetCursor(activeCursor); !ok || h != 3 {
+        t.Errorf("actbuild cursor = %d, %v; want 3", h, ok)
+    }
+    // the index's own cursor is untouched — they sit in one bucket under
+    // different names
+    if h, _ := addrindex.Cursor(); h != 3 {
+        t.Errorf("the index cursor moved to %d", h)
+    }
+}
+
+// The processed set is the point of the exercise: an address decided about in an
+// earlier chunk must not be looked up again in a later one.
+func TestActbuildProcessesEachAddressOnce(t *testing.T) {
+    openIndex(t)
+    var srv = fakeCore(t, 3)
+    var opt = &options{url: srv.URL, limit: 1000}
+    capture(t, func() { build(opt) })
+    var oldChunk = actChunk
+    actChunk = 1 // one block per chunk, so the repeats land in later chunks
+    defer func() { actChunk = oldChunk }()
+    capture(t, func() { actbuild(opt) })
+
+    // both scripts appear in several blocks, but each is recorded once
+    for _, script := range [][]byte{payScript, otherScript} {
+        var shard, rem = shardKey(script)
+        var count int
+        db.View(func(tx *bbolt.Tx) error {
+            var v = tx.Bucket(processedBucket).Get(shard)
+            for i := 0; i+remainderLen <= len(v); i += remainderLen {
+                if string(v[i:i+remainderLen]) == string(rem) { count++ }
+            }
+            return nil
+        })
+        if count != 1 {
+            t.Errorf("script %x recorded %d times in the processed set, want 1", script[:8], count)
+        }
+    }
+}
+
+// A second run with nothing new must do nothing, which is what the cursor buys.
+func TestActbuildResumesFromItsCursor(t *testing.T) {
+    openIndex(t)
+    var srv = fakeCore(t, 3)
+    var opt = &options{url: srv.URL, limit: 1000}
+    capture(t, func() { build(opt) })
+    capture(t, func() { actbuild(opt) })
+    var again = capture(t, func() { actbuild(opt) })
+    if !strings.Contains(again, "already up to the tip") {
+        t.Errorf("a second actbuild should be a no-op, got %q", again)
+    }
+}
+
+// The sharded set is the whole storage design, so its parts are pinned
+// directly: 2 bytes of shard and 6 of remainder, the same split the index uses,
+// packed into a run that is kept sorted so membership can binary-search it.
+func TestProcessedShardLayout(t *testing.T) {
+    var shard, rem = shardKey(payScript)
+    if len(shard) != 2 || len(rem) != 6 {
+        t.Fatalf("shard %d bytes, remainder %d; want 2 and 6", len(shard), len(rem))
+    }
+    var prefix = addrindex.Prefix(payScript)
+    if string(shard) != string(prefix[:2]) || string(rem) != string(prefix[2:8]) {
+        t.Error("the split must be the first 2 and last 6 bytes of the index prefix")
+    }
+}
+
+// run builds a sorted shard value out of whole remainders.
+func run(remainders ...[]byte) []byte {
+    var out []byte
+    for _, r := range remainders { out = append(out, r...) }
+    return out
+}
+
+func rem6(b byte) []byte { return []byte{b, 0, 0, 0, 0, 0} }
+
+// run2 is run under another name, for tests that shadow run with a local.
+func run2(remainders ...[]byte) []byte { return run(remainders...) }
+
+// Membership is a binary search, so it must find an entry wherever it sits in
+// the run and never claim one that is not there.
+func TestSeenBinarySearch(t *testing.T) {
+    var shard = run(rem6(1), rem6(3), rem6(5), rem6(7), rem6(9))
+    for _, b := range []byte{1, 3, 5, 7, 9} {
+        if !seen(shard, rem6(b)) {
+            t.Errorf("%d is in the run but was not found", b)
+        }
+    }
+    for _, b := range []byte{0, 2, 4, 6, 8, 10} {
+        if seen(shard, rem6(b)) {
+            t.Errorf("%d is not in the run but was found", b)
+        }
+    }
+    if seen(nil, rem6(1)) {
+        t.Error("an empty shard cannot contain anything")
+    }
+    // a remainder must not match off an entry boundary, which a byte search would
+    if seen(run(rem6(0))[1:], rem6(0)) {
+        t.Error("a remainder was matched off the entry boundary")
+    }
+}
+
+// insertOne puts a remainder in its place rather than at the end, so the run
+// stays sorted and stays searchable.
+func TestInsertOneKeepsTheRunSorted(t *testing.T) {
+    var run = run(rem6(2), rem6(6))
+    // one before, one between, one after — each lands where the order requires
+    for _, b := range []byte{8, 1, 4} {
+        run = insertOne(run, rem6(b))
+    }
+    var want = run2(rem6(1), rem6(2), rem6(4), rem6(6), rem6(8))
+    if string(run) != string(want) {
+        t.Fatalf("run = %x, want %x", run, want)
+    }
+    for _, b := range []byte{1, 2, 4, 6, 8} {
+        if !seen(run, rem6(b)) {
+            t.Errorf("%d was lost by the insert", b)
+        }
+    }
+}
+
+// Re-inserting something already there must not double it, or the set would
+// grow without bound on a re-scan.
+func TestInsertOneDoesNotDuplicate(t *testing.T) {
+    var r = run(rem6(2), rem6(4))
+    r = insertOne(r, rem6(4))
+    r = insertOne(r, rem6(2))
+    if got := len(r) / remainderLen; got != 2 {
+        t.Errorf("run holds %d entries, want 2", got)
+    }
+    // into an empty run
+    if got := insertOne(nil, rem6(5)); string(got) != string(rem6(5)) {
+        t.Errorf("into an empty run: %x", got)
+    }
+}
+
+// merge combines two sorted runs, which is how a chunk's additions reach the
+// stored shard.
+func TestMergeSortedRuns(t *testing.T) {
+    var stored = run(rem6(2), rem6(5), rem6(9))
+    var batch = run(rem6(1), rem6(5), rem6(7))
+    var got = merge(stored, batch)
+    var want = run2(rem6(1), rem6(2), rem6(5), rem6(7), rem6(9))
+    if string(got) != string(want) {
+        t.Fatalf("merge = %x, want %x — 5 is in both and must be kept once", got, want)
+    }
+    // either side empty
+    if string(merge(nil, batch)) != string(batch) {
+        t.Error("merging into an empty run lost the batch")
+    }
+    if string(merge(stored, nil)) != string(stored) {
+        t.Error("merging an empty batch changed the run")
+    }
+    // one side entirely past the other, so the tail copy finishes it
+    if got := merge(run(rem6(1)), run(rem6(8), rem6(9))); string(got) != string(run2(rem6(1), rem6(8), rem6(9))) {
+        t.Errorf("appending past the end: %x", got)
     }
 }

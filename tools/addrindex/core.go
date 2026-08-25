@@ -2,6 +2,7 @@ package main
 
 import "bytes"
 import "context"
+import "encoding/hex"
 import "encoding/json"
 import "fmt"
 import "net/http"
@@ -132,4 +133,17 @@ func (t *tx) moved(addr string) (received, sent int64) {
 func toSat(btc float64) int64 {
     if btc < 0 { return -int64(-btc*1e8 + 0.5) }
     return int64(btc*1e8 + 0.5)
+}
+
+// addressOf turns a scriptPubKey back into the address it pays, which the node
+// does — this tool decodes no address format of its own, the same rule the bot
+// follows. A nonstandard script has no address, and comes back empty.
+func (c *rpc) addressOf(ctx context.Context, script []byte) (string, error) {
+    var out struct {
+        Address string `json:"address"`
+    }
+    if err := c.call(ctx, "decodescript", []interface{}{hex.EncodeToString(script)}, &out); err != nil {
+        return "", err
+    }
+    return out.Address, nil
 }

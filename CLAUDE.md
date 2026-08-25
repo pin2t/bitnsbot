@@ -30,7 +30,7 @@ Flags (all in `main.go`): `-config` (path to a `name=value` properties file to l
 - `advertise` — announces a Bitcoin node's address to btcd's known peers over the P2P protocol (detailed below).
 - `addresses` — scans the chain from genesis to tip and collects every address seen, resuming from its own cursor bucket.
 - `top-active` — the same scan, ranking addresses by activity.
-- `addrindex` — builds and queries the address index from the command line, driving the same `addrindex` package, buckets and cursor the bot does (detailed below).
+- `addrindex` — builds and queries the address index from the command line, driving the same `addrindex` package, buckets and cursor the bot does; `actbuild` adds a second pass that records busy addresses (detailed below).
 - `addrindex-scan` — an earlier, single-purpose version of `addrindex list`. Largely superseded by it; kept only because nothing has been said about removing it.
 - `dbui` — runs the database admin web UI (the `dbui` package) as its own process, so the database can be inspected without the bot running.
 - `i18n-vet` — the translation checker CI runs; see Internationalisation below.
@@ -175,6 +175,38 @@ Three things about it are deliberate. The per-line amount is the **net** effect 
 The tool needs its own small JSON-RPC client — four methods against the bot's twenty — because `core.go` is package `main`'s and cannot be imported. The **REST source is shared**, though: it moved out of main into `addrindex.NewREST`, because the endpoints and their binary formats are *how this index is built*, and a second copy would have been free to drift from the parser that reads them.
 
 `tools/addrindex/addrindex_test.go` drives the whole tool against one `httptest` server that speaks both halves — REST for the build, JSON-RPC for the listing — over hand-serialized blocks. That is what makes it a real test of the format rather than of the formatting: it builds a genuine index through `addrindex.Build` and reads it back through `Lookup`. Two traps it caught, both worth knowing before writing another fixture: **a zero input count is the segwit marker**, so even a fixture coinbase must carry one input or the parser misreads the whole transaction; and the REST client **reverses** the bytes of `/rest/blockhashbyheight`, so a fake hash has to encode its height at the end to come back at the front.
+
+**`actbuild`** is a second pass over the chain: for every script it sees it asks the index how long that address's history is, and writes anything past `-active` (1000) to the **`addrindex-active`** bucket, keyed by address with the transaction count as its value. It keeps its own cursor — `actbuild` in the same `addrindex-cursor` bucket, beside the index's `cursor`, which is why `GetCursor`/`SetCursorIn` are named — so it resumes where it stopped without disturbing the index. Block parsing is not duplicated: `addrindex.Scripts` exposes the same parse the indexer runs.
+
+Two lookups per active address, not one, and the distinction matters. **Deciding** uses `Lookup(script, activeMin+1)` and stops there — the question is only whether the history is longer, never how much longer, and it runs against every address on the chain. Only for the few that qualify is a second, bounded lookup made for the **real count**; the deciding lookup's length is the threshold, so recording it would have written the cap and called it a count.
+
+**The `processed` bucket is what makes the pass affordable** — the index lookup is the expensive part, and scripts repeat constantly. It is a set of scripts already decided about, sharded **exactly as the index is**: key = the first 2 bytes of the script's index prefix, value = the packed run of 6-byte remainders in that shard, so the whole set lives in 65 536 keys.
+
+**The run is kept sorted**, which is what makes a 2-byte shard viable at chain scale: membership is a binary search (`seen`), so a shard holding tens of thousands of entries costs ~15 comparisons rather than a walk. Two primitives keep it that way — `insertOne` puts a single remainder in its place as the chunk grows, and `merge` combines the chunk's run with the stored one in a single pass at flush, which keeps a flush linear in the shard's size where repeated single inserts would be quadratic. Both drop a remainder already present, or a re-scan would double every entry. Because *both* runs are sorted, one `seen` searches either.
+
+**The scan streams a block at a time.** It does not collect the chunk's scripts first, and that is not a style choice: an earlier version did, and a 2000-block chunk peaked at **8.37 GB** — over the 8 GB the Pi this runs on has. Holding only the per-shard remainders (6 bytes each) instead of several million script strings brought the identical run to **645 MB**, a 12x reduction for ~4% more time. The `processed` check runs in a short read transaction per block and the index lookups run *outside* it: `Lookup` opens its own read transaction, and nesting one inside another risks deadlocking against a waiting writer.
+
+The chunk size is tunable with **`-chunk`** (default 2000 blocks). Every flush rewrites each shard it touches, and with 65 536 shards a chunk touches nearly all of them — so the whole bucket is rewritten once per chunk, and fewer, larger chunks mean fewer full rewrites.
+
+**Measured against mainnet**, the same 201 real blocks (963817–964017) indexed and then scanned, once per split:
+
+| | shard 4 / remainder 4 | shard 2 / remainder 6 |
+|---|---|---|
+| shards | 897 527 | 65 536 |
+| addresses per shard | 1.00 (biggest 2) | 13.8 (biggest 32) |
+| bytes per address | 29.4 | **9.9** |
+| `processed` on disk | 26.4 MB | **9.0 MB** |
+| scan time | 2 min 21 s | **1 min 12 s** |
+
+A 4-byte shard spreads addresses over 4 billion buckets, which is one bbolt key per address — the shape the index itself measured and rejected, and it cost 3x the space and 2x the time. The 2-byte split is the one in the code.
+
+The skip works: on the second chunk 440 213 scripts yielded only 347 193 new addresses.
+
+**Measured again at the real chunk size**, 2000 mainnet blocks (962020–964019) indexed and scanned at the real `-active 1000`: 14 796 030 script touches, **6 165 338 distinct addresses**, 294 of them past the threshold, in **8 min 3 s** at **645 MB peak RSS**. The stored set came back with **94.3 entries per shard** (biggest 141) at **12.9 bytes per address**, and a direct check over all 6 177 636 entries found **0 out-of-order pairs and 0 duplicates** — the sorted invariant and the dedup both hold against real data.
+
+Extrapolating from a small sample would have got this wrong: a 203-block chunk peaked at 1.0 GB, which scaled naively predicts ~6 GB and looks safe, where the real 2000-block figure for that same code was 8.37 GB. Measure at the size you will run.
+
+**What still grows with the chain.** At ~1.5 B addresses a shard holds ~23 000 entries (~138 KB), so per-key overhead vanishes and the bucket approaches its raw ~9 GB. Binary search handles the lookups, but bbolt values are immutable, so a flush still **rewrites every shard it touches** — the whole bucket, once per chunk. That is what `-chunk` trades against, and it is the number to watch on a full-chain run.
 
 The backfill reads Core's **REST** interface, not RPC: `/rest/block/<hash>.bin` and `/rest/spenttxouts/<hash>.bin` are binary and need no authentication. Measured on mainnet, block + spent outputs is **1.95 MB in 28 ms**, where `getblock` verbosity 3 for the same block is **13.7 MB** of JSON. This is what makes indexing the whole chain tractable at all — roughly 7 hours at the measured rate. It is enabled by `-core-rest` and runs unattended; until it has a cursor, `/info <address>` reports "unavailable (address index is still building)" rather than presenting an empty history as fact.
 
