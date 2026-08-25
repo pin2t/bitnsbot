@@ -41,6 +41,10 @@ const activeCursor = "actbuild"
 // only whether the history is longer, never how much longer.
 var activeMin = 1000
 
+// lookupLimit bounds the second, exact lookup made for an address that already
+// qualified; it is -limit.
+var lookupLimit = 1000000
+
 // actChunk is how many blocks are scanned before the batch is written and the
 // cursor advanced, so a crash mid-scan resumes from the last flushed chunk.
 //
@@ -69,30 +73,44 @@ func seen(shard, remainder []byte) bool {
     return i < n && bytes.Equal(nth(shard, i), remainder)
 }
 
-// insert adds remainders to a shard's run, each in the place that keeps the run
-// sorted. The batch is merged in one pass rather than inserted one at a time —
-// the same result for a fraction of the work, since a flush then stays linear in
-// the shard's size where repeated single inserts would be quadratic.
-func insert(shard []byte, remainders [][]byte) []byte {
-    sort.Slice(remainders, func(i, j int) bool {
-        return bytes.Compare(remainders[i], remainders[j]) < 0
-    })
-    var out = make([]byte, 0, len(shard)+len(remainders)*remainderLen)
-    var i, n = 0, len(shard)/remainderLen
-    var prev []byte
-    for _, rem := range remainders {
-        // the caller deduplicates within a chunk, but a repeat here would
-        // silently double an entry and nothing downstream would catch it
-        if prev != nil && bytes.Equal(prev, rem) { continue }
-        prev = rem
-        for i < n && bytes.Compare(nth(shard, i), rem) < 0 {
-            out = append(out, nth(shard, i)...)
+// insertOne adds a remainder in the place that keeps the run sorted, which is
+// what lets seen binary-search the chunk's own additions as well as the stored
+// ones. A shard collects a few hundred entries within a chunk, so shifting the
+// tail is a short move.
+func insertOne(run []byte, rem []byte) []byte {
+    var n = len(run) / remainderLen
+    var i = sort.Search(n, func(i int) bool { return bytes.Compare(nth(run, i), rem) >= 0 })
+    if i < n && bytes.Equal(nth(run, i), rem) { return run }
+    run = append(run, make([]byte, remainderLen)...)
+    copy(run[(i+1)*remainderLen:], run[i*remainderLen:n*remainderLen])
+    copy(run[i*remainderLen:], rem)
+    return run
+}
+
+// merge combines two sorted runs into one, which is how a chunk's additions
+// reach the stored shard. One pass rather than an insert per entry: a flush
+// stays linear in the shard's size where repeated single inserts would be
+// quadratic. A remainder present in both is kept once, or a re-scan would
+// double every entry.
+func merge(a, b []byte) []byte {
+    var out = make([]byte, 0, len(a)+len(b))
+    var i, j = 0, 0
+    var na, nb = len(a) / remainderLen, len(b) / remainderLen
+    for i < na && j < nb {
+        switch bytes.Compare(nth(a, i), nth(b, j)) {
+        case 0:
+            out = append(out, nth(a, i)...)
+            i, j = i+1, j+1
+        case -1:
+            out = append(out, nth(a, i)...)
             i++
+        default:
+            out = append(out, nth(b, j)...)
+            j++
         }
-        if i < n && bytes.Equal(nth(shard, i), rem) { continue }
-        out = append(out, rem...)
     }
-    return append(out, shard[i*remainderLen:]...)
+    out = append(out, a[i*remainderLen:]...)
+    return append(out, b[j*remainderLen:]...)
 }
 
 // actbuild walks the chain from its own cursor to the tip and, for every script
@@ -130,25 +148,19 @@ func actbuild(opt *options) {
     for from <= tip {
         var to = from + actChunk - 1
         if to > tip { to = tip }
-        var scripts, serr = chunkScripts(ctx, src, from, to)
+        var c, serr = scanChunk(ctx, src, client, from, to)
         if serr != nil {
             logging.Err("actbuild: %v", serr)
             break
         }
-        var fresh, ferr = unprocessed(scripts)
-        if ferr != nil {
-            logging.Err("actbuild: %v", ferr)
-            break
-        }
-        var active = classify(ctx, client, fresh, opt.limit)
-        if err := flushActive(fresh, active, to); err != nil {
+        if err := flushActive(c, to); err != nil {
             logging.Err("actbuild: write blocks %d..%d: %v", from, to, err)
             break
         }
-        looked += len(fresh)
-        found += len(active)
+        looked += c.fresh
+        found += len(c.active)
         logging.Info("actbuild: scanned blocks %d..%d (tip %d): %d scripts, %d new addresses, %d active so far",
-            from, to, tip, len(scripts), len(fresh), found)
+            from, to, tip, c.scripts, c.fresh, found)
         from = to + 1
     }
     var at, _ = addrindex.GetCursor(activeCursor)
@@ -156,12 +168,29 @@ func actbuild(opt *options) {
         at, took(time.Since(started)), looked, found)
 }
 
-// chunkScripts reads a range of blocks and returns the distinct scripts in them.
-// Deduplicating here is what keeps the range's cost proportional to the addresses
-// it touches rather than to its outputs.
-func chunkScripts(ctx context.Context, src *addrindex.REST, from, to int) ([][]byte, error) {
-    var seenScript = map[string]bool{}
-    var out [][]byte
+// chunk is what one range of blocks accumulates: the remainders to add to the
+// processed set, grouped by shard and kept sorted, and the active addresses
+// found. Nothing else is held — in particular not the scripts themselves, which
+// at 2000 blocks number several million and were what made an earlier version
+// of this need 8 GB.
+type chunk struct {
+    pending map[string][]byte
+    active  map[string]int
+    scripts int
+    fresh   int
+}
+
+// scanChunk walks a range of blocks and decides about every script in it that
+// has not been decided about before.
+//
+// It works a block at a time rather than collecting the range first: the whole
+// range's distinct scripts do not fit comfortably in memory, and nothing needs
+// them all at once. The processed check runs in a short read transaction per
+// block, and the index lookups run outside it — a Lookup opens its own read
+// transaction, and nesting one inside another risks deadlocking against a
+// waiting writer.
+func scanChunk(ctx context.Context, src *addrindex.REST, client *rpc, from, to int) (*chunk, error) {
+    var c = &chunk{pending: map[string][]byte{}, active: map[string]int{}}
     for h := from; h <= to; h++ {
         var blk, err = src.BlockAt(ctx, h)
         if err != nil { return nil, fmt.Errorf("block %d: %w", h, err) }
@@ -170,84 +199,75 @@ func chunkScripts(ctx context.Context, src *addrindex.REST, from, to int) ([][]b
             logging.Warn("actbuild: could not parse block %d", h)
             continue
         }
-        for _, s := range scripts {
-            if seenScript[string(s)] { continue }
-            seenScript[string(s)] = true
-            out = append(out, s)
+        c.scripts += len(scripts)
+        var fresh, ferr = c.take(scripts)
+        if ferr != nil { return nil, ferr }
+        c.fresh += len(fresh)
+        for _, script := range fresh {
+            c.classify(ctx, client, script)
         }
     }
-    return out, nil
+    return c, nil
 }
 
-// unprocessed filters out the scripts already recorded in the processed set, in
-// one read transaction rather than one per script.
-func unprocessed(scripts [][]byte) ([][]byte, error) {
-    var out [][]byte
-    // What this chunk has already taken, held as a plain set: the run on disk is
-    // sorted and binary-searched, which the chunk's own additions are not until
-    // they are merged into it at flush.
-    var pending = map[string]bool{}
+// take records the scripts this chunk has not decided about yet and returns
+// them, in one read transaction for the block.
+func (c *chunk) take(scripts [][]byte) ([][]byte, error) {
+    var fresh [][]byte
     var err = db.View(func(tx *bbolt.Tx) error {
         var p = tx.Bucket(processedBucket)
         for _, s := range scripts {
             var prefix = addrindex.Prefix(s)
-            if pending[string(prefix)] { continue }
-            if seen(p.Get(prefix[:shardLen]), prefix[shardLen:]) { continue }
-            pending[string(prefix)] = true
-            out = append(out, s)
+            var shard, rem = string(prefix[:shardLen]), prefix[shardLen:]
+            // Both runs are sorted, so both are searched the same way — the
+            // chunk's own is kept in order as it grows rather than appended to.
+            if seen(p.Get(prefix[:shardLen]), rem) || seen(c.pending[shard], rem) { continue }
+            c.pending[shard] = insertOne(c.pending[shard], rem)
+            fresh = append(fresh, s)
         }
         return nil
     })
-    return out, err
+    return fresh, err
 }
 
-// classify asks the index how long each script's history is and resolves the
-// ones past the threshold to an address. Only those few cost an RPC.
-func classify(ctx context.Context, client *rpc, scripts [][]byte, limit int) map[string]int {
-    var active = map[string]int{}
-    for _, script := range scripts {
-        // Deciding needs one lookup past the threshold and no further: the
-        // question is whether the history is longer, never how much longer, and
-        // this runs against every address on the chain.
-        if touches, _ := addrindex.Lookup(script, activeMin+1); len(touches) <= activeMin { continue }
-        var addr, err = client.addressOf(ctx, script)
-        if err != nil {
-            logging.Warn("actbuild: decode %s: %v", hex.EncodeToString(script), err)
-            continue
-        }
-        // a nonstandard script is not an address, so there is nothing to record
-        if addr == "" { continue }
-        // Only now, for the few that qualified, is the real count worth reading.
-        // The deciding lookup stopped at the threshold, so its length would be
-        // the threshold and not a count at all.
-        var touches, capped = addrindex.Lookup(script, limit)
-        if capped {
-            logging.Warn("actbuild: %s has more than -limit %d transactions; recording the cap", addr, limit)
-        }
-        active[addr] = len(touches)
+// classify asks the index how long a script's history is and, if it is past the
+// threshold, resolves it to an address. Only those few cost an RPC.
+func (c *chunk) classify(ctx context.Context, client *rpc, script []byte) {
+    // Deciding needs one lookup past the threshold and no further: the question
+    // is whether the history is longer, never how much longer, and this runs
+    // against every address on the chain.
+    if touches, _ := addrindex.Lookup(script, activeMin+1); len(touches) <= activeMin { return }
+    var addr, err = client.addressOf(ctx, script)
+    if err != nil {
+        logging.Warn("actbuild: decode %s: %v", hex.EncodeToString(script), err)
+        return
     }
-    return active
+    // a nonstandard script is not an address, so there is nothing to record
+    if addr == "" { return }
+    // Only now, for the few that qualified, is the real count worth reading. The
+    // deciding lookup stopped at the threshold, so its length would be that
+    // threshold and not a count at all.
+    var touches, capped = addrindex.Lookup(script, lookupLimit)
+    if capped {
+        logging.Warn("actbuild: %s has more than -limit %d transactions; recording the cap", addr, lookupLimit)
+    }
+    c.active[addr] = len(touches)
 }
 
 // flushActive writes a chunk's findings and advances the cursor in one
 // transaction, so an interrupted scan resumes from the last chunk that landed.
-func flushActive(processed [][]byte, active map[string]int, height int) error {
+func flushActive(c *chunk, height int) error {
     return db.Update(func(tx *bbolt.Tx) error {
         var p = tx.Bucket(processedBucket)
-        // Grouped by shard so each one is rewritten once, with its whole batch
-        // merged into place — the run comes back sorted.
-        var pending = map[string][][]byte{}
-        for _, s := range processed {
-            var shard, rem = shardKey(s)
-            pending[string(shard)] = append(pending[string(shard)], rem)
-        }
-        for shard, remainders := range pending {
-            if err := p.Put([]byte(shard), insert(p.Get([]byte(shard)), remainders)); err != nil {
+        // Each shard is rewritten once, its whole batch merged into place, so
+        // the stored run comes back sorted.
+        for shard, remainders := range c.pending {
+            if err := p.Put([]byte(shard), merge(p.Get([]byte(shard)), remainders)); err != nil {
                 return err
             }
         }
         var a = tx.Bucket(activeBucket)
-        for addr, count := range active {
+        for addr, count := range c.active {
             var v = make([]byte, 8)
             binary.BigEndian.PutUint64(v, uint64(count))
             if err := a.Put([]byte(addr), v); err != nil { return err }

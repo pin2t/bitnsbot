@@ -448,6 +448,9 @@ func run(remainders ...[]byte) []byte {
 
 func rem6(b byte) []byte { return []byte{b, 0, 0, 0, 0, 0} }
 
+// run2 is run under another name, for tests that shadow run with a local.
+func run2(remainders ...[]byte) []byte { return run(remainders...) }
+
 // Membership is a binary search, so it must find an entry wherever it sits in
 // the run and never claim one that is not there.
 func TestSeenBinarySearch(t *testing.T) {
@@ -471,51 +474,59 @@ func TestSeenBinarySearch(t *testing.T) {
     }
 }
 
-// Insertion puts each remainder in its place rather than at the end, so the run
+// insertOne puts a remainder in its place rather than at the end, so the run
 // stays sorted and stays searchable.
-func TestInsertKeepsTheRunSorted(t *testing.T) {
-    var shard = run(rem6(2), rem6(6))
-    // one before, one between, one after — all three land in the middle or the
-    // ends as the order requires
-    shard = insert(shard, [][]byte{rem6(8), rem6(1), rem6(4)})
-    var want = run(rem6(1), rem6(2), rem6(4), rem6(6), rem6(8))
-    if string(shard) != string(want) {
-        t.Fatalf("run = %x, want %x", shard, want)
+func TestInsertOneKeepsTheRunSorted(t *testing.T) {
+    var run = run(rem6(2), rem6(6))
+    // one before, one between, one after — each lands where the order requires
+    for _, b := range []byte{8, 1, 4} {
+        run = insertOne(run, rem6(b))
+    }
+    var want = run2(rem6(1), rem6(2), rem6(4), rem6(6), rem6(8))
+    if string(run) != string(want) {
+        t.Fatalf("run = %x, want %x", run, want)
     }
     for _, b := range []byte{1, 2, 4, 6, 8} {
-        if !seen(shard, rem6(b)) {
+        if !seen(run, rem6(b)) {
             t.Errorf("%d was lost by the insert", b)
         }
     }
 }
 
-// Re-inserting something already in the run must not double it, or the set would
+// Re-inserting something already there must not double it, or the set would
 // grow without bound on a re-scan.
-func TestInsertDoesNotDuplicate(t *testing.T) {
-    var shard = run(rem6(2), rem6(4))
-    shard = insert(shard, [][]byte{rem6(4), rem6(2), rem6(4)})
-    var want = run(rem6(2), rem6(4))
-    if string(shard) != string(want) {
-        t.Errorf("run = %x, want %x — an existing remainder was added again", shard, want)
+func TestInsertOneDoesNotDuplicate(t *testing.T) {
+    var r = run(rem6(2), rem6(4))
+    r = insertOne(r, rem6(4))
+    r = insertOne(r, rem6(2))
+    if got := len(r) / remainderLen; got != 2 {
+        t.Errorf("run holds %d entries, want 2", got)
     }
-    // and a batch carrying its own duplicate is taken once
-    shard = insert(shard, [][]byte{rem6(7), rem6(7)})
-    if got := len(shard) / remainderLen; got != 3 {
-        t.Errorf("run holds %d entries, want 3", got)
+    // into an empty run
+    if got := insertOne(nil, rem6(5)); string(got) != string(rem6(5)) {
+        t.Errorf("into an empty run: %x", got)
     }
 }
 
-// Inserting into an empty shard, and a batch that is entirely new, are the two
-// paths the merge takes at the ends.
-func TestInsertEdges(t *testing.T) {
-    if got := insert(nil, [][]byte{rem6(5), rem6(3)}); string(got) != string(run(rem6(3), rem6(5))) {
-        t.Errorf("into an empty shard: %x", got)
+// merge combines two sorted runs, which is how a chunk's additions reach the
+// stored shard.
+func TestMergeSortedRuns(t *testing.T) {
+    var stored = run(rem6(2), rem6(5), rem6(9))
+    var batch = run(rem6(1), rem6(5), rem6(7))
+    var got = merge(stored, batch)
+    var want = run2(rem6(1), rem6(2), rem6(5), rem6(7), rem6(9))
+    if string(got) != string(want) {
+        t.Fatalf("merge = %x, want %x — 5 is in both and must be kept once", got, want)
     }
-    if got := insert(run(rem6(1)), nil); string(got) != string(run(rem6(1))) {
-        t.Errorf("an empty batch changed the run: %x", got)
+    // either side empty
+    if string(merge(nil, batch)) != string(batch) {
+        t.Error("merging into an empty run lost the batch")
     }
-    // everything after the existing entries, so the tail copy is what finishes it
-    if got := insert(run(rem6(1), rem6(2)), [][]byte{rem6(9)}); string(got) != string(run(rem6(1), rem6(2), rem6(9))) {
+    if string(merge(stored, nil)) != string(stored) {
+        t.Error("merging an empty batch changed the run")
+    }
+    // one side entirely past the other, so the tail copy finishes it
+    if got := merge(run(rem6(1)), run(rem6(8), rem6(9))); string(got) != string(run2(rem6(1), rem6(8), rem6(9))) {
         t.Errorf("appending past the end: %x", got)
     }
 }

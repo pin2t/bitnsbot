@@ -100,6 +100,7 @@ func main() {
     case "actbuild":
         activeMin = opt.active
         if opt.chunk > 0 { actChunk = opt.chunk }
+        lookupLimit = opt.limit
         actbuild(opt)
     }
 }
