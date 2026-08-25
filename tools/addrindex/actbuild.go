@@ -15,19 +15,19 @@ import "bitnsbot/logging"
 var activeBucket = []byte("addrindex-active")
 
 // processedBucket is the set of scripts actbuild has already decided about,
-// sharded the way the index itself is and for the same reason: one bbolt key per
-// address costs far more in page overhead than the entry itself. The key is the
-// first 4 bytes of the script's index prefix, the value the packed run of 4-byte
-// remainders falling in that shard.
+// sharded exactly as the index itself is: the key is the first 2 bytes of the
+// script's index prefix and the value the packed run of 6-byte remainders
+// falling in that shard. Same reason, too — one bbolt key per address costs far
+// more in page overhead than the entry itself, which a 2-byte split avoids by
+// keeping the whole set in 65 536 keys.
 //
-// The split is wider than the index's own 2 bytes, which spreads addresses over
-// 4 billion shards — so in practice this is close to one key per address, the
-// shape the index measured and rejected. Worth re-measuring against a real chain
-// before trusting any size estimate for it.
+// The cost is on the other side: membership is a linear scan of a shard's run,
+// and appending rewrites the whole value. Both are cheap while a shard holds
+// tens of entries and grow with the chain — see CLAUDE.md for the measurement.
 var processedBucket = []byte("processed")
 
-const shardLen = 4
-const remainderLen = 4
+const shardLen = 2
+const remainderLen = 6
 
 // activeCursor is this pass's own place in the chain, kept in the index's cursor
 // bucket beside the index's own, so neither disturbs the other.

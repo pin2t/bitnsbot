@@ -426,26 +426,33 @@ func TestActbuildResumesFromItsCursor(t *testing.T) {
 }
 
 // The sharded set is the whole storage design, so its two halves are pinned
-// directly: 4 bytes of shard, 4 of remainder, packed one after another.
+// directly: 2 bytes of shard and 6 of remainder, the same split the index uses,
+// packed one after another.
 func TestProcessedShardLayout(t *testing.T) {
     var shard, rem = shardKey(payScript)
-    if len(shard) != 4 || len(rem) != 4 {
-        t.Fatalf("shard %d bytes, remainder %d; want 4 and 4", len(shard), len(rem))
+    if len(shard) != 2 || len(rem) != 6 {
+        t.Fatalf("shard %d bytes, remainder %d; want 2 and 6", len(shard), len(rem))
     }
     var prefix = addrindex.Prefix(payScript)
-    if string(shard) != string(prefix[:4]) || string(rem) != string(prefix[4:8]) {
-        t.Error("the split must be the first 4 and last 4 bytes of the index prefix")
+    if string(shard) != string(prefix[:2]) || string(rem) != string(prefix[2:8]) {
+        t.Error("the split must be the first 2 and last 6 bytes of the index prefix")
     }
     // membership is a scan of the packed run, so a remainder in the middle counts
-    var run = append(append([]byte{9, 9, 9, 9}, rem...), 8, 8, 8, 8)
+    var run = append(append([]byte{9, 9, 9, 9, 9, 9}, rem...), 8, 8, 8, 8, 8, 8)
     if !seen(run, rem) {
         t.Error("a remainder in the middle of a shard was not found")
     }
-    if seen(run, []byte{1, 2, 3, 4}) {
+    if seen(run, []byte{1, 2, 3, 4, 5, 6}) {
         t.Error("a remainder that is not there was found")
     }
     // a partial trailing run must not be read past its end
-    if seen([]byte{1, 2}, []byte{1, 2, 3, 4}) {
+    if seen([]byte{1, 2}, []byte{1, 2, 3, 4, 5, 6}) {
         t.Error("a short shard was misread")
+    }
+    // and a remainder must not be matched at an offset that is not an entry
+    // boundary, which a plain byte search would do
+    var skewed = append([]byte{0}, rem...)
+    if seen(skewed, rem) {
+        t.Error("a remainder was matched off the entry boundary")
     }
 }

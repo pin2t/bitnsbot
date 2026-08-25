@@ -180,9 +180,23 @@ The tool needs its own small JSON-RPC client — four methods against the bot's 
 
 Two lookups per active address, not one, and the distinction matters. **Deciding** uses `Lookup(script, activeMin+1)` and stops there — the question is only whether the history is longer, never how much longer, and it runs against every address on the chain. Only for the few that qualify is a second, bounded lookup made for the **real count**; the deciding lookup's length is the threshold, so recording it would have written the cap and called it a count.
 
-**The `processed` bucket is what makes the pass affordable** — the index lookup is the expensive part, and scripts repeat constantly. It is a set of scripts already decided about, sharded like the index: key = the first 4 bytes of the script's index prefix, value = the packed run of 4-byte remainders in that shard.
+**The `processed` bucket is what makes the pass affordable** — the index lookup is the expensive part, and scripts repeat constantly. It is a set of scripts already decided about, sharded **exactly as the index is**: key = the first 2 bytes of the script's index prefix, value = the packed run of 6-byte remainders in that shard, so the whole set lives in 65 536 keys.
 
-**Measured against mainnet** (201 real blocks, 963817–964017, indexed then scanned in 2 min 21 s): 897 635 distinct addresses looked up, and the skip works — the second chunk saw 440 213 scripts of which only 347 193 were new. But the sharding does not: **897 527 shards for 897 635 addresses, 1.00 per shard, the biggest holding 2**, at **29.4 bytes per address**. The 4-byte split spreads addresses over 4 billion shards, so this is one bbolt key per address — the exact shape the index itself measured and rejected. Projected to mainnet's ~1.5 B addresses that is **~44 GB** for this bucket alone. A 2-byte shard would pack ~23 000 addresses per key and cost a fraction of that, at the price of a linear scan and a full rewrite of a ~92 KB value on every insert. The current split is what was asked for; the numbers above are what it costs.
+**Measured against mainnet**, the same 201 real blocks (963817–964017) indexed and then scanned, once per split:
+
+| | shard 4 / remainder 4 | shard 2 / remainder 6 |
+|---|---|---|
+| shards | 897 527 | 65 536 |
+| addresses per shard | 1.00 (biggest 2) | 13.8 (biggest 32) |
+| bytes per address | 29.4 | **9.9** |
+| `processed` on disk | 26.4 MB | **9.0 MB** |
+| scan time | 2 min 21 s | **1 min 12 s** |
+
+A 4-byte shard spreads addresses over 4 billion buckets, which is one bbolt key per address — the shape the index itself measured and rejected, and it cost 3x the space and 2x the time. The 2-byte split is the one in the code.
+
+The skip works: on the second chunk 440 213 scripts yielded only 347 193 new addresses.
+
+**What grows with the chain, and is not measured here.** At ~1.5 B addresses a shard holds ~23 000 entries (~138 KB), so per-key overhead vanishes and the bucket approaches its raw ~9 GB — but two costs scale the wrong way. Membership is a **linear scan** of a shard's run, 23 000 comparisons instead of 14. And bbolt values are immutable, so appending **rewrites the whole shard**: a flush that touches all 65 536 shards rewrites the entire bucket. `actChunk` (100 blocks) is the lever — fewer, larger chunks mean fewer full rewrites, at the cost of holding more distinct scripts in memory per chunk. Re-measure before running the full chain.
 
 The backfill reads Core's **REST** interface, not RPC: `/rest/block/<hash>.bin` and `/rest/spenttxouts/<hash>.bin` are binary and need no authentication. Measured on mainnet, block + spent outputs is **1.95 MB in 28 ms**, where `getblock` verbosity 3 for the same block is **13.7 MB** of JSON. This is what makes indexing the whole chain tractable at all — roughly 7 hours at the measured rate. It is enabled by `-core-rest` and runs unattended; until it has a cursor, `/info <address>` reports "unavailable (address index is still building)" rather than presenting an empty history as fact.
 
