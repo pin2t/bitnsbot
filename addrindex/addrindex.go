@@ -182,14 +182,22 @@ func Lookup(script []byte, limit int) (touches []Touch, capped bool) {
     return touches, capped
 }
 
-func updateCursor(tx *bbolt.Tx, height int) error {
-    return tx.Bucket(cursorBucket).Put([]byte("cursor"), []byte(strconv.FormatInt(int64(height), 10)))
+func updateCursor(tx *bbolt.Tx, height int) error { return setCursor(tx, "cursor", height) }
+
+func setCursor(tx *bbolt.Tx, name string, height int) error {
+    return tx.Bucket(cursorBucket).Put([]byte(name), []byte(strconv.FormatInt(int64(height), 10)))
 }
 
-func Cursor() (h int, ok bool) {
+func Cursor() (h int, ok bool) { return GetCursor("cursor") }
+
+// GetCursor and SetCursor read and write a named cursor in the cursor bucket.
+// The index's own is "cursor"; a second pass over the chain — tools/addrindex's
+// actbuild — keeps its place beside it under its own name, so neither disturbs
+// the other.
+func GetCursor(name string) (h int, ok bool) {
     if db == nil { return 0, false }
     db.View(func(tx *bbolt.Tx) error {
-        if v := tx.Bucket(cursorBucket).Get([]byte("cursor")); v != nil {
+        if v := tx.Bucket(cursorBucket).Get([]byte(name)); v != nil {
             var hh, err = strconv.ParseInt(string(v), 10, 64)
             if err == nil { h, ok = int(hh), true }
         }
@@ -197,3 +205,7 @@ func Cursor() (h int, ok bool) {
     })
     return
 }
+
+// SetCursorIn writes a named cursor inside the caller's transaction, so a pass
+// can advance its place atomically with the batch that reached it.
+func SetCursorIn(tx *bbolt.Tx, name string, height int) error { return setCursor(tx, name, height) }

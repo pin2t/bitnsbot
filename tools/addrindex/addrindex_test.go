@@ -22,6 +22,7 @@ var payScript = mustHex("76a914000102030405060708090a0b0c0d0e0f1011121314ff88ac"
 var otherScript = mustHex("76a914aabbccddeeff00112233445566778899aabbccdd88ac")
 
 const address = "37QAiiRLSHEsMPu3SXT9AKWDoZsZxtfuRP"
+const otherAddress = "1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2"
 
 func mustHex(s string) []byte {
     var b, err = hex.DecodeString(s)
@@ -167,6 +168,17 @@ func rpcReply(t *testing.T, w http.ResponseWriter, r *http.Request) {
         reply(map[string]interface{}{"tx": ids})
     case "getrawtransaction":
         reply(txDetail(req.Params[0].(string)))
+    case "decodescript":
+        // the fixture's two scripts map to two addresses; anything else is
+        // nonstandard and has none
+        switch req.Params[0].(string) {
+        case hex.EncodeToString(payScript):
+            reply(map[string]interface{}{"address": address})
+        case hex.EncodeToString(otherScript):
+            reply(map[string]interface{}{"address": otherAddress})
+        default:
+            reply(map[string]interface{}{})
+        }
     default:
         t.Errorf("unexpected rpc method %s", req.Method)
     }
@@ -192,10 +204,25 @@ func txDetail(txid string) map[string]interface{} {
 }
 
 func openIndex(t *testing.T) {
-    var db, err = bbolt.Open(filepath.Join(t.TempDir(), "ai.db"), 0600, nil)
+    var handle, err = bbolt.Open(filepath.Join(t.TempDir(), "ai.db"), 0600, nil)
     if err != nil { t.Fatalf("open: %v", err) }
-    t.Cleanup(func() { db.Close() })
-    if err := addrindex.Init(db); err != nil { t.Fatalf("init: %v", err) }
+    db = handle
+    t.Cleanup(func() { handle.Close(); db = nil })
+    if err := addrindex.Init(handle); err != nil { t.Fatalf("init: %v", err) }
+}
+
+// activeAddresses reads back what actbuild recorded.
+func activeAddresses(t *testing.T) map[string]int {
+    var out = map[string]int{}
+    db.View(func(tx *bbolt.Tx) error {
+        var b = tx.Bucket(activeBucket)
+        if b == nil { return nil }
+        return b.ForEach(func(k, v []byte) error {
+            out[string(k)] = int(binary.BigEndian.Uint64(v))
+            return nil
+        })
+    })
+    return out
 }
 
 func capture(t *testing.T, f func()) string {
@@ -316,5 +343,109 @@ func TestTook(t *testing.T) {
         if got := took(c.d); got != c.want {
             t.Errorf("took(%s) = %q, want %q", c.d, got, c.want)
         }
+    }
+}
+
+// actbuild walks the chain, decides about each address once, and records the
+// ones whose history is longer than the threshold. The fixture's payScript has
+// two transactions and otherScript four, so a threshold of three separates them.
+func TestActbuildRecordsActiveAddresses(t *testing.T) {
+    openIndex(t)
+    var srv = fakeCore(t, 3)
+    var opt = &options{url: srv.URL, limit: 1000}
+    capture(t, func() { build(opt) })
+
+    var oldMin = activeMin
+    activeMin = 3
+    defer func() { activeMin = oldMin }()
+    var out = capture(t, func() { actbuild(opt) })
+    if !strings.Contains(out, "Scanning blocks 0..3") {
+        t.Errorf("actbuild did not report its range: %q", out)
+    }
+
+    var active = activeAddresses(t)
+    if _, ok := active[address]; ok {
+        t.Errorf("the address with 2 transactions was recorded as active: %v", active)
+    }
+    // 6 touches: a coinbase in each of the four blocks, plus a spend and a
+    // payment. The deciding lookup stops at the threshold, so this also pins
+    // that the recorded count is a real count and not that cap.
+    if n, ok := active[otherAddress]; !ok || n != 6 {
+        t.Errorf("active = %v; want %s with its 6 transactions", active, otherAddress)
+    }
+    if h, ok := addrindex.GetCursor(activeCursor); !ok || h != 3 {
+        t.Errorf("actbuild cursor = %d, %v; want 3", h, ok)
+    }
+    // the index's own cursor is untouched — they sit in one bucket under
+    // different names
+    if h, _ := addrindex.Cursor(); h != 3 {
+        t.Errorf("the index cursor moved to %d", h)
+    }
+}
+
+// The processed set is the point of the exercise: an address decided about in an
+// earlier chunk must not be looked up again in a later one.
+func TestActbuildProcessesEachAddressOnce(t *testing.T) {
+    openIndex(t)
+    var srv = fakeCore(t, 3)
+    var opt = &options{url: srv.URL, limit: 1000}
+    capture(t, func() { build(opt) })
+    var oldChunk = actChunk
+    actChunk = 1 // one block per chunk, so the repeats land in later chunks
+    defer func() { actChunk = oldChunk }()
+    capture(t, func() { actbuild(opt) })
+
+    // both scripts appear in several blocks, but each is recorded once
+    for _, script := range [][]byte{payScript, otherScript} {
+        var shard, rem = shardKey(script)
+        var count int
+        db.View(func(tx *bbolt.Tx) error {
+            var v = tx.Bucket(processedBucket).Get(shard)
+            for i := 0; i+remainderLen <= len(v); i += remainderLen {
+                if string(v[i:i+remainderLen]) == string(rem) { count++ }
+            }
+            return nil
+        })
+        if count != 1 {
+            t.Errorf("script %x recorded %d times in the processed set, want 1", script[:8], count)
+        }
+    }
+}
+
+// A second run with nothing new must do nothing, which is what the cursor buys.
+func TestActbuildResumesFromItsCursor(t *testing.T) {
+    openIndex(t)
+    var srv = fakeCore(t, 3)
+    var opt = &options{url: srv.URL, limit: 1000}
+    capture(t, func() { build(opt) })
+    capture(t, func() { actbuild(opt) })
+    var again = capture(t, func() { actbuild(opt) })
+    if !strings.Contains(again, "already up to the tip") {
+        t.Errorf("a second actbuild should be a no-op, got %q", again)
+    }
+}
+
+// The sharded set is the whole storage design, so its two halves are pinned
+// directly: 4 bytes of shard, 4 of remainder, packed one after another.
+func TestProcessedShardLayout(t *testing.T) {
+    var shard, rem = shardKey(payScript)
+    if len(shard) != 4 || len(rem) != 4 {
+        t.Fatalf("shard %d bytes, remainder %d; want 4 and 4", len(shard), len(rem))
+    }
+    var prefix = addrindex.Prefix(payScript)
+    if string(shard) != string(prefix[:4]) || string(rem) != string(prefix[4:8]) {
+        t.Error("the split must be the first 4 and last 4 bytes of the index prefix")
+    }
+    // membership is a scan of the packed run, so a remainder in the middle counts
+    var run = append(append([]byte{9, 9, 9, 9}, rem...), 8, 8, 8, 8)
+    if !seen(run, rem) {
+        t.Error("a remainder in the middle of a shard was not found")
+    }
+    if seen(run, []byte{1, 2, 3, 4}) {
+        t.Error("a remainder that is not there was found")
+    }
+    // a partial trailing run must not be read past its end
+    if seen([]byte{1, 2}, []byte{1, 2, 3, 4}) {
+        t.Error("a short shard was misread")
     }
 }

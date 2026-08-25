@@ -258,3 +258,27 @@ func (r *reader) varInt() (uint64, bool) {
         return uint64(first[0]), true
     }
 }
+
+// Scripts returns every distinct scriptPubKey a block touches — those its
+// outputs pay and those its inputs spend — using the same parse the indexer
+// runs. It is exported so a second pass over the chain can walk addresses
+// without a second copy of the block format; tools/addrindex's actbuild is that
+// caller.
+func Scripts(blk Block) ([][]byte, bool) {
+    var outputs, ok1 = parseBlockOutputs(blk.Raw)
+    var spent, ok2 = parseSpentOutputs(blk.Spent)
+    if !ok1 || !ok2 || len(outputs) != len(spent) { return nil, false }
+    var seen = map[string]bool{}
+    var out [][]byte
+    for _, group := range [][][][]byte{outputs, spent} {
+        for _, perTx := range group {
+            for _, s := range perTx {
+                if len(s) == 0 { continue }
+                if seen[string(s)] { continue }
+                seen[string(s)] = true
+                out = append(out, s)
+            }
+        }
+    }
+    return out, true
+}
