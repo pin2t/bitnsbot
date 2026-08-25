@@ -144,6 +144,21 @@
      width, and equal fr columns push the button out of its own cell — and only
      equal sides put the title on the true centre. */
   .det .head .ghost { visibility: hidden; }
+  /* The bell shares the ghost's cell — the ghost sets the column's width so the
+     title stays centred, and the bell is placed at that column's right edge, in
+     the corner. It is hidden until the page knows it is inside Telegram; a watch
+     is per-user and there is nobody to file one for outside. */
+  .det .head .side { position: relative; }
+  .det .head .bell { display: none; position: absolute; right: 0; top: 50%;
+                     transform: translateY(-50%); padding: 6px 10px; }
+  body.tg .det .head .bell { display: flex; }
+  .det .head .bell svg { width: 19px; height: 19px; fill: none; stroke: currentColor;
+                         stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+  /* Pushed: filled in the accent colour and inset, so "watching" reads at a
+     glance and survives a theme that renders borders faintly. */
+  .det .head .bell.on { color: var(--bg); background: var(--accent); border-color: var(--accent); }
+  .det .head .bell.on svg { fill: currentColor; }
+  .det .head .bell.err { color: #d92d20; }
   .det .head h1 { min-width: 0; margin: 0; font-size: 18px; font-weight: 600;
                   line-height: 1.2; text-align: center;
                   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -240,6 +255,9 @@
 <script>
   var tg = window.Telegram && window.Telegram.WebApp;
   if (tg) { tg.ready(); tg.expand(); }
+  // Marked on the body rather than per fragment: details pages arrive later, by
+  // swap, so anything set only at load would never reach them.
+  if (tg && tg.initData) { document.body.classList.add("tg"); }
 
   function showPanel(name) {
     document.querySelectorAll("nav button").forEach(function(x) { x.classList.toggle("active", x.dataset.panel === name); });
@@ -335,6 +353,13 @@
 
 {{define "addresses"}}<div id="addrpanel" class="blocklist"><div class="empty">Addresses — coming soon</div></div>{{end}}
 
+{{define "watchbtn"}}<button id="watchbtn" class="bell{{if .On}} on{{end}}{{if .Error}} err{{end}}"
+        hx-post="watch?kind={{.Kind}}&id={{.Id}}&on={{if .On}}0{{else}}1{{end}}"
+        hx-swap="outerHTML"
+        title="{{if .On}}Stop watching{{else}}Watch this{{end}}">
+  <svg viewBox="0 0 24 24"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>
+</button>{{end}}
+
 {{define "watches"}}<div id="watchpanel" class="blocklist" hx-get="watches"
      hx-trigger="watchtab from:body" hx-swap="outerHTML">
 {{- if not .OK}}
@@ -369,7 +394,12 @@
   <div class="head">
     <button hx-get="{{.Back}}" hx-target="#{{.Slot}}" hx-swap="outerHTML">&lt; Back</button>
     <h1>{{.Title}}</h1>
-    <button class="ghost" tabindex="-1" aria-hidden="true">&lt; Back</button>
+    <span class="side">
+      <button class="ghost" tabindex="-1" aria-hidden="true">&lt; Back</button>
+      {{- if .Kind}}
+      <span id="watchbtn" hx-get="watch?kind={{.Kind}}&id={{.Id}}" hx-trigger="load" hx-swap="outerHTML"></span>
+      {{- end}}
+    </span>
   </div>
 {{- if .OK}}
   <div class="fields">
