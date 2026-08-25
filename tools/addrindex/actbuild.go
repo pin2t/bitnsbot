@@ -1,9 +1,11 @@
 package main
 
+import "bytes"
 import "context"
 import "encoding/binary"
 import "encoding/hex"
 import "fmt"
+import "sort"
 import "time"
 
 import "go.etcd.io/bbolt"
@@ -21,9 +23,10 @@ var activeBucket = []byte("addrindex-active")
 // more in page overhead than the entry itself, which a 2-byte split avoids by
 // keeping the whole set in 65 536 keys.
 //
-// The cost is on the other side: membership is a linear scan of a shard's run,
-// and appending rewrites the whole value. Both are cheap while a shard holds
-// tens of entries and grow with the chain — see CLAUDE.md for the measurement.
+// The run is kept **sorted**, so membership is a binary search rather than a
+// walk — at full chain scale a shard holds tens of thousands of entries, where
+// that is ~15 comparisons against ~23 000. Appending still rewrites the whole
+// value, which is what the chunk size trades against.
 var processedBucket = []byte("processed")
 
 const shardLen = 2
@@ -39,10 +42,13 @@ const activeCursor = "actbuild"
 var activeMin = 1000
 
 // actChunk is how many blocks are scanned before the batch is written and the
-// cursor advanced, so a crash mid-scan resumes from the last flushed chunk. It
-// is smaller than the index's own chunk because a chunk holds every distinct
-// script it saw, which is a heavier thing to carry than the index's touches.
-var actChunk = 100
+// cursor advanced, so a crash mid-scan resumes from the last flushed chunk.
+//
+// Bigger is better for writes and worse for memory: every flush rewrites each
+// shard it touches, and with 65 536 shards a chunk touches nearly all of them,
+// so the whole bucket is rewritten once per chunk. Against that, a chunk holds
+// every distinct script it saw. See CLAUDE.md for what 2000 measured.
+var actChunk = 2000
 
 // shardKey splits a script's index prefix into the two halves the processed set
 // is keyed by.
@@ -51,12 +57,42 @@ func shardKey(script []byte) (shard, remainder []byte) {
     return p[:shardLen], p[shardLen : shardLen+remainderLen]
 }
 
-// seen reports whether a remainder is already recorded in a shard's packed run.
+// nth returns the i'th remainder of a shard's run.
+func nth(shard []byte, i int) []byte { return shard[i*remainderLen : (i+1)*remainderLen] }
+
+// seen reports whether a remainder is recorded in a shard's run. The run is
+// sorted, so this is a binary search — the one thing that keeps membership cheap
+// once a shard holds tens of thousands of entries.
 func seen(shard, remainder []byte) bool {
-    for i := 0; i+remainderLen <= len(shard); i += remainderLen {
-        if string(shard[i:i+remainderLen]) == string(remainder) { return true }
+    var n = len(shard) / remainderLen
+    var i = sort.Search(n, func(i int) bool { return bytes.Compare(nth(shard, i), remainder) >= 0 })
+    return i < n && bytes.Equal(nth(shard, i), remainder)
+}
+
+// insert adds remainders to a shard's run, each in the place that keeps the run
+// sorted. The batch is merged in one pass rather than inserted one at a time —
+// the same result for a fraction of the work, since a flush then stays linear in
+// the shard's size where repeated single inserts would be quadratic.
+func insert(shard []byte, remainders [][]byte) []byte {
+    sort.Slice(remainders, func(i, j int) bool {
+        return bytes.Compare(remainders[i], remainders[j]) < 0
+    })
+    var out = make([]byte, 0, len(shard)+len(remainders)*remainderLen)
+    var i, n = 0, len(shard)/remainderLen
+    var prev []byte
+    for _, rem := range remainders {
+        // the caller deduplicates within a chunk, but a repeat here would
+        // silently double an entry and nothing downstream would catch it
+        if prev != nil && bytes.Equal(prev, rem) { continue }
+        prev = rem
+        for i < n && bytes.Compare(nth(shard, i), rem) < 0 {
+            out = append(out, nth(shard, i)...)
+            i++
+        }
+        if i < n && bytes.Equal(nth(shard, i), rem) { continue }
+        out = append(out, rem...)
     }
-    return false
+    return append(out, shard[i*remainderLen:]...)
 }
 
 // actbuild walks the chain from its own cursor to the tip and, for every script
@@ -147,15 +183,17 @@ func chunkScripts(ctx context.Context, src *addrindex.REST, from, to int) ([][]b
 // one read transaction rather than one per script.
 func unprocessed(scripts [][]byte) ([][]byte, error) {
     var out [][]byte
+    // What this chunk has already taken, held as a plain set: the run on disk is
+    // sorted and binary-searched, which the chunk's own additions are not until
+    // they are merged into it at flush.
+    var pending = map[string]bool{}
     var err = db.View(func(tx *bbolt.Tx) error {
         var p = tx.Bucket(processedBucket)
-        // A shard may gain several remainders within this one chunk, so the
-        // pending additions are tracked alongside what is already on disk.
-        var pending = map[string][]byte{}
         for _, s := range scripts {
-            var shard, rem = shardKey(s)
-            if seen(p.Get(shard), rem) || seen(pending[string(shard)], rem) { continue }
-            pending[string(shard)] = append(pending[string(shard)], rem...)
+            var prefix = addrindex.Prefix(s)
+            if pending[string(prefix)] { continue }
+            if seen(p.Get(prefix[:shardLen]), prefix[shardLen:]) { continue }
+            pending[string(prefix)] = true
             out = append(out, s)
         }
         return nil
@@ -196,14 +234,17 @@ func classify(ctx context.Context, client *rpc, scripts [][]byte, limit int) map
 func flushActive(processed [][]byte, active map[string]int, height int) error {
     return db.Update(func(tx *bbolt.Tx) error {
         var p = tx.Bucket(processedBucket)
-        var pending = map[string][]byte{}
+        // Grouped by shard so each one is rewritten once, with its whole batch
+        // merged into place — the run comes back sorted.
+        var pending = map[string][][]byte{}
         for _, s := range processed {
             var shard, rem = shardKey(s)
-            pending[string(shard)] = append(pending[string(shard)], rem...)
+            pending[string(shard)] = append(pending[string(shard)], rem)
         }
         for shard, remainders := range pending {
-            var merged = append(append([]byte{}, p.Get([]byte(shard))...), remainders...)
-            if err := p.Put([]byte(shard), merged); err != nil { return err }
+            if err := p.Put([]byte(shard), insert(p.Get([]byte(shard)), remainders)); err != nil {
+                return err
+            }
         }
         var a = tx.Bucket(activeBucket)
         for addr, count := range active {

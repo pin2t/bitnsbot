@@ -37,6 +37,7 @@ type options struct {
     pass    string
     limit   int
     active  int
+    chunk   int
     verbose int
 }
 
@@ -49,6 +50,7 @@ func flags(fs *flag.FlagSet) *options {
     fs.StringVar(&o.pass, "pass", "", "Core RPC password, instead of a cookie")
     fs.IntVar(&o.limit, "limit", 1000000, "most touches to read for one address")
     fs.IntVar(&o.active, "active", 1000, "actbuild: transactions an address needs to count as active")
+    fs.IntVar(&o.chunk, "chunk", 2000, "actbuild: blocks scanned per batch — more means fewer rewrites, more memory")
     fs.IntVar(&o.verbose, "verbose", 1, "log level: 0 quiet, 1 progress, 2 every request")
     return o
 }
@@ -97,6 +99,7 @@ func main() {
         list(opt, fs.Arg(0))
     case "actbuild":
         activeMin = opt.active
+        if opt.chunk > 0 { actChunk = opt.chunk }
         actbuild(opt)
     }
 }

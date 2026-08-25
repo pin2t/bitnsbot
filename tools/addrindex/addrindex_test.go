@@ -425,9 +425,9 @@ func TestActbuildResumesFromItsCursor(t *testing.T) {
     }
 }
 
-// The sharded set is the whole storage design, so its two halves are pinned
+// The sharded set is the whole storage design, so its parts are pinned
 // directly: 2 bytes of shard and 6 of remainder, the same split the index uses,
-// packed one after another.
+// packed into a run that is kept sorted so membership can binary-search it.
 func TestProcessedShardLayout(t *testing.T) {
     var shard, rem = shardKey(payScript)
     if len(shard) != 2 || len(rem) != 6 {
@@ -437,22 +437,85 @@ func TestProcessedShardLayout(t *testing.T) {
     if string(shard) != string(prefix[:2]) || string(rem) != string(prefix[2:8]) {
         t.Error("the split must be the first 2 and last 6 bytes of the index prefix")
     }
-    // membership is a scan of the packed run, so a remainder in the middle counts
-    var run = append(append([]byte{9, 9, 9, 9, 9, 9}, rem...), 8, 8, 8, 8, 8, 8)
-    if !seen(run, rem) {
-        t.Error("a remainder in the middle of a shard was not found")
+}
+
+// run builds a sorted shard value out of whole remainders.
+func run(remainders ...[]byte) []byte {
+    var out []byte
+    for _, r := range remainders { out = append(out, r...) }
+    return out
+}
+
+func rem6(b byte) []byte { return []byte{b, 0, 0, 0, 0, 0} }
+
+// Membership is a binary search, so it must find an entry wherever it sits in
+// the run and never claim one that is not there.
+func TestSeenBinarySearch(t *testing.T) {
+    var shard = run(rem6(1), rem6(3), rem6(5), rem6(7), rem6(9))
+    for _, b := range []byte{1, 3, 5, 7, 9} {
+        if !seen(shard, rem6(b)) {
+            t.Errorf("%d is in the run but was not found", b)
+        }
     }
-    if seen(run, []byte{1, 2, 3, 4, 5, 6}) {
-        t.Error("a remainder that is not there was found")
+    for _, b := range []byte{0, 2, 4, 6, 8, 10} {
+        if seen(shard, rem6(b)) {
+            t.Errorf("%d is not in the run but was found", b)
+        }
     }
-    // a partial trailing run must not be read past its end
-    if seen([]byte{1, 2}, []byte{1, 2, 3, 4, 5, 6}) {
-        t.Error("a short shard was misread")
+    if seen(nil, rem6(1)) {
+        t.Error("an empty shard cannot contain anything")
     }
-    // and a remainder must not be matched at an offset that is not an entry
-    // boundary, which a plain byte search would do
-    var skewed = append([]byte{0}, rem...)
-    if seen(skewed, rem) {
+    // a remainder must not match off an entry boundary, which a byte search would
+    if seen(run(rem6(0))[1:], rem6(0)) {
         t.Error("a remainder was matched off the entry boundary")
+    }
+}
+
+// Insertion puts each remainder in its place rather than at the end, so the run
+// stays sorted and stays searchable.
+func TestInsertKeepsTheRunSorted(t *testing.T) {
+    var shard = run(rem6(2), rem6(6))
+    // one before, one between, one after — all three land in the middle or the
+    // ends as the order requires
+    shard = insert(shard, [][]byte{rem6(8), rem6(1), rem6(4)})
+    var want = run(rem6(1), rem6(2), rem6(4), rem6(6), rem6(8))
+    if string(shard) != string(want) {
+        t.Fatalf("run = %x, want %x", shard, want)
+    }
+    for _, b := range []byte{1, 2, 4, 6, 8} {
+        if !seen(shard, rem6(b)) {
+            t.Errorf("%d was lost by the insert", b)
+        }
+    }
+}
+
+// Re-inserting something already in the run must not double it, or the set would
+// grow without bound on a re-scan.
+func TestInsertDoesNotDuplicate(t *testing.T) {
+    var shard = run(rem6(2), rem6(4))
+    shard = insert(shard, [][]byte{rem6(4), rem6(2), rem6(4)})
+    var want = run(rem6(2), rem6(4))
+    if string(shard) != string(want) {
+        t.Errorf("run = %x, want %x — an existing remainder was added again", shard, want)
+    }
+    // and a batch carrying its own duplicate is taken once
+    shard = insert(shard, [][]byte{rem6(7), rem6(7)})
+    if got := len(shard) / remainderLen; got != 3 {
+        t.Errorf("run holds %d entries, want 3", got)
+    }
+}
+
+// Inserting into an empty shard, and a batch that is entirely new, are the two
+// paths the merge takes at the ends.
+func TestInsertEdges(t *testing.T) {
+    if got := insert(nil, [][]byte{rem6(5), rem6(3)}); string(got) != string(run(rem6(3), rem6(5))) {
+        t.Errorf("into an empty shard: %x", got)
+    }
+    if got := insert(run(rem6(1)), nil); string(got) != string(run(rem6(1))) {
+        t.Errorf("an empty batch changed the run: %x", got)
+    }
+    // everything after the existing entries, so the tail copy is what finishes it
+    if got := insert(run(rem6(1), rem6(2)), [][]byte{rem6(9)}); string(got) != string(run(rem6(1), rem6(2), rem6(9))) {
+        t.Errorf("appending past the end: %x", got)
     }
 }

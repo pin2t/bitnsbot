@@ -182,6 +182,12 @@ Two lookups per active address, not one, and the distinction matters. **Deciding
 
 **The `processed` bucket is what makes the pass affordable** — the index lookup is the expensive part, and scripts repeat constantly. It is a set of scripts already decided about, sharded **exactly as the index is**: key = the first 2 bytes of the script's index prefix, value = the packed run of 6-byte remainders in that shard, so the whole set lives in 65 536 keys.
 
+**The run is kept sorted**, which is what makes a 2-byte shard viable at chain scale: membership is a binary search (`seen`), so a shard holding ~23 000 entries costs ~15 comparisons rather than 23 000. Insertion (`insert`) puts each remainder in the place that keeps the order — but the chunk's batch is **merged in one pass** rather than inserted one at a time, which is the same result while keeping a flush linear in the shard's size instead of quadratic. Two details it depends on: the batch is sorted first, and a remainder already present is not added again, or a re-scan would double every entry.
+
+Note the chunk's *own* pending set is a plain `map`, not a packed run. Only what is on disk is sorted; the chunk's additions are unordered until the merge, so binary-searching them would silently miss.
+
+The chunk's cost is a real trade, tunable with **`-chunk`** (default 2000 blocks). Every flush rewrites each shard it touches, and with 65 536 shards a chunk touches nearly all of them — so the whole bucket is rewritten once per chunk, and fewer, larger chunks mean fewer full rewrites. Against that, a chunk holds every distinct script it saw.
+
 **Measured against mainnet**, the same 201 real blocks (963817–964017) indexed and then scanned, once per split:
 
 | | shard 4 / remainder 4 | shard 2 / remainder 6 |
