@@ -58,7 +58,9 @@ var appSrv *http.Server
 
 // appSource adapts main's fee cache and formatters to app.Source, so the app
 // package stays unaware of Bitcoin Core, the price feeds and the cache.
-type appSource struct{}
+// It carries the bot because adding a watch starts a notifier goroutine, which
+// needs something to send the notification with.
+type appSource struct{ bot *bot }
 
 func (appSource) Network() app.Network {
     networkMu.Lock()
@@ -172,6 +174,29 @@ func (appSource) AddrInfo(addr string) app.Info {
     }
     out.OK, out.Rows = true, appFields(pairs)
     return out
+}
+
+// Watching and SetWatch back the Mini App's watch button. They go through the
+// same addWatch/removeWatch the /watch and /unwatch commands use, so a watch
+// added from the app fires notifications exactly like one added from the chat.
+func (appSource) Watching(chat int64, kind, id string) bool { return watching(chat, id) }
+
+// SetWatch adds or removes a watch and reports the state it ended in — which is
+// what the button renders, so a refusal shows as unpushed rather than lying.
+func (s appSource) SetWatch(chat int64, kind, id string, on bool) (bool, error) {
+    if !on {
+        var _, err = removeWatch(chat, id)
+        return false, err
+    }
+    if watching(chat, id) { return true, nil }
+    var full, err = atWatchLimit(chat)
+    if err != nil { return false, err }
+    if full {
+        logging.Info("mini app: rejected watch for chat %d: at the limit of %d", chat, maxSubscriptionsPerChat)
+        return false, nil
+    }
+    if err := addWatch(s.bot, chat, id, ""); err != nil { return false, err }
+    return true, nil
 }
 
 // MinerInfo backs the miner details page, opened from a pool name in the block
@@ -306,7 +331,7 @@ func main() {
         dbuiSrv = dbui.Start(db, *dbuiListen)
     }
     if *appListen != "" {
-        appSrv = app.Start(*appListen, *botToken, appSource{})
+        appSrv = app.Start(*appListen, *botToken, appSource{bot: bot})
     }
     if *backupPath != "" {
         startBackup(*backupPath, *backupInterval, *backupScript)
@@ -586,6 +611,69 @@ var pendingWatchChats = make(map[int64]bool)
 // chat already has this many.
 const maxSubscriptionsPerChat = 500
 
+// atWatchLimit reports whether this chat may add another watch. The cap counts
+// both kinds together: each address watch costs a live goroutine and a channel
+// in the notification fan-out, and every one is woken for every match.
+func atWatchLimit(chat int64) (bool, error) {
+    var count, err = watches.Count(chat)
+    if err != nil { return false, err }
+    return count+len(txwatches.For(chat)) >= maxSubscriptionsPerChat, nil
+}
+
+// addWatch records a watch and starts everything that makes it fire: the store
+// or the in-memory list, the notifier goroutine, and the local script/outpoint
+// matcher. /watch and the Mini App's bell both go through here, so a watch added
+// either way behaves identically.
+func addWatch(b *bot, chat int64, target, alias string) error {
+    if isTxid(target) {
+        txwatches.Add(target, chat, alias)
+    } else {
+        if err := watches.Add(chat, target, alias); err != nil { return err }
+        startNotifyChat(b, chat, target, alias)
+        if core != nil { seedOutpoints([]string{target}) }
+    }
+    logging.Info("added subscription %s for chat %d (alias %q)", target, chat, alias)
+    return nil
+}
+
+// removeWatch reverses addWatch and reports whether anything was actually being
+// watched, which is what tells a caller "you weren't watching that".
+func removeWatch(chat int64, target string) (bool, error) {
+    if isTxid(target) {
+        if txwatches.Remove(target, chat) == 0 { return false, nil }
+        logging.Info("removed transaction watch %s for chat %d", target, chat)
+        return true, nil
+    }
+    var removed, err = watches.Remove(chat, target)
+    if err != nil { return false, err }
+    if removed == 0 { return false, nil }
+    stopNotifyChat(chat, target)
+    txwatches.RemoveAddrConfirms(target, chat)
+    unwatchScripts(target)
+    logging.Info("removed subscription %s for chat %d", target, chat)
+    return true, nil
+}
+
+// watching reports whether this chat already watches target, which is what the
+// Mini App's bell renders as pushed or unpushed.
+func watching(chat int64, target string) bool {
+    if isTxid(target) {
+        for _, e := range txwatches.For(chat) {
+            if e.Txid == target { return true }
+        }
+        return false
+    }
+    var records, err = watches.List()
+    if err != nil {
+        logging.Err("list watches: %v", err)
+        return false
+    }
+    for _, r := range records {
+        if r.Chat == chat && r.Address == target { return true }
+    }
+    return false
+}
+
 func watchCmd(bot *bot, chat int64, arg string) {
     if arg == "" {
         pendingWatchMu.Lock()
@@ -601,32 +689,22 @@ func watchCmd(bot *bot, chat int64, arg string) {
     var watch = fields[0]
     var alias string
     if len(fields) > 1 { alias = strings.TrimSpace(fields[1]) }
-    var count, err = watches.Count(chat)
+    var full, err = atWatchLimit(chat)
     if err != nil {
         logging.Err("count watches: %v", err)
         send(bot, chat, i18n(chat).String("Sorry, something went wrong saving that watch"), nil)
         return
     }
-    count += len(txwatches.For(chat))
-    if count >= maxSubscriptionsPerChat {
-        logging.Info("rejected subscription for chat %d: already at %d (limit %d)", chat, count, maxSubscriptionsPerChat)
+    if full {
+        logging.Info("rejected subscription for chat %d: at the limit of %d", chat, maxSubscriptionsPerChat)
         send(bot, chat, i18n(chat).Sprintf("Sorry, this chat has reached the limit of %d subscriptions. Unwatch something first to add a new one.", maxSubscriptionsPerChat), nil)
         return
     }
-    if isTxid(watch) {
-        txwatches.Add(watch, chat, alias)
-    } else {
-        if err := watches.Add(chat, watch, alias); err != nil {
-            logging.Err("add watch: %v", err)
-            send(bot, chat, i18n(chat).String("Sorry, something went wrong saving that watch"), nil)
-            return
-        }
-        startNotifyChat(bot, chat, watch, alias)
-        if core != nil {
-            seedOutpoints([]string{watch})
-        }
+    if err := addWatch(bot, chat, watch, alias); err != nil {
+        logging.Err("add watch: %v", err)
+        send(bot, chat, i18n(chat).String("Sorry, something went wrong saving that watch"), nil)
+        return
     }
-    logging.Info("added subscription %s for chat %d (alias %q)", watch, chat, alias)
     var msg string
     if alias != "" {
         msg = i18n(chat).Sprintf("Watching %s (%s)", html.EscapeString(watch), html.EscapeString(alias))
@@ -650,29 +728,16 @@ func unwatch(bot *bot, chat int64, arg string) {
     pendingUnwatchMu.Lock()
     delete(pendingUnwatchChats, chat)
     pendingUnwatchMu.Unlock()
-    if isTxid(arg) {
-        if txwatches.Remove(arg, chat) == 0 {
-            send(bot, chat, i18n(chat).Sprintf("You're not watching %s", html.EscapeString(arg)), nil)
-            return
-        }
-        logging.Info("removed transaction watch %s for chat %d", arg, chat)
-        send(bot, chat, i18n(chat).Sprintf("Stopped watching %s", html.EscapeString(arg)), nil)
-        return
-    }
-    var removed, err = watches.Remove(chat, arg)
+    var removed, err = removeWatch(chat, arg)
     if err != nil {
         logging.Err("remove watch: %v", err)
         send(bot, chat, i18n(chat).String("Sorry, something went wrong removing that watch"), nil)
         return
     }
-    if removed == 0 {
+    if !removed {
         send(bot, chat, i18n(chat).Sprintf("You're not watching %s", html.EscapeString(arg)), nil)
         return
     }
-    stopNotifyChat(chat, arg)
-    txwatches.RemoveAddrConfirms(arg, chat)
-    logging.Info("removed subscription %s for chat %d", arg, chat)
-    unwatchScripts(arg)
     send(bot, chat, i18n(chat).Sprintf("Stopped watching %s", html.EscapeString(arg)), nil)
 }
 

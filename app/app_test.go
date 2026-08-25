@@ -5,6 +5,7 @@ import "html"
 import "crypto/hmac"
 import "crypto/sha256"
 import "encoding/hex"
+import "fmt"
 import "net/http"
 import "net/http/httptest"
 import "net/url"
@@ -76,6 +77,22 @@ func (s fakeSource) MinerInfo(name string) Info {
         {Label: "Fees", Value: "0.39 BTC"},
         {Label: "Consumption", Value: "2 GW"},
     }}
+}
+
+// watched is the fake's per-chat watch set, so the tests can prove the button
+// reflects the caller and not whoever asked first.
+var watched = map[int64]map[string]bool{}
+
+func (s fakeSource) Watching(chat int64, kind, id string) bool { return watched[chat][id] }
+
+func (s fakeSource) SetWatch(chat int64, kind, id string, on bool) (bool, error) {
+    if watched[chat] == nil { watched[chat] = map[string]bool{} }
+    if on {
+        watched[chat][id] = true
+    } else {
+        delete(watched[chat], id)
+    }
+    return on, nil
 }
 
 func (s fakeSource) Watches(chat int64) Watches {
@@ -196,9 +213,28 @@ func handler(t *testing.T, token string, src Source) http.Handler {
     // The rendered-card caches are package state shared across tests, so each
     // test starts from empty rather than seeing the previous one's fixture.
     resetCache()
+    watched = map[int64]map[string]bool{}
     var srv = Start("127.0.0.1:0", token, src)
     t.Cleanup(func() { srv.Close() })
     return srv.Handler
+}
+
+// failingSource stands in for a store that cannot save, so the button's error
+// path has something to render.
+type failingSource struct{ fakeSource }
+
+func (failingSource) SetWatch(chat int64, kind, id string, on bool) (bool, error) {
+    return false, errFailed
+}
+
+var errFailed = fmt.Errorf("store unavailable")
+
+func post(h http.Handler, path, initData string) *httptest.ResponseRecorder {
+    var r = httptest.NewRequest("POST", path, nil)
+    if initData != "" { r.Header.Set("X-Telegram-Init-Data", initData) }
+    var w = httptest.NewRecorder()
+    h.ServeHTTP(w, r)
+    return w
 }
 
 func get(h http.Handler, path, initData string) *httptest.ResponseRecorder {
@@ -1253,5 +1289,135 @@ func TestMinerNameHandling(t *testing.T) {
     var body = get(h, "/miner?name=SBI+Crypto", data).Body.String()
     if !strings.Contains(body, "<h1>SBI Crypto</h1>") {
         t.Errorf("a pool name with a space did not survive the URL: %s", body)
+    }
+}
+
+// The bell sits in the title row of the two pages that have something to watch,
+// and loads its own state — the page around it is cached and shared, so the
+// pushed/unpushed state cannot be rendered into it.
+func TestWatchButtonOnDetailsPages(t *testing.T) {
+    var h = handler(t, "TESTTOKEN", fakeSource{t: liveTx(), a: liveAddr(), b: liveBlocks(), d: liveBlockInfo()})
+    var data = freshInitData("TESTTOKEN")
+    for _, c := range []struct{ path, want string }{
+        {"/address?a=" + liveAddress, `hx-get="watch?kind=address&id=` + liveAddress + `"`},
+        {"/tx?id=" + liveTxid, `hx-get="watch?kind=tx&id=` + liveTxid + `"`},
+    } {
+        var body = get(h, c.path, data).Body.String()
+        if !strings.Contains(body, c.want) {
+            t.Errorf("%s does not load a watch button: %s", c.path, body[:min(400, len(body))])
+        }
+        if !strings.Contains(body, `hx-trigger="load"`) {
+            t.Errorf("%s: the button must fetch its own state", c.path)
+        }
+        // the shared, cached page must not carry anyone's watch state
+        if strings.Contains(body, `class="bell`) {
+            t.Errorf("%s rendered the button's state into the cached page", c.path)
+        }
+    }
+    // a block and a miner have nothing to watch
+    for _, p := range []string{"/block?height=963268", "/miner?name=AntPool"} {
+        if body := get(h, p, data).Body.String(); strings.Contains(body, "watch?kind=") {
+            t.Errorf("%s should have no watch button", p)
+        }
+    }
+}
+
+// Pushed when watching, unpushed when not, and tapping flips it. The POST
+// carries the state it wants rather than toggling, so a stale button cannot
+// undo a watch the reader did not touch.
+func TestWatchButtonTogglesAndReflectsState(t *testing.T) {
+    var h = handler(t, "TESTTOKEN", fakeSource{a: liveAddr()})
+    var data = freshInitData("TESTTOKEN")
+    var url = "/watch?kind=address&id=" + liveAddress
+
+    var off = get(h, url, data).Body.String()
+    if strings.Contains(off, "bell on") {
+        t.Errorf("an unwatched address should render unpushed: %s", off)
+    }
+    if !strings.Contains(off, "&on=1") {
+        t.Errorf("the unpushed button should offer to start watching: %s", off)
+    }
+
+    var on = post(h, url+"&on=1", data).Body.String()
+    if !strings.Contains(on, "bell on") {
+        t.Errorf("after watching, the button should be pushed: %s", on)
+    }
+    if !strings.Contains(on, "&on=0") {
+        t.Errorf("the pushed button should offer to stop watching: %s", on)
+    }
+    // it stays pushed on a fresh read, which is the whole point
+    if again := get(h, url, data).Body.String(); !strings.Contains(again, "bell on") {
+        t.Errorf("the watch did not stick: %s", again)
+    }
+    // and tapping again removes it
+    var back = post(h, url+"&on=0", data).Body.String()
+    if strings.Contains(back, "bell on") {
+        t.Errorf("after unwatching, the button should be unpushed: %s", back)
+    }
+    if w, ok := watched[42][liveAddress]; ok && w {
+        t.Error("the watch was not removed from the source")
+    }
+}
+
+// Whether a reader watches something is per-user, so the button must never be
+// cached: two users looking at the same page see their own state.
+func TestWatchButtonIsPerUser(t *testing.T) {
+    var h = handler(t, "TESTTOKEN", fakeSource{a: liveAddr()})
+    var mine = freshInitData("TESTTOKEN")
+    var theirs = signInitData("TESTTOKEN", map[string]string{
+        "auth_date": strconv.FormatInt(time.Now().Unix(), 10),
+        "user":      `{"id":99,"first_name":"Mallory"}`})
+    var url = "/watch?kind=address&id=" + liveAddress
+    post(h, url+"&on=1", mine)
+    if body := get(h, url, mine).Body.String(); !strings.Contains(body, "bell on") {
+        t.Errorf("user 42 should see their own watch: %s", body)
+    }
+    if body := get(h, url, theirs).Body.String(); strings.Contains(body, "bell on") {
+        t.Errorf("user 99 was served user 42's watch state: %s", body)
+    }
+}
+
+// The button is data, so it needs a signature, and its parameters come from a
+// URL a user can edit.
+func TestWatchButtonGuards(t *testing.T) {
+    var h = handler(t, "TESTTOKEN", fakeSource{a: liveAddr()})
+    var data = freshInitData("TESTTOKEN")
+    if w := get(h, "/watch?kind=address&id="+liveAddress, ""); w.Code != 401 {
+        t.Errorf("unauthenticated /watch = %d, want 401", w.Code)
+    }
+    for _, p := range []string{"/watch", "/watch?kind=address", "/watch?kind=block&id=1",
+        "/watch?kind=&id=x", "/watch?id=" + liveAddress} {
+        if w := get(h, p, data); w.Code != 400 {
+            t.Errorf("%s = %d, want 400", p, w.Code)
+        }
+    }
+}
+
+// Outside Telegram there is nobody to file a watch for, so the button is hidden
+// — by a body class set once at load, since details pages arrive later by swap
+// and any script inside them would not re-run.
+func TestWatchButtonHiddenOutsideTelegram(t *testing.T) {
+    var body = get(handler(t, "TESTTOKEN", fakeSource{f: liveFees()}), "/", "").Body.String()
+    if !strings.Contains(body, `classList.add("tg")`) {
+        t.Error("nothing marks the page as running inside Telegram")
+    }
+    if !strings.Contains(body, ".det .head .bell { display: none;") {
+        t.Error("the bell must be hidden by default")
+    }
+    if !strings.Contains(body, "body.tg .det .head .bell { display: flex; }") {
+        t.Error("the bell must only appear once initData is present")
+    }
+}
+
+// A failed set must not leave the button claiming a state the store does not
+// have.
+func TestWatchButtonReportsFailure(t *testing.T) {
+    var h = handler(t, "TESTTOKEN", failingSource{})
+    var body = post(h, "/watch?kind=address&id="+liveAddress+"&on=1", freshInitData("TESTTOKEN")).Body.String()
+    if !strings.Contains(body, "bell err") {
+        t.Errorf("a failed watch should show as failed: %s", body)
+    }
+    if strings.Contains(body, "bell on") {
+        t.Errorf("a failed watch must not render as watching: %s", body)
     }
 }

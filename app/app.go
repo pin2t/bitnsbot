@@ -315,6 +315,12 @@ type Info struct {
     Rows  []Field
     Slot  string
     Back  string
+    // Kind and Id name what the watch button acts on — "address" or "tx" and
+    // the full id. Empty on a block or miner page, which has nothing to watch.
+    // The button itself is loaded separately: whether *this* reader watches it
+    // is per-user, and the page around it is one cached copy shared by all.
+    Kind string
+    Id   string
 }
 // Blocks is one page of the recent-block list, newest first. Prev and Next carry
 // the page numbers the buttons link to, so the template does no arithmetic.
@@ -330,6 +336,16 @@ type Blocks struct {
     Next    int
     HasPrev bool
     HasNext bool
+}
+
+// watchButton is the bell in a details page's title row: what it acts on, and
+// whether this reader is currently watching it. Error marks a set that failed,
+// so the button can say so instead of silently lying about the state.
+type watchButton struct {
+    Kind  string
+    Id    string
+    On    bool
+    Error bool
 }
 
 // Watch is one watched id on the Watches tab: the shortened form the row shows,
@@ -362,6 +378,8 @@ type Source interface {
     AddrInfo(address string) Info
     MinerInfo(name string) Info
     Watches(chat int64) Watches
+    Watching(chat int64, kind, id string) bool
+    SetWatch(chat int64, kind, id string, on bool) (bool, error)
 }
 
 // The two containers a details page can replace, each the content of one tab.
@@ -414,6 +432,10 @@ func listPage(r *http.Request) string {
     return strconv.Itoa(p)
 }
 
+// watchable reports whether a details page can be watched, and is what keeps the
+// button off block and miner pages.
+func watchable(kind string) bool { return kind == "address" || kind == "tx" }
+
 // details renders one of the three detail pages. They differ only in which
 // container they replace and where Back goes, so they share a template.
 //
@@ -421,12 +443,13 @@ func listPage(r *http.Request) string {
 // know which container the answer belongs in — only the server, having
 // classified the query, does — so it names a target and the response corrects
 // it. Without this an address page lands in the Blocks tab, replacing the list.
-func details(w http.ResponseWriter, r *http.Request, slot, back string, load func() Info) {
+func details(w http.ResponseWriter, r *http.Request, slot, back, kind, id string, load func() Info) {
     w.Header().Set("HX-Retarget", "#"+slot)
     w.Header().Set("HX-Trigger", showtab(tabOf(slot)))
     cached(blocksCache, w, r, func() []byte {
         var info = load()
         info.Slot, info.Back = slot, back
+        if info.OK { info.Kind, info.Id = kind, id }
         return render("details", info)
     })
 }
@@ -511,7 +534,7 @@ func Start(addr, token string, src Source) *http.Server {
             http.Error(w, "no such block", http.StatusBadRequest)
             return
         }
-        details(w, r, blocksSlot, backToList(r), func() Info { return src.BlockInfo(height) })
+        details(w, r, blocksSlot, backToList(r), "", "", func() Info { return src.BlockInfo(height) })
     }))
     mux.HandleFunc("/tx", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
         var id = strings.TrimSpace(r.URL.Query().Get("id"))
@@ -519,7 +542,7 @@ func Start(addr, token string, src Source) *http.Server {
             http.Error(w, "no such transaction", http.StatusBadRequest)
             return
         }
-        details(w, r, blocksSlot, backToList(r), func() Info { return src.TxInfo(id) })
+        details(w, r, blocksSlot, backToList(r), "tx", id, func() Info { return src.TxInfo(id) })
     }))
     mux.HandleFunc("/miner", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
         var name = strings.TrimSpace(r.URL.Query().Get("name"))
@@ -527,7 +550,7 @@ func Start(addr, token string, src Source) *http.Server {
             http.Error(w, "no miner", http.StatusBadRequest)
             return
         }
-        details(w, r, blocksSlot, backToList(r), func() Info { return src.MinerInfo(name) })
+        details(w, r, blocksSlot, backToList(r), "", "", func() Info { return src.MinerInfo(name) })
     }))
     mux.HandleFunc("/address", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
         var a = strings.TrimSpace(r.URL.Query().Get("a"))
@@ -535,7 +558,7 @@ func Start(addr, token string, src Source) *http.Server {
             http.Error(w, "no address", http.StatusBadRequest)
             return
         }
-        details(w, r, addressSlot, "addresses?to="+origin(r, addressSlot), func() Info { return src.AddrInfo(a) })
+        details(w, r, addressSlot, "addresses?to="+origin(r, addressSlot), "address", a, func() Info { return src.AddrInfo(a) })
     }))
     // what Back on an address page returns to: the tab's own content, which is
     // still a placeholder
@@ -552,6 +575,39 @@ func Start(addr, token string, src Source) *http.Server {
     // rendered list — / is one copy shared by every visitor.
     mux.HandleFunc("/watches", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
         var b = render("watches", src.Watches(chatOf(r.Header.Get("X-Telegram-Init-Data"))))
+        if b == nil {
+            http.Error(w, "internal server error", http.StatusInternalServerError)
+            return
+        }
+        w.Header().Set("Content-Type", "text/html; charset=utf-8")
+        w.Write(b)
+    }))
+    // The watch button. GET renders it for the calling user, POST sets the watch
+    // and renders the result. Never cached: whether a given reader watches
+    // something is per-user, and every cache here is keyed by URL alone.
+    mux.HandleFunc("/watch", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
+        var kind = r.URL.Query().Get("kind")
+        var id = strings.TrimSpace(r.URL.Query().Get("id"))
+        if !watchable(kind) || id == "" {
+            http.Error(w, "nothing to watch", http.StatusBadRequest)
+            return
+        }
+        var chat = chatOf(r.Header.Get("X-Telegram-Init-Data"))
+        var btn = watchButton{Kind: kind, Id: id}
+        if r.Method == http.MethodPost {
+            // The desired state rides in the request rather than being toggled
+            // server-side, so a stale button cannot flip a watch the reader did
+            // not mean to touch: setting it twice is a no-op, not an undo.
+            var on, serr = src.SetWatch(chat, kind, id, r.URL.Query().Get("on") == "1")
+            if serr != nil {
+                logging.Err("mini app: set watch %s: %v", id, serr)
+                btn.Error = true
+            }
+            btn.On = on
+        } else {
+            btn.On = src.Watching(chat, kind, id)
+        }
+        var b = render("watchbtn", btn)
         if b == nil {
             http.Error(w, "internal server error", http.StatusInternalServerError)
             return

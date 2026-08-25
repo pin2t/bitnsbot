@@ -56,6 +56,10 @@ func (s *countingSource) MinerInfo(name string) Info {
     return Info{OK: true, Title: name, Rows: []Field{{Label: "Blocks mined", Value: "22 blocks"}}}
 }
 
+func (s *countingSource) Watching(chat int64, kind, id string) bool { return false }
+
+func (s *countingSource) SetWatch(chat int64, kind, id string, on bool) (bool, error) { return on, nil }
+
 func (s *countingSource) Watches(chat int64) Watches {
     s.hit("watches")
     return Watches{OK: true}
