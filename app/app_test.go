@@ -1421,3 +1421,55 @@ func TestWatchButtonReportsFailure(t *testing.T) {
         t.Errorf("a failed watch must not render as watching: %s", body)
     }
 }
+
+// Font sizes are relative so the page follows the font size the reader chose in
+// their phone's settings; a px size ignores it, which is what made the text read
+// too small on a high-density screen.
+func TestFontSizesAreRelative(t *testing.T) {
+    var body = get(handler(t, "TESTTOKEN", fakeSource{f: liveFees()}), "/", "").Body.String()
+    if n := strings.Count(body, "font-size: "); n == 0 {
+        t.Fatal("no font sizes in the page at all")
+    }
+    // every declaration must be relative — rem, or a min()/max() built on rem
+    for _, i := range indexesOf(body, "font-size: ") {
+        var decl = body[i : i+min(60, len(body)-i)]
+        var end = strings.Index(decl, ";")
+        if end > 0 { decl = decl[:end] }
+        if !strings.Contains(decl, "rem") {
+            t.Errorf("font size is not relative: %q", decl)
+        }
+    }
+    if strings.Contains(body, "font: 17px") {
+        t.Error("the body shorthand still carries a px size")
+    }
+    // The root is left unset on purpose: setting it would pin the page back to
+    // one size and undo the point.
+    if strings.Contains(body, "html { font-size") {
+        t.Error("the root font size is pinned, so the reader's setting is ignored")
+    }
+}
+
+// Two sizes cannot simply scale, and both are guarded rather than left to break.
+func TestFontSizeGuards(t *testing.T) {
+    var body = get(handler(t, "TESTTOKEN", fakeSource{f: liveFees()}), "/", "").Body.String()
+    // below 16px iOS zooms the whole page whenever the search field is focused,
+    // which a smaller font setting would otherwise cause
+    if !strings.Contains(body, "font-size: max(1.0625rem, 16px)") {
+        t.Error("the search field has no 16px floor; a small font setting would make iOS zoom")
+    }
+    // six columns of percentages already measure their cells, so they yield to
+    // the width once it runs out
+    if !strings.Contains(body, "font-size: min(0.75rem, 3.34vw)") {
+        t.Error("the market percentages are not width-capped; a large font setting overflows the row")
+    }
+}
+
+func indexesOf(s, sub string) []int {
+    var out []int
+    for i := 0; ; {
+        var j = strings.Index(s[i:], sub)
+        if j < 0 { return out }
+        out = append(out, i+j)
+        i += j + len(sub)
+    }
+}
