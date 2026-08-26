@@ -111,9 +111,15 @@ Another option: there are [scripts](scripts) to deploy a bot as a systemd servic
 [advertise](tools/advertise) - simple command line tool which sends advertising packets with a specific IP to all nodes in Bitcoin network
 
 dbui - simple web interface to manage bot database. Embedded into a bot itself 
+                   
+i18n-vet - check translation 
+
+addrindex - build transaction history index on addresses. Gather other statistics
 
 ### Roadmap
 
- - I18N
- - Daily statistics. Send every day market, transactions volume, moved coins, etc statistics
- - Improve data quality. More reliable and correct answers on addresses
+- [x] I18N
+- [x] Mini App
+- [ ] Addresses statistics
+- [ ] Daily statistics. Send every day market, transactions volume, moved coins, etc statistics
+- [ ] Improve data quality. More reliable and correct answers on addresses
