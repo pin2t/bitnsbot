@@ -195,7 +195,9 @@ func unsubscribe(ch chan string) {
 // headers, so a stream that needed the signature could not be opened at all. The
 // cardsCache react by issuing their ordinary hx-get, and those still go through
 // requireInitData with the header attached.
-func events(w http.ResponseWriter, r *http.Request) {
+//
+// closing is what ends the stream when the server is shutting down; see Start.
+func events(w http.ResponseWriter, r *http.Request, closing <-chan struct{}) {
     var rc = http.NewResponseController(w)
     w.Header().Set("Content-Type", "text/event-stream")
     w.Header().Set("Cache-Control", "no-cache")
@@ -213,6 +215,11 @@ func events(w http.ResponseWriter, r *http.Request) {
     for {
         select {
         case <-r.Context().Done():
+            return
+        case <-closing:
+            // The server is shutting down. Shutdown waits for connections to
+            // fall idle and a stream never does on its own, so without this it
+            // waits out the caller's whole timeout and then reports it.
             return
         case name := <-ch:
             fmt.Fprintf(w, "event: %s\ndata: 1\n\n", name)
@@ -505,7 +512,13 @@ func Start(addr, token string, src Source) *http.Server {
         w.Header().Set("Cache-Control", "public, max-age=86400")
         w.Write(sseJS)
     })
-    mux.HandleFunc("/events", events)
+    // Closed when the server begins shutting down, which is what lets the open
+    // event streams return. Per-server rather than package-level: a second Start
+    // (the tests make several) would otherwise close the same channel twice.
+    var closing = make(chan struct{})
+    mux.HandleFunc("/events", func(w http.ResponseWriter, r *http.Request) {
+        events(w, r, closing)
+    })
     mux.HandleFunc("/fees", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
         cached(cardsCache, w, r, func() []byte { return  render("fees", src.Fees()) })
     }))
@@ -634,6 +647,9 @@ func Start(addr, token string, src Source) *http.Server {
         }
     }))
     var srv = &http.Server{Addr: addr, Handler: mux}
+    // Shutdown calls this before it starts waiting, so the streams end and the
+    // connections go idle instead of holding it open until the deadline.
+    srv.RegisterOnShutdown(func() { close(closing) })
     go func() {
         logging.Status("mini app listening on %s", addr)
         if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {

@@ -6,6 +6,7 @@ import "crypto/hmac"
 import "crypto/sha256"
 import "encoding/hex"
 import "fmt"
+import "net"
 import "net/http"
 import "net/http/httptest"
 import "net/url"
@@ -1508,5 +1509,54 @@ func indexesOf(s, sub string) []int {
         if j < 0 { return out }
         out = append(out, i+j)
         i += j + len(sub)
+    }
+}
+
+// An open event stream must not hold the server open. Shutdown waits for
+// connections to fall idle and a stream never does on its own, so before this it
+// waited out the caller's whole timeout and then reported "context deadline
+// exceeded" — which is what the bot's logs showed on every restart.
+func TestShutdownDoesNotWaitForEventStreams(t *testing.T) {
+    // a real listener and a real connection: the point is what Shutdown does
+    // with a live streaming request, which a recorder cannot exercise
+    var probe, err = net.Listen("tcp", "127.0.0.1:0")
+    if err != nil { t.Fatalf("pick a port: %v", err) }
+    var addr = probe.Addr().String()
+    probe.Close()
+
+    resetCache()
+    var srv = Start(addr, "TESTTOKEN", fakeSource{f: liveFees()})
+    t.Cleanup(func() { srv.Close() })
+
+    var before = subscriberCount()
+    var resp *http.Response
+    var deadline = time.Now().Add(5 * time.Second)
+    for time.Now().Before(deadline) {
+        resp, err = http.Get("http://" + addr + "/events")
+        if err == nil { break }
+        time.Sleep(20 * time.Millisecond)
+    }
+    if err != nil { t.Fatalf("open the stream: %v", err) }
+    defer resp.Body.Close()
+    for subscriberCount() == before && time.Now().Before(deadline) {
+        time.Sleep(10 * time.Millisecond)
+    }
+    if subscriberCount() != before+1 {
+        t.Fatal("the stream never registered, so this would not prove anything")
+    }
+
+    // the bot allows 15s for every server together; a stream that ends when
+    // asked takes milliseconds
+    var ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
+    defer cancel()
+    var start = time.Now()
+    if err := srv.Shutdown(ctx); err != nil {
+        t.Fatalf("shutdown after %s: %v", time.Since(start), err)
+    }
+    if took := time.Since(start); took > 2*time.Second {
+        t.Errorf("shutdown took %s; the stream did not let go", took)
+    }
+    if n := subscriberCount(); n != before {
+        t.Errorf("%d subscribers left after shutdown, want %d", n, before)
     }
 }
