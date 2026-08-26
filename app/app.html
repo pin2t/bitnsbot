@@ -8,6 +8,21 @@
 <script src="htmx.min.js"></script>
 <script src="htmx-ext-sse.js"></script>
 <script>
+  // Telegram Desktop renders a Mini App in a phone-width panel, so the viewport
+  // is no help in telling a phone from a desktop — but Telegram names the
+  // platform outright, which is exact. Set here rather than in the script at the
+  // end of the page: the class scales every size on the page, and setting it
+  // after the body had rendered would show a visible jump.
+  //
+  // The pointer fallback covers a client too old to report a platform: a mouse
+  // is "fine", a finger is "coarse".
+  (function() {
+    var tg = window.Telegram && window.Telegram.WebApp;
+    var phone = tg && tg.platform
+      ? /^(android|android_x|ios)$/.test(tg.platform)
+      : matchMedia("(pointer: coarse)").matches;
+    if (phone) { document.documentElement.classList.add("phone"); }
+  })();
   // Every HTMX request carries Telegram's signed payload; the server rejects
   // anything without it. Registered on document (not body, which does not exist
   // yet in head) and before HTMX processes the DOM, so the first request already
@@ -57,9 +72,16 @@
   /* A phone is held further from the eye than a desktop monitor, so the same
      size reads smaller. Telegram's webview does not pass the reader's own font
      setting down to the root — measured: converting every size to rem changed
-     nothing on a real device — so the base is set here instead. */
+     nothing on a real device — so the base is set here instead.
+     
+     Width alone cannot decide this: Telegram Desktop shows a Mini App in a
+     phone-width panel, so it matched the breakpoint too and came out oversized
+     on a monitor. The `phone` class is what separates them — see the head
+     script, which asks Telegram what platform it is running on. Both conditions
+     are kept: an Android tablet reports a phone platform on a screen that does
+     not need the bump. */
   @media (max-width: 480px) {
-    html { font-size: 18px; }
+    html.phone { font-size: 18px; }
   }
   html, body { height: 100%; margin: 0; }
   body {
@@ -271,6 +293,18 @@
   // Marked on the body rather than per fragment: details pages arrive later, by
   // swap, so anything set only at load would never reach them.
   if (tg && tg.initData) { document.body.classList.add("tg"); }
+  // ?debug shows what this device reports, which is how the rule above gets
+  // tuned without a console attached to the phone.
+  if (location.search.indexOf("debug") >= 0) {
+    var hint = document.querySelector(".searchwrap p");
+    if (hint) {
+      hint.textContent = "platform " + ((tg && tg.platform) || "none") +
+        " · " + window.innerWidth + "x" + window.innerHeight +
+        " · dpr " + window.devicePixelRatio +
+        " · root " + getComputedStyle(document.documentElement).fontSize +
+        " · pointer " + (matchMedia("(pointer: coarse)").matches ? "coarse" : "fine");
+    }
+  }
 
   function showPanel(name) {
     document.querySelectorAll("nav button").forEach(function(x) { x.classList.toggle("active", x.dataset.panel === name); });
