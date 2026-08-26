@@ -1430,11 +1430,14 @@ func TestFontSizesAreRelative(t *testing.T) {
     if n := strings.Count(body, "font-size: "); n == 0 {
         t.Fatal("no font sizes in the page at all")
     }
-    // every declaration must be relative — rem, or a min()/max() built on rem
+    // Every declaration must be relative — rem, or a min()/max() built on rem.
+    // The root's own is the exception: it is the base the rest are fractions of,
+    // so it cannot be relative to itself.
     for _, i := range indexesOf(body, "font-size: ") {
         var decl = body[i : i+min(60, len(body)-i)]
         var end = strings.Index(decl, ";")
         if end > 0 { decl = decl[:end] }
+        if strings.HasSuffix(body[:i], "html { ") { continue }
         if !strings.Contains(decl, "rem") {
             t.Errorf("font size is not relative: %q", decl)
         }
@@ -1442,10 +1445,20 @@ func TestFontSizesAreRelative(t *testing.T) {
     if strings.Contains(body, "font: 17px") {
         t.Error("the body shorthand still carries a px size")
     }
-    // The root is left unset on purpose: setting it would pin the page back to
-    // one size and undo the point.
-    if strings.Contains(body, "html { font-size") {
-        t.Error("the root font size is pinned, so the reader's setting is ignored")
+}
+
+// Every size being relative is what lets one rule move the whole page, which is
+// how the text is made bigger on a phone: Telegram's webview does not pass the
+// reader's own font setting down to the root.
+func TestPhoneBaseFontSize(t *testing.T) {
+    var body = get(handler(t, "TESTTOKEN", fakeSource{f: liveFees()}), "/", "").Body.String()
+    if !strings.Contains(body, "@media (max-width: 480px)") {
+        t.Error("no phone-sized breakpoint, so the base size never changes")
+    }
+    var i = strings.Index(body, "@media (max-width: 480px)")
+    var block = body[i : i+min(160, len(body)-i)]
+    if !strings.Contains(block, "html { font-size: 17px; }") {
+        t.Errorf("the breakpoint does not raise the root: %q", block)
     }
 }
 

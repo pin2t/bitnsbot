@@ -380,9 +380,17 @@ One operational constraint, learned the hard way and not obvious: **cloudflared'
 
 **Card titles are 15px, above the 14px labels.** They were 13px — the *smallest* text in a card while also being uppercase, letter-spaced and in the muted hint colour, three things that each cost legibility. That read fine on a desktop preview and too small on a real phone, where the page is physically smaller and held further away. The tab labels, at 14px in normal case, were the giveaway: they looked fine while the titles did not, which pointed at a relative typographic problem rather than a scaling bug (the viewport meta was correct all along).
 
-**Every font size is in `rem`, and the root is deliberately unset.** A `px` size ignores the font size the reader chose in their phone's settings, which is what left the text reading small on a high-density screen even after the sizes were raised. Leaving `html` without a `font-size` is the other half: the root then *is* that setting, so the whole page follows it. `TestFontSizesAreRelative` pins both, since one `px` slipping back in is invisible until someone with a large font setting opens the app.
+**Every font size is in `rem`, and one media query sets the root on phones**:
 
-The conversion is byte-identical at the default 16px root — every computed size measured the same as the `px` version it replaced. What it adds is that the page now scales, verified from a 14px root to a 22px one with **nothing clipped anywhere**, across every tab and details page at 320, 360 and 375px.
+```css
+@media (max-width: 480px) { html { font-size: 17px; } }
+```
+
+That rule is the whole reason the sizes are relative. The original hope was that `rem` would make the page follow the font size the reader chose in their phone's settings — **it does not: Telegram's webview does not pass that setting down to the root**, measured on a real device, where converting every size to `rem` changed nothing visible. What the conversion does buy is this single lever: a phone is held further from the eye than a monitor, and one declaration now moves the entire page (measured at 375px: body 17 → 18.06px, the tier rates 20 → 21.25, the nav 14 → 14.88 — about 6% across the board).
+
+`TestFontSizesAreRelative` pins that every size stays relative, since one `px` slipping back in would silently stop scaling with it; the root's own declaration is the one exception, being the base the rest are fractions of. `TestPhoneBaseFontSize` pins the breakpoint itself.
+
+Verified with **nothing clipped anywhere** at 320 and 375px, across every tab and both details pages — and the design tolerates far more than this 6%: it was checked from a 14px root to a 22px one before the breakpoint was added.
 
 Two sizes cannot simply scale, and both are guarded rather than left to break:
 

@@ -50,12 +50,17 @@
     --line:   rgba(128,128,128,.22);
   }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-  /* Sizes are in rem, so they are fractions of the root — which on a phone is
-     the font size the user chose in their system settings. The root is
-     deliberately left unset for that reason: setting it here would pin the page
-     back to one size and undo the point. text-size-adjust stops Chrome layering
-     its own inflation on top, which would double-count that scaling. */
+  /* Sizes are in rem, so they are all fractions of the root — which is what
+     makes the one rule below able to move the whole page at once.
+     text-size-adjust stops Chrome layering its own inflation on top of that. */
   html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+  /* A phone is held further from the eye than a desktop monitor, so the same
+     size reads smaller. Telegram's webview does not pass the reader's own font
+     setting down to the root — measured: converting every size to rem changed
+     nothing on a real device — so the base is set here instead. */
+  @media (max-width: 480px) {
+    html { font-size: 17px; }
+  }
   html, body { height: 100%; margin: 0; }
   body {
     display: flex; flex-direction: column;
