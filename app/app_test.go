@@ -1437,7 +1437,7 @@ func TestFontSizesAreRelative(t *testing.T) {
         var decl = body[i : i+min(60, len(body)-i)]
         var end = strings.Index(decl, ";")
         if end > 0 { decl = decl[:end] }
-        if strings.HasSuffix(body[:i], "html { ") { continue }
+        if isRootRule(body[:i]) { continue }
         if !strings.Contains(decl, "rem") {
             t.Errorf("font size is not relative: %q", decl)
         }
@@ -1457,8 +1457,21 @@ func TestPhoneBaseFontSize(t *testing.T) {
     }
     var i = strings.Index(body, "@media (max-width: 480px)")
     var block = body[i : i+min(160, len(body)-i)]
-    if !strings.Contains(block, "html { font-size: 18px; }") {
+    if !strings.Contains(block, "html.phone { font-size: 18px; }") {
         t.Errorf("the breakpoint does not raise the root: %q", block)
+    }
+    // Width alone matched Telegram Desktop too, which shows a Mini App in a
+    // phone-width panel and came out oversized on a monitor.
+    if !strings.Contains(body, `/^(android|android_x|ios)$/.test(tg.platform)`) {
+        t.Error("nothing asks Telegram what platform it is, so a desktop gets the phone size")
+    }
+    if !strings.Contains(body, `document.documentElement.classList.add("phone")`) {
+        t.Error("the phone class is never set, so the breakpoint can never apply")
+    }
+    // It must be set before the body renders, or every size jumps once it lands.
+    var script = strings.Index(body, `classList.add("phone")`)
+    if script > strings.Index(body, "<body") {
+        t.Error("the phone class is set after the body, which would show a visible jump")
     }
 }
 
@@ -1475,6 +1488,17 @@ func TestFontSizeGuards(t *testing.T) {
     if !strings.Contains(body, "font-size: min(0.75rem, 3.34vw)") {
         t.Error("the market percentages are not width-capped; a large font setting overflows the row")
     }
+}
+
+// isRootRule reports whether a declaration sits in a rule on the root element,
+// whose own font size is the base every rem is a fraction of and so is the one
+// size that cannot itself be relative.
+func isRootRule(before string) bool {
+    var open = strings.LastIndex(before, "{")
+    if open < 0 { return false }
+    var selector = strings.TrimSpace(before[:open])
+    if i := strings.LastIndexAny(selector, " \n"); i >= 0 { selector = selector[i+1:] }
+    return selector == "html" || strings.HasPrefix(selector, "html.")
 }
 
 func indexesOf(s, sub string) []int {

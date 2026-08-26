@@ -380,17 +380,27 @@ One operational constraint, learned the hard way and not obvious: **cloudflared'
 
 **Card titles are 15px, above the 14px labels.** They were 13px — the *smallest* text in a card while also being uppercase, letter-spaced and in the muted hint colour, three things that each cost legibility. That read fine on a desktop preview and too small on a real phone, where the page is physically smaller and held further away. The tab labels, at 14px in normal case, were the giveaway: they looked fine while the titles did not, which pointed at a relative typographic problem rather than a scaling bug (the viewport meta was correct all along).
 
-**Every font size is in `rem`, and one media query sets the root on phones**:
+**Every font size is in `rem`, and one rule sets the root on phones**:
 
 ```css
-@media (max-width: 480px) { html { font-size: 17px; } }
+@media (max-width: 480px) { html.phone { font-size: 18px; } }
 ```
 
-That rule is the whole reason the sizes are relative. The original hope was that `rem` would make the page follow the font size the reader chose in their phone's settings — **it does not: Telegram's webview does not pass that setting down to the root**, measured on a real device, where converting every size to `rem` changed nothing visible. What the conversion does buy is this single lever: a phone is held further from the eye than a monitor, and one declaration now moves the entire page (measured at 375px: body 17 → 18.06px, the tier rates 20 → 21.25, the nav 14 → 14.88 — about 6% across the board).
+**Width alone cannot decide this.** Telegram Desktop renders a Mini App in a *phone-width panel*, so it matched a plain `max-width` breakpoint too and came out oversized on a monitor — measured at 375px, the breakpoint matches on both. What separates them is `Telegram.WebApp.platform`, which names the client outright; a head script adds the `phone` class for `android`/`android_x`/`ios` and nothing else. Verified by driving the page against a harness claiming each platform in turn at the same 375px: android → root 18px, tdesktop → root 16px.
+
+Three details it depends on:
+
+- **The class is set in `<head>`, not in the script at the end of the page.** It scales every size at once, so setting it after the body had rendered would show a visible jump.
+- **The width condition is kept as well.** An Android tablet reports a phone platform on a screen that does not need the bump.
+- **A client too old to report a platform falls back to `pointer: coarse`** — a mouse is fine, a finger is coarse. Verified with the SDK removed entirely.
+
+**`?debug=1` prints what the device reports** into the search hint — platform, viewport, device pixel ratio, resolved root size and pointer type. That is how this gets tuned from the phone itself, with no console attached.
+
+That rule is the whole reason the sizes are relative. The original hope was that `rem` would make the page follow the font size the reader chose in their phone's settings — **it does not: Telegram's webview does not pass that setting down to the root**, measured on a real device, where converting every size to `rem` changed nothing visible. What the conversion does buy is this single lever: a phone is held further from the eye than a monitor, and one declaration now moves the entire page (measured at 375px: body 17 → 19.13px, the tier rates 20 → 22.5 — about 12% across the board).
 
 `TestFontSizesAreRelative` pins that every size stays relative, since one `px` slipping back in would silently stop scaling with it; the root's own declaration is the one exception, being the base the rest are fractions of. `TestPhoneBaseFontSize` pins the breakpoint itself.
 
-Verified with **nothing clipped anywhere** at 320 and 375px, across every tab and both details pages — and the design tolerates far more than this 6%: it was checked from a 14px root to a 22px one before the breakpoint was added.
+Verified with **nothing clipped anywhere** at 320 and 375px, across every tab and both details pages — and the design tolerates far more than this: it was checked from a 14px root to a 22px one before the breakpoint was added.
 
 Two sizes cannot simply scale, and both are guarded rather than left to break:
 
