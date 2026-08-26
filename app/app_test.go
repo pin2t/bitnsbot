@@ -1457,7 +1457,7 @@ func TestPhoneBaseFontSize(t *testing.T) {
     }
     var i = strings.Index(body, "@media (max-width: 480px)")
     var block = body[i : i+min(160, len(body)-i)]
-    if !strings.Contains(block, "html { font-size: 17px; }") {
+    if !strings.Contains(block, "html { font-size: 18px; }") {
         t.Errorf("the breakpoint does not raise the root: %q", block)
     }
 }
