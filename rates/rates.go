@@ -267,17 +267,17 @@ func fetchHistory() ([]rate, error) {
                     logging.Net("rates ← history %d daily samples", len(records))
                     return records, nil
                 }
-                logging.Warn("rate history backfill: parse (attempt %d/3): %v", attempt, parseErr)
+                logging.Warn("rate history: parse (attempt %d/3): %v", attempt, parseErr)
             } else if readErr != nil {
-                logging.Warn("rate history backfill: read (attempt %d/3): %v", attempt, readErr)
+                logging.Warn("rate history: read (attempt %d/3): %v", attempt, readErr)
             } else {
-                logging.Warn("rate history backfill: status %d (attempt %d/3)", resp.StatusCode, attempt)
+                logging.Warn("rate history: status %d (attempt %d/3)", resp.StatusCode, attempt)
             }
         } else {
-            logging.Warn("rate history backfill: fetch (attempt %d/3): %v", attempt, err)
+            logging.Warn("rate history: fetch (attempt %d/3): %v", attempt, err)
         }
         if attempt >= 3 {
-            return nil, fmt.Errorf("rate history backfill: all 3 attempts failed")
+            return nil, fmt.Errorf("rate history: all 3 attempts failed")
         }
         time.Sleep(10 * time.Second)
     }
@@ -303,24 +303,24 @@ func backfill() {
     if historyFile != "" {
         records, err = loadHistoryFromFile()
         if err != nil {
-            logging.Warn("rate history backfill: file %s: %v — falling back to network", historyFile, err)
+            logging.Warn("rate history: file %s: %v — falling back to network", historyFile, err)
         }
     }
     if len(records) == 0 {
         records, err = fetchHistory()
         if err != nil {
-            logging.Warn("rate history backfill: %v", err)
+            logging.Warn("rate history: %v", err)
             return
         }
     }
     if len(records) == 0 { return }
     if err := storeRates(records); err != nil {
-        logging.Err("store rate history: %v", err)
+        logging.Err("rates history: %v", err)
         return
     }
     var src = "network"
     if historyFile != "" { src = "file " + historyFile }
-    logging.Info("backfilled %d historical BTC rates from %s", len(records), src)
+    logging.Info("rates: stored %d historical BTC rates from %s", len(records), src)
 }
 
 // update fetches every source, averages the ones that succeeded, and stores a
@@ -346,7 +346,7 @@ func update() {
         logging.Err("store rate: %v", err)
         return
     }
-    logging.Info("updated BTC rate: $%.2f (avg of %s)", avg, strings.Join(names, ", "))
+    logging.Info("rates: updated $%.2f (avg of %s)", avg, strings.Join(names, ", "))
     updateMarket()
 }
 
@@ -358,10 +358,10 @@ func updateMarket() {
     var m, ok = Snapshot()
     if !ok { return }
     if err := storeMarket(m); err != nil {
-        logging.Err("store market: %v", err)
+        logging.Err("rates: market: %v", err)
         return
     }
-    logging.Info("updated market: cap $%.0f, 24h volume $%.0f", m.MarketCap, m.Volume24h)
+    logging.Info("rates: updated market cap $%.0f, 24h volume $%.0f", m.MarketCap, m.Volume24h)
 }
 
 // Start backfills the historical daily rates once, fetches an initial current
@@ -410,26 +410,26 @@ func parseMarket(body []byte) (Market, error) {
 // called per command rather than on a timer, so it makes no attempt to average
 // across sources — only CoinGecko publishes capitalisation and volume for free.
 func Snapshot() (Market, bool) {
-    logging.Net("rates → GET %s", marketURL)
+    logging.Net("rates: GET %s", marketURL)
     var resp, err = httpClient.Get(marketURL)
     if err != nil {
-        logging.Warn("market snapshot: %v", err)
+        logging.Warn("rates: market: %v", err)
         return Market{}, false
     }
     defer resp.Body.Close()
     var body, readErr = io.ReadAll(resp.Body)
     if readErr != nil {
-        logging.Warn("market snapshot: %v", readErr)
+        logging.Warn("rates: market: %v", readErr)
         return Market{}, false
     }
-    logging.Net("rates ← market %s", body)
+    logging.Net("rates: market %s", body)
     if resp.StatusCode != http.StatusOK {
-        logging.Warn("market snapshot: status %d", resp.StatusCode)
+        logging.Warn("rates: market: status %d", resp.StatusCode)
         return Market{}, false
     }
     var m, parseErr = parseMarket(body)
     if parseErr != nil {
-        logging.Warn("market snapshot: %v", parseErr)
+        logging.Warn("rates: market: %v", parseErr)
         return Market{}, false
     }
     return m, true
@@ -463,7 +463,7 @@ func storeMarket(m Market) error {
 // reachable at the moment someone types it.
 func LastMarket() (Market, bool) {
     if db == nil { return Market{}, false }
-    logging.Db("last market")
+    logging.Db("rates: market")
     var m Market
     var found bool
     db.View(func(tx *bbolt.Tx) error {

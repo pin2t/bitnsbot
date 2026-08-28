@@ -16,11 +16,6 @@
   //
   // The pointer fallback covers a client too old to report a platform: a mouse
   // is "fine", a finger is "coarse".
-  //
-  // Windows is a separate question, and Telegram is no help with it at all:
-  // Telegram Desktop reports "tdesktop" on Windows, Linux and macOS alike. The
-  // browser is what knows, so the OS is read from userAgentData where it exists
-  // and from the older navigator fields where it does not.
   (function() {
     var tg = window.Telegram && window.Telegram.WebApp;
     var phone = tg && tg.platform
@@ -32,9 +27,6 @@
       : /^Win/i.test(navigator.platform || "") || /Windows/i.test(navigator.userAgent || "");
     var root = document.documentElement;
     if (phone) { root.classList.add("phone"); }
-    // never both: the two rules have equal specificity, so a device matching
-    // each would be decided by their order in the stylesheet rather than by
-    // anything meaningful
     else if (windows) { root.classList.add("windows"); }
   })();
   // Every HTMX request carries Telegram's signed payload; the server rejects
@@ -82,10 +74,6 @@
   html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
   @media (max-width: 480px) {
     html.phone { font-size: 19px; }
-    /* Windows renders this panel larger than the other desktops do, so it needs
-       the opposite correction to a phone's. Telegram cannot say which desktop
-       it is — Windows, Linux and macOS all report "tdesktop" — so the class
-       comes from the browser instead; see the head script. */
     html.windows { font-size: 15px; }
   }
   html, body { height: 100%; margin: 0; }
@@ -271,8 +259,6 @@
   function showPanel(name) {
     document.querySelectorAll("nav button").forEach(function(x) { x.classList.toggle("active", x.dataset.panel === name); });
     document.querySelectorAll(".panel").forEach(function(p) { p.classList.toggle("active", p.id === name); });
-    // The watch list is per-user and never cached, so it is fetched when the tab
-    // is opened rather than kept warm.
     if (name === "watches") { document.body.dispatchEvent(new Event("watchtab")); }
   }
   document.querySelectorAll("nav button").forEach(function(b) {

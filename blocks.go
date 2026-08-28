@@ -55,7 +55,7 @@ func blockInit(handle *bbolt.DB) error {
 
 func storeBlock(bi *blockInfo) error {
     if db == nil { return nil }
-    logging.Db("store block %d", bi.Height)
+    logging.Db("blocksstat: store %d", bi.Height)
     var data, err = json.Marshal(bi)
     if err != nil { return err }
     return db.Update(func(tx *bbolt.Tx) error {
@@ -65,7 +65,7 @@ func storeBlock(bi *blockInfo) error {
 
 func loadBlock(height int64) (*blockInfo, bool) {
     if db == nil { return nil, false }
-    logging.Db("load block %d", height)
+    logging.Db("blocksstat: load %d", height)
     var bi blockInfo
     var found bool
     db.View(func(tx *bbolt.Tx) error {
@@ -153,14 +153,14 @@ func processBlock(hash string) {
     defer cancel()
     var bi, err = computeBlockInfo(ctx, hash)
     if err != nil {
-        logging.Warn("cache block %s: %v", short(hash), err)
+        logging.Warn("blocksstat: process %s: %v", short(hash), err)
         return
     }
     if err := storeBlock(bi); err != nil {
-        logging.Err("store block %d: %v", bi.Height, err)
+        logging.Err("blocksstat: store %d: %v", bi.Height, err)
         return
     }
-    logging.Info("cached block %d mined by %s", bi.Height, bi.Miner)
+    logging.Info("blocksstat: processed %d mined by %s", bi.Height, bi.Miner)
     // Notify only once the block is actually stored: the Blocks tab reads the
     // cache, so announcing earlier would have the page re-fetch the old list.
     app.Notify("blocks")
@@ -187,7 +187,7 @@ func collectBlocks() {
     defer cancel()
     var tip, err = core.getBlockCount(ctx)
     if err != nil {
-        logging.Warn("block cache: tip: %v", err)
+        logging.Warn("blocksstat: %v", err)
         return
     }
     // read the last processed height from the blocks-cursor bucket
@@ -220,27 +220,27 @@ func collectBlocks() {
             var hash, herr = core.getBlockHash(bctx, h)
             bcancel()
             if herr != nil {
-                logging.Warn("block cache: block %d hash: %v — retrying next run", h, herr)
+                logging.Warn("blocksstat: block %d hash: %v — retrying next run", h, herr)
                 return
             }
             bctx, bcancel = context.WithTimeout(context.Background(), 60*time.Second)
             var bi, cerr = computeBlockInfo(bctx, hash)
             bcancel()
             if cerr != nil {
-                logging.Warn("block cache: block %d: %v — retrying next run", h, cerr)
+                logging.Warn("blocksstat: block %d: %v — retrying next run", h, herr)
                 return
             }
             infos = append(infos, bi)
         }
         if err := flushBlocks(infos, to); err != nil {
-            logging.Err("block cache: flush: %v", err)
+            logging.Err("blocksstat: flush %v", err)
             return
         }
         if from < tip { time.Sleep(1 * time.Minute) }
         from = to + 1
     }
     if from-1 > began {
-        logging.Info("block cache: processed %d blocks, up to %d", from-1-began, from-1)
+        logging.Info("blocksstat: processed %d blocks, up to %d", from-1-began, from-1)
     }
 }
 
