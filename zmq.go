@@ -224,7 +224,7 @@ func startZMQ(ctx context.Context, endpoints []string, b *bot) error {
             var msg, err = sub.Recv()
             if err != nil {
                 if ctx.Err() != nil { return }
-                logging.Warn("zmq receive: %v", err)
+                logging.Warn("zmq: %v", err)
                 continue
             }
             if len(msg.Frames) < 2 { continue }
@@ -246,6 +246,6 @@ func startZMQ(ctx context.Context, endpoints []string, b *bot) error {
             }
         }
     }()
-    logging.Status("subscribed to Bitcoin Core notifications at %s", strings.Join(endpoints, ", "))
+    logging.Status("zmq: subscribed to Bitcoin Core notifications at %s", strings.Join(endpoints, ", "))
     return nil
 }

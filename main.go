@@ -263,9 +263,6 @@ func (appSource) Market() app.Market {
         {"5y", 5 * 365 * 24 * time.Hour},
     }
     for _, p := range periods {
-        // A gap in the history leaves a placeholder rather than dropping the
-        // column: the grid keeps its shape on a fresh install, where the older
-        // periods have no baseline until the backfill lands.
         var then, have = rates.At(time.Now().Add(-p.back))
         if !have || then <= 0 {
             m.Changes = append(m.Changes, app.Change{Label: p.label, Pct: "—", Neutral: true})
@@ -1036,7 +1033,7 @@ func refreshFees() {
     defer cancel()
     var entries, err = core.rawMempoolVerbose(ctx)
     if err != nil {
-        logging.Warn("mempool fees: %v", err)
+        logging.Warn("fees: %v", err)
         return
     }
     var minFee float64

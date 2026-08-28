@@ -488,7 +488,6 @@ func isTxid(s string) bool {
 func Start(addr, token string, src Source) *http.Server {
     var mux = http.NewServeMux()
     mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-        logging.Info("mini app: headers", r.Header)
         if r.URL.Path != "/" {
             http.NotFound(w, r)
             return
@@ -669,7 +668,6 @@ func Start(addr, token string, src Source) *http.Server {
 func isValid(initData, token string) bool {
     var v, err = url.ParseQuery(initData)
     if err != nil { return false }
-    logging.Info("mini app: init data ", v)
     var want = v.Get("hash")
     if want == "" { return false }
     v.Del("hash")
