@@ -88,16 +88,15 @@ func invalidate(event string) {
     case "blocks":
         blocksCache.Clear()
         cardsCache.Clear()
-    default:
-        return
+    default: return
     }
     // The page embeds every card, so whichever one moved, the page it would
     // serve to the next visitor is stale.
     cardsCache.Delete("/")
 }
 
-// resetCache empties every cache, for tests that share this package state.
-func resetCache() {
+// for testing
+func invalidateAll() {
     cacheMu.Lock()
     cardsCache.Clear()
     blocksCache.Clear()
@@ -109,14 +108,13 @@ func resetCache() {
 // its own; two concurrent misses simply render the same bytes twice, which is
 // cheaper than serialising every request behind one mutex.
 func cached(c *lru.Cache[string, []byte], w http.ResponseWriter, r *http.Request, render func() []byte) {
+    var started = time.Now().UnixNano()
     cacheMu.Lock()
     var b, hit = c.Get(r.RequestURI)
     cacheMu.Unlock()
-    logging.Info("mini app: serving %s: cached = %v", r.RequestURI, hit)
     if !hit {
         b = render()
         if b == nil {
-            logging.Err("mini app: error rendering %s", r.RequestURI)
             http.Error(w, "internal server error", http.StatusInternalServerError)
             return
         }
@@ -126,13 +124,14 @@ func cached(c *lru.Cache[string, []byte], w http.ResponseWriter, r *http.Request
     }
     w.Header().Set("Content-Type", "text/html; charset=utf-8")
     w.Write(b)
+    logging.Info("mini app: %s %s %.2f ms cached = %v", r.Method, r.RequestURI, float64(time.Now().UnixNano() - started) / 1e6, hit)
 }
 
 func render(name string, data any) []byte {
     var buf bytes.Buffer
     var err = appTmpl.ExecuteTemplate(&buf, name, data)
     if err != nil {
-        logging.Err("mini app: render %s: %v", name, err)
+        logging.Err("mini app: render error %s: %v", name, err)
         return nil
     }
     return buf.Bytes()
@@ -168,9 +167,9 @@ func Notify(event string) {
     }
 }
 
-// subscriberCount reports how many streams are connected; used by the tests to
+// subscribes reports how many streams are connected; used by the tests to
 // wait for a handler to register rather than sleeping a fixed time.
-func subscriberCount() int {
+func subscribes() int {
     subsMu.Lock()
     defer subsMu.Unlock()
     return len(subs)
@@ -214,13 +213,8 @@ func events(w http.ResponseWriter, r *http.Request, closing <-chan struct{}) {
     defer t.Stop()
     for {
         select {
-        case <-r.Context().Done():
-            return
-        case <-closing:
-            // The server is shutting down. Shutdown waits for connections to
-            // fall idle and a stream never does on its own, so without this it
-            // waits out the caller's whole timeout and then reports it.
-            return
+        case <-r.Context().Done(): return
+        case <-closing:            return
         case name := <-ch:
             fmt.Fprintf(w, "event: %s\ndata: 1\n\n", name)
             if rc.Flush() != nil { return }
@@ -494,6 +488,7 @@ func isTxid(s string) bool {
 func Start(addr, token string, src Source) *http.Server {
     var mux = http.NewServeMux()
     mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+        logging.Info("mini app: headers", r.Header)
         if r.URL.Path != "/" {
             http.NotFound(w, r)
             return
@@ -587,6 +582,7 @@ func Start(addr, token string, src Source) *http.Server {
     // This is also why the shell page ships an empty container rather than the
     // rendered list — / is one copy shared by every visitor.
     mux.HandleFunc("/watches", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
+        var started = time.Now().UnixNano()
         var b = render("watches", src.Watches(chatOf(r.Header.Get("X-Telegram-Init-Data"))))
         if b == nil {
             http.Error(w, "internal server error", http.StatusInternalServerError)
@@ -594,11 +590,13 @@ func Start(addr, token string, src Source) *http.Server {
         }
         w.Header().Set("Content-Type", "text/html; charset=utf-8")
         w.Write(b)
+        logging.Info("mini app: %s %s %.2f ms", r.Method, r.RequestURI, float64(time.Now().UnixNano() - started) / 1e6)
     }))
     // The watch button. GET renders it for the calling user, POST sets the watch
     // and renders the result. Never cached: whether a given reader watches
     // something is per-user, and every cache here is keyed by URL alone.
     mux.HandleFunc("/watch", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
+        var started = time.Now().UnixNano()
         var kind = r.URL.Query().Get("kind")
         var id = strings.TrimSpace(r.URL.Query().Get("id"))
         if !watchable(kind) || id == "" {
@@ -627,6 +625,7 @@ func Start(addr, token string, src Source) *http.Server {
         }
         w.Header().Set("Content-Type", "text/html; charset=utf-8")
         w.Write(b)
+        logging.Info("mini app: %s %s %.2f ms", r.Method, r.RequestURI, float64(time.Now().UnixNano() - started) / 1e6)
     }))
     // search classifies the query and hands off, in the same order info() does:
     // the 64-hex shape first, because a string of 64 digits is also a valid
@@ -670,6 +669,7 @@ func Start(addr, token string, src Source) *http.Server {
 func isValid(initData, token string) bool {
     var v, err = url.ParseQuery(initData)
     if err != nil { return false }
+    logging.Info("mini app: init data ", v)
     var want = v.Get("hash")
     if want == "" { return false }
     v.Del("hash")

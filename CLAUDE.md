@@ -526,7 +526,7 @@ Invalidation is event-driven with a time backstop:
 
 Note `TestInlineAndRefreshMatch` — the drift guard asserting the page embeds the exact fragment `/fees` returns — still holds with both sides cached, because both execute the same `{{define}}` block from the same `Source`. It is weaker than it was (a stale page and a fresh fragment would both have to be wrong in the same way to slip past), but the shared block is what it was really pinning.
 
-`resetCache` clears both caches wholesale rather than looping over `invalidate`. The app tests share this package state, and an earlier version that cleared the page only as a *consequence* of card invalidation made the test helper's isolation depend on the very line under test — a mutation of it leaked one test's fixture into the next instead of failing the test that targets it.
+`invalidateAll` clears both caches wholesale rather than looping over `invalidate`. The app tests share this package state, and an earlier version that cleared the page only as a *consequence* of card invalidation made the test helper's isolation depend on the very line under test — a mutation of it leaked one test's fixture into the next instead of failing the test that targets it.
 
 `data` is called *outside* `cacheMu`, so a `Source` implementation is never invoked with the cache lock held — main's `appSource` takes `feesMu`/`networkMu` of its own, and the refresh goroutines call `Notify` (which takes `cacheMu`) right after releasing them. Two concurrent misses simply render the same bytes twice, which is cheaper than serialising every request behind one mutex. `TestCacheConcurrentRequests` drives that path under `-race`.
 
