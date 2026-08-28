@@ -213,7 +213,7 @@ func liveNetwork() Network {
 func handler(t *testing.T, token string, src Source) http.Handler {
     // The rendered-card caches are package state shared across tests, so each
     // test starts from empty rather than seeing the previous one's fixture.
-    resetCache()
+    invalidateAll()
     watched = map[int64]map[string]bool{}
     var srv = Start("127.0.0.1:0", token, src)
     t.Cleanup(func() { srv.Close() })
@@ -694,7 +694,7 @@ func TestEventStreamCarriesNoData(t *testing.T) {
     go func() { h.ServeHTTP(w, r); close(done) }()
     // let the handler subscribe before notifying
     var deadline = time.Now().Add(2 * time.Second)
-    for subscriberCount() == 0 && time.Now().Before(deadline) {
+    for subscribes() == 0 && time.Now().Before(deadline) {
         time.Sleep(5 * time.Millisecond)
     }
     Notify("fees")
@@ -722,7 +722,7 @@ func TestEventStreamCarriesNoData(t *testing.T) {
 // A disconnected client must not be left in the subscriber set, or every page
 // load would leak a channel for the life of the process.
 func TestEventStreamUnsubscribesOnDisconnect(t *testing.T) {
-    var before = subscriberCount()
+    var before = subscribes()
     var h = handler(t, "TESTTOKEN", fakeSource{})
     var r = httptest.NewRequest("GET", "/events", nil)
     var ctx, cancel = context.WithCancel(r.Context())
@@ -730,16 +730,16 @@ func TestEventStreamUnsubscribesOnDisconnect(t *testing.T) {
     var done = make(chan struct{})
     go func() { h.ServeHTTP(httptest.NewRecorder(), r); close(done) }()
     var deadline = time.Now().Add(2 * time.Second)
-    for subscriberCount() == before && time.Now().Before(deadline) {
+    for subscribes() == before && time.Now().Before(deadline) {
         time.Sleep(5 * time.Millisecond)
     }
-    if subscriberCount() != before+1 {
-        t.Fatalf("subscriber not registered: %d, want %d", subscriberCount(), before+1)
+    if subscribes() != before+1 {
+        t.Fatalf("subscriber not registered: %d, want %d", subscribes(), before+1)
     }
     cancel()
     <-done
-    if subscriberCount() != before {
-        t.Fatalf("subscriber left behind after disconnect: %d, want %d", subscriberCount(), before)
+    if subscribes() != before {
+        t.Fatalf("subscriber left behind after disconnect: %d, want %d", subscribes(), before)
     }
 }
 
@@ -1524,11 +1524,11 @@ func TestShutdownDoesNotWaitForEventStreams(t *testing.T) {
     var addr = probe.Addr().String()
     probe.Close()
 
-    resetCache()
+    invalidateAll()
     var srv = Start(addr, "TESTTOKEN", fakeSource{f: liveFees()})
     t.Cleanup(func() { srv.Close() })
 
-    var before = subscriberCount()
+    var before = subscribes()
     var resp *http.Response
     var deadline = time.Now().Add(5 * time.Second)
     for time.Now().Before(deadline) {
@@ -1538,10 +1538,10 @@ func TestShutdownDoesNotWaitForEventStreams(t *testing.T) {
     }
     if err != nil { t.Fatalf("open the stream: %v", err) }
     defer resp.Body.Close()
-    for subscriberCount() == before && time.Now().Before(deadline) {
+    for subscribes() == before && time.Now().Before(deadline) {
         time.Sleep(10 * time.Millisecond)
     }
-    if subscriberCount() != before+1 {
+    if subscribes() != before+1 {
         t.Fatal("the stream never registered, so this would not prove anything")
     }
 
@@ -1556,7 +1556,7 @@ func TestShutdownDoesNotWaitForEventStreams(t *testing.T) {
     if took := time.Since(start); took > 2*time.Second {
         t.Errorf("shutdown took %s; the stream did not let go", took)
     }
-    if n := subscriberCount(); n != before {
+    if n := subscribes(); n != before {
         t.Errorf("%d subscribers left after shutdown, want %d", n, before)
     }
 }
