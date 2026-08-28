@@ -16,12 +16,26 @@
   //
   // The pointer fallback covers a client too old to report a platform: a mouse
   // is "fine", a finger is "coarse".
+  //
+  // Windows is a separate question, and Telegram is no help with it at all:
+  // Telegram Desktop reports "tdesktop" on Windows, Linux and macOS alike. The
+  // browser is what knows, so the OS is read from userAgentData where it exists
+  // and from the older navigator fields where it does not.
   (function() {
     var tg = window.Telegram && window.Telegram.WebApp;
     var phone = tg && tg.platform
       ? /^(android|android_x|ios)$/.test(tg.platform)
       : matchMedia("(pointer: coarse)").matches;
-    if (phone) { document.documentElement.classList.add("phone"); }
+    var ua = navigator.userAgentData;
+    var windows = ua && ua.platform
+      ? ua.platform === "Windows"
+      : /^Win/i.test(navigator.platform || "") || /Windows/i.test(navigator.userAgent || "");
+    var root = document.documentElement;
+    if (phone) { root.classList.add("phone"); }
+    // never both: the two rules have equal specificity, so a device matching
+    // each would be decided by their order in the stylesheet rather than by
+    // anything meaningful
+    else if (windows) { root.classList.add("windows"); }
   })();
   // Every HTMX request carries Telegram's signed payload; the server rejects
   // anything without it. Registered on document (not body, which does not exist
@@ -68,6 +82,11 @@
   html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
   @media (max-width: 480px) {
     html.phone { font-size: 19px; }
+    /* Windows renders this panel larger than the other desktops do, so it needs
+       the opposite correction to a phone's. Telegram cannot say which desktop
+       it is — Windows, Linux and macOS all report "tdesktop" — so the class
+       comes from the browser instead; see the head script. */
+    html.windows { font-size: 15px; }
   }
   html, body { height: 100%; margin: 0; }
   body {
@@ -243,7 +262,9 @@
         " · " + window.innerWidth + "x" + window.innerHeight +
         " · dpr " + window.devicePixelRatio +
         " · root " + getComputedStyle(document.documentElement).fontSize +
-        " · pointer " + (matchMedia("(pointer: coarse)").matches ? "coarse" : "fine");
+        " · pointer " + (matchMedia("(pointer: coarse)").matches ? "coarse" : "fine") +
+        " · os " + ((navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || "?") +
+        " · class " + (document.documentElement.className || "none");
     }
   }
 
