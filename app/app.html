@@ -65,23 +65,9 @@
     --line:   rgba(128,128,128,.22);
   }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-  /* Sizes are in rem, so they are all fractions of the root — which is what
-     makes the one rule below able to move the whole page at once.
-     text-size-adjust stops Chrome layering its own inflation on top of that. */
   html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
-  /* A phone is held further from the eye than a desktop monitor, so the same
-     size reads smaller. Telegram's webview does not pass the reader's own font
-     setting down to the root — measured: converting every size to rem changed
-     nothing on a real device — so the base is set here instead.
-     
-     Width alone cannot decide this: Telegram Desktop shows a Mini App in a
-     phone-width panel, so it matched the breakpoint too and came out oversized
-     on a monitor. The `phone` class is what separates them — see the head
-     script, which asks Telegram what platform it is running on. Both conditions
-     are kept: an Android tablet reports a phone platform on a screen that does
-     not need the bump. */
   @media (max-width: 480px) {
-    html.phone { font-size: 18px; }
+    html.phone { font-size: 19px; }
   }
   html, body { height: 100%; margin: 0; }
   body {
@@ -93,7 +79,6 @@
   .panel { display: none; height: 100%; }
   .panel.active { display: flex; flex-direction: column; }
 
-  /* Home: fees pinned at the top, search centred in what remains. */
   .fees { background: var(--card); border-radius: 14px; padding: 10px 12px; }
   .fees h2 { margin: 0 0 7px; font-size: 0.9375rem; font-weight: 600; text-align: center; line-height: 1.2;
              letter-spacing: .06em; text-transform: uppercase; color: var(--hint); }
@@ -105,34 +90,19 @@
   .tier .usd   { font-size: 0.875rem; line-height: 1.2; color: var(--hint); }
   .fees .note  { margin: 7px 0 0; font-size: 0.8125rem; line-height: 1.3; color: var(--hint); text-align: center; }
 
-  /* Four fields across is unreadable at 375px ("19.7 M / 21 M" alone needs the
-     width), so the network card is a 2x2 grid of the same cells. */
-  /* Gap between stacked cards. One rule, so Blockchain sits the same distance
-     below Network fees as Market does below Blockchain. */
   .net { margin-top: 12px; }
   .net .stats { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px 6px; text-align: center; }
   .net .stat .label { font-size: 0.875rem; line-height: 1.2; color: var(--hint); }
   .net .stat .value { font-size: 1.25rem; font-weight: 600; margin-top: 1px; line-height: 1.15; }
 
-  /* Six periods across a phone leaves ~50px each, so the percentages are the
-     only thing in a column — no absolute prices. Green up, red down, chosen to
-     stay legible on Telegram's light and dark themes alike. */
   .mkt .price { text-align: center; font-size: 1.375rem; font-weight: 600; line-height: 1.15; }
   .mkt .changes { display: grid; grid-template-columns: repeat(6, 1fr); gap: 2px; margin-top: 8px; text-align: center; }
-  /* The one place a larger font setting cannot be honoured in full: six columns
-     of "+512.9%" already measure their cells, so these scale with the root only
-     until the width runs out, and then the width wins. min() is what expresses
-     that — it also makes the sizes shrink smoothly on a narrow screen, which is
-     what the 359px rule below used to do by hand. */
   .mkt .chg .label { font-size: min(0.6875rem, 3.06vw); line-height: 1.2; color: var(--hint); }
   .mkt .chg .pct { font-size: min(0.75rem, 3.34vw); font-weight: 600; line-height: 1.2; margin-top: 1px; white-space: nowrap; }
   .mkt .chg .pct.up { color: #1a9e4b; }
   .mkt .chg .pct.down { color: #d92d20; }
   .mkt .chg .pct.flat { color: var(--hint); font-weight: 400; }
 
-  /* Six columns fit from 360px up, which is every current phone. On a 320px
-     screen an extreme 5y figure would overflow the row, so shrink the type
-     there rather than drop a period. */
   @media (max-width: 359px) {
     .mkt .changes    { gap: 1px; }
   }
@@ -148,7 +118,6 @@
   .empty { flex: 1; display: flex; align-items: center; justify-content: center;
            color: var(--hint); font-size: 1rem; }
 
-  /* Blocks tab: the list scrolls, the pager stays pinned above the tab bar. */
   .blocklist { flex: 1; display: flex; flex-direction: column; min-height: 0; }
   .blocklist .rows { flex: 1; overflow-y: auto; }
   .blk { display: flex; align-items: center; gap: 8px;
@@ -156,49 +125,24 @@
   .blk + .blk { margin-top: 6px; }
   .blk .h  { font-size: 0.875rem; font-weight: 600; white-space: nowrap; }
   .blk .sz, .blk .tx { font-size: 0.8125rem; color: var(--hint); white-space: nowrap; }
-  /* The miner takes the slack and truncates: pool names vary from "F2Pool" to
-     "SBI Crypto", and it is the one field that can be cut without losing a
-     number. min-width:0 is what lets a flex item shrink below its content. */
   .blk .mn { flex: 1; min-width: 0; font-size: 0.8125rem; text-align: right;
              overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  /* Height and miner are the tappable fields, so they carry the link colour
-     rather than the row carrying a chevron. An unattributed miner is not a
-     link, so it stays plain text. */
   .blk .lnk { color: var(--link); cursor: pointer; }
-  /* Block details: the title row, then the same label/value cells the cards
-     use. It reuses #blocklist as its slot so the Blocks tab stays selected and
-     Back can swap the list straight back in. */
-  /* Back on the left, title centred on the row — not merely in the space left
-     over, which would sit it off-centre by the button's width. Both sides are
-     flex: 1 1 0 so they are equal regardless of the button, and the title
-     between them lands on the true centre. */
   .det .head { display: grid; grid-template-columns: auto minmax(0, 1fr) auto;
                align-items: center; gap: 8px; margin-bottom: 10px; }
-  /* The right side is a hidden copy of the Back button. Nothing else makes the
-     two columns exactly equal — sized from content they differ by the button's
-     width, and equal fr columns push the button out of its own cell — and only
-     equal sides put the title on the true centre. */
   .det .head .ghost { visibility: hidden; }
-  /* The bell shares the ghost's cell — the ghost sets the column's width so the
-     title stays centred, and the bell is placed at that column's right edge, in
-     the corner. It is hidden until the page knows it is inside Telegram; a watch
-     is per-user and there is nobody to file one for outside. */
   .det .head .side { position: relative; }
   .det .head .bell { display: none; position: absolute; right: 0; top: 50%;
                      transform: translateY(-50%); padding: 6px 10px; }
   body.tg .det .head .bell { display: flex; }
   .det .head .bell svg { width: 19px; height: 19px; fill: none; stroke: currentColor;
                          stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
-  /* Pushed: filled in the accent colour and inset, so "watching" reads at a
-     glance and survives a theme that renders borders faintly. */
   .det .head .bell.on { color: var(--bg); background: var(--accent); border-color: var(--accent); }
   .det .head .bell.on svg { fill: currentColor; }
   .det .head .bell.err { color: #d92d20; }
   .det .head h1 { min-width: 0; margin: 0; font-size: 1.125rem; font-weight: 600;
                   line-height: 1.2; text-align: center;
                   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  /* flex: 0 1 auto so the card ends after the last field rather than stretching
-     to the tab bar, while still shrinking and scrolling on a short screen. */
   .det .fields { flex: 0 1 auto; overflow-y: auto; background: var(--card);
                  border-radius: 14px; padding: 4px 12px; }
   .det .f { display: flex; align-items: baseline; gap: 10px; padding: 5px 0; }
@@ -217,7 +161,6 @@
                   border: 1px solid var(--line); border-radius: 10px; cursor: pointer; }
   .det .head button { padding: 6px 12px; }
 
-  /* Watches: the same rows the block list uses, grouped under two labels. */
   .wsec { font-size: 0.875rem; font-weight: 600; color: var(--hint); margin: 12px 0 6px; }
   .wsec:first-child { margin-top: 0; }
   .blk .alias { flex: 1; min-width: 0; font-size: 0.8125rem; text-align: right; color: var(--hint);
@@ -225,8 +168,6 @@
   .pager button[disabled] { color: var(--hint); opacity: .5; cursor: default; }
   .pager .page { font-size: 0.875rem; font-weight: 600; min-width: 24px; text-align: center; }
 
-  /* Bottom tab bar: thumb-reachable on a phone, and padded for the home
-     indicator on notched devices. */
   nav { display: flex; border-top: 1px solid var(--line); background: var(--bg);
         padding-bottom: env(safe-area-inset-bottom, 0); }
   nav button { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 2px;
