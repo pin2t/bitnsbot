@@ -388,6 +388,10 @@ One operational constraint, learned the hard way and not obvious: **cloudflared'
 
 **Width alone cannot decide this.** Telegram Desktop renders a Mini App in a *phone-width panel*, so it matched a plain `max-width` breakpoint too and came out oversized on a monitor — measured at 375px, the breakpoint matches on both. What separates them is `Telegram.WebApp.platform`, which names the client outright; a head script adds the `phone` class for `android`/`android_x`/`ios` and nothing else. Verified by driving the page against a harness claiming each platform in turn at the same 375px: android → root 18px, tdesktop → root 16px.
 
+**Windows takes the opposite correction** — `html.windows { font-size: 15px }` in the same breakpoint, because Telegram Desktop renders the panel larger there than on the other desktops. Telegram cannot answer this one: **Windows, Linux and macOS all report `tdesktop`**, so the OS comes from the browser instead — `navigator.userAgentData.platform` where it exists, falling back to `navigator.platform`/`userAgent` matching `Win`. The two classes are mutually exclusive (`else if`), since both rules have equal specificity and a device matching each would be settled by stylesheet order rather than by anything meaningful.
+
+Verified by driving the page against a harness faking each combination: `tdesktop`+Windows → 15px, `tdesktop`+macOS → 16px, `tdesktop`+Linux → 16px, `android` → 19px. The fallback expression was checked against representative `navigator` values too — true for `Win32` and a Windows UA, false for macOS, Linux, Android and iPhone.
+
 Three details it depends on:
 
 - **The class is set in `<head>`, not in the script at the end of the page.** It scales every size at once, so setting it after the body had rendered would show a visible jump.

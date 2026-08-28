@@ -1466,13 +1466,44 @@ func TestPhoneBaseFontSize(t *testing.T) {
     if !strings.Contains(body, `/^(android|android_x|ios)$/.test(tg.platform)`) {
         t.Error("nothing asks Telegram what platform it is, so a desktop gets the phone size")
     }
-    if !strings.Contains(body, `document.documentElement.classList.add("phone")`) {
+    if !strings.Contains(body, `classList.add("phone")`) {
         t.Error("the phone class is never set, so the breakpoint can never apply")
     }
     // It must be set before the body renders, or every size jumps once it lands.
     var script = strings.Index(body, `classList.add("phone")`)
     if script > strings.Index(body, "<body") {
         t.Error("the phone class is set after the body, which would show a visible jump")
+    }
+}
+
+// Windows renders the panel larger than the other desktops, so it takes the
+// opposite correction. Telegram cannot answer this one — Windows, Linux and
+// macOS all report "tdesktop" — so the OS is read from the browser.
+func TestWindowsBaseFontSize(t *testing.T) {
+    var body = get(handler(t, "TESTTOKEN", fakeSource{f: liveFees()}), "/", "").Body.String()
+    var i = strings.Index(body, "@media (max-width: 480px)")
+    if i < 0 { t.Fatal("no phone-sized breakpoint") }
+    var block = body[i : i+min(500, len(body)-i)]
+    if !strings.Contains(block, "html.windows { font-size: 15px; }") {
+        t.Errorf("the breakpoint does not shrink the root on Windows: %q", block)
+    }
+    if !strings.Contains(body, `ua.platform === "Windows"`) {
+        t.Error("nothing reads the OS from userAgentData")
+    }
+    if !strings.Contains(body, `/^Win/i.test(navigator.platform`) {
+        t.Error("no fallback for a browser without userAgentData")
+    }
+    if !strings.Contains(body, `classList.add("windows")`) {
+        t.Error("the windows class is never set, so the rule can never apply")
+    }
+    // Both rules have equal specificity, so a device matching each would be
+    // decided by their order in the stylesheet rather than by anything real.
+    if !strings.Contains(body, `else if (windows)`) {
+        t.Error("phone and windows are not exclusive; a device could take both")
+    }
+    // Set before the body renders, like the phone class, or the size jumps.
+    if strings.Index(body, `classList.add("windows")`) > strings.Index(body, "<body") {
+        t.Error("the windows class is set after the body, which would show a visible jump")
     }
 }
 
