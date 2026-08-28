@@ -1458,7 +1458,7 @@ func TestPhoneBaseFontSize(t *testing.T) {
     }
     var i = strings.Index(body, "@media (max-width: 480px)")
     var block = body[i : i+min(160, len(body)-i)]
-    if !strings.Contains(block, "html.phone { font-size: 18px; }") {
+    if !strings.Contains(block, "html.phone { font-size: 19px; }") {
         t.Errorf("the breakpoint does not raise the root: %q", block)
     }
     // Width alone matched Telegram Desktop too, which shows a Mini App in a
