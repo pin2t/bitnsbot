@@ -1,6 +1,7 @@
 package main
 
 import "encoding/binary"
+import "flag"
 import "encoding/hex"
 import "encoding/json"
 import "io"
@@ -150,13 +151,58 @@ func heightOfHash(hash string) int {
     return int(b[0])
 }
 
+// rpcCall is one request, whether it arrived alone or inside a batch. The id is
+// left untyped on purpose: a single call carries a string one and a batch
+// carries numbers, and decoding into an int would fail on the former.
+type rpcCall struct {
+    ID     interface{}   `json:"id"`
+    Method string        `json:"method"`
+    Params []interface{} `json:"params"`
+}
+
+// batchID is the numeric id a batch entry carries, which is what the reply must
+// be matched back by.
+func batchID(v interface{}) int {
+    if n, ok := v.(float64); ok { return int(n) }
+    return -1
+}
+
+// batched counts the batch requests the fake has served, so a test can assert
+// that a group of scripts cost one round trip rather than one each.
+var batched int
+
 func rpcReply(t *testing.T, w http.ResponseWriter, r *http.Request) {
-    var req struct {
-        Method string        `json:"method"`
-        Params []interface{} `json:"params"`
+    var body, rerr = io.ReadAll(r.Body)
+    if rerr != nil {
+        t.Errorf("read rpc: %v", rerr)
+        return
     }
-    if err := json.NewDecoder(r.Body).Decode(&req); err != nil { t.Fatalf("decode rpc: %v", err) }
-    var reply = func(v interface{}) { json.NewEncoder(w).Encode(map[string]interface{}{"result": v}) }
+    // Core answers a batch — an array of requests — with an array of results.
+    if len(body) > 0 && body[0] == '[' {
+        var reqs []rpcCall
+        if err := json.Unmarshal(body, &reqs); err != nil {
+            t.Errorf("decode batch: %v", err)
+            return
+        }
+        batched++
+        var out []map[string]interface{}
+        for _, req := range reqs {
+            out = append(out, map[string]interface{}{"id": batchID(req.ID), "result": answer(t, req)})
+        }
+        json.NewEncoder(w).Encode(out)
+        return
+    }
+    var req rpcCall
+    if err := json.Unmarshal(body, &req); err != nil {
+        t.Errorf("decode rpc: %v", err)
+        return
+    }
+    json.NewEncoder(w).Encode(map[string]interface{}{"result": answer(t, req)})
+}
+
+func answer(t *testing.T, req rpcCall) interface{} {
+    var out interface{}
+    var reply = func(v interface{}) { out = v }
     switch req.Method {
     case "validateaddress":
         reply(map[string]interface{}{"isvalid": true, "scriptPubKey": hex.EncodeToString(payScript)})
@@ -182,6 +228,7 @@ func rpcReply(t *testing.T, w http.ResponseWriter, r *http.Request) {
     default:
         t.Errorf("unexpected rpc method %s", req.Method)
     }
+    return out
 }
 
 // txDetail: block 1's transaction pays the address 20000 sat; block 2's spends
@@ -528,5 +575,123 @@ func TestMergeSortedRuns(t *testing.T) {
     // one side entirely past the other, so the tail copy finishes it
     if got := merge(run(rem6(1)), run(rem6(8), rem6(9))); string(got) != string(run2(rem6(1), rem6(8), rem6(9))) {
         t.Errorf("appending past the end: %x", got)
+    }
+}
+
+// Deciding and counting are one lookup, not two. Lookup walks the whole shard
+// whichever limit it is given, so asking twice repeated the entire first call.
+func TestClassifyMakesOneLookup(t *testing.T) {
+    openIndex(t)
+    var srv = fakeCore(t, 3)
+    var opt = &options{url: srv.URL, limit: 1000}
+    capture(t, func() { build(opt) })
+    var oldMin = activeMin
+    activeMin = 3
+    defer func() { activeMin = oldMin }()
+    capture(t, func() { actbuild(opt) })
+    // the count recorded is the real one, which a deciding-only lookup capped at
+    // the threshold could not produce
+    if n := activeAddresses(t)[otherAddress]; n != 6 {
+        t.Errorf("count = %d, want the real 6 — one lookup must both decide and count", n)
+    }
+}
+
+// The scripts that qualify are resolved in one batched call rather than a round
+// trip each.
+func TestDecodeScriptIsBatched(t *testing.T) {
+    openIndex(t)
+    var srv = fakeCore(t, 3)
+    var opt = &options{url: srv.URL, limit: 1000}
+    capture(t, func() { build(opt) })
+    var oldMin, oldBatch = activeMin, decodeBatch
+    // a threshold low enough that both fixture scripts qualify, so there is
+    // something to batch
+    activeMin, decodeBatch = 1, 1000
+    defer func() { activeMin, decodeBatch = oldMin, oldBatch }()
+    batched = 0
+    capture(t, func() { actbuild(opt) })
+    if batched == 0 {
+        t.Fatal("decodescript was never sent as a batch")
+    }
+    var active = activeAddresses(t)
+    if len(active) != 2 {
+        t.Errorf("resolved %d addresses, want both fixture scripts: %v", len(active), active)
+    }
+    // and the counts must still line up with the right addresses, which is what
+    // matching a batch reply by id is for
+    if active[address] != 2 || active[otherAddress] != 6 {
+        t.Errorf("counts landed on the wrong addresses: %v", active)
+    }
+}
+
+// A batch bigger than decodeBatch is split, and every script still comes back
+// against its own count.
+func TestDecodeScriptSplitsLargeBatches(t *testing.T) {
+    openIndex(t)
+    var srv = fakeCore(t, 3)
+    var opt = &options{url: srv.URL, limit: 1000}
+    capture(t, func() { build(opt) })
+    var oldMin, oldBatch = activeMin, decodeBatch
+    activeMin, decodeBatch = 1, 1 // one script per call, so two calls
+    defer func() { activeMin, decodeBatch = oldMin, oldBatch }()
+    batched = 0
+    capture(t, func() { actbuild(opt) })
+    if batched < 2 {
+        t.Errorf("sent %d batches for two scripts at decodeBatch 1, want at least 2", batched)
+    }
+    var active = activeAddresses(t)
+    if active[address] != 2 || active[otherAddress] != 6 {
+        t.Errorf("splitting the batch lost the pairing: %v", active)
+    }
+}
+
+// The progress line carries a rate and, while there is chain left, an estimate.
+func TestProgressReportsRateAndETA(t *testing.T) {
+    var started = time.Now().Add(-10 * time.Second)
+    // 100 blocks of 1000 done in 10s: 200 addr/sec, 900 blocks left at 10
+    // blocks/sec is 90 seconds
+    var got = progress(started, 1, 100, 1000, 2000)
+    if !strings.Contains(got, "200 addr/sec") {
+        t.Errorf("progress = %q, want a 200 addr/sec rate", got)
+    }
+    if !strings.Contains(got, "ETA") {
+        t.Errorf("progress = %q, want an estimate while blocks remain", got)
+    }
+    // at the tip there is nothing left to estimate
+    if got := progress(started, 1, 1000, 1000, 2000); strings.Contains(got, "ETA") {
+        t.Errorf("progress = %q; there is no ETA once the scan is at the tip", got)
+    }
+}
+
+func TestGroupAndRate(t *testing.T) {
+    for _, c := range []struct {
+        n    int64
+        want string
+    }{{0, "0"}, {7, "7"}, {999, "999"}, {1000, "1 000"}, {6177636, "6 177 636"}} {
+        if got := group(c.n); got != c.want {
+            t.Errorf("group(%d) = %q, want %q", c.n, got, c.want)
+        }
+    }
+    if got := rate(3000, 2*time.Second); got != 1500 {
+        t.Errorf("rate = %d, want 1500", got)
+    }
+    if got := rate(5, 0); got != 0 {
+        t.Errorf("rate over no time = %d, want 0", got)
+    }
+}
+
+// The flag overwrites the package var, so raising one without the other leaves
+// the lower of the two in force — which is what happened when the var alone was
+// raised to five million and -limit still defaulted to one.
+func TestLookupLimitDefaultsAgree(t *testing.T) {
+    var fs = flag.NewFlagSet("actbuild", flag.ContinueOnError)
+    var opt = flags(fs)
+    if err := fs.Parse(nil); err != nil { t.Fatalf("parse: %v", err) }
+    if opt.limit != lookupLimit {
+        t.Errorf("-limit defaults to %d but lookupLimit is %d; actbuild would use %d",
+            opt.limit, lookupLimit, opt.limit)
+    }
+    if opt.limit != 5000000 {
+        t.Errorf("-limit defaults to %d, want 5000000", opt.limit)
     }
 }

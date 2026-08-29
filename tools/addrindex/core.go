@@ -9,6 +9,8 @@ import "net/http"
 import "os"
 import "strings"
 
+import "bitnsbot/logging"
+
 // rpc is a minimal Bitcoin Core JSON-RPC client — only what resolving an
 // address's history needs. The bot's own client (core.go) is package main's and
 // cannot be imported here; this covers four methods where that one covers
@@ -146,4 +148,54 @@ func (c *rpc) addressOf(ctx context.Context, script []byte) (string, error) {
         return "", err
     }
     return out.Address, nil
+}
+
+// addressesOf resolves a batch of scriptPubKeys to the addresses they pay, in
+// one JSON-RPC call. Core accepts a batch as an array of requests and answers
+// with an array of results — matched back by id, since a batch reply is not
+// promised in order. The returned slice is aligned to scripts, with "" where the
+// script is nonstandard and has no address.
+func (c *rpc) addressesOf(ctx context.Context, scripts [][]byte) ([]string, error) {
+    var reqs = make([]map[string]interface{}, 0, len(scripts))
+    for i, s := range scripts {
+        reqs = append(reqs, map[string]interface{}{
+            "jsonrpc": "1.0", "id": i, "method": "decodescript",
+            "params": []interface{}{hex.EncodeToString(s)},
+        })
+    }
+    var body, err = json.Marshal(reqs)
+    if err != nil { return nil, err }
+    var req, reqErr = http.NewRequestWithContext(ctx, http.MethodPost, c.url, bytes.NewReader(body))
+    if reqErr != nil { return nil, reqErr }
+    req.Header.Set("Content-Type", "application/json")
+    req.Header.Set("Authorization", c.auth)
+    var resp, doErr = c.client.Do(req)
+    if doErr != nil { return nil, doErr }
+    defer resp.Body.Close()
+    var decoded []struct {
+        ID     int `json:"id"`
+        Result struct {
+            Address string `json:"address"`
+        } `json:"result"`
+        Error *struct {
+            Message string `json:"message"`
+        } `json:"error"`
+    }
+    if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
+        return nil, fmt.Errorf("decodescript batch: %w", err)
+    }
+    var out = make([]string, len(scripts))
+    for _, d := range decoded {
+        if d.ID < 0 || d.ID >= len(out) {
+            return nil, fmt.Errorf("decodescript batch: reply id %d out of range", d.ID)
+        }
+        // one bad script must not lose the rest of the batch; it simply has no
+        // address, which is the same answer a nonstandard script gives
+        if d.Error != nil {
+            logging.Warn("actbuild: decodescript: %s", d.Error.Message)
+            continue
+        }
+        out[d.ID] = d.Result.Address
+    }
+    return out, nil
 }
