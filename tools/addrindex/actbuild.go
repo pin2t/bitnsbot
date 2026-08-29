@@ -3,9 +3,9 @@ package main
 import "bytes"
 import "context"
 import "encoding/binary"
-import "encoding/hex"
 import "fmt"
 import "sort"
+import "strconv"
 import "time"
 
 import "go.etcd.io/bbolt"
@@ -41,9 +41,18 @@ const activeCursor = "actbuild"
 // only whether the history is longer, never how much longer.
 var activeMin = 1000
 
-// lookupLimit bounds the second, exact lookup made for an address that already
-// qualified; it is -limit.
-var lookupLimit = 1000000
+// lookupLimit bounds the one lookup made per address. The same call both decides
+// whether the address is active and counts its history, so it has to be high
+// enough to be a real count for a busy address rather than a cap. actbuild
+// overwrites it from -limit, whose default matches — raising only one of the two
+// would leave the other in force.
+var lookupLimit = 5000000
+
+// decodeBatch is how many scripts are resolved to addresses in one JSON-RPC
+// call. Only the addresses past the threshold get here, so at the default
+// -active this is rarely full — it earns its keep when the threshold is low
+// enough that most scripts qualify.
+var decodeBatch = 1000
 
 // actChunk is how many blocks are scanned before the batch is written and the
 // cursor advanced, so a crash mid-scan resumes from the last flushed chunk.
@@ -144,6 +153,7 @@ func actbuild(opt *options) {
     }
     fmt.Printf("Scanning blocks %d..%d for addresses with more than %d transactions\n", from, tip, activeMin)
     var started = time.Now()
+    var first = from
     var looked, found int
     for from <= tip {
         var to = from + actChunk - 1
@@ -159,13 +169,49 @@ func actbuild(opt *options) {
         }
         looked += c.fresh
         found += len(c.active)
-        logging.Info("actbuild: scanned blocks %d..%d (tip %d): %d scripts, %d new addresses, %d active so far",
-            from, to, tip, c.scripts, c.fresh, found)
+        logging.Info("actbuild: blocks %d..%d of %d: %d scripts, %d new addresses, %d active so far, %s",
+            from, to, tip, c.scripts, c.fresh, found, progress(started, first, to, tip, looked))
         from = to + 1
     }
     var at, _ = addrindex.GetCursor(activeCursor)
-    fmt.Printf("Scanned to block %d in %s: %d addresses looked up, %d active\n",
-        at, took(time.Since(started)), looked, found)
+    var elapsed = time.Since(started)
+    fmt.Printf("Scanned to block %d in %s: %s addresses looked up (%s addr/sec), %d active\n",
+        at, took(elapsed), group(int64(looked)), group(rate(looked, elapsed)), found)
+}
+
+// progress reports how fast the scan is going and how much longer it has. The
+// rate is measured over the whole run rather than the last chunk: the address
+// rate falls away as the processed set fills up, and a per-chunk figure would
+// swing with it. The estimate is off blocks, which is what actually measures the
+// distance to the tip.
+func progress(started time.Time, first, done, tip, addrs int) string {
+    var elapsed = time.Since(started)
+    if elapsed <= 0 { return "" }
+    var out = fmt.Sprintf("%s addr/sec", group(rate(addrs, elapsed)))
+    var blocks = done - first + 1
+    if blocks > 0 && done < tip {
+        var perBlock = elapsed / time.Duration(blocks)
+        out += ", ETA " + took(time.Duration(tip-done)*perBlock)
+    }
+    return out
+}
+
+// rate is a per-second figure, rounded, for a count over an elapsed time.
+func rate(n int, elapsed time.Duration) int64 {
+    if elapsed <= 0 { return 0 }
+    return int64(float64(n)/elapsed.Seconds() + 0.5)
+}
+
+// group renders a count with spaces between thousands, the way every other
+// figure this repo prints reads.
+func group(n int64) string {
+    var digits = strconv.FormatInt(n, 10)
+    var out []byte
+    for i := range digits {
+        if i > 0 && (len(digits)-i)%3 == 0 { out = append(out, ' ') }
+        out = append(out, digits[i])
+    }
+    return string(out)
 }
 
 // chunk is what one range of blocks accumulates: the remainders to add to the
@@ -176,8 +222,18 @@ func actbuild(opt *options) {
 type chunk struct {
     pending map[string][]byte
     active  map[string]int
+    // qualified but not yet resolved to an address: decodescript is sent in
+    // batches, so a script waits here until decodeBatch of them accumulate
+    waiting []pending
     scripts int
     fresh   int
+}
+
+// pending is a script that passed the threshold, with the count that got it
+// there, waiting for the batch that turns it into an address.
+type pending struct {
+    script []byte
+    count  int
 }
 
 // scanChunk walks a range of blocks and decides about every script in it that
@@ -204,9 +260,13 @@ func scanChunk(ctx context.Context, src *addrindex.REST, client *rpc, from, to i
         if ferr != nil { return nil, ferr }
         c.fresh += len(fresh)
         for _, script := range fresh {
-            c.classify(ctx, client, script)
+            c.classify(script)
+        }
+        if len(c.waiting) >= decodeBatch {
+            if err := c.resolve(ctx, client); err != nil { return nil, err }
         }
     }
+    if err := c.resolve(ctx, client); err != nil { return nil, err }
     return c, nil
 }
 
@@ -230,28 +290,43 @@ func (c *chunk) take(scripts [][]byte) ([][]byte, error) {
     return fresh, err
 }
 
-// classify asks the index how long a script's history is and, if it is past the
-// threshold, resolves it to an address. Only those few cost an RPC.
-func (c *chunk) classify(ctx context.Context, client *rpc, script []byte) {
-    // Deciding needs one lookup past the threshold and no further: the question
-    // is whether the history is longer, never how much longer, and this runs
-    // against every address on the chain.
-    if touches, _ := addrindex.Lookup(script, activeMin+1); len(touches) <= activeMin { return }
-    var addr, err = client.addressOf(ctx, script)
-    if err != nil {
-        logging.Warn("actbuild: decode %s: %v", hex.EncodeToString(script), err)
-        return
-    }
-    // a nonstandard script is not an address, so there is nothing to record
-    if addr == "" { return }
-    // Only now, for the few that qualified, is the real count worth reading. The
-    // deciding lookup stopped at the threshold, so its length would be that
-    // threshold and not a count at all.
+// classify asks the index how long a script's history is and queues the ones
+// past the threshold for resolving.
+//
+// One lookup, not two. An earlier version asked for activeMin+1 first and only
+// then for the real count, on the theory that stopping early was cheaper — it is
+// not: Lookup walks the whole shard whichever limit it is given, and the limit
+// only bites for an address that actually exceeds it. So the second call
+// repeated the entire first one.
+func (c *chunk) classify(script []byte) {
     var touches, capped = addrindex.Lookup(script, lookupLimit)
+    if len(touches) <= activeMin { return }
     if capped {
-        logging.Warn("actbuild: %s has more than -limit %d transactions; recording the cap", addr, lookupLimit)
+        logging.Warn("actbuild: a script has more than -limit %d transactions; recording the cap", lookupLimit)
     }
-    c.active[addr] = len(touches)
+    c.waiting = append(c.waiting, pending{script: script, count: len(touches)})
+}
+
+// resolve turns the queued scripts into addresses in one JSON-RPC call per
+// decodeBatch, rather than a round trip each.
+func (c *chunk) resolve(ctx context.Context, client *rpc) error {
+    for len(c.waiting) > 0 {
+        var n = len(c.waiting)
+        if n > decodeBatch { n = decodeBatch }
+        var group = c.waiting[:n]
+        var scripts = make([][]byte, 0, n)
+        for _, p := range group { scripts = append(scripts, p.script) }
+        var addrs, err = client.addressesOf(ctx, scripts)
+        if err != nil { return fmt.Errorf("decode %d scripts: %w", n, err) }
+        for i, addr := range addrs {
+            // a nonstandard script is not an address, so there is nothing to
+            // record for it
+            if addr == "" { continue }
+            c.active[addr] = group[i].count
+        }
+        c.waiting = c.waiting[n:]
+    }
+    return nil
 }
 
 // flushActive writes a chunk's findings and advances the cursor in one
