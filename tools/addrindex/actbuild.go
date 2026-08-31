@@ -1,10 +1,8 @@
 package main
 
-import "bytes"
 import "context"
 import "encoding/binary"
 import "fmt"
-import "sort"
 import "strconv"
 import "time"
 
@@ -16,25 +14,12 @@ import "bitnsbot/logging"
 // is the address, the value its transaction count at the time it qualified.
 var activeBucket = []byte("addrindex-active")
 
-// processedBucket is the set of scripts actbuild has already decided about,
-// sharded exactly as the index itself is: the key is the first 2 bytes of the
-// script's index prefix and the value the packed run of 6-byte remainders
-// falling in that shard. Same reason, too — one bbolt key per address costs far
-// more in page overhead than the entry itself, which a 2-byte split avoids by
-// keeping the whole set in 65 536 keys.
-//
-// The run is kept **sorted**, so membership is a binary search rather than a
-// walk — at full chain scale a shard holds tens of thousands of entries, where
-// that is ~15 comparisons against ~23 000. Appending still rewrites the whole
-// value, which is what the chunk size trades against.
-var processedBucket = []byte("processed")
-
-const shardLen = 2
-const remainderLen = 6
-
-// activeCursor is this pass's own place in the chain, kept in the index's cursor
-// bucket beside the index's own, so neither disturbs the other.
-const activeCursor = "actbuild"
+// activeCursor is this pass's own place, kept in the index's cursor bucket
+// beside the index's own so neither disturbs the other. It counts **block
+// files**, not heights — a scan of the raw files has no cheap notion of height,
+// and the name is deliberately not the old height-based one, so a cursor written
+// by an earlier version cannot be read as a file number.
+const activeCursor = "actbuild-file"
 
 // activeMin is how many transactions an address needs before it counts as
 // active. Lookup is asked for one more than this and no further: the question is
@@ -54,90 +39,39 @@ var lookupLimit = 5000000
 // enough that most scripts qualify.
 var decodeBatch = 1000
 
-// actChunk is how many blocks are scanned before the batch is written and the
-// cursor advanced, so a crash mid-scan resumes from the last flushed chunk.
+// processed is the set of script prefixes this run has already decided about,
+// held in memory rather than in the database. One entry is the whole 8-byte
+// index prefix packed into a uint64, so the set is exact — a map of strings
+// would cost several times as much for the same information.
 //
-// Bigger is better for writes and worse for memory: every flush rewrites each
-// shard it touches, and with 65 536 shards a chunk touches nearly all of them,
-// so the whole bucket is rewritten once per chunk. Against that, a chunk holds
-// every distinct script it saw. See CLAUDE.md for what 2000 measured.
-var actChunk = 2000
+// It does not survive the run. A resumed scan therefore starts empty and looks
+// up addresses it decided about last time, which costs work but changes no
+// answer: the count it writes is the same either way.
+type processed map[uint64]struct{}
 
-// shardKey splits a script's index prefix into the two halves the processed set
-// is keyed by.
-func shardKey(script []byte) (shard, remainder []byte) {
-    var p = addrindex.Prefix(script)
-    return p[:shardLen], p[shardLen : shardLen+remainderLen]
+func (p processed) take(script []byte) bool {
+    var key = binary.BigEndian.Uint64(addrindex.Prefix(script))
+    if _, ok := p[key]; ok { return false }
+    p[key] = struct{}{}
+    return true
 }
 
-// nth returns the i'th remainder of a shard's run.
-func nth(shard []byte, i int) []byte { return shard[i*remainderLen : (i+1)*remainderLen] }
-
-// seen reports whether a remainder is recorded in a shard's run. The run is
-// sorted, so this is a binary search — the one thing that keeps membership cheap
-// once a shard holds tens of thousands of entries.
-func seen(shard, remainder []byte) bool {
-    var n = len(shard) / remainderLen
-    var i = sort.Search(n, func(i int) bool { return bytes.Compare(nth(shard, i), remainder) >= 0 })
-    return i < n && bytes.Equal(nth(shard, i), remainder)
-}
-
-// insertOne adds a remainder in the place that keeps the run sorted, which is
-// what lets seen binary-search the chunk's own additions as well as the stored
-// ones. A shard collects a few hundred entries within a chunk, so shifting the
-// tail is a short move.
-func insertOne(run []byte, rem []byte) []byte {
-    var n = len(run) / remainderLen
-    var i = sort.Search(n, func(i int) bool { return bytes.Compare(nth(run, i), rem) >= 0 })
-    if i < n && bytes.Equal(nth(run, i), rem) { return run }
-    run = append(run, make([]byte, remainderLen)...)
-    copy(run[(i+1)*remainderLen:], run[i*remainderLen:n*remainderLen])
-    copy(run[i*remainderLen:], rem)
-    return run
-}
-
-// merge combines two sorted runs into one, which is how a chunk's additions
-// reach the stored shard. One pass rather than an insert per entry: a flush
-// stays linear in the shard's size where repeated single inserts would be
-// quadratic. A remainder present in both is kept once, or a re-scan would
-// double every entry.
-func merge(a, b []byte) []byte {
-    var out = make([]byte, 0, len(a)+len(b))
-    var i, j = 0, 0
-    var na, nb = len(a) / remainderLen, len(b) / remainderLen
-    for i < na && j < nb {
-        switch bytes.Compare(nth(a, i), nth(b, j)) {
-        case 0:
-            out = append(out, nth(a, i)...)
-            i, j = i+1, j+1
-        case -1:
-            out = append(out, nth(a, i)...)
-            i++
-        default:
-            out = append(out, nth(b, j)...)
-            j++
-        }
-    }
-    out = append(out, a[i*remainderLen:]...)
-    return append(out, b[j*remainderLen:]...)
-}
-
-// actbuild walks the chain from its own cursor to the tip and, for every script
-// it has not decided about before, asks the index how many transactions that
-// address has. Anything past activeMin is written to addrindex-active.
+// actbuild walks Core's raw block files and, for every script it has not decided
+// about before, asks the index how many transactions that address has. Anything
+// past activeMin is written to addrindex-active.
 //
-// The processed set is what makes this affordable: the index lookup is the
-// expensive part, and the overwhelming majority of scripts are seen again and
-// again as the scan goes on.
+// It reads the files rather than Core's REST interface: the whole point is one
+// sequential pass over local data instead of a request per block. It needs no
+// undo data either — see addrindex.OutputScripts for why the outputs alone see
+// every address.
 func actbuild(opt *options) {
-    var src = addrindex.NewREST(opt.url)
-    var ctx = context.Background()
-    var probe, cancel = context.WithTimeout(ctx, 30*time.Second)
-    var tip, err = src.Tip(probe)
-    cancel()
-    if err != nil {
-        logging.Fatal("Core REST is unreachable at %s (%v) — enable -rest=1", opt.url, err)
+    if opt.blocks == "" {
+        logging.Fatal("actbuild needs -blocks pointing at Core's blocks directory")
     }
+    var files, err = blockFiles(opt.blocks)
+    if err != nil { logging.Fatal("%v", err) }
+    var key, kerr = xorKey(opt.blocks)
+    if kerr != nil { logging.Fatal("read xor.dat: %v", kerr) }
     var client, rerr = newRPC(opt.url, opt.user, opt.pass, opt.cookie)
     if rerr != nil { logging.Fatal("RPC client: %v", rerr) }
     if _, ok := addrindex.Cursor(); !ok {
@@ -146,37 +80,69 @@ func actbuild(opt *options) {
     if err := ensureBuckets(); err != nil { logging.Fatal("create buckets: %v", err) }
 
     var from = 0
-    if h, ok := addrindex.GetCursor(activeCursor); ok { from = h + 1 }
-    if from > tip {
-        fmt.Printf("Active addresses are already up to the tip (block %d)\n", tip)
+    if n, ok := addrindex.GetCursor(activeCursor); ok { from = n + 1 }
+    if from >= len(files) {
+        fmt.Printf("Every block file has been scanned (%d of %d)\n", from, len(files))
         return
     }
-    fmt.Printf("Scanning blocks %d..%d for addresses with more than %d transactions\n", from, tip, activeMin)
+    fmt.Printf("Scanning %s files %d..%d for addresses with more than %d transactions\n",
+        opt.blocks, from, len(files)-1, activeMin)
+    var ctx = context.Background()
     var started = time.Now()
     var first = from
+    var seenScripts = processed{}
     var looked, found int
-    for from <= tip {
-        var to = from + actChunk - 1
-        if to > tip { to = tip }
-        var c, serr = scanChunk(ctx, src, client, from, to)
+    for i := from; i < len(files); i++ {
+        var c, serr = scanFile(ctx, files[i], key, seenScripts, client)
         if serr != nil {
             logging.Err("actbuild: %v", serr)
             break
         }
-        if err := flushActive(c, to); err != nil {
-            logging.Err("actbuild: write blocks %d..%d: %v", from, to, err)
+        if err := flushActive(c, i); err != nil {
+            logging.Err("actbuild: write file %d: %v", i, err)
             break
         }
         looked += c.fresh
         found += len(c.active)
-        logging.Info("actbuild: blocks %d..%d of %d: %d scripts, %d new addresses, %d active so far, %s",
-            from, to, tip, c.scripts, c.fresh, found, progress(started, first, to, tip, looked))
-        from = to + 1
+        logging.Info("actbuild: file %d of %d: %d blocks, %d scripts, %d new addresses, %d active so far, %s",
+            i, len(files)-1, c.blocks, c.scripts, c.fresh, found,
+            progress(started, first, i, len(files)-1, looked))
     }
     var at, _ = addrindex.GetCursor(activeCursor)
     var elapsed = time.Since(started)
-    fmt.Printf("Scanned to block %d in %s: %s addresses looked up (%s addr/sec), %d active\n",
+    fmt.Printf("Scanned through file %d in %s: %s addresses looked up (%s addr/sec), %d active\n",
         at, took(elapsed), group(int64(looked)), group(rate(looked, elapsed)), found)
+}
+
+// scanFile reads one blk file end to end and decides about every script in it
+// that this run has not seen before.
+func scanFile(ctx context.Context, name string, key []byte, seenScripts processed, client *rpc) (*chunk, error) {
+    var r, err = openBlockFile(name, key)
+    if err != nil { return nil, err }
+    defer r.Close()
+    var c = &chunk{active: map[string]int{}}
+    for {
+        var raw, rerr = r.next()
+        if rerr != nil { return nil, fmt.Errorf("%s: %w", name, rerr) }
+        if raw == nil { break }
+        c.blocks++
+        var scripts, ok = addrindex.OutputScripts(raw)
+        if !ok {
+            logging.Warn("actbuild: could not parse a block in %s", name)
+            continue
+        }
+        c.scripts += len(scripts)
+        for _, script := range scripts {
+            if !seenScripts.take(script) { continue }
+            c.fresh++
+            c.classify(script)
+        }
+        if len(c.waiting) >= decodeBatch {
+            if err := c.resolve(ctx, client); err != nil { return nil, err }
+        }
+    }
+    if err := c.resolve(ctx, client); err != nil { return nil, err }
+    return c, nil
 }
 
 // progress reports how fast the scan is going and how much longer it has. The
@@ -220,8 +186,8 @@ func group(n int64) string {
 // at 2000 blocks number several million and were what made an earlier version
 // of this need 8 GB.
 type chunk struct {
-    pending map[string][]byte
-    active  map[string]int
+    active map[string]int
+    blocks int
     // qualified but not yet resolved to an address: decodescript is sent in
     // batches, so a script waits here until decodeBatch of them accumulate
     waiting []pending
@@ -234,60 +200,6 @@ type chunk struct {
 type pending struct {
     script []byte
     count  int
-}
-
-// scanChunk walks a range of blocks and decides about every script in it that
-// has not been decided about before.
-//
-// It works a block at a time rather than collecting the range first: the whole
-// range's distinct scripts do not fit comfortably in memory, and nothing needs
-// them all at once. The processed check runs in a short read transaction per
-// block, and the index lookups run outside it — a Lookup opens its own read
-// transaction, and nesting one inside another risks deadlocking against a
-// waiting writer.
-func scanChunk(ctx context.Context, src *addrindex.REST, client *rpc, from, to int) (*chunk, error) {
-    var c = &chunk{pending: map[string][]byte{}, active: map[string]int{}}
-    for h := from; h <= to; h++ {
-        var blk, err = src.BlockAt(ctx, h)
-        if err != nil { return nil, fmt.Errorf("block %d: %w", h, err) }
-        var scripts, ok = addrindex.Scripts(blk)
-        if !ok {
-            logging.Warn("actbuild: could not parse block %d", h)
-            continue
-        }
-        c.scripts += len(scripts)
-        var fresh, ferr = c.take(scripts)
-        if ferr != nil { return nil, ferr }
-        c.fresh += len(fresh)
-        for _, script := range fresh {
-            c.classify(script)
-        }
-        if len(c.waiting) >= decodeBatch {
-            if err := c.resolve(ctx, client); err != nil { return nil, err }
-        }
-    }
-    if err := c.resolve(ctx, client); err != nil { return nil, err }
-    return c, nil
-}
-
-// take records the scripts this chunk has not decided about yet and returns
-// them, in one read transaction for the block.
-func (c *chunk) take(scripts [][]byte) ([][]byte, error) {
-    var fresh [][]byte
-    var err = db.View(func(tx *bbolt.Tx) error {
-        var p = tx.Bucket(processedBucket)
-        for _, s := range scripts {
-            var prefix = addrindex.Prefix(s)
-            var shard, rem = string(prefix[:shardLen]), prefix[shardLen:]
-            // Both runs are sorted, so both are searched the same way — the
-            // chunk's own is kept in order as it grows rather than appended to.
-            if seen(p.Get(prefix[:shardLen]), rem) || seen(c.pending[shard], rem) { continue }
-            c.pending[shard] = insertOne(c.pending[shard], rem)
-            fresh = append(fresh, s)
-        }
-        return nil
-    })
-    return fresh, err
 }
 
 // classify asks the index how long a script's history is and queues the ones
@@ -331,31 +243,21 @@ func (c *chunk) resolve(ctx context.Context, client *rpc) error {
 
 // flushActive writes a chunk's findings and advances the cursor in one
 // transaction, so an interrupted scan resumes from the last chunk that landed.
-func flushActive(c *chunk, height int) error {
+func flushActive(c *chunk, file int) error {
     return db.Update(func(tx *bbolt.Tx) error {
-        var p = tx.Bucket(processedBucket)
-        // Each shard is rewritten once, its whole batch merged into place, so
-        // the stored run comes back sorted.
-        for shard, remainders := range c.pending {
-            if err := p.Put([]byte(shard), merge(p.Get([]byte(shard)), remainders)); err != nil {
-                return err
-            }
-        }
         var a = tx.Bucket(activeBucket)
         for addr, count := range c.active {
             var v = make([]byte, 8)
             binary.BigEndian.PutUint64(v, uint64(count))
             if err := a.Put([]byte(addr), v); err != nil { return err }
         }
-        return addrindex.SetCursorIn(tx, activeCursor, height)
+        return addrindex.SetCursorIn(tx, activeCursor, file)
     })
 }
 
 func ensureBuckets() error {
     return db.Update(func(tx *bbolt.Tx) error {
-        for _, name := range [][]byte{activeBucket, processedBucket} {
-            if _, err := tx.CreateBucketIfNotExists(name); err != nil { return err }
-        }
-        return nil
+        var _, err = tx.CreateBucketIfNotExists(activeBucket)
+        return err
     })
 }
