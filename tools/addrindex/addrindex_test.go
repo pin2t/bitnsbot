@@ -2,6 +2,7 @@ package main
 
 import "encoding/binary"
 import "flag"
+import "fmt"
 import "encoding/hex"
 import "encoding/json"
 import "io"
@@ -9,6 +10,7 @@ import "net/http"
 import "net/http/httptest"
 import "os"
 import "path/filepath"
+import "sort"
 import "strconv"
 import "strings"
 import "testing"
@@ -19,11 +21,14 @@ import "bitnsbot/addrindex"
 
 // The script the fixture's address is paid to. Its bytes are all that matter —
 // the index is keyed by scriptPubKey, and no address format is ever decoded.
-var payScript = mustHex("76a914000102030405060708090a0b0c0d0e0f1011121314ff88ac")
+var payScript = mustHex("76a914000102030405060708090a0b0c0d0e0f1011121388ac")
 var otherScript = mustHex("76a914aabbccddeeff00112233445566778899aabbccdd88ac")
 
+// address is what the list tests hand to the node to validate; the node decides
+// what script it maps to, so its text is arbitrary. The addresses actbuild
+// records are not — those are encoded from the scripts themselves, so the tests
+// ask scriptAddress rather than naming them.
 const address = "37QAiiRLSHEsMPu3SXT9AKWDoZsZxtfuRP"
-const otherAddress = "1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2"
 
 func mustHex(s string) []byte {
     var b, err = hex.DecodeString(s)
@@ -167,11 +172,12 @@ func batchID(v interface{}) int {
     return -1
 }
 
-// batched counts the batch requests the fake has served, so a test can assert
-// that a group of scripts cost one round trip rather than one each.
-var batched int
+// requests counts every request the fake has served, so a test can assert that
+// a pass which should read only files touched the node not at all.
+var requests int
 
 func rpcReply(t *testing.T, w http.ResponseWriter, r *http.Request) {
+    requests++
     var body, rerr = io.ReadAll(r.Body)
     if rerr != nil {
         t.Errorf("read rpc: %v", rerr)
@@ -184,7 +190,6 @@ func rpcReply(t *testing.T, w http.ResponseWriter, r *http.Request) {
             t.Errorf("decode batch: %v", err)
             return
         }
-        batched++
         var out []map[string]interface{}
         for _, req := range reqs {
             out = append(out, map[string]interface{}{"id": batchID(req.ID), "result": answer(t, req)})
@@ -214,17 +219,6 @@ func answer(t *testing.T, req rpcCall) interface{} {
         reply(map[string]interface{}{"tx": ids})
     case "getrawtransaction":
         reply(txDetail(req.Params[0].(string)))
-    case "decodescript":
-        // the fixture's two scripts map to two addresses; anything else is
-        // nonstandard and has none
-        switch req.Params[0].(string) {
-        case hex.EncodeToString(payScript):
-            reply(map[string]interface{}{"address": address})
-        case hex.EncodeToString(otherScript):
-            reply(map[string]interface{}{"address": otherAddress})
-        default:
-            reply(map[string]interface{}{})
-        }
     default:
         t.Errorf("unexpected rpc method %s", req.Method)
     }
@@ -393,188 +387,223 @@ func TestTook(t *testing.T) {
     }
 }
 
-// actbuild walks the chain, decides about each address once, and records the
-// ones whose history is longer than the threshold. The fixture's payScript has
-// two transactions and otherScript four, so a threshold of three separates them.
+// writeBlockFiles lays out a Core blocks directory: one blk file per group of
+// blocks, framed and obfuscated exactly as Core writes them, plus the xor.dat
+// that holds the key.
+func writeBlockFiles(t *testing.T, groups [][][]byte) string {
+    var dir = t.TempDir()
+    var key = []byte{0x66, 0xcb, 0x13, 0xcf, 0x57, 0x2a, 0x2e, 0x5f}
+    if err := os.WriteFile(filepath.Join(dir, "xor.dat"), key, 0600); err != nil {
+        t.Fatalf("xor.dat: %v", err)
+    }
+    for n, blocks := range groups {
+        var raw []byte
+        for _, b := range blocks {
+            var size = make([]byte, 4)
+            binary.LittleEndian.PutUint32(size, uint32(len(b)))
+            raw = append(raw, magic...)
+            raw = append(raw, size...)
+            raw = append(raw, b...)
+        }
+        // Core preallocates, so the written records are followed by zeros — the
+        // reader has to stop there rather than read them as a record
+        raw = append(raw, make([]byte, 64)...)
+        for i := range raw { raw[i] ^= key[i%len(key)] }
+        var name = filepath.Join(dir, fmt.Sprintf("blk%05d.dat", n))
+        if err := os.WriteFile(name, raw, 0600); err != nil { t.Fatalf("write %s: %v", name, err) }
+    }
+    return dir
+}
+
+// chainFiles is the fixture as Core would store it: the same blocks the index is
+// built from, two per file.
+func chainFiles(t *testing.T) string {
+    var blocks = chainBlocks()
+    return writeBlockFiles(t, [][][]byte{
+        {blocks[0][0], blocks[1][0]},
+        {blocks[2][0], blocks[3][0]},
+    })
+}
+
+// The reader has to undo Core's obfuscation, follow the magic-and-length
+// framing, and stop at the padding rather than read it as a record.
+func TestBlockReaderWalksAFile(t *testing.T) {
+    var blocks = chainBlocks()
+    var dir = writeBlockFiles(t, [][][]byte{{blocks[0][0], blocks[1][0], blocks[2][0]}})
+    var key, err = xorKey(dir)
+    if err != nil { t.Fatalf("key: %v", err) }
+    var names, ferr = blockFiles(dir)
+    if ferr != nil { t.Fatalf("files: %v", ferr) }
+    if len(names) != 1 { t.Fatalf("found %d files, want 1", len(names)) }
+    var r, oerr = openBlockFile(names[0], key)
+    if oerr != nil { t.Fatalf("open: %v", oerr) }
+    defer r.Close()
+    var got int
+    for {
+        var raw, rerr = r.next()
+        if rerr != nil { t.Fatalf("next: %v", rerr) }
+        if raw == nil { break }
+        if len(raw) != len(blocks[got][0]) {
+            t.Errorf("block %d is %d bytes, want %d", got, len(raw), len(blocks[got][0]))
+        }
+        if string(raw) != string(blocks[got][0]) {
+            t.Errorf("block %d came back wrong — the obfuscation was not undone", got)
+        }
+        got++
+    }
+    if got != 3 { t.Errorf("read %d blocks, want 3", got) }
+}
+
+// A directory with no key file is an older node that wrote the blocks in the
+// clear, which an all-zero key expresses.
+func TestBlockReaderWithoutAKey(t *testing.T) {
+    var dir = t.TempDir()
+    if err := os.WriteFile(filepath.Join(dir, "blk00000.dat"), nil, 0600); err != nil {
+        t.Fatalf("write: %v", err)
+    }
+    var key, err = xorKey(dir)
+    if err != nil { t.Fatalf("key: %v", err) }
+    for _, b := range key {
+        if b != 0 { t.Fatalf("key = %x, want all zeros when xor.dat is absent", key) }
+    }
+}
+
+// actbuild reads the block files, decides about each address once, and records
+// the ones whose history is longer than the threshold.
 func TestActbuildRecordsActiveAddresses(t *testing.T) {
     openIndex(t)
     var srv = fakeCore(t, 3)
-    var opt = &options{url: srv.URL, limit: 1000}
+    var opt = &options{url: srv.URL, limit: 1000, blocks: chainFiles(t)}
     capture(t, func() { build(opt) })
 
     var oldMin = activeMin
     activeMin = 3
     defer func() { activeMin = oldMin }()
     var out = capture(t, func() { actbuild(opt) })
-    if !strings.Contains(out, "Scanning blocks 0..3") {
+    if !strings.Contains(out, "Scanning") {
         t.Errorf("actbuild did not report its range: %q", out)
     }
 
     var active = activeAddresses(t)
-    if _, ok := active[address]; ok {
+    if _, ok := active[scriptAddress(payScript)]; ok {
         t.Errorf("the address with 2 transactions was recorded as active: %v", active)
     }
     // 6 touches: a coinbase in each of the four blocks, plus a spend and a
-    // payment. The deciding lookup stops at the threshold, so this also pins
-    // that the recorded count is a real count and not that cap.
-    if n, ok := active[otherAddress]; !ok || n != 6 {
-        t.Errorf("active = %v; want %s with its 6 transactions", active, otherAddress)
+    // payment. One lookup both decides and counts, so this also pins that the
+    // recorded figure is a real count and not the threshold.
+    if n, ok := active[scriptAddress(otherScript)]; !ok || n != 6 {
+        t.Errorf("active = %v; want %s with its 6 transactions", active, scriptAddress(otherScript))
     }
-    if h, ok := addrindex.GetCursor(activeCursor); !ok || h != 3 {
-        t.Errorf("actbuild cursor = %d, %v; want 3", h, ok)
+    // the cursor counts files, and the index's own is untouched
+    if n, ok := addrindex.GetCursor(activeCursor); !ok || n != 1 {
+        t.Errorf("actbuild cursor = %d, %v; want file 1", n, ok)
     }
-    // the index's own cursor is untouched — they sit in one bucket under
-    // different names
     if h, _ := addrindex.Cursor(); h != 3 {
         t.Errorf("the index cursor moved to %d", h)
     }
 }
 
-// The processed set is the point of the exercise: an address decided about in an
-// earlier chunk must not be looked up again in a later one.
+// The in-memory set is the point: a script repeated across blocks and files is
+// looked up once for the whole run.
 func TestActbuildProcessesEachAddressOnce(t *testing.T) {
     openIndex(t)
     var srv = fakeCore(t, 3)
-    var opt = &options{url: srv.URL, limit: 1000}
+    var opt = &options{url: srv.URL, limit: 1000, blocks: chainFiles(t)}
     capture(t, func() { build(opt) })
-    var oldChunk = actChunk
-    actChunk = 1 // one block per chunk, so the repeats land in later chunks
-    defer func() { actChunk = oldChunk }()
-    capture(t, func() { actbuild(opt) })
-
-    // both scripts appear in several blocks, but each is recorded once
-    for _, script := range [][]byte{payScript, otherScript} {
-        var shard, rem = shardKey(script)
-        var count int
-        db.View(func(tx *bbolt.Tx) error {
-            var v = tx.Bucket(processedBucket).Get(shard)
-            for i := 0; i+remainderLen <= len(v); i += remainderLen {
-                if string(v[i:i+remainderLen]) == string(rem) { count++ }
-            }
-            return nil
-        })
-        if count != 1 {
-            t.Errorf("script %x recorded %d times in the processed set, want 1", script[:8], count)
-        }
+    var out = capture(t, func() { actbuild(opt) })
+    // the fixture has two distinct scripts across four blocks in two files
+    if !strings.Contains(out, "2 addresses looked up") {
+        t.Errorf("want two lookups for two distinct scripts, got: %q", out)
     }
 }
 
-// A second run with nothing new must do nothing, which is what the cursor buys.
+// A second run with no new files must do nothing, which is what the cursor buys.
 func TestActbuildResumesFromItsCursor(t *testing.T) {
     openIndex(t)
     var srv = fakeCore(t, 3)
-    var opt = &options{url: srv.URL, limit: 1000}
+    var opt = &options{url: srv.URL, limit: 1000, blocks: chainFiles(t)}
     capture(t, func() { build(opt) })
     capture(t, func() { actbuild(opt) })
     var again = capture(t, func() { actbuild(opt) })
-    if !strings.Contains(again, "already up to the tip") {
+    if !strings.Contains(again, "Every block file has been scanned") {
         t.Errorf("a second actbuild should be a no-op, got %q", again)
     }
 }
 
-// The sharded set is the whole storage design, so its parts are pinned
-// directly: 2 bytes of shard and 6 of remainder, the same split the index uses,
-// packed into a run that is kept sorted so membership can binary-search it.
-func TestProcessedShardLayout(t *testing.T) {
-    var shard, rem = shardKey(payScript)
-    if len(shard) != 2 || len(rem) != 6 {
-        t.Fatalf("shard %d bytes, remainder %d; want 2 and 6", len(shard), len(rem))
-    }
-    var prefix = addrindex.Prefix(payScript)
-    if string(shard) != string(prefix[:2]) || string(rem) != string(prefix[2:8]) {
-        t.Error("the split must be the first 2 and last 6 bytes of the index prefix")
+// The set holds the whole 8-byte prefix, so two scripts are only ever confused
+// if the index itself would confuse them.
+func TestProcessedSet(t *testing.T) {
+    var p = newProcessed(0)
+    if !p.take(payScript) { t.Error("a script not seen before must be taken") }
+    if p.take(payScript) { t.Error("the same script was taken twice") }
+    if !p.take(otherScript) { t.Error("a different script must be taken") }
+    if p.len() != 2 { t.Errorf("set holds %d, want 2", p.len()) }
+    // the key is the index prefix, which is what makes the set agree with the
+    // index about what counts as the same address
+    p.flush()
+    var want = binary.BigEndian.Uint64(addrindex.Prefix(payScript))
+    if p.sorted[0] != want && p.sorted[1] != want {
+        t.Error("the set is not keyed by the index prefix")
     }
 }
 
-// run builds a sorted shard value out of whole remainders.
-func run(remainders ...[]byte) []byte {
-    var out []byte
-    for _, r := range remainders { out = append(out, r...) }
-    return out
-}
+// The merge is where a sorted set goes wrong, so it is driven hard: many keys,
+// arriving out of order, across several flushes, with repeats throughout.
+func TestProcessedSetMergesCorrectly(t *testing.T) {
+    var old = bufferedAddrs
+    bufferedAddrs = 16 // several flushes over a few hundred keys
+    defer func() { bufferedAddrs = old }()
 
-func rem6(b byte) []byte { return []byte{b, 0, 0, 0, 0, 0} }
-
-// run2 is run under another name, for tests that shadow run with a local.
-func run2(remainders ...[]byte) []byte { return run(remainders...) }
-
-// Membership is a binary search, so it must find an entry wherever it sits in
-// the run and never claim one that is not there.
-func TestSeenBinarySearch(t *testing.T) {
-    var shard = run(rem6(1), rem6(3), rem6(5), rem6(7), rem6(9))
-    for _, b := range []byte{1, 3, 5, 7, 9} {
-        if !seen(shard, rem6(b)) {
-            t.Errorf("%d is in the run but was not found", b)
+    var p = newProcessed(0)
+    var want = map[uint64]bool{}
+    var rnd uint64 = 12345
+    for i := 0; i < 500; i++ {
+        rnd = rnd*6364136223846793005 + 1442695040888963407
+        var script = make([]byte, 8)
+        binary.BigEndian.PutUint64(script, rnd%137) // a small range, so keys repeat
+        var key = binary.BigEndian.Uint64(addrindex.Prefix(script))
+        var fresh = p.take(script)
+        if fresh == want[key] {
+            t.Fatalf("take reported %v for a key already seen = %v", fresh, want[key])
+        }
+        want[key] = true
+    }
+    p.flush()
+    if len(p.sorted) != len(want) {
+        t.Errorf("set holds %d distinct keys, want %d", len(p.sorted), len(want))
+    }
+    for i := 1; i < len(p.sorted); i++ {
+        if p.sorted[i-1] >= p.sorted[i] {
+            t.Fatalf("the set is not sorted at %d: %d then %d", i, p.sorted[i-1], p.sorted[i])
         }
     }
-    for _, b := range []byte{0, 2, 4, 6, 8, 10} {
-        if seen(shard, rem6(b)) {
-            t.Errorf("%d is not in the run but was found", b)
-        }
-    }
-    if seen(nil, rem6(1)) {
-        t.Error("an empty shard cannot contain anything")
-    }
-    // a remainder must not match off an entry boundary, which a byte search would
-    if seen(run(rem6(0))[1:], rem6(0)) {
-        t.Error("a remainder was matched off the entry boundary")
-    }
-}
-
-// insertOne puts a remainder in its place rather than at the end, so the run
-// stays sorted and stays searchable.
-func TestInsertOneKeepsTheRunSorted(t *testing.T) {
-    var run = run(rem6(2), rem6(6))
-    // one before, one between, one after — each lands where the order requires
-    for _, b := range []byte{8, 1, 4} {
-        run = insertOne(run, rem6(b))
-    }
-    var want = run2(rem6(1), rem6(2), rem6(4), rem6(6), rem6(8))
-    if string(run) != string(want) {
-        t.Fatalf("run = %x, want %x", run, want)
-    }
-    for _, b := range []byte{1, 2, 4, 6, 8} {
-        if !seen(run, rem6(b)) {
-            t.Errorf("%d was lost by the insert", b)
+    for k := range want {
+        var i = sort.Search(len(p.sorted), func(i int) bool { return p.sorted[i] >= k })
+        if i >= len(p.sorted) || p.sorted[i] != k {
+            t.Fatalf("key %d was lost by a merge", k)
         }
     }
 }
 
-// Re-inserting something already there must not double it, or the set would
-// grow without bound on a re-scan.
-func TestInsertOneDoesNotDuplicate(t *testing.T) {
-    var r = run(rem6(2), rem6(4))
-    r = insertOne(r, rem6(4))
-    r = insertOne(r, rem6(2))
-    if got := len(r) / remainderLen; got != 2 {
-        t.Errorf("run holds %d entries, want 2", got)
+// Reserving room up front means the slice never reallocates, which is what
+// keeps the peak at the size of the set rather than twice it.
+func TestProcessedSetReserves(t *testing.T) {
+    var p = newProcessed(1000)
+    if cap(p.sorted) < 1000 {
+        t.Errorf("reserved capacity %d, want at least 1000", cap(p.sorted))
     }
-    // into an empty run
-    if got := insertOne(nil, rem6(5)); string(got) != string(rem6(5)) {
-        t.Errorf("into an empty run: %x", got)
+    var before = cap(p.sorted)
+    var old = bufferedAddrs
+    bufferedAddrs = 4
+    defer func() { bufferedAddrs = old }()
+    for i := 0; i < 100; i++ {
+        var script = make([]byte, 8)
+        binary.BigEndian.PutUint64(script, uint64(i))
+        p.take(script)
     }
-}
-
-// merge combines two sorted runs, which is how a chunk's additions reach the
-// stored shard.
-func TestMergeSortedRuns(t *testing.T) {
-    var stored = run(rem6(2), rem6(5), rem6(9))
-    var batch = run(rem6(1), rem6(5), rem6(7))
-    var got = merge(stored, batch)
-    var want = run2(rem6(1), rem6(2), rem6(5), rem6(7), rem6(9))
-    if string(got) != string(want) {
-        t.Fatalf("merge = %x, want %x — 5 is in both and must be kept once", got, want)
-    }
-    // either side empty
-    if string(merge(nil, batch)) != string(batch) {
-        t.Error("merging into an empty run lost the batch")
-    }
-    if string(merge(stored, nil)) != string(stored) {
-        t.Error("merging an empty batch changed the run")
-    }
-    // one side entirely past the other, so the tail copy finishes it
-    if got := merge(run(rem6(1)), run(rem6(8), rem6(9))); string(got) != string(run2(rem6(1), rem6(8), rem6(9))) {
-        t.Errorf("appending past the end: %x", got)
+    p.flush()
+    if cap(p.sorted) != before {
+        t.Errorf("the slice reallocated (%d to %d) despite the reservation", before, cap(p.sorted))
     }
 }
 
@@ -583,65 +612,47 @@ func TestMergeSortedRuns(t *testing.T) {
 func TestClassifyMakesOneLookup(t *testing.T) {
     openIndex(t)
     var srv = fakeCore(t, 3)
-    var opt = &options{url: srv.URL, limit: 1000}
+    var opt = &options{url: srv.URL, limit: 1000, blocks: chainFiles(t)}
     capture(t, func() { build(opt) })
     var oldMin = activeMin
     activeMin = 3
     defer func() { activeMin = oldMin }()
     capture(t, func() { actbuild(opt) })
-    // the count recorded is the real one, which a deciding-only lookup capped at
-    // the threshold could not produce
-    if n := activeAddresses(t)[otherAddress]; n != 6 {
+    if n := activeAddresses(t)[scriptAddress(otherScript)]; n != 6 {
         t.Errorf("count = %d, want the real 6 — one lookup must both decide and count", n)
     }
 }
 
-// The scripts that qualify are resolved in one batched call rather than a round
-// trip each.
-func TestDecodeScriptIsBatched(t *testing.T) {
+// actbuild talks to no node at all. The addresses are encoded from the scripts
+// locally, which was the last thing tying this pass to Core's RPC interface.
+func TestActbuildMakesNoNodeRequests(t *testing.T) {
     openIndex(t)
     var srv = fakeCore(t, 3)
-    var opt = &options{url: srv.URL, limit: 1000}
+    var opt = &options{url: srv.URL, limit: 1000, blocks: chainFiles(t)}
     capture(t, func() { build(opt) })
-    var oldMin, oldBatch = activeMin, decodeBatch
-    // a threshold low enough that both fixture scripts qualify, so there is
-    // something to batch
-    activeMin, decodeBatch = 1, 1000
-    defer func() { activeMin, decodeBatch = oldMin, oldBatch }()
-    batched = 0
+    var oldMin = activeMin
+    activeMin = 1
+    defer func() { activeMin = oldMin }()
+    requests = 0
     capture(t, func() { actbuild(opt) })
-    if batched == 0 {
-        t.Fatal("decodescript was never sent as a batch")
+    if requests != 0 {
+        t.Errorf("actbuild made %d requests to the node; it should read only files", requests)
     }
+    // and it still produced the addresses, encoded from the scripts themselves
     var active = activeAddresses(t)
     if len(active) != 2 {
-        t.Errorf("resolved %d addresses, want both fixture scripts: %v", len(active), active)
+        t.Errorf("recorded %d addresses, want both fixture scripts: %v", len(active), active)
     }
-    // and the counts must still line up with the right addresses, which is what
-    // matching a batch reply by id is for
-    if active[address] != 2 || active[otherAddress] != 6 {
+    if active[scriptAddress(payScript)] != 2 || active[scriptAddress(otherScript)] != 6 {
         t.Errorf("counts landed on the wrong addresses: %v", active)
     }
 }
 
-// A batch bigger than decodeBatch is split, and every script still comes back
-// against its own count.
-func TestDecodeScriptSplitsLargeBatches(t *testing.T) {
-    openIndex(t)
-    var srv = fakeCore(t, 3)
-    var opt = &options{url: srv.URL, limit: 1000}
-    capture(t, func() { build(opt) })
-    var oldMin, oldBatch = activeMin, decodeBatch
-    activeMin, decodeBatch = 1, 1 // one script per call, so two calls
-    defer func() { activeMin, decodeBatch = oldMin, oldBatch }()
-    batched = 0
-    capture(t, func() { actbuild(opt) })
-    if batched < 2 {
-        t.Errorf("sent %d batches for two scripts at decodeBatch 1, want at least 2", batched)
-    }
-    var active = activeAddresses(t)
-    if active[address] != 2 || active[otherAddress] != 6 {
-        t.Errorf("splitting the batch lost the pairing: %v", active)
+// actbuild has no source without it, so it must say so rather than scan nothing.
+func TestActbuildNeedsABlocksDirectory(t *testing.T) {
+    var _, err = blockFiles(t.TempDir())
+    if err == nil {
+        t.Error("an empty directory should not pass as a blocks directory")
     }
 }
 

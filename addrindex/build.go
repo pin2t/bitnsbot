@@ -282,3 +282,26 @@ func Scripts(blk Block) ([][]byte, bool) {
     }
     return out, true
 }
+
+// OutputScripts returns the distinct scriptPubKeys a block's outputs pay to,
+// using the same parse the indexer runs.
+//
+// Outputs only, where Scripts also takes the spending side. That is enough to
+// enumerate every address the chain has ever seen: an input can only spend an
+// output that was paid earlier, so every script that is ever spent was already
+// seen when its funding block was scanned. It is what lets a pass over the raw
+// block files skip Core's undo data entirely.
+func OutputScripts(raw []byte) ([][]byte, bool) {
+    var outputs, ok = parseBlockOutputs(raw)
+    if !ok { return nil, false }
+    var seen = map[string]bool{}
+    var out [][]byte
+    for _, perTx := range outputs {
+        for _, s := range perTx {
+            if len(s) == 0 || seen[string(s)] { continue }
+            seen[string(s)] = true
+            out = append(out, s)
+        }
+    }
+    return out, true
+}

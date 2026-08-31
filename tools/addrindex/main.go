@@ -8,12 +8,13 @@
 //
 //	addrindex build    -db ai.db -url http://127.0.0.1:8332 -cookie ./cookie
 //	addrindex list     -db ai.db -url http://127.0.0.1:8332 -cookie ./cookie <address>
-//	addrindex actbuild -db ai.db -url http://127.0.0.1:8332 -cookie ./cookie
+//	addrindex actbuild -db ai.db -blocks ~/.bitcoin/blocks
 //
 // build catches the index up from its cursor to the chain tip and exits; list
 // prints every transaction the index holds for an address, then a summary;
-// actbuild walks the chain again and records the addresses whose history is
-// longer than -active transactions.
+// actbuild reads Core's raw block files and records the addresses whose history
+// is longer than -active transactions. It talks to no node at all — it reads the
+// files and encodes the addresses itself — so it needs neither -url nor -cookie.
 package main
 
 import "context"
@@ -37,7 +38,8 @@ type options struct {
     pass    string
     limit   int
     active  int
-    chunk   int
+    blocks  string
+    addrs   int
     verbose int
 }
 
@@ -50,7 +52,8 @@ func flags(fs *flag.FlagSet) *options {
     fs.StringVar(&o.pass, "pass", "", "Core RPC password, instead of a cookie")
     fs.IntVar(&o.limit, "limit", 5000000, "most touches to read for one address")
     fs.IntVar(&o.active, "active", 1000, "actbuild: transactions an address needs to count as active")
-    fs.IntVar(&o.chunk, "chunk", 2000, "actbuild: blocks scanned per batch — more means fewer rewrites, more memory")
+    fs.StringVar(&o.blocks, "blocks", "", "actbuild: Core's blocks directory, read instead of its REST interface")
+    fs.IntVar(&o.addrs, "addrs", 0, "actbuild: distinct addresses to reserve room for, so the set never reallocates")
     fs.IntVar(&o.verbose, "verbose", 1, "log level: 0 quiet, 1 progress, 2 every request")
     return o
 }
@@ -61,7 +64,7 @@ func usage() {
     fmt.Fprintln(os.Stderr, "commands:")
     fmt.Fprintln(os.Stderr, "  build     catch the index up from its cursor to the chain tip")
     fmt.Fprintln(os.Stderr, "  list      print every transaction the index holds for an address")
-    fmt.Fprintln(os.Stderr, "  actbuild  record the addresses with more than -active transactions")
+    fmt.Fprintln(os.Stderr, "  actbuild  record the addresses with more than -active transactions, from -blocks")
 }
 
 func main() {
@@ -99,7 +102,6 @@ func main() {
         list(opt, fs.Arg(0))
     case "actbuild":
         activeMin = opt.active
-        if opt.chunk > 0 { actChunk = opt.chunk }
         lookupLimit = opt.limit
         actbuild(opt)
     }
