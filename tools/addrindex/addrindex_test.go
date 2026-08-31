@@ -10,6 +10,7 @@ import "net/http"
 import "net/http/httptest"
 import "os"
 import "path/filepath"
+import "sort"
 import "strconv"
 import "strings"
 import "testing"
@@ -532,16 +533,77 @@ func TestActbuildResumesFromItsCursor(t *testing.T) {
 // The set holds the whole 8-byte prefix, so two scripts are only ever confused
 // if the index itself would confuse them.
 func TestProcessedSet(t *testing.T) {
-    var p = processed{}
+    var p = newProcessed(0)
     if !p.take(payScript) { t.Error("a script not seen before must be taken") }
     if p.take(payScript) { t.Error("the same script was taken twice") }
     if !p.take(otherScript) { t.Error("a different script must be taken") }
-    if len(p) != 2 { t.Errorf("set holds %d, want 2", len(p)) }
+    if p.len() != 2 { t.Errorf("set holds %d, want 2", p.len()) }
     // the key is the index prefix, which is what makes the set agree with the
     // index about what counts as the same address
+    p.flush()
     var want = binary.BigEndian.Uint64(addrindex.Prefix(payScript))
-    if _, ok := p[want]; !ok {
+    if p.sorted[0] != want && p.sorted[1] != want {
         t.Error("the set is not keyed by the index prefix")
+    }
+}
+
+// The merge is where a sorted set goes wrong, so it is driven hard: many keys,
+// arriving out of order, across several flushes, with repeats throughout.
+func TestProcessedSetMergesCorrectly(t *testing.T) {
+    var old = bufferedAddrs
+    bufferedAddrs = 16 // several flushes over a few hundred keys
+    defer func() { bufferedAddrs = old }()
+
+    var p = newProcessed(0)
+    var want = map[uint64]bool{}
+    var rnd uint64 = 12345
+    for i := 0; i < 500; i++ {
+        rnd = rnd*6364136223846793005 + 1442695040888963407
+        var script = make([]byte, 8)
+        binary.BigEndian.PutUint64(script, rnd%137) // a small range, so keys repeat
+        var key = binary.BigEndian.Uint64(addrindex.Prefix(script))
+        var fresh = p.take(script)
+        if fresh == want[key] {
+            t.Fatalf("take reported %v for a key already seen = %v", fresh, want[key])
+        }
+        want[key] = true
+    }
+    p.flush()
+    if len(p.sorted) != len(want) {
+        t.Errorf("set holds %d distinct keys, want %d", len(p.sorted), len(want))
+    }
+    for i := 1; i < len(p.sorted); i++ {
+        if p.sorted[i-1] >= p.sorted[i] {
+            t.Fatalf("the set is not sorted at %d: %d then %d", i, p.sorted[i-1], p.sorted[i])
+        }
+    }
+    for k := range want {
+        var i = sort.Search(len(p.sorted), func(i int) bool { return p.sorted[i] >= k })
+        if i >= len(p.sorted) || p.sorted[i] != k {
+            t.Fatalf("key %d was lost by a merge", k)
+        }
+    }
+}
+
+// Reserving room up front means the slice never reallocates, which is what
+// keeps the peak at the size of the set rather than twice it.
+func TestProcessedSetReserves(t *testing.T) {
+    var p = newProcessed(1000)
+    if cap(p.sorted) < 1000 {
+        t.Errorf("reserved capacity %d, want at least 1000", cap(p.sorted))
+    }
+    var before = cap(p.sorted)
+    var old = bufferedAddrs
+    bufferedAddrs = 4
+    defer func() { bufferedAddrs = old }()
+    for i := 0; i < 100; i++ {
+        var script = make([]byte, 8)
+        binary.BigEndian.PutUint64(script, uint64(i))
+        p.take(script)
+    }
+    p.flush()
+    if cap(p.sorted) != before {
+        t.Errorf("the slice reallocated (%d to %d) despite the reservation", before, cap(p.sorted))
     }
 }
 

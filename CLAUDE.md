@@ -198,13 +198,22 @@ Verified against the real chain, which is what proves the P2PK and taproot paths
 
 **The processed set is held in memory**, not in the database: a `map[uint64]struct{}` keyed by the whole 8-byte index prefix, so it is exact. It does not survive the run, so a resumed scan starts empty and re-looks-up addresses it decided about last time — wasted work, but the same answer.
 
-It is a plain map. The sorted packed runs the database-backed version used were there to make a bbolt value searchable and buy nothing in memory.
+The bulk is a **sorted `[]uint64`**, searched by binary search; new prefixes land in a small map and are merged in when it fills. Inserting each into the big slice as it arrives would shift everything after it, which over a billion additions is quadratic — the merge is one pass. Membership meanwhile is the binary search plus a lookup in the buffer. Even this beats asking the index the same question: that walks a shard's every range on disk, where this is ~30 comparisons in memory.
 
-**Its size is the binding constraint on a full-chain run.** A `map[uint64]struct{}` costs **30.3 bytes per entry** — measured on Go 1.25 at 5, 10, 20 and 40 M entries, identical at every size, and identical again pre-sized with `make(map, n)` or valued `bool`. That is ~3.8x the 8 bytes the key itself is, and it is Go's map, not the key: the same 40 M values in a sorted `[]uint64` measure exactly **8.0 bytes per entry**.
+**The shape is what makes a full-chain run fit.** Measured on Go 1.25 with the same 40 M values in each:
 
-Over mainnet's ~1.3–1.5 B distinct addresses that is **39–45 GB** as a map against **10–12 GB** as a sorted slice; the old on-disk set measured 12.9 bytes per address. The map is right for a partial scan and is what the tool uses; a full pass wants the slice.
+| structure | bytes per entry |
+|---|---|
+| `map[uint64]struct{}` | 30.3 |
+| the same, pre-sized `make(map, n)` | 30.3 |
+| `map[uint64]bool` | 30.3 |
+| **sorted `[]uint64`** | **8.0** |
 
-**Measure this with a `runtime.GC()` first.** An earlier figure here read 36.9 bytes per entry because `HeapAlloc` was sampled without one, counting the bucket arrays the map had already discarded while doubling. The number was wrong in the alarming direction, and the shape of the conclusion happened to survive it — which is exactly why it went unnoticed.
+A map costs ~3.8x the 8 bytes the key itself is, and that is the table — control bytes, slot padding, the spare capacity a load factor needs — not the key: pre-sizing does not recover it and the value type is free either way. The sorted set measured exactly **8.0 bytes an entry at 20, 40 and 100 M**, flat. Over mainnet's ~1.3–1.5 B distinct addresses that is **10–12 GB** against a map's 39–45.
+
+On top of the slice sits one constant: the buffer is a map, so it peaks at `bufferedAddrs` x ~30 bytes, 0.5 GB at 1<<24. **Do not pre-size that map** — a size hint costs the whole peak from the start and again after every flush, which is what made a first measurement read 23.1 bytes an entry instead of 8. `-addrs` reserves the slice's capacity up front so it never reallocates, which keeps the peak at the size of the set rather than twice it.
+
+**Measure any of this with a `runtime.GC()` first.** An earlier figure here read 36.9 bytes for the map because `HeapAlloc` was sampled without one, counting the bucket arrays it had already discarded while doubling.
 
 The backfill reads Core's **REST** interface, not RPC:The backfill reads Core's **REST** interface, not RPC: `/rest/block/<hash>.bin` and `/rest/spenttxouts/<hash>.bin` are binary and need no authentication. Measured on mainnet, block + spent outputs is **1.95 MB in 28 ms**, where `getblock` verbosity 3 for the same block is **13.7 MB** of JSON. This is what makes indexing the whole chain tractable at all — roughly 7 hours at the measured rate. It is enabled by `-core-rest` and runs unattended; until it has a cursor, `/info <address>` reports "unavailable (address index is still building)" rather than presenting an empty history as fact.
 

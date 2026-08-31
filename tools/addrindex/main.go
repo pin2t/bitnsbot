@@ -39,6 +39,7 @@ type options struct {
     limit   int
     active  int
     blocks  string
+    addrs   int
     verbose int
 }
 
@@ -52,6 +53,7 @@ func flags(fs *flag.FlagSet) *options {
     fs.IntVar(&o.limit, "limit", 5000000, "most touches to read for one address")
     fs.IntVar(&o.active, "active", 1000, "actbuild: transactions an address needs to count as active")
     fs.StringVar(&o.blocks, "blocks", "", "actbuild: Core's blocks directory, read instead of its REST interface")
+    fs.IntVar(&o.addrs, "addrs", 0, "actbuild: distinct addresses to reserve room for, so the set never reallocates")
     fs.IntVar(&o.verbose, "verbose", 1, "log level: 0 quiet, 1 progress, 2 every request")
     return o
 }

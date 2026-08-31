@@ -1,6 +1,7 @@
 package main
 
 import "encoding/binary"
+import "sort"
 import "fmt"
 import "strconv"
 import "time"
@@ -32,26 +33,91 @@ var activeMin = 1000
 // would leave the other in force.
 var lookupLimit = 5000000
 
+// bufferedAddrs is how many new prefixes are held before being folded into the
+// sorted set. It is the one constant overhead on top of the slice's 8 bytes an
+// entry: the buffer is a map, so it peaks at this many times ~30 bytes — 0.5 GB
+// at the value below. Against that, each merge rewrites the whole set, so a
+// bigger buffer means fewer passes over it. The map is deliberately not
+// pre-sized: a hint would cost that peak from the start and again after every
+// flush, rather than only while it is actually full.
+var bufferedAddrs = 1 << 24
+
 // processed is the set of script prefixes this run has already decided about,
 // held in memory rather than in the database. An entry is the whole 8-byte index
 // prefix packed into a uint64, so the set is exact and two scripts are only ever
 // confused if the index itself would confuse them.
 //
-// A plain map, not the sorted run the database-backed version used: sorting was
-// there to make a packed bbolt value searchable, and in memory it buys nothing.
+// The bulk is a **sorted slice**, searched by binary search. That is the whole
+// reason for the shape: a map[uint64]struct{} measured 30.3 bytes an entry on
+// Go 1.25 against the slice's exact 8.0, which over ~1.3 B addresses is 39 GB
+// against 10 GB. Even so it beats a lookup in the index for the same question —
+// that walks a shard's every range on disk, where this is ~30 comparisons in
+// memory.
+//
+// New prefixes land in a small map and are merged in when it fills, rather than
+// each being inserted into the big slice as it arrives: a single insert has to
+// shift everything after it, which over a billion additions is quadratic. The
+// merge is one pass, and membership meanwhile is the binary search plus a lookup
+// in the buffer.
 //
 // It does not survive the run. A resumed scan therefore starts empty and looks
 // up addresses it decided about last time, which costs work but changes no
 // answer: the count it writes is the same either way.
-type processed map[uint64]struct{}
+type processed struct {
+    sorted []uint64
+    buf    map[uint64]struct{}
+}
+
+func newProcessed(reserve int) *processed {
+    var p = &processed{buf: map[uint64]struct{}{}}
+    if reserve > 0 { p.sorted = make([]uint64, 0, reserve) }
+    return p
+}
 
 // take reports whether this script is new, and records it when it is.
-func (p processed) take(script []byte) bool {
+func (p *processed) take(script []byte) bool {
     var key = binary.BigEndian.Uint64(addrindex.Prefix(script))
-    if _, ok := p[key]; ok { return false }
-    p[key] = struct{}{}
+    if _, ok := p.buf[key]; ok { return false }
+    var i = sort.Search(len(p.sorted), func(i int) bool { return p.sorted[i] >= key })
+    if i < len(p.sorted) && p.sorted[i] == key { return false }
+    p.buf[key] = struct{}{}
+    if len(p.buf) >= bufferedAddrs { p.flush() }
     return true
 }
+
+// flush folds the buffer into the sorted set in one merge. It runs backwards so
+// it can write in place whenever the slice already has the capacity, which is
+// what keeps the peak at the size of the result rather than twice it — reserve
+// the capacity up front (-addrs) and it never reallocates at all.
+func (p *processed) flush() {
+    if len(p.buf) == 0 { return }
+    var add = make([]uint64, 0, len(p.buf))
+    for k := range p.buf { add = append(add, k) }
+    sort.Slice(add, func(i, j int) bool { return add[i] < add[j] })
+    var total = len(p.sorted) + len(add)
+    if cap(p.sorted) < total {
+        var grown = make([]uint64, total, total+total/4)
+        copy(grown, p.sorted)
+        p.sorted = grown
+    } else {
+        p.sorted = p.sorted[:total]
+    }
+    // a and b never run ahead of the write position, so nothing unread is
+    // overwritten
+    var a, b = total - len(add) - 1, len(add) - 1
+    for i := total - 1; i >= 0; i-- {
+        if b >= 0 && (a < 0 || add[b] >= p.sorted[a]) {
+            p.sorted[i] = add[b]
+            b--
+        } else {
+            p.sorted[i] = p.sorted[a]
+            a--
+        }
+    }
+    p.buf = map[uint64]struct{}{}
+}
+
+func (p *processed) len() int { return len(p.sorted) + len(p.buf) }
 
 // actbuild walks Core's raw block files and, for every script it has not decided
 // about before, asks the index how many transactions that address has. Anything
@@ -84,7 +150,7 @@ func actbuild(opt *options) {
         opt.blocks, from, len(files)-1, activeMin)
     var started = time.Now()
     var first = from
-    var seenScripts = processed{}
+    var seenScripts = newProcessed(opt.addrs)
     var looked, found int
     for i := from; i < len(files); i++ {
         var c, serr = scanFile(files[i], key, seenScripts)
@@ -110,7 +176,7 @@ func actbuild(opt *options) {
 
 // scanFile reads one blk file end to end and decides about every script in it
 // that this run has not seen before.
-func scanFile(name string, key []byte, seenScripts processed) (*chunk, error) {
+func scanFile(name string, key []byte, seenScripts *processed) (*chunk, error) {
     var r, err = openBlockFile(name, key)
     if err != nil { return nil, err }
     defer r.Close()
