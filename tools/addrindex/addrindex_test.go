@@ -20,11 +20,14 @@ import "bitnsbot/addrindex"
 
 // The script the fixture's address is paid to. Its bytes are all that matter —
 // the index is keyed by scriptPubKey, and no address format is ever decoded.
-var payScript = mustHex("76a914000102030405060708090a0b0c0d0e0f1011121314ff88ac")
+var payScript = mustHex("76a914000102030405060708090a0b0c0d0e0f1011121388ac")
 var otherScript = mustHex("76a914aabbccddeeff00112233445566778899aabbccdd88ac")
 
+// address is what the list tests hand to the node to validate; the node decides
+// what script it maps to, so its text is arbitrary. The addresses actbuild
+// records are not — those are encoded from the scripts themselves, so the tests
+// ask scriptAddress rather than naming them.
 const address = "37QAiiRLSHEsMPu3SXT9AKWDoZsZxtfuRP"
-const otherAddress = "1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2"
 
 func mustHex(s string) []byte {
     var b, err = hex.DecodeString(s)
@@ -168,11 +171,12 @@ func batchID(v interface{}) int {
     return -1
 }
 
-// batched counts the batch requests the fake has served, so a test can assert
-// that a group of scripts cost one round trip rather than one each.
-var batched int
+// requests counts every request the fake has served, so a test can assert that
+// a pass which should read only files touched the node not at all.
+var requests int
 
 func rpcReply(t *testing.T, w http.ResponseWriter, r *http.Request) {
+    requests++
     var body, rerr = io.ReadAll(r.Body)
     if rerr != nil {
         t.Errorf("read rpc: %v", rerr)
@@ -185,7 +189,6 @@ func rpcReply(t *testing.T, w http.ResponseWriter, r *http.Request) {
             t.Errorf("decode batch: %v", err)
             return
         }
-        batched++
         var out []map[string]interface{}
         for _, req := range reqs {
             out = append(out, map[string]interface{}{"id": batchID(req.ID), "result": answer(t, req)})
@@ -215,17 +218,6 @@ func answer(t *testing.T, req rpcCall) interface{} {
         reply(map[string]interface{}{"tx": ids})
     case "getrawtransaction":
         reply(txDetail(req.Params[0].(string)))
-    case "decodescript":
-        // the fixture's two scripts map to two addresses; anything else is
-        // nonstandard and has none
-        switch req.Params[0].(string) {
-        case hex.EncodeToString(payScript):
-            reply(map[string]interface{}{"address": address})
-        case hex.EncodeToString(otherScript):
-            reply(map[string]interface{}{"address": otherAddress})
-        default:
-            reply(map[string]interface{}{})
-        }
     default:
         t.Errorf("unexpected rpc method %s", req.Method)
     }
@@ -492,14 +484,14 @@ func TestActbuildRecordsActiveAddresses(t *testing.T) {
     }
 
     var active = activeAddresses(t)
-    if _, ok := active[address]; ok {
+    if _, ok := active[scriptAddress(payScript)]; ok {
         t.Errorf("the address with 2 transactions was recorded as active: %v", active)
     }
     // 6 touches: a coinbase in each of the four blocks, plus a spend and a
     // payment. One lookup both decides and counts, so this also pins that the
     // recorded figure is a real count and not the threshold.
-    if n, ok := active[otherAddress]; !ok || n != 6 {
-        t.Errorf("active = %v; want %s with its 6 transactions", active, otherAddress)
+    if n, ok := active[scriptAddress(otherScript)]; !ok || n != 6 {
+        t.Errorf("active = %v; want %s with its 6 transactions", active, scriptAddress(otherScript))
     }
     // the cursor counts files, and the index's own is untouched
     if n, ok := addrindex.GetCursor(activeCursor); !ok || n != 1 {
@@ -564,55 +556,33 @@ func TestClassifyMakesOneLookup(t *testing.T) {
     activeMin = 3
     defer func() { activeMin = oldMin }()
     capture(t, func() { actbuild(opt) })
-    if n := activeAddresses(t)[otherAddress]; n != 6 {
+    if n := activeAddresses(t)[scriptAddress(otherScript)]; n != 6 {
         t.Errorf("count = %d, want the real 6 — one lookup must both decide and count", n)
     }
 }
 
-// The scripts that qualify are resolved in one batched call rather than a round
-// trip each.
-func TestDecodeScriptIsBatched(t *testing.T) {
+// actbuild talks to no node at all. The addresses are encoded from the scripts
+// locally, which was the last thing tying this pass to Core's RPC interface.
+func TestActbuildMakesNoNodeRequests(t *testing.T) {
     openIndex(t)
     var srv = fakeCore(t, 3)
     var opt = &options{url: srv.URL, limit: 1000, blocks: chainFiles(t)}
     capture(t, func() { build(opt) })
-    var oldMin, oldBatch = activeMin, decodeBatch
-    activeMin, decodeBatch = 1, 1000
-    defer func() { activeMin, decodeBatch = oldMin, oldBatch }()
-    batched = 0
+    var oldMin = activeMin
+    activeMin = 1
+    defer func() { activeMin = oldMin }()
+    requests = 0
     capture(t, func() { actbuild(opt) })
-    if batched == 0 {
-        t.Fatal("decodescript was never sent as a batch")
+    if requests != 0 {
+        t.Errorf("actbuild made %d requests to the node; it should read only files", requests)
     }
+    // and it still produced the addresses, encoded from the scripts themselves
     var active = activeAddresses(t)
     if len(active) != 2 {
-        t.Errorf("resolved %d addresses, want both fixture scripts: %v", len(active), active)
+        t.Errorf("recorded %d addresses, want both fixture scripts: %v", len(active), active)
     }
-    // the counts must land on the right addresses, which is what matching a
-    // batch reply by id is for
-    if active[address] != 2 || active[otherAddress] != 6 {
+    if active[scriptAddress(payScript)] != 2 || active[scriptAddress(otherScript)] != 6 {
         t.Errorf("counts landed on the wrong addresses: %v", active)
-    }
-}
-
-// A batch bigger than decodeBatch is split, and every script still comes back
-// against its own count.
-func TestDecodeScriptSplitsLargeBatches(t *testing.T) {
-    openIndex(t)
-    var srv = fakeCore(t, 3)
-    var opt = &options{url: srv.URL, limit: 1000, blocks: chainFiles(t)}
-    capture(t, func() { build(opt) })
-    var oldMin, oldBatch = activeMin, decodeBatch
-    activeMin, decodeBatch = 1, 1
-    defer func() { activeMin, decodeBatch = oldMin, oldBatch }()
-    batched = 0
-    capture(t, func() { actbuild(opt) })
-    if batched < 2 {
-        t.Errorf("sent %d batches for two scripts at decodeBatch 1, want at least 2", batched)
-    }
-    var active = activeAddresses(t)
-    if active[address] != 2 || active[otherAddress] != 6 {
-        t.Errorf("splitting the batch lost the pairing: %v", active)
     }
 }
 

@@ -1,6 +1,5 @@
 package main
 
-import "context"
 import "encoding/binary"
 import "fmt"
 import "strconv"
@@ -33,22 +32,20 @@ var activeMin = 1000
 // would leave the other in force.
 var lookupLimit = 5000000
 
-// decodeBatch is how many scripts are resolved to addresses in one JSON-RPC
-// call. Only the addresses past the threshold get here, so at the default
-// -active this is rarely full — it earns its keep when the threshold is low
-// enough that most scripts qualify.
-var decodeBatch = 1000
-
 // processed is the set of script prefixes this run has already decided about,
-// held in memory rather than in the database. One entry is the whole 8-byte
-// index prefix packed into a uint64, so the set is exact — a map of strings
-// would cost several times as much for the same information.
+// held in memory rather than in the database. An entry is the whole 8-byte index
+// prefix packed into a uint64, so the set is exact and two scripts are only ever
+// confused if the index itself would confuse them.
+//
+// A plain map, not the sorted run the database-backed version used: sorting was
+// there to make a packed bbolt value searchable, and in memory it buys nothing.
 //
 // It does not survive the run. A resumed scan therefore starts empty and looks
 // up addresses it decided about last time, which costs work but changes no
 // answer: the count it writes is the same either way.
 type processed map[uint64]struct{}
 
+// take reports whether this script is new, and records it when it is.
 func (p processed) take(script []byte) bool {
     var key = binary.BigEndian.Uint64(addrindex.Prefix(script))
     if _, ok := p[key]; ok { return false }
@@ -72,8 +69,6 @@ func actbuild(opt *options) {
     if err != nil { logging.Fatal("%v", err) }
     var key, kerr = xorKey(opt.blocks)
     if kerr != nil { logging.Fatal("read xor.dat: %v", kerr) }
-    var client, rerr = newRPC(opt.url, opt.user, opt.pass, opt.cookie)
-    if rerr != nil { logging.Fatal("RPC client: %v", rerr) }
     if _, ok := addrindex.Cursor(); !ok {
         logging.Fatal("the address index is empty — run addrindex build first")
     }
@@ -87,13 +82,12 @@ func actbuild(opt *options) {
     }
     fmt.Printf("Scanning %s files %d..%d for addresses with more than %d transactions\n",
         opt.blocks, from, len(files)-1, activeMin)
-    var ctx = context.Background()
     var started = time.Now()
     var first = from
     var seenScripts = processed{}
     var looked, found int
     for i := from; i < len(files); i++ {
-        var c, serr = scanFile(ctx, files[i], key, seenScripts, client)
+        var c, serr = scanFile(files[i], key, seenScripts)
         if serr != nil {
             logging.Err("actbuild: %v", serr)
             break
@@ -116,7 +110,7 @@ func actbuild(opt *options) {
 
 // scanFile reads one blk file end to end and decides about every script in it
 // that this run has not seen before.
-func scanFile(ctx context.Context, name string, key []byte, seenScripts processed, client *rpc) (*chunk, error) {
+func scanFile(name string, key []byte, seenScripts processed) (*chunk, error) {
     var r, err = openBlockFile(name, key)
     if err != nil { return nil, err }
     defer r.Close()
@@ -137,11 +131,7 @@ func scanFile(ctx context.Context, name string, key []byte, seenScripts processe
             c.fresh++
             c.classify(script)
         }
-        if len(c.waiting) >= decodeBatch {
-            if err := c.resolve(ctx, client); err != nil { return nil, err }
-        }
     }
-    if err := c.resolve(ctx, client); err != nil { return nil, err }
     return c, nil
 }
 
@@ -188,19 +178,10 @@ func group(n int64) string {
 type chunk struct {
     active map[string]int
     blocks int
-    // qualified but not yet resolved to an address: decodescript is sent in
-    // batches, so a script waits here until decodeBatch of them accumulate
-    waiting []pending
     scripts int
     fresh   int
 }
 
-// pending is a script that passed the threshold, with the count that got it
-// there, waiting for the batch that turns it into an address.
-type pending struct {
-    script []byte
-    count  int
-}
 
 // classify asks the index how long a script's history is and queues the ones
 // past the threshold for resolving.
@@ -210,36 +191,24 @@ type pending struct {
 // not: Lookup walks the whole shard whichever limit it is given, and the limit
 // only bites for an address that actually exceeds it. So the second call
 // repeated the entire first one.
+// One lookup, not two. An earlier version asked for activeMin+1 first and only
+// then for the real count, on the theory that stopping early was cheaper — it is
+// not: Lookup walks the whole shard whichever limit it is given, and the limit
+// only bites for an address that actually exceeds it.
+//
+// The address is encoded here rather than asked of the node. That was the last
+// thing tying this pass to Core's RPC interface, and it was a round trip per
+// qualifying script; see address.go.
 func (c *chunk) classify(script []byte) {
     var touches, capped = addrindex.Lookup(script, lookupLimit)
     if len(touches) <= activeMin { return }
     if capped {
         logging.Warn("actbuild: a script has more than -limit %d transactions; recording the cap", lookupLimit)
     }
-    c.waiting = append(c.waiting, pending{script: script, count: len(touches)})
+    // a nonstandard script is not an address, so there is nothing to record
+    if addr := scriptAddress(script); addr != "" { c.active[addr] = len(touches) }
 }
 
-// resolve turns the queued scripts into addresses in one JSON-RPC call per
-// decodeBatch, rather than a round trip each.
-func (c *chunk) resolve(ctx context.Context, client *rpc) error {
-    for len(c.waiting) > 0 {
-        var n = len(c.waiting)
-        if n > decodeBatch { n = decodeBatch }
-        var group = c.waiting[:n]
-        var scripts = make([][]byte, 0, n)
-        for _, p := range group { scripts = append(scripts, p.script) }
-        var addrs, err = client.addressesOf(ctx, scripts)
-        if err != nil { return fmt.Errorf("decode %d scripts: %w", n, err) }
-        for i, addr := range addrs {
-            // a nonstandard script is not an address, so there is nothing to
-            // record for it
-            if addr == "" { continue }
-            c.active[addr] = group[i].count
-        }
-        c.waiting = c.waiting[n:]
-    }
-    return nil
-}
 
 // flushActive writes a chunk's findings and advances the cursor in one
 // transaction, so an interrupted scan resumes from the last chunk that landed.

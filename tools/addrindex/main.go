@@ -8,12 +8,13 @@
 //
 //	addrindex build    -db ai.db -url http://127.0.0.1:8332 -cookie ./cookie
 //	addrindex list     -db ai.db -url http://127.0.0.1:8332 -cookie ./cookie <address>
-//	addrindex actbuild -db ai.db -url http://127.0.0.1:8332 -cookie ./cookie -blocks ~/.bitcoin/blocks
+//	addrindex actbuild -db ai.db -blocks ~/.bitcoin/blocks
 //
 // build catches the index up from its cursor to the chain tip and exits; list
 // prints every transaction the index holds for an address, then a summary;
 // actbuild reads Core's raw block files and records the addresses whose history
-// is longer than -active transactions.
+// is longer than -active transactions. It talks to no node at all — it reads the
+// files and encodes the addresses itself — so it needs neither -url nor -cookie.
 package main
 
 import "context"
@@ -61,7 +62,7 @@ func usage() {
     fmt.Fprintln(os.Stderr, "commands:")
     fmt.Fprintln(os.Stderr, "  build     catch the index up from its cursor to the chain tip")
     fmt.Fprintln(os.Stderr, "  list      print every transaction the index holds for an address")
-    fmt.Fprintln(os.Stderr, "  actbuild  record the addresses with more than -active transactions")
+    fmt.Fprintln(os.Stderr, "  actbuild  record the addresses with more than -active transactions, from -blocks")
 }
 
 func main() {
