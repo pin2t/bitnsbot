@@ -200,7 +200,11 @@ Verified against the real chain, which is what proves the P2PK and taproot paths
 
 It is a plain map. The sorted packed runs the database-backed version used were there to make a bbolt value searchable and buy nothing in memory.
 
-**Its size is the binding constraint on a full-chain run.** Measured at 10 M entries, a `map[uint64]struct{}` costs **36.9 bytes per entry** — Go's map overhead, not the 8 bytes the key itself is — which extrapolates to about **55 GB** over mainnet's ~1.3–1.5 B distinct addresses. A sorted `[]uint64` would be the 8 bytes and so ~12 GB, and the old on-disk set measured 12.9 bytes per address. The map is what a partial scan wants and what was asked for; a full pass wants one of the other two, and the swap is contained.
+**Its size is the binding constraint on a full-chain run.** A `map[uint64]struct{}` costs **30.3 bytes per entry** — measured on Go 1.25 at 5, 10, 20 and 40 M entries, identical at every size, and identical again pre-sized with `make(map, n)` or valued `bool`. That is ~3.8x the 8 bytes the key itself is, and it is Go's map, not the key: the same 40 M values in a sorted `[]uint64` measure exactly **8.0 bytes per entry**.
+
+Over mainnet's ~1.3–1.5 B distinct addresses that is **39–45 GB** as a map against **10–12 GB** as a sorted slice; the old on-disk set measured 12.9 bytes per address. The map is right for a partial scan and is what the tool uses; a full pass wants the slice.
+
+**Measure this with a `runtime.GC()` first.** An earlier figure here read 36.9 bytes per entry because `HeapAlloc` was sampled without one, counting the bucket arrays the map had already discarded while doubling. The number was wrong in the alarming direction, and the shape of the conclusion happened to survive it — which is exactly why it went unnoticed.
 
 The backfill reads Core's **REST** interface, not RPC:The backfill reads Core's **REST** interface, not RPC: `/rest/block/<hash>.bin` and `/rest/spenttxouts/<hash>.bin` are binary and need no authentication. Measured on mainnet, block + spent outputs is **1.95 MB in 28 ms**, where `getblock` verbosity 3 for the same block is **13.7 MB** of JSON. This is what makes indexing the whole chain tractable at all — roughly 7 hours at the measured rate. It is enabled by `-core-rest` and runs unattended; until it has a cursor, `/info <address>` reports "unavailable (address index is still building)" rather than presenting an empty history as fact.
 
