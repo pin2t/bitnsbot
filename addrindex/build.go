@@ -305,3 +305,10 @@ func OutputScripts(raw []byte) ([][]byte, bool) {
     }
     return out, true
 }
+
+// OutputsByTx returns each transaction's output scripts, indexed by the
+// transaction's position in the block. Where OutputScripts flattens a block into
+// its distinct scripts, this keeps the transaction boundaries — which is what a
+// caller counting *transactions* per address needs, since an address paid twice
+// by one transaction was involved in one transaction, not two.
+func OutputsByTx(raw []byte) ([][][]byte, bool) { return parseBlockOutputs(raw) }

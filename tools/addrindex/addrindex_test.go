@@ -1,7 +1,6 @@
 package main
 
 import "encoding/binary"
-import "flag"
 import "fmt"
 import "encoding/hex"
 import "encoding/json"
@@ -10,7 +9,6 @@ import "net/http"
 import "net/http/httptest"
 import "os"
 import "path/filepath"
-import "sort"
 import "strconv"
 import "strings"
 import "testing"
@@ -468,168 +466,35 @@ func TestBlockReaderWithoutAKey(t *testing.T) {
     }
 }
 
-// actbuild reads the block files, decides about each address once, and records
-// the ones whose history is longer than the threshold.
-func TestActbuildRecordsActiveAddresses(t *testing.T) {
+// actbuild reads the block files, counts the transactions paying to each
+// address, and records the ones past the threshold.
+func TestActbuildCountsFromBlocks(t *testing.T) {
     openIndex(t)
-    var srv = fakeCore(t, 3)
-    var opt = &options{url: srv.URL, limit: 1000, blocks: chainFiles(t)}
-    capture(t, func() { build(opt) })
-
+    // a threshold of 3: the fixture pays otherScript in four transactions (a
+    // coinbase in each block plus one more) and payScript in two
+    var opt = &options{limit: 1000, blocks: chainFiles(t), active: 3}
     var oldMin = activeMin
     activeMin = 3
     defer func() { activeMin = oldMin }()
     var out = capture(t, func() { actbuild(opt) })
     if !strings.Contains(out, "Scanning") {
-        t.Errorf("actbuild did not report its range: %q", out)
+        t.Errorf("actbuild did not report what it was doing: %q", out)
     }
-
     var active = activeAddresses(t)
     if _, ok := active[scriptAddress(payScript)]; ok {
-        t.Errorf("the address with 2 transactions was recorded as active: %v", active)
+        t.Errorf("the address in 2 transactions was recorded as active: %v", active)
     }
-    // 6 touches: a coinbase in each of the four blocks, plus a spend and a
-    // payment. One lookup both decides and counts, so this also pins that the
-    // recorded figure is a real count and not the threshold.
-    if n, ok := active[scriptAddress(otherScript)]; !ok || n != 6 {
-        t.Errorf("active = %v; want %s with its 6 transactions", active, scriptAddress(otherScript))
-    }
-    // the cursor counts files, and the index's own is untouched
-    if n, ok := addrindex.GetCursor(activeCursor); !ok || n != 1 {
-        t.Errorf("actbuild cursor = %d, %v; want file 1", n, ok)
-    }
-    if h, _ := addrindex.Cursor(); h != 3 {
-        t.Errorf("the index cursor moved to %d", h)
+    // five: a coinbase paying otherScript in each of the four blocks, plus
+    // block 2's transaction paying it as well
+    if n, ok := active[scriptAddress(otherScript)]; !ok || n != 5 {
+        t.Errorf("active = %v; want %s in 5 transactions", active, scriptAddress(otherScript))
     }
 }
 
-// The in-memory set is the point: a script repeated across blocks and files is
-// looked up once for the whole run.
-func TestActbuildProcessesEachAddressOnce(t *testing.T) {
-    openIndex(t)
-    var srv = fakeCore(t, 3)
-    var opt = &options{url: srv.URL, limit: 1000, blocks: chainFiles(t)}
-    capture(t, func() { build(opt) })
-    var out = capture(t, func() { actbuild(opt) })
-    // the fixture has two distinct scripts across four blocks in two files
-    if !strings.Contains(out, "2 addresses looked up") {
-        t.Errorf("want two lookups for two distinct scripts, got: %q", out)
-    }
-}
-
-// A second run with no new files must do nothing, which is what the cursor buys.
-func TestActbuildResumesFromItsCursor(t *testing.T) {
-    openIndex(t)
-    var srv = fakeCore(t, 3)
-    var opt = &options{url: srv.URL, limit: 1000, blocks: chainFiles(t)}
-    capture(t, func() { build(opt) })
-    capture(t, func() { actbuild(opt) })
-    var again = capture(t, func() { actbuild(opt) })
-    if !strings.Contains(again, "Every block file has been scanned") {
-        t.Errorf("a second actbuild should be a no-op, got %q", again)
-    }
-}
-
-// The set holds the whole 8-byte prefix, so two scripts are only ever confused
-// if the index itself would confuse them.
-func TestProcessedSet(t *testing.T) {
-    var p = newProcessed(0)
-    if !p.take(payScript) { t.Error("a script not seen before must be taken") }
-    if p.take(payScript) { t.Error("the same script was taken twice") }
-    if !p.take(otherScript) { t.Error("a different script must be taken") }
-    if p.len() != 2 { t.Errorf("set holds %d, want 2", p.len()) }
-    // the key is the index prefix, which is what makes the set agree with the
-    // index about what counts as the same address
-    p.flush()
-    var want = binary.BigEndian.Uint64(addrindex.Prefix(payScript))
-    if p.sorted[0] != want && p.sorted[1] != want {
-        t.Error("the set is not keyed by the index prefix")
-    }
-}
-
-// The merge is where a sorted set goes wrong, so it is driven hard: many keys,
-// arriving out of order, across several flushes, with repeats throughout.
-func TestProcessedSetMergesCorrectly(t *testing.T) {
-    var old = bufferedAddrs
-    bufferedAddrs = 16 // several flushes over a few hundred keys
-    defer func() { bufferedAddrs = old }()
-
-    var p = newProcessed(0)
-    var want = map[uint64]bool{}
-    var rnd uint64 = 12345
-    for i := 0; i < 500; i++ {
-        rnd = rnd*6364136223846793005 + 1442695040888963407
-        var script = make([]byte, 8)
-        binary.BigEndian.PutUint64(script, rnd%137) // a small range, so keys repeat
-        var key = binary.BigEndian.Uint64(addrindex.Prefix(script))
-        var fresh = p.take(script)
-        if fresh == want[key] {
-            t.Fatalf("take reported %v for a key already seen = %v", fresh, want[key])
-        }
-        want[key] = true
-    }
-    p.flush()
-    if len(p.sorted) != len(want) {
-        t.Errorf("set holds %d distinct keys, want %d", len(p.sorted), len(want))
-    }
-    for i := 1; i < len(p.sorted); i++ {
-        if p.sorted[i-1] >= p.sorted[i] {
-            t.Fatalf("the set is not sorted at %d: %d then %d", i, p.sorted[i-1], p.sorted[i])
-        }
-    }
-    for k := range want {
-        var i = sort.Search(len(p.sorted), func(i int) bool { return p.sorted[i] >= k })
-        if i >= len(p.sorted) || p.sorted[i] != k {
-            t.Fatalf("key %d was lost by a merge", k)
-        }
-    }
-}
-
-// Reserving room up front means the slice never reallocates, which is what
-// keeps the peak at the size of the set rather than twice it.
-func TestProcessedSetReserves(t *testing.T) {
-    var p = newProcessed(1000)
-    if cap(p.sorted) < 1000 {
-        t.Errorf("reserved capacity %d, want at least 1000", cap(p.sorted))
-    }
-    var before = cap(p.sorted)
-    var old = bufferedAddrs
-    bufferedAddrs = 4
-    defer func() { bufferedAddrs = old }()
-    for i := 0; i < 100; i++ {
-        var script = make([]byte, 8)
-        binary.BigEndian.PutUint64(script, uint64(i))
-        p.take(script)
-    }
-    p.flush()
-    if cap(p.sorted) != before {
-        t.Errorf("the slice reallocated (%d to %d) despite the reservation", before, cap(p.sorted))
-    }
-}
-
-// Deciding and counting are one lookup, not two. Lookup walks the whole shard
-// whichever limit it is given, so asking twice repeated the entire first call.
-func TestClassifyMakesOneLookup(t *testing.T) {
-    openIndex(t)
-    var srv = fakeCore(t, 3)
-    var opt = &options{url: srv.URL, limit: 1000, blocks: chainFiles(t)}
-    capture(t, func() { build(opt) })
-    var oldMin = activeMin
-    activeMin = 3
-    defer func() { activeMin = oldMin }()
-    capture(t, func() { actbuild(opt) })
-    if n := activeAddresses(t)[scriptAddress(otherScript)]; n != 6 {
-        t.Errorf("count = %d, want the real 6 — one lookup must both decide and count", n)
-    }
-}
-
-// actbuild talks to no node at all. The addresses are encoded from the scripts
-// locally, which was the last thing tying this pass to Core's RPC interface.
+// actbuild reads the files and nothing else — no index lookups, no node.
 func TestActbuildMakesNoNodeRequests(t *testing.T) {
     openIndex(t)
-    var srv = fakeCore(t, 3)
-    var opt = &options{url: srv.URL, limit: 1000, blocks: chainFiles(t)}
-    capture(t, func() { build(opt) })
+    var opt = &options{limit: 1000, blocks: chainFiles(t), active: 1}
     var oldMin = activeMin
     activeMin = 1
     defer func() { activeMin = oldMin }()
@@ -638,13 +503,21 @@ func TestActbuildMakesNoNodeRequests(t *testing.T) {
     if requests != 0 {
         t.Errorf("actbuild made %d requests to the node; it should read only files", requests)
     }
-    // and it still produced the addresses, encoded from the scripts themselves
-    var active = activeAddresses(t)
-    if len(active) != 2 {
-        t.Errorf("recorded %d addresses, want both fixture scripts: %v", len(active), active)
+    if len(activeAddresses(t)) != 2 {
+        t.Errorf("recorded %v, want both fixture addresses", activeAddresses(t))
     }
-    if active[scriptAddress(payScript)] != 2 || active[scriptAddress(otherScript)] != 6 {
-        t.Errorf("counts landed on the wrong addresses: %v", active)
+}
+
+// It does not need the index at all, so an empty one must not stop it.
+func TestActbuildNeedsNoIndex(t *testing.T) {
+    openIndex(t)
+    var opt = &options{limit: 1000, blocks: chainFiles(t), active: 1}
+    var oldMin = activeMin
+    activeMin = 1
+    defer func() { activeMin = oldMin }()
+    capture(t, func() { actbuild(opt) })
+    if len(activeAddresses(t)) == 0 {
+        t.Error("actbuild produced nothing against an unbuilt index; it should not need one")
     }
 }
 
@@ -688,21 +561,5 @@ func TestGroupAndRate(t *testing.T) {
     }
     if got := rate(5, 0); got != 0 {
         t.Errorf("rate over no time = %d, want 0", got)
-    }
-}
-
-// The flag overwrites the package var, so raising one without the other leaves
-// the lower of the two in force — which is what happened when the var alone was
-// raised to five million and -limit still defaulted to one.
-func TestLookupLimitDefaultsAgree(t *testing.T) {
-    var fs = flag.NewFlagSet("actbuild", flag.ContinueOnError)
-    var opt = flags(fs)
-    if err := fs.Parse(nil); err != nil { t.Fatalf("parse: %v", err) }
-    if opt.limit != lookupLimit {
-        t.Errorf("-limit defaults to %d but lookupLimit is %d; actbuild would use %d",
-            opt.limit, lookupLimit, opt.limit)
-    }
-    if opt.limit != 5000000 {
-        t.Errorf("-limit defaults to %d, want 5000000", opt.limit)
     }
 }

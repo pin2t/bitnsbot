@@ -50,7 +50,7 @@ func flags(fs *flag.FlagSet) *options {
     fs.StringVar(&o.cookie, "cookie", "", "path to Core's .cookie file, for RPC auth")
     fs.StringVar(&o.user, "user", "", "Core RPC username, instead of a cookie")
     fs.StringVar(&o.pass, "pass", "", "Core RPC password, instead of a cookie")
-    fs.IntVar(&o.limit, "limit", 5000000, "most touches to read for one address")
+    fs.IntVar(&o.limit, "limit", 5000000, "list: most touches to read for one address")
     fs.IntVar(&o.active, "active", 1000, "actbuild: transactions an address needs to count as active")
     fs.StringVar(&o.blocks, "blocks", "", "actbuild: Core's blocks directory, read instead of its REST interface")
     fs.IntVar(&o.addrs, "addrs", 0, "actbuild: distinct addresses to reserve room for, so the set never reallocates")
@@ -102,7 +102,6 @@ func main() {
         list(opt, fs.Arg(0))
     case "actbuild":
         activeMin = opt.active
-        lookupLimit = opt.limit
         actbuild(opt)
     }
 }
