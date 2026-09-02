@@ -9,7 +9,7 @@
 // same seam the miners package uses for its own collector.
 package app
 
-import _ "embed"
+import "embed"
 import "bytes"
 import "crypto/hmac"
 import "crypto/sha256"
@@ -27,8 +27,8 @@ import "time"
 import "bitnsbot/logging"
 import "bitnsbot/lru"
 
-//go:embed app.html
-var appHTML []byte
+//go:embed app.html app.*.html
+var pages embed.FS
 
 //go:embed htmx.min.js
 var htmxJS []byte
@@ -36,10 +36,98 @@ var htmxJS []byte
 //go:embed htmx-ext-sse.js
 var sseJS []byte
 
-// appTmpl is the page and, inside it, the "fees" and "network" blocks. The
-// initial render and each refresh render those same blocks, so the card the
-// page ships with and the card that replaces it cannot drift apart.
-var appTmpl = template.Must(template.New("app").Parse(string(appHTML)))
+// langs are the languages the page is translated into, English first because it
+// is the reference the others are checked against and the fallback for every
+// language there is no page for. tools/i18n-html is what keeps the translated
+// files structurally identical to app.html — nothing else notices when a whole
+// second copy of a page drifts.
+var langs = []string{"en", "ru", "es"}
+
+// appTmpl is one parsed page per language: the shell and, inside it, the "fees",
+// "network" and the other blocks. The initial render and each refresh render
+// those same blocks from the same file, so the card the page ships with and the
+// card that replaces it cannot drift apart.
+var appTmpl = parsePages()
+
+func parsePages() map[string]*template.Template {
+    var out = map[string]*template.Template{}
+    for _, lang := range langs {
+        var name = "app.html"
+        if lang != langs[0] { name = "app." + lang + ".html" }
+        var b, err = pages.ReadFile(name)
+        if err != nil { panic("mini app: " + err.Error()) }
+        // Named "app" in every language, not after the language: the page is
+        // executed by that name, and it is the whole file's own template.
+        out[lang] = template.Must(template.New("app").Parse(string(b)))
+    }
+    return out
+}
+
+// language picks the page to render. Telegram signs the user's own setting into
+// initData, so when the app is opened from the bot that is the answer — it is
+// the same language the bot's own replies use. A plain browser has only
+// Accept-Language, and anything we have no page for falls back to English.
+func language(r *http.Request) string {
+    if l := langOf(r.Header.Get("X-Telegram-Init-Data")); supported(l) { return l }
+    for _, tag := range accepted(r.Header.Get("Accept-Language")) {
+        if supported(tag) { return tag }
+    }
+    return langs[0]
+}
+
+func supported(lang string) bool {
+    for _, l := range langs {
+        if l == lang { return true }
+    }
+    return false
+}
+
+// langOf pulls language_code out of an initData payload — "ru", or "pt-br" for a
+// regional variant, of which only the base is ours to match. Meaningful only on
+// a payload isValid has accepted, since the field is part of what Telegram signs.
+func langOf(initData string) string {
+    var v, err = url.ParseQuery(initData)
+    if err != nil { return "" }
+    var u struct {
+        Lang string `json:"language_code"`
+    }
+    if json.Unmarshal([]byte(v.Get("user")), &u) != nil { return "" }
+    return base(u.Lang)
+}
+
+// accepted reads an Accept-Language header into the languages it asks for, best
+// first. Quality drives the order rather than position: "en;q=0.8,ru" wants
+// Russian, and reading it in written order would answer in English.
+func accepted(header string) []string {
+    type want struct {
+        lang string
+        q    float64
+    }
+    var list []want
+    for _, part := range strings.Split(header, ",") {
+        var tag, params, _ = strings.Cut(strings.TrimSpace(part), ";")
+        if tag = base(tag); tag == "" { continue }
+        var q = 1.0
+        // A malformed or absent q is 1.0 — the default the header's grammar
+        // gives it — so a broken parameter cannot silently demote a language.
+        if _, after, ok := strings.Cut(params, "q="); ok {
+            if f, err := strconv.ParseFloat(strings.TrimSpace(after), 64); err == nil { q = f }
+        }
+        list = append(list, want{tag, q})
+    }
+    sort.SliceStable(list, func(i, j int) bool { return list[i].q > list[j].q })
+    var out []string
+    for _, w := range list { out = append(out, w.lang) }
+    return out
+}
+
+// base is the primary subtag, lowercased: the "pt" of "pt-BR". A page is per
+// language, not per region.
+func base(tag string) string {
+    tag, _, _ = strings.Cut(strings.TrimSpace(tag), "-")
+    if tag == "*" { return "" }
+    return strings.ToLower(tag)
+}
 
 // page is what the whole template renders from: one field per card.
 type page struct {
@@ -62,10 +150,11 @@ var cacheTTL = 10 * time.Minute
 // what an edited before= parameter can make the process hold.
 const blocksCached = 20
 
-// cardsCached is exactly the number of single-valued renders — the three cardsCache
-// plus the shell page — so nothing is ever evicted for space. This cache is
-// keyed and expiring, not bounded; blocksCache is the one that needs the bound.
-const cardsCached = 4
+// cardsCached is exactly the number of single-valued renders — the three cards
+// plus the shell page — in every language, so nothing is ever evicted for space.
+// This cache is keyed and expiring, not bounded; blocksCache is the one that
+// needs the bound.
+var cardsCached = 4 * len(langs)
 
 var cacheMu sync.Mutex
 
@@ -75,6 +164,11 @@ var cacheMu sync.Mutex
 // servable without a signature at all. Anything per-chat must stay behind the
 // requireInitData endpoints, and caching here is a second reason why.
 var cardsCache = lru.New[string, []byte](cardsCached)
+
+// key is what a rendered page is filed under. The language belongs in it: the
+// same URL renders in three of them, and serving one reader's language to
+// another is exactly what a URL-only key would do.
+func key(lang, uri string) string { return lang + uri }
 var blocksCache = lru.New[string, []byte](blocksCached)
 
 // invalidate drops one card's rendered HTML. Notify calls it *before* announcing
@@ -85,15 +179,16 @@ func invalidate(event string) {
     defer cacheMu.Unlock()
     switch event {
     case "fees", "network", "market":
-        cardsCache.Delete("/" + event)
+        for _, lang := range langs { cardsCache.Delete(key(lang, "/"+event)) }
     case "blocks":
         blocksCache.Clear()
         cardsCache.Clear()
     default: return
     }
     // The page embeds every card, so whichever one moved, the page it would
-    // serve to the next visitor is stale.
-    cardsCache.Delete("/")
+    // serve to the next visitor is stale — in every language, since the card
+    // that moved is in all of them.
+    for _, lang := range langs { cardsCache.Delete(key(lang, "/")) }
 }
 
 // for testing
@@ -108,31 +203,35 @@ func invalidateAll() {
 // outside cacheMu because it reaches into main's Source, which holds locks of
 // its own; two concurrent misses simply render the same bytes twice, which is
 // cheaper than serialising every request behind one mutex.
-func cached(c *lru.Cache[string, []byte], w http.ResponseWriter, r *http.Request, render func() []byte) {
+func cached(c *lru.Cache[string, []byte], w http.ResponseWriter, r *http.Request, render func(string) []byte) {
     var started = time.Now().UnixNano()
+    var lang = language(r)
     cacheMu.Lock()
-    var b, hit = c.Get(r.RequestURI)
+    var b, hit = c.Get(key(lang, r.RequestURI))
     cacheMu.Unlock()
     if !hit {
-        b = render()
+        b = render(lang)
         if b == nil {
             http.Error(w, "internal server error", http.StatusInternalServerError)
             return
         }
         cacheMu.Lock()
-        c.PutTTL(r.RequestURI, b, cacheTTL)
+        c.PutTTL(key(lang, r.RequestURI), b, cacheTTL)
         cacheMu.Unlock()
     }
     w.Header().Set("Content-Type", "text/html; charset=utf-8")
+    w.Header().Set("Content-Language", lang)
     w.Write(b)
-    logging.Info("mini app: %s %s %.2f ms cached = %v", r.Method, r.RequestURI, float64(time.Now().UnixNano() - started) / 1e6, hit)
+    logging.Info("mini app: %s %s [%s] %.2f ms cached = %v", r.Method, r.RequestURI, lang, float64(time.Now().UnixNano() - started) / 1e6, hit)
 }
 
-func render(name string, data any) []byte {
+func render(lang, name string, data any) []byte {
+    var t, ok = appTmpl[lang]
+    if !ok { t = appTmpl[langs[0]] }
     var buf bytes.Buffer
-    var err = appTmpl.ExecuteTemplate(&buf, name, data)
+    var err = t.ExecuteTemplate(&buf, name, data)
     if err != nil {
-        logging.Err("mini app: render error %s: %v", name, err)
+        logging.Err("mini app: render error %s [%s]: %v", name, lang, err)
         return nil
     }
     return buf.Bytes()
@@ -484,11 +583,11 @@ func watchable(kind string) bool { return kind == "address" || kind == "tx" }
 func details(w http.ResponseWriter, r *http.Request, slot, back, swap, kind, id string, load func() Info) {
     w.Header().Set("HX-Retarget", "#"+slot)
     w.Header().Set("HX-Trigger", showtab(tabOf(slot)))
-    cached(blocksCache, w, r, func() []byte {
+    cached(blocksCache, w, r, func(lang string) []byte {
         var info = load()
         info.Slot, info.Back, info.Swap = slot, back, swap
         if info.OK { info.Kind, info.Id = kind, id }
-        return render("details", info)
+        return render(lang, "details", info)
     })
 }
 
@@ -529,8 +628,8 @@ func Start(addr, token string, src Source) *http.Server {
             http.NotFound(w, r)
             return
         }
-        cached(cardsCache, w, r, func() []byte {
-            return render("app", page{Fees: src.Fees(), Network: src.Network(), Market: src.Market(), Blocks: src.Blocks(Range{})})
+        cached(cardsCache, w, r, func(lang string) []byte {
+            return render(lang, "app", page{Fees: src.Fees(), Network: src.Network(), Market: src.Market(), Blocks: src.Blocks(Range{})})
         })
     })
     mux.HandleFunc("/htmx.min.js", func(w http.ResponseWriter, r *http.Request) {
@@ -551,13 +650,13 @@ func Start(addr, token string, src Source) *http.Server {
         events(w, r, closing)
     })
     mux.HandleFunc("/fees", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
-        cached(cardsCache, w, r, func() []byte { return  render("fees", src.Fees()) })
+        cached(cardsCache, w, r, func(lang string) []byte { return render(lang, "fees", src.Fees()) })
     }))
     mux.HandleFunc("/network", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
-        cached(cardsCache, w, r, func() []byte { return  render("network", src.Network()) })
+        cached(cardsCache, w, r, func(lang string) []byte { return render(lang, "network", src.Network()) })
     }))
     mux.HandleFunc("/market", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
-        cached(cardsCache, w, r, func() []byte { return  render("market", src.Market()) })
+        cached(cardsCache, w, r, func(lang string) []byte { return render(lang, "market", src.Market()) })
     }))
     // The list itself: the newest blocks, or — when Back asked — everything down
     // to the block the reader had opened from it.
@@ -565,7 +664,7 @@ func Start(addr, token string, src Source) *http.Server {
         // Only when Back explicitly asked: an empty list also refreshes through
         // here, and that must never move a reader off their tab.
         if to := r.URL.Query().Get("to"); isPanel(to) { w.Header().Set("HX-Trigger", showtab(to)) }
-        cached(blocksCache, w, r, func() []byte { return  render("blocks", src.Blocks(Range{Down: heightOf(r, "down")})) })
+        cached(blocksCache, w, r, func(lang string) []byte { return render(lang, "blocks", src.Blocks(Range{Down: heightOf(r, "down")})) })
     }))
     // The batch the sentinel below the rows appends as the reader reaches it.
     mux.HandleFunc("/moreblocks", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
@@ -574,7 +673,7 @@ func Start(addr, token string, src Source) *http.Server {
             http.Error(w, "no such block", http.StatusBadRequest)
             return
         }
-        cached(blocksCache, w, r, func() []byte { return  render("blockrows", src.Blocks(Range{Before: before})) })
+        cached(blocksCache, w, r, func(lang string) []byte { return render(lang, "blockrows", src.Blocks(Range{Before: before})) })
     }))
     // What the sentinel above the rows prepends when a block is mined. Inserting
     // above the reader leaves the rows they are looking at where they are, where
@@ -600,7 +699,7 @@ func Start(addr, token string, src Source) *http.Server {
             blocks, name = src.Blocks(Range{}), "blocks"
             w.Header().Set("HX-Retarget", "#"+blocksSlot)
         }
-        var b = render(name, blocks)
+        var b = render(language(r), name, blocks)
         if b == nil {
             http.Error(w, "internal server error", http.StatusInternalServerError)
             return
@@ -656,7 +755,7 @@ func Start(addr, token string, src Source) *http.Server {
         if !isPanel(to) { to = "addresses" }
         w.Header().Set("HX-Retarget", "#"+addressSlot)
         w.Header().Set("HX-Trigger", showtab(to))
-        cached(cardsCache, w, r, func() []byte { return render("addresses", nil) })
+        cached(cardsCache, w, r, func(lang string) []byte { return render(lang, "addresses", nil) })
     }))
     // Never cached: every cache here is keyed by URL, which is identical for
     // every user, so a cached watch list would be handed to the wrong person.
@@ -664,7 +763,7 @@ func Start(addr, token string, src Source) *http.Server {
     // rendered list — / is one copy shared by every visitor.
     mux.HandleFunc("/watches", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
         var started = time.Now().UnixNano()
-        var b = render("watches", src.Watches(chatOf(r.Header.Get("X-Telegram-Init-Data"))))
+        var b = render(language(r), "watches", src.Watches(chatOf(r.Header.Get("X-Telegram-Init-Data"))))
         if b == nil {
             http.Error(w, "internal server error", http.StatusInternalServerError)
             return
@@ -699,7 +798,7 @@ func Start(addr, token string, src Source) *http.Server {
         } else {
             btn.On = src.Watching(chat, kind, id)
         }
-        var b = render("watchbtn", btn)
+        var b = render(language(r), "watchbtn", btn)
         if b == nil {
             http.Error(w, "internal server error", http.StatusInternalServerError)
             return

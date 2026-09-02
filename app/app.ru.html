@@ -1,0 +1,418 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>bitnsbot</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<script src="htmx.min.js"></script>
+<script src="htmx-ext-sse.js"></script>
+<script>
+  // Telegram Desktop renders a Mini App in a phone-width panel, so the viewport
+  // is no help in telling a phone from a desktop — but Telegram names the
+  // platform outright, which is exact. Set here rather than in the script at the
+  // end of the page: the class scales every size on the page, and setting it
+  // after the body had rendered would show a visible jump.
+  //
+  // The pointer fallback covers a client too old to report a platform: a mouse
+  // is "fine", a finger is "coarse".
+  (function() {
+    var tg = window.Telegram && window.Telegram.WebApp;
+    var phone = tg && tg.platform
+      ? /^(android|android_x|ios)$/.test(tg.platform)
+      : matchMedia("(pointer: coarse)").matches;
+    var ua = navigator.userAgentData;
+    var windows = ua && ua.platform
+      ? ua.platform === "Windows"
+      : /^Win/i.test(navigator.platform || "") || /Windows/i.test(navigator.userAgent || "");
+    var root = document.documentElement;
+    if (phone) { root.classList.add("phone"); }
+    else if (windows) { root.classList.add("windows"); }
+  })();
+  // Every HTMX request carries Telegram's signed payload; the server rejects
+  // anything without it. Registered on document (not body, which does not exist
+  // yet in head) and before HTMX processes the DOM, so the first request already
+  // has the header.
+  document.addEventListener("htmx:configRequest", function(e) {
+    var tg = window.Telegram && window.Telegram.WebApp;
+    if (tg && tg.initData) { e.detail.headers["X-Telegram-Init-Data"] = tg.initData; }
+  });
+  // HTMX leaves the element untouched on a failed request, so the placeholder
+  // would otherwise read "loading…" forever. 401 means we are outside Telegram
+  // (or the signature expired), which is worth saying plainly.
+  function feesFailed(status) {
+    var card = document.getElementById("fees");
+    // The card is server-rendered, so a failed *refresh* must leave the fees
+    // already on screen alone — stale numbers beat an error message.
+    if (!card || card.querySelector(".tier")) { return; }
+    var note = card.querySelector(".note");
+    if (note) {
+      note.textContent = status === 401 ? "откройте в Telegram, чтобы видеть комиссии"
+                                        : "комиссии недоступны";
+    }
+  }
+  document.addEventListener("htmx:responseError", function(e) {
+    if (e.detail.target && e.detail.target.id === "fees") { feesFailed(e.detail.xhr.status); }
+  });
+  document.addEventListener("htmx:sendError", function(e) {
+    if (e.detail.target && e.detail.target.id === "fees") { feesFailed(0); }
+  });
+</script>
+<style>
+  /* Telegram supplies these at runtime; the fallbacks keep the page usable in a
+     plain browser, which is how it gets developed and tested. */
+  :root {
+    --bg:     var(--tg-theme-bg-color, #ffffff);
+    --fg:     var(--tg-theme-text-color, #1c1c1e);
+    --hint:   var(--tg-theme-hint-color, #8e8e93);
+    --card:   var(--tg-theme-secondary-bg-color, #f2f2f7);
+    --accent: var(--tg-theme-button-color, #2481cc);
+    --link:   var(--tg-theme-link-color, #2481cc);
+    --line:   rgba(128,128,128,.22);
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+  @media (max-width: 480px) {
+    html.phone { font-size: 19px; }
+    html.windows { font-size: 15px; }
+  }
+  html, body { height: 100%; margin: 0; }
+  body {
+    display: flex; flex-direction: column;
+    background: var(--bg); color: var(--fg);
+    font: 1.0625rem/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  main { flex: 1; overflow-y: auto; padding: 16px 16px 8px; }
+  .panel { display: none; height: 100%; }
+  .panel.active { display: flex; flex-direction: column; }
+
+  .fees { background: var(--card); border-radius: 14px; padding: 10px 12px; }
+  .fees h2 { margin: 0 0 7px; font-size: 0.9375rem; font-weight: 600; text-align: center; line-height: 1.2;
+             letter-spacing: .06em; text-transform: uppercase; color: var(--hint); }
+  .tiers { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; text-align: center; }
+  .tier + .tier { border-left: 1px solid var(--line); }
+  .tier .label { font-size: 0.875rem; line-height: 1.2; color: var(--hint); }
+  .tier .rate  { font-size: 1.25rem; font-weight: 600; margin: 1px 0 0; line-height: 1.15; }
+  .tier .unit  { font-size: 0.875rem; font-weight: 400; color: var(--hint); }
+  .tier .usd   { font-size: 0.875rem; line-height: 1.2; color: var(--hint); }
+  .fees .note  { margin: 7px 0 0; font-size: 0.8125rem; line-height: 1.3; color: var(--hint); text-align: center; }
+
+  .net { margin-top: 12px; }
+  .net .stats { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px 6px; text-align: center; }
+  .net .stat .label { font-size: 0.875rem; line-height: 1.2; color: var(--hint); }
+  .net .stat .value { font-size: 1.25rem; font-weight: 600; margin-top: 1px; line-height: 1.15; }
+
+  .mkt .price { text-align: center; font-size: 1.375rem; font-weight: 600; line-height: 1.15; }
+  .mkt .changes { display: grid; grid-template-columns: repeat(6, 1fr); gap: 2px; margin-top: 8px; text-align: center; }
+  .mkt .chg .label { font-size: min(0.6875rem, 3.06vw); line-height: 1.2; color: var(--hint); }
+  .mkt .chg .pct { font-size: min(0.75rem, 3.34vw); font-weight: 600; line-height: 1.2; margin-top: 1px; white-space: nowrap; }
+  .mkt .chg .pct.up { color: #1a9e4b; }
+  .mkt .chg .pct.down { color: #d92d20; }
+  .mkt .chg .pct.flat { color: var(--hint); font-weight: 400; }
+
+  @media (max-width: 359px) {
+    .mkt .changes    { gap: 1px; }
+  }
+
+  .searchwrap { flex: 1; display: flex; flex-direction: column;
+                align-items: center; justify-content: center; gap: 10px; }
+  .searchwrap p { margin: 0; font-size: 0.9375rem; color: var(--hint); text-align: center; }
+  #q { width: 100%; max-width: 420px; padding: 14px 16px; font-size: max(1.0625rem, 16px);
+       color: var(--fg); background: var(--card);
+       border: 1px solid var(--line); border-radius: 12px; outline: none; }
+  #q:focus { border-color: var(--accent); }
+
+  .empty { flex: 1; display: flex; align-items: center; justify-content: center;
+           color: var(--hint); font-size: 1rem; }
+
+  .blocklist { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+  .blocklist .rows { flex: 1; overflow-y: auto; }
+  .blk { display: flex; align-items: center; gap: 8px;
+         background: var(--card); border-radius: 12px; padding: 9px 10px; }
+  .blk + .blk { margin-top: 6px; }
+  .blk .h  { font-size: 0.875rem; font-weight: 600; white-space: nowrap; }
+  .blk .sz, .blk .tx { font-size: 0.8125rem; color: var(--hint); white-space: nowrap; }
+  .blk .mn { flex: 1; min-width: 0; font-size: 0.8125rem; text-align: right;
+             overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .blk .lnk { color: var(--link); cursor: pointer; }
+  .det .head { display: grid; grid-template-columns: auto minmax(0, 1fr) auto;
+               align-items: center; gap: 8px; margin-bottom: 10px; }
+  .det .head .ghost { visibility: hidden; }
+  .det .head .side { position: relative; }
+  .det .head .bell { display: none; position: absolute; right: 0; top: 50%;
+                     transform: translateY(-50%); padding: 6px 10px; }
+  body.tg .det .head .bell { display: flex; }
+  .det .head .bell svg { width: 19px; height: 19px; fill: none; stroke: currentColor;
+                         stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+  .det .head .bell.on { color: var(--bg); background: var(--accent); border-color: var(--accent); }
+  .det .head .bell.on svg { fill: currentColor; }
+  .det .head .bell.err { color: #d92d20; }
+  .det .head h1 { min-width: 0; margin: 0; font-size: 1.125rem; font-weight: 600;
+                  line-height: 1.2; text-align: center;
+                  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .det .fields { flex: 0 1 auto; overflow-y: auto; background: var(--card);
+                 border-radius: 14px; padding: 4px 12px; }
+  .det .f { display: flex; align-items: baseline; gap: 10px; padding: 5px 0; }
+  .det .f + .f { border-top: 1px solid var(--line); }
+  .det .f .lbl { flex: none; font-size: 0.875rem; color: var(--hint); }
+  .det .f .val { flex: 1; min-width: 0; font-size: 0.875rem; text-align: right;
+                 overflow-wrap: anywhere; }
+  /* A pair with no value is a heading for the lines under it. */
+  .det .f.hd { border-top: 1px solid var(--line); }
+  .det .f.hd .lbl { font-size: 0.875rem; font-weight: 600; color: var(--fg); }
+
+  .det .head button { padding: 6px 12px; font-size: 0.875rem; font-family: inherit;
+                  color: var(--fg); background: var(--card);
+                  border: 1px solid var(--line); border-radius: 10px; cursor: pointer; }
+
+  .wsec { font-size: 0.875rem; font-weight: 600; color: var(--hint); margin: 12px 0 6px; }
+  .wsec:first-child { margin-top: 0; }
+  .blk .alias { flex: 1; min-width: 0; font-size: 0.8125rem; text-align: right; color: var(--hint);
+                overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .more { padding: 11px 0 3px; text-align: center; font-size: 0.8125rem; color: var(--hint); }
+
+  nav { display: flex; border-top: 1px solid var(--line); background: var(--bg);
+        padding-bottom: env(safe-area-inset-bottom, 0); }
+  nav button { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 2px;
+               padding: 6px 0 7px; border: 0; background: none; cursor: pointer;
+               font-size: 0.875rem; color: var(--hint); font-family: inherit; }
+  nav button.active { color: var(--accent); }
+  nav svg { width: 24px; height: 24px; fill: none; stroke: currentColor;
+            stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+</style>
+</head>
+<body hx-ext="sse" sse-connect="events">
+
+<main>
+  <section id="home" class="panel active">
+    <div id="fees" class="fees" hx-get="fees" hx-trigger="sse:fees, every 10m" hx-swap="innerHTML">
+      {{template "fees" .Fees}}
+    </div>
+    <div id="network" class="fees net" hx-get="network" hx-trigger="sse:network, every 10m" hx-swap="innerHTML">
+      {{template "network" .Network}}
+    </div>
+    <div id="market" class="fees net mkt" hx-get="market" hx-trigger="sse:market, every 10m" hx-swap="innerHTML">
+      {{template "market" .Market}}
+    </div>
+    <div class="searchwrap">
+      <input id="q" name="q" type="search" enterkeyhint="search" autocapitalize="off"
+             autocorrect="off" spellcheck="false"
+             placeholder="Транзакция, блок или адрес"
+             hx-get="search" hx-trigger="keyup[key=='Enter']"
+             hx-target="#blocklist" hx-swap="outerHTML">
+      <p>Вставьте txid, высоту или хеш блока, либо адрес</p>
+    </div>
+  </section>
+
+  <section id="blocks" class="panel">
+    {{template "blocks" .Blocks}}
+  </section>
+  <section id="addresses" class="panel">{{template "addresses" .}}</section>
+  <section id="watches" class="panel">
+    <div id="watchpanel" class="blocklist" hx-get="watches"
+         hx-trigger="watchtab from:body" hx-swap="outerHTML">
+      <div class="empty">загрузка…</div>
+    </div>
+  </section>
+</main>
+
+<nav>
+  <button class="active" data-panel="home">
+    <svg viewBox="0 0 24 24"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/></svg>
+    Главная</button>
+  <button data-panel="blocks">
+    <svg viewBox="0 0 24 24"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M12 12l8-4.5M12 12v9M12 12L4 7.5"/></svg>
+    Блоки</button>
+  <button data-panel="addresses">
+    <svg viewBox="0 0 24 24"><path d="M4 7h16v13H4z"/><path d="M4 7l8 6 8-6"/></svg>
+    Адреса</button>
+  <button data-panel="watches">
+    <svg viewBox="0 0 24 24"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>
+    Наблюдение</button>
+</nav>
+
+<script>
+  var tg = window.Telegram && window.Telegram.WebApp;
+  if (tg) { tg.ready(); tg.expand(); }
+  // Marked on the body rather than per fragment: details pages arrive later, by
+  // swap, so anything set only at load would never reach them.
+  if (tg && tg.initData) { document.body.classList.add("tg"); }
+  // ?debug shows what this device reports, which is how the rule above gets
+  // tuned without a console attached to the phone.
+  if (location.search.indexOf("debug") >= 0) {
+    var hint = document.querySelector(".searchwrap p");
+    if (hint) {
+      hint.textContent = "platform " + ((tg && tg.platform) || "none") +
+        " · " + window.innerWidth + "x" + window.innerHeight +
+        " · dpr " + window.devicePixelRatio +
+        " · root " + getComputedStyle(document.documentElement).fontSize +
+        " · pointer " + (matchMedia("(pointer: coarse)").matches ? "coarse" : "fine") +
+        " · os " + ((navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || "?") +
+        " · class " + (document.documentElement.className || "none");
+    }
+  }
+
+  function showPanel(name) {
+    document.querySelectorAll("nav button").forEach(function(x) { x.classList.toggle("active", x.dataset.panel === name); });
+    document.querySelectorAll(".panel").forEach(function(p) { p.classList.toggle("active", p.id === name); });
+    if (name === "watches") { document.body.dispatchEvent(new Event("watchtab")); }
+  }
+  document.querySelectorAll("nav button").forEach(function(b) {
+    b.addEventListener("click", function() { showPanel(b.dataset.panel); });
+  });
+  // Outside Telegram there is no initData, so /watches can only 401. Say so
+  // rather than leaving a request to fail silently behind a "loading…".
+  if (!(tg && tg.initData)) {
+    var wp = document.getElementById("watchpanel");
+    if (wp) { wp.innerHTML = '<div class="empty">Наблюдение доступно только в Telegram</div>'; }
+  }
+  // A details page answers with HX-Trigger: {"showtab":"<panel>"}, so a search
+  // made from Home lands on the right tab with the page already swapped in.
+  document.body.addEventListener("showtab", function(e) { showPanel(e.detail.value); });
+</script>
+</body>
+</html>
+
+{{define "fees"}}<h2>Комиссии сети</h2>
+{{- if .OK}}
+<div class="tiers">
+  <div class="tier"><div class="label">Быстро</div><div class="rate">{{.Fast.Rate}} <span class="unit">sat/vB</span></div><div class="usd">{{.Fast.USD}}</div></div>
+  <div class="tier"><div class="label">1 час</div><div class="rate">{{.Hour.Rate}} <span class="unit">sat/vB</span></div><div class="usd">{{.Hour.USD}}</div></div>
+  <div class="tier"><div class="label">2+ часа</div><div class="rate">{{.Slow.Rate}} <span class="unit">sat/vB</span></div><div class="usd">{{.Slow.USD}}</div></div>
+</div>
+<p class="note">по {{.TxCount}} транзакциям в мемпуле</p>
+{{- else}}
+<p class="note">комиссии недоступны</p>
+{{- end}}{{end}}
+
+{{define "network"}}<h2>Блокчейн</h2>
+{{- if .OK}}
+<div class="stats">
+  <div class="stat"><div class="label">Монеты</div><div class="value">{{.Coins}} / {{.Cap}}</div></div>
+  <div class="stat"><div class="label">Блоки</div><div class="value">{{.Blocks}}</div></div>
+  <div class="stat"><div class="label">Размер</div><div class="value">{{.Size}}</div></div>
+  <div class="stat"><div class="label">Активные узлы</div><div class="value">{{.Nodes}}</div></div>
+  <div class="stat"><div class="label">Транзакции</div><div class="value">{{.Txs}}</div></div>
+  <div class="stat"><div class="label">Адреса</div><div class="value">{{.Addresses}}</div></div>
+</div>
+{{- else}}
+<p class="note">статистика сети недоступна</p>
+{{- end}}{{end}}
+
+{{define "market"}}<h2>Рынок</h2>
+{{- if .OK}}
+<div class="price">{{.Price}}</div>
+<div class="changes">
+{{- range .Changes}}
+  <div class="chg"><div class="label">{{.Label}}</div><div class="pct {{if .Neutral}}flat{{else if .Up}}up{{else}}down{{end}}">{{.Pct}}</div></div>
+{{- end}}
+</div>
+{{- else}}
+<p class="note">данные рынка недоступны</p>
+{{- end}}{{end}}
+
+{{define "blocks"}}<div id="blocklist" class="blocklist">
+{{- if .OK}}
+  <div class="rows">
+  {{- template "blocktop" .}}
+  {{- template "blockrows" .}}
+  </div>
+{{- else}}
+  <div class="empty" hx-get="blocks" hx-trigger="sse:blocks, every 10m"
+       hx-target="#blocklist" hx-swap="outerHTML">блоки ещё не загружены</div>
+{{- end}}
+</div>{{end}}
+
+{{/* The sentinel above the rows: a new block replaces it with itself plus the
+     rows that appeared, which lands them at the top without touching the ones
+     the reader is looking at. Empty, so it costs no height while it waits. */}}
+{{define "blocktop"}}
+    <div class="new" hx-get="newblocks?after={{.Top}}"
+         hx-trigger="sse:blocks, every 10m" hx-swap="outerHTML"></div>{{end}}
+
+{{/* The rows, and below them the sentinel that appends the next batch when the
+     reader scrolls it into view. "intersect once" rather than "revealed"
+     because the rows are their own scroller, which is what htmx's own docs say
+     revealed does not handle. */}}
+{{define "blockrows"}}
+  {{- range .Rows}}
+    <div class="blk" id="blk{{.Num}}">
+      <span class="h lnk" hx-get="block?height={{.Num}}&down={{.Num}}"
+            hx-target="#blocklist" hx-swap="outerHTML">{{.Height}}</span>
+      <span class="sz">{{.Size}}</span>
+      <span class="tx">{{.Txs}}</span>
+      {{- if .MinerKnown}}
+      <span class="mn lnk" hx-get="miner?name={{.Miner | urlquery}}&down={{.Num}}"
+            hx-target="#blocklist" hx-swap="outerHTML">{{.Miner}}</span>
+      {{- else}}
+      <span class="mn">{{.Miner}}</span>
+      {{- end}}
+    </div>
+  {{- end}}
+  {{- if .More}}
+    <div class="more" hx-get="moreblocks?before={{.Next}}"
+         hx-trigger="intersect once" hx-swap="outerHTML">загрузка…</div>
+  {{- end}}{{end}}
+
+{{define "newblocks"}}{{template "blocktop" .}}{{template "blockrows" .}}{{end}}
+
+{{define "addresses"}}<div id="addrpanel" class="blocklist"><div class="empty">Адреса — скоро</div></div>{{end}}
+
+{{define "watchbtn"}}<button id="watchbtn" class="bell{{if .On}} on{{end}}{{if .Error}} err{{end}}"
+        hx-post="watch?kind={{.Kind}}&id={{.Id}}&on={{if .On}}0{{else}}1{{end}}"
+        hx-swap="outerHTML"
+        title="{{if .On}}Не следить{{else}}Следить{{end}}">
+  <svg viewBox="0 0 24 24"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>
+</button>{{end}}
+
+{{define "watches"}}<div id="watchpanel" class="blocklist" hx-get="watches"
+     hx-trigger="watchtab from:body" hx-swap="outerHTML">
+{{- if not .OK}}
+  <div class="empty">наблюдение недоступно</div>
+{{- else if and (not .Addresses) (not .Txs)}}
+  <div class="empty">Вы пока ни за чем не следите</div>
+{{- else}}
+  <div class="rows">
+  {{- if .Addresses}}
+    <div class="wsec">Адреса</div>
+    {{- range .Addresses}}
+    <div class="blk">
+      <span class="h lnk" hx-get="address?a={{.Id}}&from=watches" hx-target="#watchpanel" hx-swap="outerHTML">{{.Short}}</span>
+      <span class="alias">{{.Alias}}</span>
+    </div>
+    {{- end}}
+  {{- end}}
+  {{- if .Txs}}
+    <div class="wsec">Транзакции</div>
+    {{- range .Txs}}
+    <div class="blk">
+      <span class="h lnk" hx-get="tx?id={{.Id}}&from=watches" hx-target="#watchpanel" hx-swap="outerHTML">{{.Short}}</span>
+      <span class="alias">{{.Alias}}</span>
+    </div>
+    {{- end}}
+  {{- end}}
+  </div>
+{{- end}}
+</div>{{end}}
+
+{{define "details"}}<div id="{{.Slot}}" class="blocklist det">
+  <div class="head">
+    <button hx-get="{{.Back}}" hx-target="#{{.Slot}}" hx-swap="{{.Swap}}">&lt; Назад</button>
+    <h1>{{.Title}}</h1>
+    <span class="side">
+      <button class="ghost" tabindex="-1" aria-hidden="true">&lt; Назад</button>
+      {{- if .Kind}}
+      <span id="watchbtn" hx-get="watch?kind={{.Kind}}&id={{.Id}}" hx-trigger="load" hx-swap="outerHTML"></span>
+      {{- end}}
+    </span>
+  </div>
+{{- if .OK}}
+  <div class="fields">
+  {{- range .Rows}}
+    <div class="f{{if not .Value}} hd{{end}}"><span class="lbl">{{.Label}}</span><span class="val">{{.Value}}</span></div>
+  {{- end}}
+  </div>
+{{- else}}
+  <div class="empty">{{if .Rows}}{{(index .Rows 0).Label}}{{else}}ничего не найдено{{end}}</div>
+{{- end}}
+</div>{{end}}
