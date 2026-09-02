@@ -68,32 +68,47 @@ func (appSource) Network() app.Network {
     return cachedNetwork
 }
 
-// blocksPerPage is how many rows the Blocks tab shows at once.
+// blocksPerPage is how many rows one batch of the Blocks tab carries.
 const blocksPerPage = 12
 
-// Blocks reads a page of the recent-block list straight out of the blocks-stat
-// bucket. The keys are big-endian heights, so walking the cursor backwards from
-// the end yields newest-first order with no sorting and no node round trip —
-// everything the row needs is already in the cached record.
-func (appSource) Blocks(page int) app.Blocks {
-    var out = app.Blocks{Page: page, Num: page + 1, Prev: page - 1, Next: page + 1, HasPrev: page > 0}
+// blocksMaxRows bounds a list restored by Back, which is as deep as the reader
+// had scrolled. Twenty batches is further than anyone scrolls, and it is what
+// stops an edited down= from asking for every block ever cached.
+const blocksMaxRows = blocksPerPage * 20
+
+// Blocks reads one window of the recent-block list straight out of the
+// blocks-stat bucket. The keys are big-endian heights, so walking the cursor
+// backwards yields newest-first order with no sorting and no node round trip,
+// and Seek starts a batch at a given height without stepping over the ones above
+// it — everything the row needs is already in the cached record.
+func (appSource) Blocks(rng app.Range) app.Blocks {
+    var out = app.Blocks{Top: rng.After}
     if db == nil { return out }
+    var limit = blocksPerPage
+    if rng.Down > 0 { limit = blocksMaxRows }
     db.View(func(tx *bbolt.Tx) error {
         var b = tx.Bucket(blocksBucket)
         if b == nil { return nil }
-        var skipped = 0
         var c = b.Cursor()
-        for k, v := c.Last(); k != nil; k, v = c.Prev() {
+        var k, v = c.Last()
+        if rng.Before > 0 {
+            // Seek lands on the first key at or above Before, so one step back
+            // is the block below it; past the tip it returns nothing, which is
+            // the whole list.
+            if k, v = c.Seek(itob(uint64(rng.Before))); k == nil {
+                k, v = c.Last()
+            } else {
+                k, v = c.Prev()
+            }
+        }
+        for ; k != nil; k, v = c.Prev() {
             var bi blockInfo
             // A record written before a schema change fails to decode; skip it
-            // rather than letting one bad row end the page early.
+            // rather than letting one bad row end the batch early.
             if json.Unmarshal(v, &bi) != nil { continue }
-            if skipped < page*blocksPerPage {
-                skipped++
-                continue
-            }
-            if len(out.Rows) == blocksPerPage {
-                out.HasNext = true
+            if rng.After > 0 && bi.Height <= rng.After { break }
+            if len(out.Rows) == limit {
+                out.More = true
                 break
             }
             var miner = bi.Miner
@@ -106,9 +121,17 @@ func (appSource) Blocks(page int) app.Blocks {
                 Miner:      miner,
                 MinerKnown: bi.Miner != "",
             })
+            if rng.Down > 0 && bi.Height <= rng.Down {
+                var next, _ = c.Prev()
+                out.More = next != nil
+                break
+            }
         }
         return nil
     })
+    if len(out.Rows) > 0 {
+        out.Top, out.Next = out.Rows[0].Num, out.Rows[len(out.Rows)-1].Num
+    }
     out.OK = len(out.Rows) > 0
     return out
 }

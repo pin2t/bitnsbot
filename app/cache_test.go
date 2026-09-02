@@ -12,7 +12,7 @@ import "time"
 type countingSource struct {
     mu    sync.Mutex
     calls map[string]int
-    b     map[int]Blocks
+    b     []Block
 }
 
 func newCounting() *countingSource {
@@ -65,13 +65,28 @@ func (s *countingSource) Watches(chat int64) Watches {
     return Watches{OK: true}
 }
 
-func (s *countingSource) Blocks(page int) Blocks {
-    s.hit("blocks" + strconv.Itoa(page))
-    if b, ok := s.b[page]; ok { return b }
-    // beyond the fixture, a page that exists but holds nothing recognisable —
-    // enough for the eviction test to page deep
-    return Blocks{OK: true, Page: page, Num: page + 1, Prev: page - 1, Next: page + 1,
-        HasPrev: true, HasNext: true, Rows: []Block{{Height: "h" + strconv.Itoa(page)}}}
+func (s *countingSource) Blocks(rng Range) Blocks {
+    s.hit("blocks" + rangeKey(rng))
+    var b = window(s.b, rng)
+    if !b.OK && rng.Before > 0 {
+        // below the fixture: a batch that exists but holds nothing recognisable
+        // — enough for the eviction test to scroll deep
+        var h = rng.Before - 1
+        b = Blocks{OK: true, Top: h, Next: h, More: true,
+            Rows: []Block{{Height: strconv.FormatInt(h, 10), Num: h}}}
+    }
+    return b
+}
+
+// rangeKey names a window the way the tests count them: one key per distinct
+// request, so a cache hit shows up as a call that did not happen.
+func rangeKey(rng Range) string {
+    switch {
+    case rng.Before > 0: return "before" + strconv.FormatInt(rng.Before, 10)
+    case rng.After > 0:  return "after" + strconv.FormatInt(rng.After, 10)
+    case rng.Down > 0:   return "down" + strconv.FormatInt(rng.Down, 10)
+    }
+    return "top"
 }
 
 // A second request for an unchanged card is served from memory: the fragment is
@@ -102,7 +117,7 @@ func TestNotifyClearsOneCard(t *testing.T) {
     var src = newCounting()
     var h = handler(t, "TESTTOKEN", src)
     var data = freshInitData("TESTTOKEN")
-    var paths = []string{"/fees", "/network", "/market", "/blocks?page=0"}
+    var paths = []string{"/fees", "/network", "/market", "/blocks"}
     for _, p := range paths { get(h, p, data) }
     Notify("fees")
     for _, p := range paths { get(h, p, data) }
@@ -124,7 +139,7 @@ func TestPageServedFromCache(t *testing.T) {
     if !strings.HasSuffix(strings.TrimSpace(second), "</html>") {
         t.Errorf("the cached page is truncated; tail: %q", second[max(0, len(second)-120):])
     }
-    for _, name := range []string{"fees", "network", "market", "blocks0"} {
+    for _, name := range []string{"fees", "network", "market", "blockstop"} {
         if n := src.count(name); n != 1 {
             t.Errorf("%s asked Source %d times for two page loads, want 1", name, n)
         }
@@ -155,65 +170,67 @@ func TestAnyNotifyClearsPage(t *testing.T) {
     }
 }
 
-// A new block invalidates the whole list, not just the page that happened to be
-// showing: every page shifts by one when a block arrives.
+// A new block invalidates the whole list, not just the batch that happened to be
+// showing: every batch below it shifts by one when a block arrives.
 func TestNotifyBlocksClearsEveryPage(t *testing.T) {
     var src = newCounting()
     var h = handler(t, "TESTTOKEN", src)
     var data = freshInitData("TESTTOKEN")
-    get(h, "/blocks?page=0", data)
-    get(h, "/blocks?page=1", data)
+    get(h, "/blocks", data)
+    get(h, "/moreblocks?before=963257", data)
     Notify("blocks")
-    get(h, "/blocks?page=0", data)
-    get(h, "/blocks?page=1", data)
-    for _, p := range []string{"blocks0", "blocks1"} {
+    get(h, "/blocks", data)
+    get(h, "/moreblocks?before=963257", data)
+    for _, p := range []string{"blockstop", "blocksbefore963257"} {
         if n := src.count(p); n != 2 {
-            t.Errorf("%s rendered %d times, want 2 — a new block stales every page", p, n)
+            t.Errorf("%s rendered %d times, want 2 — a new block stales every batch", p, n)
         }
     }
 }
 
-// Pages are cached independently and returned under their own key, so paging
-// back to one already seen serves that page and not a neighbour's HTML.
+// Batches are cached independently and returned under their own key, so a list
+// restored by Back serves its own HTML and not a neighbour's.
 func TestBlocksCachedPerPage(t *testing.T) {
     var src = newCounting()
     var h = handler(t, "TESTTOKEN", src)
     var data = freshInitData("TESTTOKEN")
-    var first = get(h, "/blocks?page=0", data).Body.String()
-    get(h, "/blocks?page=1", data)
-    var again = get(h, "/blocks?page=0", data).Body.String()
+    var first = get(h, "/blocks", data).Body.String()
+    get(h, "/moreblocks?before=963257", data)
+    var again = get(h, "/blocks", data).Body.String()
     if first != again {
-        t.Error("paging back to page 0 did not return page 0's cached HTML")
+        t.Error("re-opening the list did not return its cached HTML")
     }
     if !strings.Contains(again, "963268") || strings.Contains(again, "963256") {
-        t.Errorf("page 0 came back holding another page's rows: %q", again)
+        t.Errorf("the list came back holding another batch's rows: %q", again)
     }
-    if n := src.count("blocks0"); n != 1 {
-        t.Errorf("page 0 rendered %d times, want 1", n)
+    if n := src.count("blockstop"); n != 1 {
+        t.Errorf("the newest batch rendered %d times, want 1", n)
     }
-    if n := src.count("blocks1"); n != 1 {
-        t.Errorf("page 1 rendered %d times, want 1", n)
+    if n := src.count("blocksbefore963257"); n != 1 {
+        t.Errorf("the second batch rendered %d times, want 1", n)
     }
 }
 
-// The list cache is bounded, so an edited page= parameter cannot make the
-// process hold an unbounded number of rendered pages.
+// The list cache is bounded, so an edited before= parameter cannot make the
+// process hold an unbounded number of rendered batches.
 func TestBlocksCacheEvictsOldestPage(t *testing.T) {
     var src = newCounting()
     var h = handler(t, "TESTTOKEN", src)
     var data = freshInitData("TESTTOKEN")
-    for p := 0; p <= blocksCached; p++ {
-        get(h, "/blocks?page="+strconv.Itoa(p), data)
+    get(h, "/blocks", data)
+    for i := 0; i < blocksCached; i++ {
+        get(h, "/moreblocks?before="+strconv.Itoa(963257-i), data)
     }
-    // page 0 is the least recently used of the blocksCached+1 pages requested
-    get(h, "/blocks?page=0", data)
-    if n := src.count("blocks0"); n != 2 {
-        t.Errorf("page 0 rendered %d times, want 2 — it should have been evicted", n)
+    // the list itself is the least recently used of the blocksCached+1 renders
+    get(h, "/blocks", data)
+    if n := src.count("blockstop"); n != 2 {
+        t.Errorf("the newest batch rendered %d times, want 2 — it should have been evicted", n)
     }
-    // the most recent page is still held
-    get(h, "/blocks?page="+strconv.Itoa(blocksCached), data)
-    if n := src.count("blocks" + strconv.Itoa(blocksCached)); n != 1 {
-        t.Errorf("the newest page rendered %d times, want 1 — it should still be cached", n)
+    // the most recent batch is still held
+    var last = strconv.Itoa(963257 - (blocksCached - 1))
+    get(h, "/moreblocks?before="+last, data)
+    if n := src.count("blocksbefore" + last); n != 1 {
+        t.Errorf("the newest batch rendered %d times, want 1 — it should still be cached", n)
     }
 }
 
@@ -227,11 +244,11 @@ func TestCacheExpires(t *testing.T) {
     var src = newCounting()
     var h = handler(t, "TESTTOKEN", src)
     var data = freshInitData("TESTTOKEN")
-    var paths = []string{"/network", "/market", "/blocks?page=0"}
+    var paths = []string{"/network", "/market", "/blocks"}
     for _, p := range paths { get(h, p, data) }
     time.Sleep(40 * time.Millisecond)
     for _, p := range paths { get(h, p, data) }
-    for _, name := range []string{"network", "market", "blocks0"} {
+    for _, name := range []string{"network", "market", "blockstop"} {
         if n := src.count(name); n != 2 {
             t.Errorf("%s rendered %d times, want 2 — the entry should have aged out", name, n)
         }
@@ -275,7 +292,7 @@ func TestCacheConcurrentRequests(t *testing.T) {
             defer wg.Done()
             get(h, "/fees", data)
             get(h, "/network", data)
-            get(h, "/blocks?page="+strconv.Itoa(i%3), data)
+            get(h, "/moreblocks?before="+strconv.Itoa(963257-i%3), data)
             if i%5 == 0 { Notify("blocks") }
         }(i)
     }
