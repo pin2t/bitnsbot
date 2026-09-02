@@ -628,7 +628,7 @@ All three are implemented the same way, short handler names (`info`, `watchCmd`,
 
 ## Git conventions
 
-- **Commit messages are a single compact line.** No multi-paragraph bodies, no bullet lists, no explanation of why — the diff and this file carry that. "Accept a block hash in /info, not only a block height" is the shape; a summary line followed by three paragraphs of rationale is not.
+- **A commit message is one compact, descriptive sentence on a single line.** No multi-paragraph bodies, no bullet lists, no explanation of why — the diff and this file carry that. "Accept a block hash in /info, not only a block height" is the shape; a summary line followed by three paragraphs of rationale is not.
 - **No `Co-Authored-By` trailer.**
 
 ### The database UI
