@@ -20,7 +20,7 @@ func setup(t *testing.T, seed func(*bbolt.Tx) error) (*bbolt.DB, *sql.DB) {
     if err != nil { t.Fatal(err) }
     t.Cleanup(func() { target.Close() })
     target.SetMaxOpenConns(1)
-    for _, s := range schema {
+    for _, s := range append(append([]string{}, pragmas...), schema...) {
         if _, err := target.Exec(s); err != nil { t.Fatalf("%s: %v", s, err) }
     }
     return source, target
@@ -257,5 +257,27 @@ func TestCopyEmptyDatabase(t *testing.T) {
         var rows, skipped, err = c.copy(source, target)
         if err != nil { t.Fatalf("%s: %v", c.name, err) }
         if rows != 0 || skipped != 0 { t.Errorf("%s: rows=%d skipped=%d, want an absent bucket to be no rows", c.name, rows, skipped) }
+    }
+}
+
+// page_size is fixed when the file header is written, so setting it once a page
+// exists is silently a no-op — nothing errors, the database is simply built with
+// 4K pages. The pragma order in main is what makes it take, and this is what
+// catches that order being disturbed.
+func TestPageSizeTakesEffect(t *testing.T) {
+    var _, target = setup(t, func(tx *bbolt.Tx) error { return nil })
+    var got int
+    if err := target.QueryRow("PRAGMA page_size").Scan(&got); err != nil { t.Fatal(err) }
+    if got != 16384 { t.Errorf("page_size = %d, want 16384", got) }
+}
+
+// rates keys on the timestamp alone, which a bbolt rate already is unique by, so
+// a second price for the same instant collides instead of quietly becoming a
+// second row the way a (ts, cents) key would allow.
+func TestRatesKeyIsTimestampAlone(t *testing.T) {
+    var _, target = setup(t, func(tx *bbolt.Tx) error { return nil })
+    if _, err := target.Exec("insert into rates (ts, cents) values (1, 100)"); err != nil { t.Fatal(err) }
+    if _, err := target.Exec("insert into rates (ts, cents) values (1, 200)"); err == nil {
+        t.Error("a second row at the same timestamp was accepted, so cents is still part of the key")
     }
 }

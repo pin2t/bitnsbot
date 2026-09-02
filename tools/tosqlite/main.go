@@ -28,11 +28,27 @@ var dst = flag.String("dst", "", "path to the SQLite database to create (require
 var verbose = flag.Int("verbose", 0, "log level: 0 status, 1 detail, 2 per-record")
 var batch = flag.Int("batch", 10000, "rows per SQLite transaction")
 
-// schema is the destination layout. It carries three corrections to the DDL as
-// written, all of them forced by SQLite: a table may declare only one PRIMARY KEY
-// clause, so the three tables that named several become composite keys; and
-// `RIMARY KEY` does not fail, it parses as part of the column's *type*, which
-// would have left blocks with no primary key at all.
+// pragmas prepare a fresh destination for a bulk load, and their order matters:
+// page_size is fixed when the file header is written, so it has to be set before
+// anything creates a page — a later one is silently a no-op. 16K measured 9%
+// faster than the 4K default and 11% smaller (1265 MB against 1425 MB on the same
+// million-row source), because a packed shard-range value averages about a
+// kilobyte and four times as many of them fit per page. Raising cache_size on top
+// was measured too and is not here: it was slower at every size tried, 64 MB by
+// 0.5% and 256 MB by 1.3%, sequential rowid inserts having nothing to re-read.
+// journal_mode=OFF rather than WAL, and synchronous=OFF, because this run builds
+// the whole file — a crash means running it again, not recovering.
+var pragmas = []string{
+    "PRAGMA page_size=16384",
+    "PRAGMA journal_mode=OFF",
+    "PRAGMA synchronous=OFF",
+}
+
+// schema is the destination layout. It corrects the DDL as written in two places,
+// both forced by SQLite: a table may declare only one PRIMARY KEY clause, so
+// miners and watches — which each named several — take composite keys, and rates
+// keys on its timestamp alone; and `RIMARY KEY` does not fail, it parses as part
+// of the column's *type*, which would have left blocks with no primary key at all.
 var schema = []string{
     `create table addrindex (shard INTEGER PRIMARY KEY, data BLOB NOT NULL)`,
     `create table blocks (height INTEGER PRIMARY KEY, hash TEXT NOT NULL, ts INTEGER NOT NULL,
@@ -45,7 +61,7 @@ var schema = []string{
     `create table miners (name TEXT NOT NULL, address TEXT NOT NULL, tag TEXT NOT NULL,
         blocks INTEGER NOT NULL, reward INTEGER NOT NULL, fees INTEGER NOT NULL,
         totalWork FLOAT NOT NULL, lastWork FLOAT NOT NULL, PRIMARY KEY (name, address, tag))`,
-    `create table rates (ts INTEGER NOT NULL, cents INTEGER NOT NULL, PRIMARY KEY (ts, cents))`,
+    `create table rates (ts INTEGER PRIMARY KEY, cents INTEGER NOT NULL)`,
     `create table watches (chat INTEGER NOT NULL, addr TEXT NOT NULL, alias TEXT NOT NULL,
         created INTEGER NOT NULL, PRIMARY KEY (chat, addr))`,
 }
@@ -90,12 +106,11 @@ func main() {
     defer source.Close()
     target, err := sql.Open("sqlite", *dst)
     if err != nil { logging.Fatal("open %s: %v", *dst, err) }
-    // pragmas are per connection, so one connection is what makes them hold; and
-    // the whole destination is built by this run, so a crash means running it
-    // again rather than recovering — which is what buys the durability trade.
+    // a pragma applies to the connection that ran it, so one connection is what
+    // makes the whole set hold for every statement after it
     target.SetMaxOpenConns(1)
     var began = time.Now()
-    for _, s := range append([]string{"PRAGMA journal_mode=OFF", "PRAGMA synchronous=OFF"}, schema...) {
+    for _, s := range append(append([]string{}, pragmas...), schema...) {
         if _, err := target.Exec(s); err != nil { abort(target, "%v", err) }
     }
     for _, t := range tables {
