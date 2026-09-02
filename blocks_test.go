@@ -9,6 +9,8 @@ import "time"
 
 import "go.etcd.io/bbolt"
 
+import "bitnsbot/app"
+
 func TestSubsidy(t *testing.T) {
     var cases = map[int64]int64{0: 5000000000, 209999: 5000000000, 210000: 2500000000, 420000: 1250000000, 630000: 625000000, 840000: 312500000}
     for h, want := range cases {
@@ -176,5 +178,77 @@ func TestBlockNotification(t *testing.T) {
     }
     if !ok {
         t.Fatalf("block 100 was not cached from the blockconnected notification")
+    }
+}
+
+// The Mini App's block list windows the blocks-stat bucket by height rather than
+// by an offset, which is what keeps a batch stable while the chain grows at the
+// head. The cursor arithmetic is where that can go wrong, so this drives it
+// against a real database.
+func TestAppBlocksWindows(t *testing.T) {
+    if err := openDB(filepath.Join(t.TempDir(), "watches.db")); err != nil {
+        t.Fatalf("openDB: %v", err)
+    }
+    defer closeDB()
+    for h := int64(700000); h < 700050; h++ {
+        if err := storeBlock(&blockInfo{Height: h, Hash: "h", NumTx: 3, Miner: "PoolX"}); err != nil {
+            t.Fatalf("store %d: %v", h, err)
+        }
+    }
+    var heights = func(b app.Blocks) []int64 {
+        var out []int64
+        for _, r := range b.Rows { out = append(out, r.Num) }
+        return out
+    }
+    // the newest batch, newest first, with more below it
+    var top = appSource{}.Blocks(app.Range{})
+    if !top.OK || len(top.Rows) != blocksPerPage || !top.More {
+        t.Fatalf("newest batch: %d rows more=%v", len(top.Rows), top.More)
+    }
+    if top.Top != 700049 || top.Next != 700038 || heights(top)[0] != 700049 {
+        t.Fatalf("newest batch spans %d..%d, want 700049..700038", top.Top, top.Next)
+    }
+    // the next batch continues strictly below it — no row is repeated, and none
+    // is skipped
+    var next = appSource{}.Blocks(app.Range{Before: top.Next})
+    if len(next.Rows) != blocksPerPage || next.Top != 700037 || next.Next != 700026 {
+        t.Fatalf("second batch spans %d..%d, want 700037..700026", next.Top, next.Next)
+    }
+    // a height the bucket does not hold still starts below it
+    if b := (appSource{}).Blocks(app.Range{Before: 800000}); b.Top != 700049 {
+        t.Fatalf("a before above the tip should start at the tip, got %d", b.Top)
+    }
+    if b := (appSource{}).Blocks(app.Range{Before: 700000}); b.OK || len(b.Rows) != 0 {
+        t.Fatalf("nothing is below the oldest block, got %d rows", len(b.Rows))
+    }
+    // what a new block prepends: everything above the height the list topped out
+    // at, and nothing that is already on screen
+    var fresh = appSource{}.Blocks(app.Range{After: 700046})
+    if got := heights(fresh); len(got) != 3 || got[0] != 700049 || got[2] != 700047 {
+        t.Fatalf("prepend = %v, want 700049..700047", got)
+    }
+    if fresh.More {
+        t.Error("three new blocks fit in a batch; nothing was cut off")
+    }
+    // nothing new is a legitimate answer, and the sentinel keeps its height
+    var none = appSource{}.Blocks(app.Range{After: 700049})
+    if len(none.Rows) != 0 || none.Top != 700049 {
+        t.Fatalf("nothing new = %d rows top=%d, want 0 rows at 700049", len(none.Rows), none.Top)
+    }
+    // more new blocks than a batch holds is what tells the app to replace the
+    // whole list rather than prepend a piece of it
+    if b := (appSource{}).Blocks(app.Range{After: 700000}); !b.More {
+        t.Error("49 new blocks do not fit in one batch; More must say so")
+    }
+    // Back restores everything from the tip down to the block that was opened
+    var back = appSource{}.Blocks(app.Range{Down: 700030})
+    if got := heights(back); len(got) != 20 || got[0] != 700049 || got[19] != 700030 {
+        t.Fatalf("restored %d rows spanning %v, want 700049..700030", len(got), got)
+    }
+    if !back.More {
+        t.Error("there are older blocks below the restored list, so it keeps its sentinel")
+    }
+    if b := (appSource{}).Blocks(app.Range{Down: 700000}); b.More {
+        t.Error("a list restored to the oldest block has nothing more to append")
     }
 }

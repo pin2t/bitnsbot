@@ -48,7 +48,7 @@ type fakeSource struct {
     f Fees
     n Network
     m Market
-    b map[int]Blocks
+    b []Block
     d map[int64]Info
     t map[string]Info
     a map[string]Info
@@ -58,7 +58,7 @@ type fakeSource struct {
 func (s fakeSource) Fees() Fees       { return s.f }
 func (s fakeSource) Network() Network { return s.n }
 func (s fakeSource) Market() Market   { return s.m }
-func (s fakeSource) Blocks(page int) Blocks { return s.b[page] }
+func (s fakeSource) Blocks(rng Range) Blocks { return window(s.b, rng) }
 
 func (s fakeSource) BlockInfo(height int64) Info {
     if d, ok := s.d[height]; ok { return d }
@@ -171,24 +171,55 @@ func liveBlockInfo() map[int64]Info {
     }}}
 }
 
-// two pages of ten, so pagination has something to move between
-func liveBlocks() map[int]Blocks {
-    var mk = func(page, from int, hasNext bool) Blocks {
-        var b = Blocks{OK: true, Page: page, Num: page + 1, Prev: page - 1, Next: page + 1,
-            HasPrev: page > 0, HasNext: hasNext}
-        for i := 0; i < 12; i++ {
-            // the last row of each page is unattributed, so every page carries
-            // both the linked and the plain form of the miner field
-            var row = Block{Height: strconv.Itoa(from - i), Num: int64(from - i),
-                Size: "1.56 MB", Txs: "4 000 txs", Miner: "AntPool", MinerKnown: true}
-            if i == 11 { row.Miner, row.MinerKnown = "Unknown", false }
-            // a pool name with a space, so the link's URL encoding is exercised
-            if i == 5 { row.Miner = "SBI Crypto" }
-            b.Rows = append(b.Rows, row)
-        }
-        return b
+// fakeBatch and fakeMaxRows are what main's blocksPerPage and blocksMaxRows are
+// to the real list: one batch, and the depth a restored list stops at.
+const fakeBatch = 12
+const fakeMaxRows = 24
+
+// Two batches of blocks, newest first — the order the bucket's cursor hands them
+// to main, so the fixture is a chain rather than a canned page.
+func liveBlocks() []Block {
+    var all []Block
+    for i := 0; i < 24; i++ {
+        var h = int64(963268 - i)
+        var row = Block{Height: strconv.FormatInt(h, 10), Num: h,
+            Size: "1.56 MB", Txs: "4 000 txs", Miner: "AntPool", MinerKnown: true}
+        // the last row of each batch is unattributed, so every batch carries
+        // both the linked and the plain form of the miner field
+        if i%fakeBatch == 11 { row.Miner, row.MinerKnown = "Unknown", false }
+        // a pool name with a space, so the link's URL encoding is exercised
+        if i%fakeBatch == 5 { row.Miner = "SBI Crypto" }
+        all = append(all, row)
     }
-    return map[int]Blocks{0: mk(0, 963268, true), 1: mk(1, 963256, false)}
+    return all
+}
+
+// window answers a Range out of that chain exactly as main's cursor walk does,
+// so what the tests drive is the paging contract itself and not a fixture that
+// happens to agree with it.
+func window(all []Block, rng Range) Blocks {
+    var out = Blocks{Top: rng.After}
+    var limit = fakeBatch
+    if rng.Down > 0 { limit = fakeMaxRows }
+    var i = 0
+    if rng.Before > 0 {
+        for i < len(all) && all[i].Num >= rng.Before { i++ }
+    }
+    for ; i < len(all); i++ {
+        if rng.After > 0 && all[i].Num <= rng.After { break }
+        if len(out.Rows) == limit {
+            out.More = true
+            break
+        }
+        out.Rows = append(out.Rows, all[i])
+        if rng.Down > 0 && all[i].Num <= rng.Down {
+            out.More = i + 1 < len(all)
+            break
+        }
+    }
+    if len(out.Rows) > 0 { out.Top, out.Next = out.Rows[0].Num, out.Rows[len(out.Rows)-1].Num }
+    out.OK = len(out.Rows) > 0
+    return out
 }
 
 func liveMarket() Market {
@@ -421,16 +452,21 @@ func TestMarketColdCache(t *testing.T) {
 }
 
 // The Blocks tab lists recent blocks newest first, each row carrying the four
-// fields, with the pager below.
+// fields, with the sentinel that loads the next batch below them.
 func TestBlocksListRenders(t *testing.T) {
     var src = fakeSource{f: liveFees(), b: liveBlocks()}
     var body = get(handler(t, "TESTTOKEN", src), "/", "").Body.String()
     if n := strings.Count(body, `class="blk"`); n != 12 {
         t.Errorf("rendered %d block rows, want 12", n)
     }
-    for _, want := range []string{"963268", "1.56 MB", "4 000 txs", "AntPool", "Prev &lt;", "&gt; Next"} {
+    for _, want := range []string{"963268", "1.56 MB", "4 000 txs", "AntPool"} {
         if !strings.Contains(body, want) {
             t.Errorf("block list is missing %q", want)
+        }
+    }
+    for _, gone := range []string{"Prev &lt;", "&gt; Next", `class="pager"`} {
+        if strings.Contains(body, gone) {
+            t.Errorf("the pager is gone; %q should not be rendered", gone)
         }
     }
     // descending: the newest height must appear before the one below it
@@ -461,89 +497,139 @@ func TestBlockRowLinks(t *testing.T) {
     }
 }
 
-// Paging moves the window and flips the buttons at the ends.
-func TestBlocksPagination(t *testing.T) {
+// Scrolling to the sentinel below the rows appends the next batch, which
+// continues below the lowest height on screen — a height, not a page number, so
+// a block mined mid-scroll cannot shift the boundary and repeat a row.
+func TestBlocksInfiniteScroll(t *testing.T) {
     var h = handler(t, "TESTTOKEN", fakeSource{b: liveBlocks()})
-    var first = get(h, "/blocks?page=0", freshInitData("TESTTOKEN")).Body.String()
+    var data = freshInitData("TESTTOKEN")
+    var first = get(h, "/blocks", data).Body.String()
     if !strings.Contains(first, "963268") || strings.Contains(first, "963256") {
-        t.Error("page 0 should hold the newest twelve")
+        t.Error("the list should open on the newest twelve")
     }
-    // the disabled attribute sits immediately before the label, so this pins it
-    // to the Prev button rather than to "disabled" appearing anywhere on the page
-    if !strings.Contains(first, `disabled>Prev &lt;</button>`) {
-        t.Error("Prev must be disabled on the first page")
+    if !strings.Contains(first, `hx-get="moreblocks?before=963257"`) {
+        t.Errorf("no sentinel continuing below the last row: %s", first)
     }
-    var second = get(h, "/blocks?page=1", freshInitData("TESTTOKEN")).Body.String()
-    if !strings.Contains(second, "963256") {
-        t.Error("page 1 should hold the next twelve")
+    if !strings.Contains(first, `hx-trigger="intersect once"`) {
+        t.Error(`the sentinel must load when scrolled into view ("intersect once", not "revealed" — the rows are their own scroller)`)
     }
-    if !strings.Contains(second, `hx-get="blocks?page=0"`) {
-        t.Error("Prev on page 1 must link back to page 0")
+    var next = get(h, "/moreblocks?before=963257", data).Body.String()
+    if !strings.Contains(next, "963256") || strings.Contains(next, "963268") {
+        t.Errorf("the next batch should hold the twelve below 963257: %s", next)
     }
-    if strings.Contains(second, `disabled>Prev &lt;</button>`) {
-        t.Error("Prev must be enabled once past the first page")
+    // a fragment, not a container: it is swapped in where the sentinel was
+    if strings.Contains(next, `id="blocklist"`) {
+        t.Error("an appended batch must not carry the list container")
+    }
+    // the fixture ends there, so nothing more is offered
+    if strings.Contains(next, "moreblocks?before=") {
+        t.Error("the sentinel should be gone once the list is exhausted")
     }
 }
 
-// The page number comes from a URL a user can edit, so nonsense must land on
-// page 0 rather than erroring or panicking.
-func TestBlocksBadPageFallsBackToFirst(t *testing.T) {
+// The heights come from a URL a user can edit, so nonsense must land on the
+// newest blocks or be refused rather than erroring or panicking.
+func TestBlocksBadHeightsAreSafe(t *testing.T) {
     var h = handler(t, "TESTTOKEN", fakeSource{b: liveBlocks()})
-    for _, q := range []string{"", "?page=", "?page=abc", "?page=-3"} {
-        var w = get(h, "/blocks"+q, freshInitData("TESTTOKEN"))
+    var data = freshInitData("TESTTOKEN")
+    for _, q := range []string{"", "?down=", "?down=abc", "?down=-3", "?down=0"} {
+        var w = get(h, "/blocks"+q, data)
         if w.Code != 200 || !strings.Contains(w.Body.String(), "963268") {
-            t.Errorf("%q gave %d; want page 0", q, w.Code)
+            t.Errorf("/blocks%s gave %d; want the newest blocks", q, w.Code)
+        }
+    }
+    for _, p := range []string{"/moreblocks", "/moreblocks?before=abc", "/moreblocks?before=-1",
+        "/newblocks", "/newblocks?after=abc", "/newblocks?after=0"} {
+        if w := get(h, p, data); w.Code != 400 {
+            t.Errorf("%s gave %d, want 400", p, w.Code)
         }
     }
 }
 
-// The list re-fetches on a new block, and keeps whichever page is showing —
-// re-rendering the container is what carries the page number across the swap.
-func TestBlocksRefreshKeepsPage(t *testing.T) {
+// A new block is prepended above the rows already on screen rather than
+// re-rendering the list, which is what keeps a reader who has scrolled where
+// they are. The sentinel replaces itself, so it comes back with the new height.
+func TestNewBlocksPrepend(t *testing.T) {
     var h = handler(t, "TESTTOKEN", fakeSource{b: liveBlocks()})
-    var second = get(h, "/blocks?page=1", freshInitData("TESTTOKEN")).Body.String()
-    if !strings.Contains(second, `hx-trigger="sse:blocks"`) {
-        t.Error("the list must refresh on the sse:blocks event")
+    var data = freshInitData("TESTTOKEN")
+    var list = get(h, "/blocks", data).Body.String()
+    if !strings.Contains(list, `hx-get="newblocks?after=963268"`) {
+        t.Errorf("no sentinel watching for blocks above the newest: %s", list)
     }
-    if !strings.Contains(second, `hx-get="blocks?page=1"`) {
-        t.Error("the refreshed container must ask for the page it is showing, not page 0")
+    if !strings.Contains(list, `hx-trigger="sse:blocks, every 10m"`) {
+        t.Error("the sentinel must refresh on the event, with the slow poll as a fallback")
+    }
+    // a reader whose list topped out two blocks ago gets exactly those two
+    var w = get(h, "/newblocks?after=963266", data)
+    var got = w.Body.String()
+    if n := strings.Count(got, `class="blk"`); n != 2 {
+        t.Errorf("prepended %d rows, want the 2 new ones: %s", n, got)
+    }
+    if !strings.Contains(got, `hx-get="newblocks?after=963268"`) {
+        t.Error("the replacement sentinel must ask about the new newest height")
+    }
+    // the sentinel comes first, or the next block would land below these two
+    if strings.Index(got, "newblocks?after=") > strings.Index(got, `class="blk"`) {
+        t.Errorf("the sentinel must stay above the rows it prepends: %s", got)
+    }
+    if strings.Contains(got, "moreblocks?before=") {
+        t.Error("a prepend must not carry a second bottom sentinel")
+    }
+    if rt := w.Header().Get("HX-Retarget"); rt != "" {
+        t.Errorf("a prepend retargeted to %q; it replaces the sentinel in place", rt)
     }
 }
 
-// The pager reads "Prev < 1 > Next": the label counts from 1 the way a reader
-// does, while the URL keeps its zero-based page so the contract is unchanged.
-func TestPagerLabelsCountFromOne(t *testing.T) {
+// Nothing new is a legitimate answer — the sentinel just goes back to waiting on
+// the same height.
+func TestNewBlocksWithNothingNew(t *testing.T) {
     var h = handler(t, "TESTTOKEN", fakeSource{b: liveBlocks()})
-    var first = get(h, "/blocks?page=0", freshInitData("TESTTOKEN")).Body.String()
-    if !strings.Contains(first, `<span class="page">1</span>`) {
-        t.Error("the first page should be labelled 1, not 0")
+    var got = get(h, "/newblocks?after=963268", freshInitData("TESTTOKEN")).Body.String()
+    if strings.Contains(got, `class="blk"`) {
+        t.Errorf("nothing was mined, so nothing should be prepended: %s", got)
     }
-    if strings.Contains(first, "page 0") || strings.Contains(first, ">page ") {
-        t.Error(`the "page" word should be gone from the indicator`)
+    if !strings.Contains(got, `hx-get="newblocks?after=963268"`) {
+        t.Error("the sentinel must come back watching the same height")
     }
-    var second = get(h, "/blocks?page=1", freshInitData("TESTTOKEN")).Body.String()
-    if !strings.Contains(second, `<span class="page">2</span>`) {
-        t.Error("the second page should be labelled 2")
+}
+
+// More new blocks than one batch holds would leave a gap between them and the
+// rows on screen, so the whole list is replaced instead.
+func TestNewBlocksOverflowReplacesTheList(t *testing.T) {
+    var h = handler(t, "TESTTOKEN", fakeSource{b: liveBlocks()})
+    var w = get(h, "/newblocks?after=963250", freshInitData("TESTTOKEN"))
+    if rt := w.Header().Get("HX-Retarget"); rt != "#blocklist" {
+        t.Errorf("HX-Retarget = %q, want #blocklist — a partial prepend would leave a hole", rt)
     }
-    // the zero-based URL contract is unchanged
-    if !strings.Contains(second, `hx-get="blocks?page=0"`) {
-        t.Error("Prev on the second page must still link to page=0")
+    var got = w.Body.String()
+    if !strings.Contains(got, `id="blocklist"`) {
+        t.Errorf("the whole list should come back, not a fragment: %s", got)
+    }
+    if !strings.Contains(got, "963268") {
+        t.Error("the replacement list should start at the newest block")
     }
 }
 
 // /blocks is data, so it needs a signature like the cards do.
 func TestBlocksNeedsInitData(t *testing.T) {
     var h = handler(t, "TESTTOKEN", fakeSource{b: liveBlocks()})
-    if w := get(h, "/blocks?page=0", ""); w.Code != 401 {
-        t.Errorf("unauthenticated /blocks = %d, want 401", w.Code)
+    for _, p := range []string{"/blocks", "/moreblocks?before=963257", "/newblocks?after=963268"} {
+        if w := get(h, p, ""); w.Code != 401 {
+            t.Errorf("unauthenticated %s = %d, want 401", p, w.Code)
+        }
     }
 }
 
-// An empty cache says so rather than rendering an empty list with a pager.
+// An empty cache says so — and keeps watching, since there is no row for the
+// sentinel to sit above until the first block is cached.
 func TestBlocksEmptyCache(t *testing.T) {
     var body = get(handler(t, "TESTTOKEN", fakeSource{f: liveFees()}), "/", "").Body.String()
     if !strings.Contains(body, "no blocks cached yet") {
         t.Error("with no cached blocks the tab should say so")
+    }
+    var empty = body[strings.Index(body, "no blocks cached yet")-260:]
+    if !strings.Contains(empty[:strings.Index(empty, "no blocks cached yet")], `hx-trigger="sse:blocks, every 10m"`) {
+        t.Errorf("an empty list must still reload when a block arrives: %s", empty[:260])
     }
 }
 
@@ -761,13 +847,13 @@ func TestNotifyDoesNotBlockOnSlowClient(t *testing.T) {
 }
 
 // A block height in the list links into the details page, swapping the whole
-// container so the Blocks tab stays selected — and carrying the page it was on,
-// which is what Back needs.
+// container so the Blocks tab stays selected — and carrying its own height,
+// which is the mark Back restores the list to.
 func TestBlockHeightLinksToDetails(t *testing.T) {
     var h = handler(t, "TESTTOKEN", fakeSource{b: liveBlocks(), d: liveBlockInfo()})
-    var list = get(h, "/blocks?page=1", freshInitData("TESTTOKEN")).Body.String()
-    if !strings.Contains(list, `hx-get="block?height=963256&page=1"`) {
-        t.Error("the height does not link to its details page, carrying the current page")
+    var list = get(h, "/blocks", freshInitData("TESTTOKEN")).Body.String()
+    if !strings.Contains(list, `hx-get="block?height=963268&down=963268"`) {
+        t.Error("the height does not link to its details page, carrying where the reader was")
     }
     if !strings.Contains(list, `hx-target="#blocklist" hx-swap="outerHTML"`) {
         t.Error("the link must replace the list container, not swap into it")
@@ -779,7 +865,7 @@ func TestBlockHeightLinksToDetails(t *testing.T) {
 func TestBlockDetailsRender(t *testing.T) {
     var h = handler(t, "TESTTOKEN", fakeSource{b: liveBlocks(), d: liveBlockInfo()})
     // html/template escapes "+" as &#43;, so "Reward + fees" needs unescaping
-    var body = html.UnescapeString(get(h, "/block?height=963268&page=2", freshInitData("TESTTOKEN")).Body.String())
+    var body = html.UnescapeString(get(h, "/block?height=963268&down=963257", freshInitData("TESTTOKEN")).Body.String())
     if !strings.Contains(body, "<h1>Block 963 268</h1>") {
         t.Errorf("missing the title: %s", body)
     }
@@ -797,8 +883,13 @@ func TestBlockDetailsRender(t *testing.T) {
     if !strings.Contains(head, "< Back") {
         t.Errorf("no Back button on the title row: %s", head)
     }
-    if !strings.Contains(head, `hx-get="blocks?page=2&to=blocks"`) {
-        t.Errorf("Back returns to the wrong page: %s", head)
+    if !strings.Contains(head, `hx-get="blocks?down=963257&to=blocks"`) {
+        t.Errorf("Back returns to the wrong place: %s", head)
+    }
+    // and scrolls the row the reader tapped back into view, since a list with no
+    // pages has nothing else to return them to
+    if !strings.Contains(head, `hx-swap="outerHTML show:#blk963257:top"`) {
+        t.Errorf("Back does not restore the reader's position: %s", head)
     }
     // Back sits to the left of the title, which is centred between two equal
     // sides rather than filling the space the button leaves
@@ -936,7 +1027,7 @@ func TestTxDetailsRender(t *testing.T) {
     var head = body[strings.Index(body, `class="head"`):strings.Index(body, `class="fields"`)]
     // Back comes from a template *value*, so html/template escapes its "&" —
     // unlike the list's links, where the "&" is literal template text
-    if !strings.Contains(head, `hx-get="blocks?page=0&amp;to=blocks"`) {
+    if !strings.Contains(head, `hx-get="blocks?to=blocks"`) {
         t.Errorf("Back should return to the block list: %s", head)
     }
     if strings.Index(head, "&lt; Back") > strings.Index(head, "<h1>") {
@@ -1158,13 +1249,13 @@ func TestBackReturnsToOrigin(t *testing.T) {
         t: liveTx(), a: liveAddr()})
     var data = freshInitData("TESTTOKEN")
     var cases = []struct{ name, path, wantBack, wantTo string }{
-        {"block from search", "/block?height=963268&from=home", "blocks?page=0&amp;to=home", "home"},
-        {"block from list", "/block?height=963268&page=2", "blocks?page=2&amp;to=blocks", "blocks"},
-        {"tx from search", "/tx?id=" + liveTxid + "&from=home", "blocks?page=0&amp;to=home", "home"},
-        {"tx from watches", "/tx?id=" + liveTxid + "&from=watches", "blocks?page=0&amp;to=watches", "watches"},
+        {"block from search", "/block?height=963268&from=home", "blocks?to=home", "home"},
+        {"block from list", "/block?height=963268&down=963257", "blocks?down=963257&amp;to=blocks", "blocks"},
+        {"tx from search", "/tx?id=" + liveTxid + "&from=home", "blocks?to=home", "home"},
+        {"tx from watches", "/tx?id=" + liveTxid + "&from=watches", "blocks?to=watches", "watches"},
         {"address from search", "/address?a=" + liveAddress + "&from=home", "addresses?to=home", "home"},
         {"address from watches", "/address?a=" + liveAddress + "&from=watches", "addresses?to=watches", "watches"},
-        {"miner from list", "/miner?name=AntPool&page=1", "blocks?page=1&amp;to=blocks", "blocks"},
+        {"miner from list", "/miner?name=AntPool&down=963260", "blocks?down=963260&amp;to=blocks", "blocks"},
     }
     for _, c := range cases {
         var body = get(h, c.path, data).Body.String()
@@ -1181,8 +1272,8 @@ func TestBackEndpointsSwitchTab(t *testing.T) {
     var h = handler(t, "TESTTOKEN", fakeSource{b: liveBlocks()})
     var data = freshInitData("TESTTOKEN")
     for _, c := range []struct{ path, want string }{
-        {"/blocks?page=0&to=home", `{"showtab":"home"}`},
-        {"/blocks?page=0&to=watches", `{"showtab":"watches"}`},
+        {"/blocks?to=home", `{"showtab":"home"}`},
+        {"/blocks?down=963257&to=watches", `{"showtab":"watches"}`},
         {"/addresses?to=watches", `{"showtab":"watches"}`},
         {"/addresses?to=home", `{"showtab":"home"}`},
         {"/addresses", `{"showtab":"addresses"}`},
@@ -1193,13 +1284,14 @@ func TestBackEndpointsSwitchTab(t *testing.T) {
     }
 }
 
-// The block list is also the pager and the SSE refresh target. Those must never
-// move a reader off whatever tab they are on, so /blocks stays silent unless
-// Back explicitly asked for a switch.
+// The block list is also what an empty list reloads through, and the batches
+// carry no tab of their own. None of that may move a reader off whatever tab
+// they are on, so these stay silent unless Back explicitly asked for a switch.
 func TestBlockListDoesNotHijackTheTab(t *testing.T) {
     var h = handler(t, "TESTTOKEN", fakeSource{b: liveBlocks()})
     var data = freshInitData("TESTTOKEN")
-    for _, p := range []string{"/blocks?page=0", "/blocks?page=1", "/blocks"} {
+    for _, p := range []string{"/blocks", "/blocks?down=963257",
+        "/moreblocks?before=963257", "/newblocks?after=963266"} {
         if got := get(h, p, data).Header().Get("HX-Trigger"); got != "" {
             t.Errorf("%s set HX-Trigger %q; a refresh must not switch tabs", p, got)
         }
@@ -1212,10 +1304,10 @@ func TestOriginIsValidated(t *testing.T) {
     var h = handler(t, "TESTTOKEN", fakeSource{b: liveBlocks(), d: liveBlockInfo()})
     var data = freshInitData("TESTTOKEN")
     var body = get(h, `/block?height=963268&from="},"x":{"`, data).Body.String()
-    if !strings.Contains(body, `hx-get="blocks?page=0&amp;to=blocks"`) {
+    if !strings.Contains(body, `hx-get="blocks?to=blocks"`) {
         t.Error("an unknown origin should fall back to the page's own tab")
     }
-    var trig = get(h, `/blocks?page=0&to="},"evil":{"`, data).Header().Get("HX-Trigger")
+    var trig = get(h, `/blocks?to="},"evil":{"`, data).Header().Get("HX-Trigger")
     if trig != "" {
         t.Errorf("an unknown tab reached the header: %q", trig)
     }
@@ -1225,13 +1317,13 @@ func TestOriginIsValidated(t *testing.T) {
 func TestMinerLinkAndPage(t *testing.T) {
     var h = handler(t, "TESTTOKEN", fakeSource{b: liveBlocks()})
     var data = freshInitData("TESTTOKEN")
-    var list = get(h, "/blocks?page=0", data).Body.String()
-    if !strings.Contains(list, `hx-get="miner?name=AntPool&page=0"`) {
+    var list = get(h, "/blocks", data).Body.String()
+    if !strings.Contains(list, `hx-get="miner?name=AntPool&down=963268"`) {
         t.Error("the miner name does not link to its page")
     }
     // pool names have spaces ("SBI Crypto", "Foundry USA"), so the link has to
     // survive the URL — an unescaped space would truncate the name
-    if !strings.Contains(list, `hx-get="miner?name=SBI&#43;Crypto&page=0"`) {
+    if !strings.Contains(list, `hx-get="miner?name=SBI&#43;Crypto&down=963263"`) {
         t.Errorf("a pool name with a space is not url-escaped in its link")
     }
     // an unattributed miner is still plain text: there is no pool to open

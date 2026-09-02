@@ -56,9 +56,10 @@ type page struct {
 // the blocks bucket without announcing it.
 var cacheTTL = 10 * time.Minute
 
-// blocksCached is how many pages of the block list are kept. A reader pages down
-// a few screens and stops, so twenty covers the depth anyone reaches, while
-// bounding what an edited page= parameter can make the process hold.
+// blocksCached is how many block-list renders are kept — batches as the reader
+// scrolls, plus the restored lists a Back returns to. A reader scrolls a few
+// screens and stops, so twenty covers the depth anyone reaches, while bounding
+// what an edited before= parameter can make the process hold.
 const blocksCached = 20
 
 // cardsCached is exactly the number of single-valued renders — the three cardsCache
@@ -322,21 +323,41 @@ type Info struct {
     // is per-user, and the page around it is one cached copy shared by all.
     Kind string
     Id   string
+    // Swap is the Back button's hx-swap. It carries a show: modifier when the
+    // page was opened from the block list, which is what scrolls the row the
+    // reader tapped back into view.
+    Swap string
 }
-// Blocks is one page of the recent-block list, newest first. Prev and Next carry
-// the page numbers the buttons link to, so the template does no arithmetic.
+// Blocks is one batch of the recent-block list, newest first. Top and Next are
+// the heights the two sentinels ask about, so the template does no arithmetic.
 type Blocks struct {
     OK   bool
     Rows []Block
-    // Page is the zero-based index the URL uses; Num is the same page as a
-    // reader counts them, from 1. Keeping both means the URL contract does not
-    // change just because the label does.
-    Page    int
-    Num     int
-    Prev    int
-    Next    int
-    HasPrev bool
-    HasNext bool
+    // Top is the highest height the list holds — what the sentinel above the
+    // rows asks for anything newer than. On a batch that came back empty it is
+    // the height that was asked about, so the sentinel keeps its place.
+    Top int64
+    // Next is the lowest height in this batch: where the sentinel below the rows
+    // continues. More says whether the batch was cut short — there are older
+    // blocks to append, or (on a newer-than request) more new ones than fit.
+    Next int64
+    More bool
+}
+
+// Range is the window of the block list a request wants. At most one field is
+// set; all three zero is the newest batch, which is what the tab opens on.
+type Range struct {
+    // Before is the next batch as the reader scrolls: the blocks below this
+    // height. It is a height rather than a page number because the list grows at
+    // the head — an offset would shift under a reader mid-scroll and repeat the
+    // row that crossed the boundary.
+    Before int64
+    // After is what a new block prepends: the blocks above this height.
+    After int64
+    // Down restores a list Back returns to: everything from the tip down to the
+    // block the reader had opened, so the rows they had scrolled through are
+    // there again.
+    Down int64
 }
 
 // watchButton is the bell in a details page's title row: what it acts on, and
@@ -373,7 +394,7 @@ type Source interface {
     Fees() Fees
     Network() Network
     Market() Market
-    Blocks(page int) Blocks
+    Blocks(Range) Blocks
     BlockInfo(height int64) Info
     TxInfo(txid string) Info
     AddrInfo(address string) Info
@@ -418,19 +439,35 @@ func origin(r *http.Request, slot string) string {
     return tabOf(slot)
 }
 
-// backToList is the Back target for a page shown in the Blocks tab: restore the
-// list, then hand the reader to whichever tab they came from.
-func backToList(r *http.Request) string {
-    return "blocks?page=" + listPage(r) + "&to=" + origin(r, blocksSlot)
+// backToList is the Back target for a page shown in the Blocks tab, and the swap
+// that goes with it: restore the list down to the block the reader opened, scroll
+// that row back into view, then hand them to whichever tab they came from. An
+// infinite list has no page number to return to, so the row itself is the mark —
+// and restoring the rows without restoring the position would land the reader at
+// the top of a list they had scrolled a long way down.
+func backToList(r *http.Request) (string, string) {
+    var to = origin(r, blocksSlot)
+    var down = downOf(r)
+    if down == "" { return "blocks?to=" + to, "outerHTML" }
+    return "blocks?down=" + down + "&to=" + to, "outerHTML show:#blk" + down + ":top"
 }
 
-// listPage is the block-list page a Back button should return to. It rides along
-// in the URL because only the list knows which page the reader came from; a
-// search arrives without one and lands on the first.
-func listPage(r *http.Request) string {
-    var p, err = strconv.Atoi(r.URL.Query().Get("page"))
-    if err != nil || p < 0 { p = 0 }
-    return strconv.Itoa(p)
+// downOf is the block a details page was opened from, as it rides in the URL:
+// only the row that was tapped knows it. A search or a watch list arrives
+// without one, and lands on the newest blocks. Genesis is excluded along with
+// the nonsense, which also keeps a down=0 from asking for the whole chain.
+func downOf(r *http.Request) string {
+    var h, err = strconv.ParseInt(r.URL.Query().Get("down"), 10, 64)
+    if err != nil || h <= 0 { return "" }
+    return strconv.FormatInt(h, 10)
+}
+
+// heightOf reads a block height out of the query. Zero — absent, or nonsense
+// from an edited URL — is what every caller reads as "from the tip".
+func heightOf(r *http.Request, name string) int64 {
+    var h, err = strconv.ParseInt(r.URL.Query().Get(name), 10, 64)
+    if err != nil || h < 0 { return 0 }
+    return h
 }
 
 // watchable reports whether a details page can be watched, and is what keeps the
@@ -444,12 +481,12 @@ func watchable(kind string) bool { return kind == "address" || kind == "tx" }
 // know which container the answer belongs in — only the server, having
 // classified the query, does — so it names a target and the response corrects
 // it. Without this an address page lands in the Blocks tab, replacing the list.
-func details(w http.ResponseWriter, r *http.Request, slot, back, kind, id string, load func() Info) {
+func details(w http.ResponseWriter, r *http.Request, slot, back, swap, kind, id string, load func() Info) {
     w.Header().Set("HX-Retarget", "#"+slot)
     w.Header().Set("HX-Trigger", showtab(tabOf(slot)))
     cached(blocksCache, w, r, func() []byte {
         var info = load()
-        info.Slot, info.Back = slot, back
+        info.Slot, info.Back, info.Swap = slot, back, swap
         if info.OK { info.Kind, info.Id = kind, id }
         return render("details", info)
     })
@@ -493,7 +530,7 @@ func Start(addr, token string, src Source) *http.Server {
             return
         }
         cached(cardsCache, w, r, func() []byte {
-            return render("app", page{Fees: src.Fees(), Network: src.Network(), Market: src.Market(), Blocks: src.Blocks(0)})
+            return render("app", page{Fees: src.Fees(), Network: src.Network(), Market: src.Market(), Blocks: src.Blocks(Range{})})
         })
     })
     mux.HandleFunc("/htmx.min.js", func(w http.ResponseWriter, r *http.Request) {
@@ -522,13 +559,55 @@ func Start(addr, token string, src Source) *http.Server {
     mux.HandleFunc("/market", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
         cached(cardsCache, w, r, func() []byte { return  render("market", src.Market()) })
     }))
+    // The list itself: the newest blocks, or — when Back asked — everything down
+    // to the block the reader had opened from it.
     mux.HandleFunc("/blocks", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
-        var page, err = strconv.Atoi(r.URL.Query().Get("page"))
-        if err != nil || page < 0 { page = 0 }
-        // Only when Back explicitly asked: this endpoint is also the pager and
-        // the SSE refresh, and those must never move a reader off their tab.
+        // Only when Back explicitly asked: an empty list also refreshes through
+        // here, and that must never move a reader off their tab.
         if to := r.URL.Query().Get("to"); isPanel(to) { w.Header().Set("HX-Trigger", showtab(to)) }
-        cached(blocksCache, w, r, func() []byte { return  render("blocks", src.Blocks(page)) })
+        cached(blocksCache, w, r, func() []byte { return  render("blocks", src.Blocks(Range{Down: heightOf(r, "down")})) })
+    }))
+    // The batch the sentinel below the rows appends as the reader reaches it.
+    mux.HandleFunc("/moreblocks", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
+        var before = heightOf(r, "before")
+        if before <= 0 {
+            http.Error(w, "no such block", http.StatusBadRequest)
+            return
+        }
+        cached(blocksCache, w, r, func() []byte { return  render("blockrows", src.Blocks(Range{Before: before})) })
+    }))
+    // What the sentinel above the rows prepends when a block is mined. Inserting
+    // above the reader leaves the rows they are looking at where they are, where
+    // re-rendering the list would throw them back to the top of it.
+    //
+    // Not cached: the answer decides a response header, which a cache hit would
+    // not set — and it is keyed by a height that moves with every block, so an
+    // entry would be read about once anyway.
+    mux.HandleFunc("/newblocks", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
+        var started = time.Now().UnixNano()
+        var after = heightOf(r, "after")
+        if after <= 0 {
+            http.Error(w, "no such block", http.StatusBadRequest)
+            return
+        }
+        var blocks, name = src.Blocks(Range{After: after}), "newblocks"
+        // More new blocks than one batch holds — the tab sat open through a
+        // catch-up, or the stream was down for hours. Prepending would leave a
+        // gap between them and the rows already on screen, so replace the whole
+        // list instead: it costs the reader their place, which is the right
+        // trade against showing a list with a hole in it.
+        if blocks.More {
+            blocks, name = src.Blocks(Range{}), "blocks"
+            w.Header().Set("HX-Retarget", "#"+blocksSlot)
+        }
+        var b = render(name, blocks)
+        if b == nil {
+            http.Error(w, "internal server error", http.StatusInternalServerError)
+            return
+        }
+        w.Header().Set("Content-Type", "text/html; charset=utf-8")
+        w.Write(b)
+        logging.Info("mini app: %s %s %.2f ms", r.Method, r.RequestURI, float64(time.Now().UnixNano() - started) / 1e6)
     }))
     // A details page replaces its tab's container in place, so the tab it
     // belongs to stays selected and Back can swap the original straight back in.
@@ -541,7 +620,8 @@ func Start(addr, token string, src Source) *http.Server {
             http.Error(w, "no such block", http.StatusBadRequest)
             return
         }
-        details(w, r, blocksSlot, backToList(r), "", "", func() Info { return src.BlockInfo(height) })
+        var back, swap = backToList(r)
+        details(w, r, blocksSlot, back, swap, "", "", func() Info { return src.BlockInfo(height) })
     }))
     mux.HandleFunc("/tx", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
         var id = strings.TrimSpace(r.URL.Query().Get("id"))
@@ -549,7 +629,8 @@ func Start(addr, token string, src Source) *http.Server {
             http.Error(w, "no such transaction", http.StatusBadRequest)
             return
         }
-        details(w, r, blocksSlot, backToList(r), "tx", id, func() Info { return src.TxInfo(id) })
+        var back, swap = backToList(r)
+        details(w, r, blocksSlot, back, swap, "tx", id, func() Info { return src.TxInfo(id) })
     }))
     mux.HandleFunc("/miner", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
         var name = strings.TrimSpace(r.URL.Query().Get("name"))
@@ -557,7 +638,8 @@ func Start(addr, token string, src Source) *http.Server {
             http.Error(w, "no miner", http.StatusBadRequest)
             return
         }
-        details(w, r, blocksSlot, backToList(r), "", "", func() Info { return src.MinerInfo(name) })
+        var back, swap = backToList(r)
+        details(w, r, blocksSlot, back, swap, "", "", func() Info { return src.MinerInfo(name) })
     }))
     mux.HandleFunc("/address", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
         var a = strings.TrimSpace(r.URL.Query().Get("a"))
@@ -565,7 +647,7 @@ func Start(addr, token string, src Source) *http.Server {
             http.Error(w, "no address", http.StatusBadRequest)
             return
         }
-        details(w, r, addressSlot, "addresses?to="+origin(r, addressSlot), "address", a, func() Info { return src.AddrInfo(a) })
+        details(w, r, addressSlot, "addresses?to="+origin(r, addressSlot), "outerHTML", "address", a, func() Info { return src.AddrInfo(a) })
     }))
     // what Back on an address page returns to: the tab's own content, which is
     // still a placeholder

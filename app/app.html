@@ -161,19 +161,15 @@
   .det .f.hd { border-top: 1px solid var(--line); }
   .det .f.hd .lbl { font-size: 0.875rem; font-weight: 600; color: var(--fg); }
 
-  .pager { display: flex; gap: 8px; justify-content: center; align-items: center;
-           padding: 8px 0 2px; }
-  .pager button, .det .head button { padding: 7px 18px; font-size: 0.875rem; font-family: inherit;
+  .det .head button { padding: 6px 12px; font-size: 0.875rem; font-family: inherit;
                   color: var(--fg); background: var(--card);
                   border: 1px solid var(--line); border-radius: 10px; cursor: pointer; }
-  .det .head button { padding: 6px 12px; }
 
   .wsec { font-size: 0.875rem; font-weight: 600; color: var(--hint); margin: 12px 0 6px; }
   .wsec:first-child { margin-top: 0; }
   .blk .alias { flex: 1; min-width: 0; font-size: 0.8125rem; text-align: right; color: var(--hint);
                 overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .pager button[disabled] { color: var(--hint); opacity: .5; cursor: default; }
-  .pager .page { font-size: 0.875rem; font-weight: 600; min-width: 24px; text-align: center; }
+  .more { padding: 11px 0 3px; text-align: center; font-size: 0.8125rem; color: var(--hint); }
 
   nav { display: flex; border-top: 1px solid var(--line); background: var(--bg);
         padding-bottom: env(safe-area-inset-bottom, 0); }
@@ -315,36 +311,50 @@
 <p class="note">market data unavailable</p>
 {{- end}}{{end}}
 
-{{define "blocks"}}<div id="blocklist" class="blocklist" hx-get="blocks?page={{.Page}}"
-     hx-trigger="sse:blocks" hx-target="#blocklist" hx-swap="outerHTML">
+{{define "blocks"}}<div id="blocklist" class="blocklist">
 {{- if .OK}}
   <div class="rows">
+  {{- template "blocktop" .}}
+  {{- template "blockrows" .}}
+  </div>
+{{- else}}
+  <div class="empty" hx-get="blocks" hx-trigger="sse:blocks, every 10m"
+       hx-target="#blocklist" hx-swap="outerHTML">no blocks cached yet</div>
+{{- end}}
+</div>{{end}}
+
+{{/* The sentinel above the rows: a new block replaces it with itself plus the
+     rows that appeared, which lands them at the top without touching the ones
+     the reader is looking at. Empty, so it costs no height while it waits. */}}
+{{define "blocktop"}}
+    <div class="new" hx-get="newblocks?after={{.Top}}"
+         hx-trigger="sse:blocks, every 10m" hx-swap="outerHTML"></div>{{end}}
+
+{{/* The rows, and below them the sentinel that appends the next batch when the
+     reader scrolls it into view. "intersect once" rather than "revealed"
+     because the rows are their own scroller, which is what htmx's own docs say
+     revealed does not handle. */}}
+{{define "blockrows"}}
   {{- range .Rows}}
-    <div class="blk">
-      <span class="h lnk" hx-get="block?height={{.Num}}&page={{$.Page}}"
+    <div class="blk" id="blk{{.Num}}">
+      <span class="h lnk" hx-get="block?height={{.Num}}&down={{.Num}}"
             hx-target="#blocklist" hx-swap="outerHTML">{{.Height}}</span>
       <span class="sz">{{.Size}}</span>
       <span class="tx">{{.Txs}}</span>
       {{- if .MinerKnown}}
-      <span class="mn lnk" hx-get="miner?name={{.Miner | urlquery}}&page={{$.Page}}"
+      <span class="mn lnk" hx-get="miner?name={{.Miner | urlquery}}&down={{.Num}}"
             hx-target="#blocklist" hx-swap="outerHTML">{{.Miner}}</span>
       {{- else}}
       <span class="mn">{{.Miner}}</span>
       {{- end}}
     </div>
   {{- end}}
-  </div>
-  <div class="pager">
-    <button hx-get="blocks?page={{.Prev}}" hx-target="#blocklist" hx-swap="outerHTML"
-            {{if not .HasPrev}}disabled{{end}}>Prev &lt;</button>
-    <span class="page">{{.Num}}</span>
-    <button hx-get="blocks?page={{.Next}}" hx-target="#blocklist" hx-swap="outerHTML"
-            {{if not .HasNext}}disabled{{end}}>&gt; Next</button>
-  </div>
-{{- else}}
-  <div class="empty">no blocks cached yet</div>
-{{- end}}
-</div>{{end}}
+  {{- if .More}}
+    <div class="more" hx-get="moreblocks?before={{.Next}}"
+         hx-trigger="intersect once" hx-swap="outerHTML">loading…</div>
+  {{- end}}{{end}}
+
+{{define "newblocks"}}{{template "blocktop" .}}{{template "blockrows" .}}{{end}}
 
 {{define "addresses"}}<div id="addrpanel" class="blocklist"><div class="empty">Addresses — coming soon</div></div>{{end}}
 
@@ -387,7 +397,7 @@
 
 {{define "details"}}<div id="{{.Slot}}" class="blocklist det">
   <div class="head">
-    <button hx-get="{{.Back}}" hx-target="#{{.Slot}}" hx-swap="outerHTML">&lt; Back</button>
+    <button hx-get="{{.Back}}" hx-target="#{{.Slot}}" hx-swap="{{.Swap}}">&lt; Back</button>
     <h1>{{.Title}}</h1>
     <span class="side">
       <button class="ghost" tabindex="-1" aria-hidden="true">&lt; Back</button>
