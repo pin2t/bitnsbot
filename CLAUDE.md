@@ -33,6 +33,7 @@ Flags (all in `main.go`): `-config` (path to a `name=value` properties file to l
 - `addrindex` — builds and queries the address index from the command line, driving the same `addrindex` package, buckets and cursor the bot does; `actbuild` adds a second pass that records busy addresses (detailed below).
 - `addrindex-scan` — an earlier, single-purpose version of `addrindex list`. Largely superseded by it; kept only because nothing has been said about removing it.
 - `dbui` — runs the database admin web UI (the `dbui` package) as its own process, so the database can be inspected without the bot running.
+- `tosqlite` — migrates the bbolt database to SQLite (detailed below). The only thing in the repo that needs a database driver, and the one dependency the bot itself does not link.
 - `i18n-vet` — the translation checker CI runs; see Internationalisation below.
 
 `tools/advertise` announces a Bitcoin node's address to the peers btcd already knows. It reads btcd's `peers.json` (the addrmanager dump: `{"Addresses":[{"Addr":"1.2.3.4:8333","LastSuccess":…}, …]}`), and for every **IPv4** peer performs the P2P version/verack handshake and sends a one-entry `addr` message — which is exactly how a node's address spreads through the gossip layer. Flags: `-peers`, `-advertise` (default `178.46.128.227:8333`), `-workers` (64), `-timeout` (10s), `-limit`, `-live`, `-verbose`. IPv6 and `.onion` entries are skipped: those need a working IPv6 route and a Tor proxy respectively.
@@ -42,6 +43,29 @@ The wire format is **hand-rolled on the standard library** rather than importing
 **Most of `peers.json` is dead weight**, which is worth knowing before running it: in a real 7.7 MB file of 34288 addresses, 23276 were IPv4, but only **4016 had ever been dialled by btcd and only 463 ever answered** — the rest is unverified gossip. A first run against the file's leading entries reached **0 of 20** peers, all failing at `dial`. `-live` keeps only addresses with a real `LastSuccess`, and over those the same run reached **14 of 25**. So default (all peers) is what the tool was asked for, but `-live` is the flag to use when you want it to finish quickly.
 
 Verified against the live network: 7 of 7 selected peers completed the handshake and took the `addr`, including this repo's own btcd node at its P2P port. A throwaway probe then sent `getaddr` immediately after the `addr` and got healthy `addr` replies back (30003 bytes from the local node — 1000 addresses), confirming peers do not treat the message as malformed and drop the connection.
+
+### tosqlite
+
+`tools/tosqlite` copies the bbolt database into SQLite — `tosqlite -src bitnsbot.db -dst bitnsbot.sqlite.db`. Seven buckets become six tables: `blocks-stat`, `market`, `rates` and `watches` map one to one, `addrindex` packs its composite key into a column, and the three miner buckets combine.
+
+The driver is **`modernc.org/sqlite`** (cznic's, whose source is gitlab.com/cznic/sqlite): a pure-Go translation of SQLite with no cgo, so the repo still cross-compiles the way the rest of it does. It is the tool's dependency, not the bot's — nothing under `/` imports it — but it is by far the heaviest thing in `go.mod`, pulling in `modernc.org/libc`, `mathutil`, `memory` and five smaller packages, and it bumped `golang.org/x/sys` to v0.47.0 and `x/sync` to v0.21.0.
+
+**Three corrections to the requested DDL, all forced by SQLite**, and one of them silent:
+- A table may carry only **one** `PRIMARY KEY` clause. `miners`, `rates` and `watches` each named several, which is a hard error (`table "rates" has more than one primary key`), so they became composite keys — `(name, address, tag)`, `(ts, cents)` and `(chat, addr)`.
+- `blocks` was written `height INTEGER RIMARY KEY`. That does **not** fail: SQLite reads `RIMARY KEY` as the tail of the column's *type name*, so the table would be created with no primary key at all and nobody would be told. Fixed to `PRIMARY KEY`.
+
+Five decisions the mapping rests on:
+- **`addrindex.shard` holds the whole bbolt key.** That key is a 2-byte shard plus a 4-byte block-range index, both big-endian; all six bytes read as one integer fit in 48 bits and keep the ordering a lookup's cursor scan depends on (`shard<<32 | rangeIndex`).
+- **`blocks.fees` is `total - reward`.** The record stores `reward` and `total`, where total is the whole coinbase output; the difference is the fees, and reward + fees recovers it exactly.
+- **`rates` takes its timestamp from the key**, which is the only place it exists — the stored value holds nothing but the price, tagged `json:"-"`. A key still wearing dbui's `hex:` marker (a database rebuilt from a CSV export whose importer never decoded it) is decoded rather than dropped, with a warning naming the count, because otherwise the whole table migrates as zero rows.
+- **Money becomes integer cents** — `market`'s price, cap and volume are stored as floating-point USD and land as cents, the unit the `rates` bucket already uses to keep prices off floats.
+- **`miners` zips.** `miners` maps an address to its pool and `miners-tag` a coinbase tag to the same pool, but nothing links an individual address to an individual tag, so each pool's two lists are paired positionally and padded with `""`; a pool known only from `miners-stat` still gets its one row of aggregates. The alternative — a row per address plus a row per tag — repeats the aggregate twice as often for no more information.
+
+**Old-format records are skipped, not converted**, and the count is reported per table. The satoshi migration changed `blockInfo`'s fees/reward/total and the miners package's reward/fees from float BTC to integer satoshi while keeping their JSON keys, so a surviving old record fails to decode — which is exactly how the bot treats it (a cache miss it recomputes; miner aggregates restart from the collector's cursor). Converting them here would mean guessing a unit from the value's magnitude. Measured on the repo's own 130 GB `tools/addrindex/addrindex.db`: 1 block record of 965 003 is pre-satoshi (genesis), against 138 of 157 miner aggregates.
+
+Operationally: the source is opened **read-only with a 5-second timeout**, so a mistake cannot damage the bot's database and a run against a live bot fails with a message naming the fix rather than blocking forever on bbolt's exclusive lock — migrate a `-backup` copy instead. The destination must not already exist, and is **removed** if the run fails partway, since a partial migration that looks complete is worse than no file. `journal_mode=OFF`/`synchronous=OFF` on one connection is what makes the bulk load fast; the whole file is built by this run, so a crash means running it again. Rows are committed in transactions of `-batch` (10000), and tables run **smallest first** so a mistake surfaces in the first second rather than after the address index.
+
+Verified end to end against that real database: 965 003 blocks, 8 616 market snapshots, 14 961 rates and 311 miner rows, with block 965 002's `reward + fees` reproducing the stored `total` exactly, the oldest rate landing at $0.07 on 2010-08-18, and the address index streaming at ~56 000 rows/s (1.68 M rows in the first 30 s), which is what the progress line exists to show — a full pass is hours, and a silent run is indistinguishable from a hung one.
 
 ## Runtime model
 
