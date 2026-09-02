@@ -34,7 +34,8 @@ Flags (all in `main.go`): `-config` (path to a `name=value` properties file to l
 - `addrindex-scan` — an earlier, single-purpose version of `addrindex list`. Largely superseded by it; kept only because nothing has been said about removing it.
 - `dbui` — runs the database admin web UI (the `dbui` package) as its own process, so the database can be inspected without the bot running.
 - `tosqlite` — migrates the bbolt database to SQLite (detailed below). The only thing in the repo that needs a database driver, and the one dependency the bot itself does not link.
-- `i18n-vet` — the translation checker CI runs; see Internationalisation below.
+- `i18n-vet` — the translation checker CI runs over the Go string tables; see Internationalisation below.
+- `i18n-html` — the same idea for the Mini App's translated pages, which are whole second copies of a file rather than a table with an entry missing; see The Mini App's translations below. CI runs it too.
 
 `tools/advertise` announces a Bitcoin node's address to the peers btcd already knows. It reads btcd's `peers.json` (the addrmanager dump: `{"Addresses":[{"Addr":"1.2.3.4:8333","LastSuccess":…}, …]}`), and for every **IPv4** peer performs the P2P version/verack handshake and sends a one-entry `addr` message — which is exactly how a node's address spreads through the gossip layer. Flags: `-peers`, `-advertise` (default `178.46.128.227:8333`), `-workers` (64), `-timeout` (10s), `-limit`, `-live`, `-verbose`. IPv6 and `.onion` entries are skipped: those need a working IPv6 route and a Tor proxy respectively.
 
@@ -368,6 +369,8 @@ Every user-facing string goes through `i18n(chat)`, which returns a `trans` (a `
 
 `langTrans` in `i18n.go` holds one map per language; **ru** and **es** exist today. The chat's language comes from Telegram itself: `update()` calls `SetChatLanguage(chat, msg.From.LanguageCode)` on every incoming message and callback, so it follows the user's client setting with no command to set it. `chatLangs` is an **LRU bounded to 10000** entries (the `lru` package), not a plain map — a bot that anyone can message would otherwise accumulate an entry per one-off chat forever.
 
+The Mini App is translated differently — a whole page per language rather than a string table — because its text lives in HTML, not in Go. See The Mini App's translations below.
+
 **`tools/i18n-vet` enforces coverage, and it runs in CI.** It walks every `.go` file, finds each `i18n(…).String("…")` / `i18n(…).Sprintf("…", …)` call, and checks that the string appears in *every* translation section of `i18n.go` — sections being delimited by `// i18n-vet:translation <lang>` … `// i18n-vet:end translation` comments — with the same format verbs in the same order. A new translated string therefore fails the build until every language has it.
 
 The one thing to know before refactoring: **it extracts only string literals** (`*ast.BasicLit`) passed directly to those calls. Moving a translated string into a variable, a slice or a constant silently removes it from the tool's reach — no error, just no coverage. See The command menu for a case where that trade was made deliberately and covered by a test instead.
@@ -587,6 +590,35 @@ The chat is `chatOf(initData)` — the `user.id` Telegram **signs**, which for t
 Rows reuse the block list's shape — the shortened id as a link, the alias muted on the right — and open the same `/address` and `/tx` pages a search does, so a watched id is one tap from its details. The fetch fires on `watchtab`, an event `showPanel` dispatches when the tab is opened, rather than being kept warm: the list is per-user, uncached, and cheap to rebuild.
 
 **Outside Telegram the tab says so.** There is no `initData`, so `/watches` can only 401 — and HTMX does not swap a failed response, which would leave a placeholder sitting there forever. The page's own script checks `Telegram.WebApp.initData` at load and writes the message itself, so the answer is immediate and does not depend on a request failing. Verified in a browser against a page served without the Telegram SDK.
+
+### The Mini App's translations
+
+The bot translates by looking a string up in a table (`i18n`), but the app's text is in `app.html`, so it translates by **whole page**: `app.ru.html` and `app.es.html` sit beside `app.html`, identical in every tag and attribute and differing only in the words. `//go:embed app.html app.*.html` takes them all, and `parsePages` parses one `*template.Template` per language into `appTmpl`, each still **named `"app"`** — the page is executed by that name, so naming the root after the language leaves `"app" is undefined` at the first request.
+
+**`language(r)` picks the page, and initData beats the header.** Telegram signs `language_code` into the payload, so when the app is opened from the bot that is the reader's own client setting — the same one the bot's replies follow — and it is exact. A plain browser offers only `Accept-Language`, which is parsed by **quality, not by written order**: `en;q=0.1,ru` asks for Russian, and reading it left to right would answer in English. A malformed `q` keeps the default of 1.0 rather than sinking its language. Only the primary subtag is matched (`pt-BR` is `pt`), since a page is per language and not per region. A user language with no page **falls through to the header** rather than jumping to English — a reader whose Telegram is Japanese on a Spanish phone is better served in Spanish — and English is the last resort. Every response carries `Content-Language`.
+
+**The language belongs in the cache key.** Both caches are keyed by URL, which is identical for every reader, so without it the first reader's language is served to the next — the same hazard that already keeps per-user data out of `/`. `key(lang, uri)` is that key, `cardsCached` grew to `4 * len(langs)`, and `Notify` deletes each card in **every** language, or the readers of the ones it missed keep a stale card until the TTL runs out.
+
+**Not everything on screen comes from the page.** The details rows (`Hash`, `Miner`, `Reward + fees`), the block list's `Unknown` and `4 000 txs`, and the fee tiers' figures are built in `main` and arrive through `Source` — `blockPairs`/`txPairs`/`addrPairs` are called with **chat 0**, which has no language, so they are English whatever page they land in. Translating those means routing the app's language into main's `i18n`, which this does not do.
+
+**`tools/i18n-html` is what keeps the copies in step**, and CI runs it:
+
+```
+i18n-html ./app/
+app.html: es matches (354 elements)
+app.html: ru matches (354 elements)
+```
+
+For each reference `xxx.html` it finds the `xxx.<lang>.html` beside it, reduces both to the parts a translation must reproduce exactly, and compares those as text. The reduction keeps **tags, their attributes and the `{{...}}` actions**, and drops what a translator is meant to rewrite: the text between tags, and the values of the attributes a reader sees (`placeholder`, `title`, `alt`, `aria-label`) — where the actions inside are still kept, so `title="{{if .On}}Stop watching{{else}}Watch this{{end}}"` reduces to `title="{{if .On}}{{else}}{{end}}"` and translates freely. Whitespace inside a tag is collapsed, so a longer word may wrap its attributes differently.
+
+Four things about it are deliberate:
+
+- **It is hand-rolled rather than built on an HTML parser.** A parser would have to be taught Go template syntax — `{{define}}` between tags, `{{if}}` inside an attribute value — and `golang.org/x/net/html` would be a dependency for one tool. The scanner treats a `{{...}}` action as atomic *before* it interprets `<` or a quote, which is what makes the template syntax survive.
+- **`<script>` and `<style>` bodies are dropped whole**, not scanned. Both carry strings a translation has to rewrite, and a `<` in a script is arithmetic (`i < 3`) or an HTML string being assigned to `innerHTML` — read as a tag, it swallowed everything up to the next `>` and made two genuinely identical pages differ. The cost, stated plainly: markup a script writes is invisible to the check. A missing `<script>` block is still caught, because its tags are.
+- **A language tag is exactly two letters** plus an optional region. Three letters are real ISO 639-3 codes, but allowing them makes `app.min.html` read as a translation into Minangkabau and fail the build for a reason nobody would guess. Telegram's own `language_code` is two letters either way.
+- **Only the first differing element is reported.** Everything after it is usually the same mistake echoing.
+
+Verified by driving the real pages in headless Chrome at 320, 360 and 390px and measuring every width-bound row — the fee tiers, the Blockchain grid, the Market percentages and the tab bar — in all three languages: **nothing overflows at 360 or 390 in any of them**. At 320 the Market row overflows by 15px *identically in English*, which is the pre-existing case the `max-width: 359px` rule narrows the gaps for; the forced-width probe cannot trigger that media query, so that number says nothing about the translations.
 
 **Rendering fees into `/` makes them public**, because `/` cannot be authenticated — Telegram passes `initData` in the URL *fragment*, which is never sent to the server, so there is nothing to verify on the initial load. That is acceptable only because fee estimates are public network data. Anything per-user (a chat's watches) must **not** be rendered into the page; it belongs behind `/fees`-style endpoints that `requireInitData` protects.
 
