@@ -1889,3 +1889,31 @@ func TestLinkedIdsKeepTheOrigin(t *testing.T) {
         t.Errorf("an unknown origin should fall back to Home: %q", res.Header().Get("Location"))
     }
 }
+
+
+// A block hash has a txid's shape, so it arrives at /tx — and comes back as a
+// block, which has nothing to watch. The bell follows what the page turned out
+// to be, not what the URL asked for.
+func TestBlockByHashHasNoWatchButton(t *testing.T) {
+    var hash = "0000000000000000000209d0dbbd5a37b0e0e0a2f8a1ba36d6f4f0e9c0b1a2f3"
+    var txs = liveTx()
+    txs[hash] = Info{OK: true, Kind: "block", Title: "Block 963 268",
+        Rows: []Field{{Label: "Hash", Value: "000000...b1a2f3"}}}
+    var src = fakeSource{t: txs, a: liveAddr()}
+    var h = handler(t, "TESTTOKEN", src)
+    var data = freshInitData("TESTTOKEN")
+    var body = get(h, "/tx?id="+hash, data).Body.String()
+    if !strings.Contains(body, "<h1>Block 963 268</h1>") {
+        t.Fatalf("the hash should have resolved to a block page:\n%s", body)
+    }
+    if strings.Contains(body, `id="watchbtn"`) {
+        t.Errorf("a block page carries a watch button:\n%s", body)
+    }
+    if strings.Contains(body, "watch?kind=") {
+        t.Errorf("a block page offers to watch something:\n%s", body)
+    }
+    // a real transaction at the same endpoint still has its bell
+    if body := get(h, "/tx?id="+liveTxid, data).Body.String(); !strings.Contains(body, `hx-get="watch?kind=tx&id=`+liveTxid+`"`) {
+        t.Errorf("a transaction page lost its watch button:\n%s", body)
+    }
+}

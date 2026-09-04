@@ -430,9 +430,12 @@ type Info struct {
     Slot  string
     Back  string
     // Kind and Id name what the watch button acts on — "address" or "tx" and
-    // the full id. Empty on a block or miner page, which has nothing to watch.
-    // The button itself is loaded separately: whether *this* reader watches it
-    // is per-user, and the page around it is one cached copy shared by all.
+    // the full id. Empty on a page with nothing to watch, which is what a block
+    // or a miner page leaves them. A Source may set Kind itself when the page it
+    // returns is not what the URL asked for: a 64-hex id arrives at /tx, and one
+    // the node has a block header for comes back as that block. The button
+    // itself is loaded separately: whether *this* reader watches it is per-user,
+    // and the page around it is one cached copy shared by all.
     Kind string
     Id   string
     // Swap is the Back button's hx-swap. It carries a show: modifier when the
@@ -625,7 +628,12 @@ func details(w http.ResponseWriter, r *http.Request, slot, back, swap, kind, id 
     cached(blocksCache, w, r, func(lang string) []byte {
         var info = load(lang)
         info.Slot, info.Back, info.Swap, info.From = slot, back, swap, from
-        if info.OK { info.Kind, info.Id = kind, id }
+        // The URL says what was asked for, the loader says what came back, and
+        // they differ for a block hash — it has a txid's shape, so it reaches
+        // /tx, and main resolves it to the block. The watch button follows what
+        // the page turned out to be, so a block never carries one.
+        if info.Kind == "" { info.Kind, info.Id = kind, id }
+        if !info.OK || !watchable(info.Kind) { info.Kind, info.Id = "", "" }
         return render(lang, "details", info)
     })
 }

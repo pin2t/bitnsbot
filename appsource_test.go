@@ -255,3 +255,37 @@ func TestTxInfoLinksBlockAndAddresses(t *testing.T) {
         }
     }
 }
+
+
+// The same bug from main's side: TxInfo hands back a block for an id the node
+// has a header for, and that page has to say it is a block — the app has no
+// other way to know, and would otherwise offer to watch it as a transaction.
+func TestTxInfoOnABlockHashIsABlockPage(t *testing.T) {
+    if err := openDB(filepath.Join(t.TempDir(), "watches.db")); err != nil { t.Fatal(err) }
+    defer closeDB()
+    var hash = "0000000000000000000209d0dbbd5a37b0e0e0a2f8a1ba36d6f4f0e9c0b1a2f3"
+    if err := storeBlock(&blockInfo{Height: 700001, Hash: hash, Time: 1700000000,
+        Size: 1500000, NumTx: 4000, Miner: "AntPool", Reward: 312500000, Total: 320000000}); err != nil {
+        t.Fatal(err)
+    }
+    var srv = newFakeCoreServer(t, func(method string, params []interface{}) (interface{}, error) {
+        if method == "getblockheader" {
+            if id, _ := params[0].(string); id == hash { return map[string]any{"height": 700001}, nil }
+        }
+        return nil, errors.New("Block not found")
+    })
+    defer srv.Close()
+    core = newFakeCoreConn(t, srv)
+    defer func() { core = nil }()
+    var info = appSource{}.TxInfo("", hash)
+    if !info.OK || info.Title != "Block 700 001" {
+        t.Fatalf("a block hash should open the block page, got %#v", info.Title)
+    }
+    if info.Kind != "block" {
+        t.Errorf("Kind = %q, want block — this is what keeps the watch button off it", info.Kind)
+    }
+    // and the block endpoint says the same thing about the same page
+    if got := (appSource{}).BlockInfo("", 700001); got.Kind != "block" {
+        t.Errorf("BlockInfo Kind = %q, want block", got.Kind)
+    }
+}
