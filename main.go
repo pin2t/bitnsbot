@@ -45,7 +45,7 @@ var coreCookie      = flag.String("core-cookie", "", "path to Bitcoin Core's .co
 var coreZMQ         = flag.String("core-zmq", "", "comma-separated ZMQ endpoints publishing hashblock and rawtx, e.g. tcp://127.0.0.1:28332,tcp://127.0.0.1:28333")
 var coreREST        = flag.String("core-rest", "", "base URL of Bitcoin Core's REST interface for building the address index (empty disables indexing)")
 var backupPath      = flag.String("backup", "", "path to copy the database to periodically (empty disables backups)")
-var backupInterval  = flag.Duration("backup-interval", 24*time.Hour, "how often to back up the database")
+var backupInterval  = flag.Duration("backup-interval", 24*time.Hour, "how old the backup may get before a fresh one is taken")
 var backupScript    = flag.String("backup-script", "", "command run after each backup, with the backup's path as $1 and in $BACKUP_FILE (empty runs nothing)")
 var logNoTs         = flag.Bool("log-no-ts", false, "omit the date and time prefix from each log line")
 var appListen       = flag.String("app-listen", "127.0.0.1:8080", "address the Telegram Mini App web server binds to (empty disables it; bind to localhost — the Cloudflare tunnel is what faces the network)")
@@ -55,6 +55,10 @@ var historyFile     = flag.String("history-file", "", "path to a JSON file conta
 var core *coreConn
 var dbuiSrv *http.Server
 var appSrv *http.Server
+
+// stopBackup ends the backup goroutine, set when -backup started one. shutdown
+// runs it before closing the database, since a copy in flight is reading it.
+var stopBackup func()
 
 // appSource adapts main's fee cache and formatters to app.Source, so the app
 // package stays unaware of Bitcoin Core, the price feeds and the cache.
@@ -356,8 +360,9 @@ func main() {
         appSrv = app.Start(*appListen, *botToken, appSource{bot: bot})
     }
     if *backupPath != "" {
-        startBackup(*backupPath, *backupInterval, *backupScript)
-        logging.Status("backing up the database to %s every %s", *backupPath, *backupInterval)
+        var check time.Duration
+        check, stopBackup = startBackup(*backupPath, *backupInterval, *backupScript)
+        logging.Status("backing up the database to %s when the copy there is over %s old, checked every %s", *backupPath, *backupInterval, check)
     }
     if *coreURL != "" {
         core, err = newCoreConn(*coreURL, *coreUser, *corePass, *coreCookie)
@@ -437,6 +442,8 @@ func shutdown(bot *bot, srv *http.Server) {
         }
     }
     stopNotify()
+    // before closeDB, so the database is not closed under a copy in flight
+    if stopBackup != nil { stopBackup() }
     if err := closeDB(); err != nil {
         logging.Err("close watches database: %v", err)
     }
