@@ -57,20 +57,20 @@ type fakeSource struct {
 
 func (s fakeSource) Fees() Fees       { return s.f }
 func (s fakeSource) Network() Network { return s.n }
-func (s fakeSource) Market() Market   { return s.m }
-func (s fakeSource) Blocks(rng Range) Blocks { return window(s.b, rng) }
+func (s fakeSource) Market(lang string) Market { return s.m }
+func (s fakeSource) Blocks(lang string, rng Range) Blocks { return window(s.b, rng) }
 
-func (s fakeSource) BlockInfo(height int64) Info {
+func (s fakeSource) BlockInfo(lang string, height int64) Info {
     if d, ok := s.d[height]; ok { return d }
     return Info{Title: "Block " + strconv.FormatInt(height, 10)}
 }
 
-func (s fakeSource) TxInfo(txid string) Info {
+func (s fakeSource) TxInfo(lang, txid string) Info {
     if d, ok := s.t[txid]; ok { return d }
     return Info{Title: txid[:6] + "..." + txid[58:]}
 }
 
-func (s fakeSource) MinerInfo(name string) Info {
+func (s fakeSource) MinerInfo(lang, name string) Info {
     if name != "AntPool" { return Info{Title: name} }
     return Info{OK: true, Title: name, Rows: []Field{
         {Label: "Blocks mined", Value: "22 blocks"},
@@ -112,7 +112,7 @@ func liveWatches() map[int64]Watches {
     }
 }
 
-func (s fakeSource) AddrInfo(addr string) Info {
+func (s fakeSource) AddrInfo(lang, addr string) Info {
     if d, ok := s.a[addr]; ok { return d }
     return Info{Title: addr}
 }

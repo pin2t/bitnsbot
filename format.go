@@ -8,36 +8,36 @@ import "time"
 import "bitnsbot/rates"
 import "unicode/utf8"
 
-func ago(n int, unit string, chat int64) string {
-    var s = i18n(chat).String("ago")
+func ago(n int, unit string, lang string) string {
+    var s = i18nl(lang).String("ago")
     if n == 1 { return "1 " + unit + " " + s }
     return fmt.Sprintf("%d %s %s", n, unit, s)
 }
 
-func when(unix int64, chat int64) string {
-    if s := relative(unix, chat); s != "" { return s }
-    return strings.ToLower(i18n(chat).DateTime(time.Unix(unix, 0).UTC()))
+func when(unix int64, lang string) string {
+    if s := relative(unix, lang); s != "" { return s }
+    return strings.ToLower(i18nl(lang).DateTime(time.Unix(unix, 0).UTC()))
 }
 
 // day is when without the clock time. An address's first and last activity is
 // read as a date — the hour of the day says nothing about it.
-func day(unix int64, chat int64) string {
-    if s := relative(unix, chat); s != "" { return s }
-    return strings.ToLower(i18n(chat).Date(time.Unix(unix, 0).UTC()))
+func day(unix int64, lang string) string {
+    if s := relative(unix, lang); s != "" { return s }
+    return strings.ToLower(i18nl(lang).Date(time.Unix(unix, 0).UTC()))
 }
 
 // relative renders a time within the last three months as "2 days ago", and ""
 // for anything older, which belongs in absolute form.
-func relative(unix int64, chat int64) string {
+func relative(unix int64, lang string) string {
     var t = time.Unix(unix, 0)
     if !t.After(time.Now().AddDate(0, -3, 0)) { return "" }
     var since = time.Since(t)
     switch {
-    case since < time.Minute:     return i18n(chat).String("just now")
-    case since < time.Hour:       return ago(int(since.Minutes()), i18n(chat).String("min"), chat)
-    case since < 24*time.Hour:    return ago(int(since.Hours()), i18n(chat).String("h"), chat)
-    case since < 31*24*time.Hour: return ago(int(since.Hours()/24), i18n(chat).String("d"), chat)
-    default:                      return ago(int(since.Hours()/24/30), i18n(chat).String("m"), chat)
+    case since < time.Minute:     return i18nl(lang).String("just now")
+    case since < time.Hour:       return ago(int(since.Minutes()), i18nl(lang).String("min"), lang)
+    case since < 24*time.Hour:    return ago(int(since.Hours()), i18nl(lang).String("h"), lang)
+    case since < 31*24*time.Hour: return ago(int(since.Hours()/24), i18nl(lang).String("d"), lang)
+    default:                      return ago(int(since.Hours()/24/30), i18nl(lang).String("m"), lang)
     }
 }
 
@@ -112,10 +112,10 @@ func bigCount(n int64) string {
 
 // humSize renders a byte count with a 1000-scaled unit. decimals is per call
 // site: the bot's messages want two, the Mini App's card wants none.
-func humSize(s int64, decimals int, chat int64) string {
+func humSize(s int64, decimals int, lang string) string {
     var f = float64(s)
-    var unit = i18n(chat).String(" B")
-    for _, u := range []string{i18n(chat).String(" KB"), i18n(chat).String(" MB"), i18n(chat).String(" GB"), i18n(chat).String(" TB"), i18n(chat).String(" PB"), i18n(chat).String(" EB")} {
+    var unit = i18nl(lang).String(" B")
+    for _, u := range []string{i18nl(lang).String(" KB"), i18nl(lang).String(" MB"), i18nl(lang).String(" GB"), i18nl(lang).String(" TB"), i18nl(lang).String(" PB"), i18nl(lang).String(" EB")} {
         if f < 1000 { break }
         f /= 1000
         unit = u
@@ -126,17 +126,17 @@ func humSize(s int64, decimals int, chat int64) string {
 // compactBTC renders a BTC amount compactly with a USD approximation at the
 // latest rate: as BTC once it reaches 0.05 BTC ("0.5 BTC"), otherwise in sats
 // ("100 000 sats"), so large and small amounts each read naturally.
-func compactBTC(sat int64, chat int64) string {
+func compactBTC(sat int64, lang string) string {
     if sat >= notifyBTCThreshold {
         return btcAmount(sat)
     }
-    return amountLine(sat, time.Time{}, true, chat)
+    return amountLine(sat, time.Time{}, true, lang)
 }
 
 // periodText renders a duration as its two most-significant non-zero units among
 // years / months / days / hours / minutes — "3 y 2 d", "2 m 1 d", "5 h 10 min".
 // Years and months use 365- and 30-day approximations, extracted in order.
-func periodText(d time.Duration, chat int64) string {
+func periodText(d time.Duration, lang string) string {
     var total = int(d.Minutes())
     var years = total / (365 * 24 * 60)
     total -= years * 365 * 24 * 60
@@ -149,7 +149,7 @@ func periodText(d time.Duration, chat int64) string {
     var units = []struct {
         n int
         s string
-    }{{years, i18n(chat).String("y")}, {months, i18n(chat).String("m")}, {days, i18n(chat).String("d")}, {hours, i18n(chat).String("h")}, {mins, i18n(chat).String("min")}}
+    }{{years, i18nl(lang).String("y")}, {months, i18nl(lang).String("m")}, {days, i18nl(lang).String("d")}, {hours, i18nl(lang).String("h")}, {mins, i18nl(lang).String("min")}}
     var parts []string
     for _, u := range units {
         if u.n > 0 {
@@ -157,7 +157,7 @@ func periodText(d time.Duration, chat int64) string {
         }
     }
     if len(parts) == 0 {
-        return i18n(chat).String("just now")
+        return i18nl(lang).String("just now")
     }
     if len(parts) > 2 {
         parts = parts[:2]
@@ -191,8 +191,8 @@ func usd(sat int64, rate float64) string {
 // rate nearest the transaction's time otherwise — falling back to the last
 // stored rate for confirmed times that predate our rate history, so an old
 // transaction still shows its value at today's rate rather than nothing.
-func amountLine(sat int64, at time.Time, current bool, chat int64) string {
-    var s = amountText(sat, chat)
+func amountLine(sat int64, at time.Time, current bool, lang string) string {
+    var s = amountText(sat, lang)
     var rate float64
     var ok bool
     if current {
@@ -224,15 +224,15 @@ func btcAmount(sat int64) string {
 }
 
 // durationText renders elapsed time compactly: "45 sec", "12 min", "2 h 5 min".
-func durationText(d time.Duration, chat int64) string {
+func durationText(d time.Duration, lang string) string {
     switch {
-    case d < time.Minute: return i18n(chat).Sprintf("%d sec", int(d.Seconds()))
-    case d < time.Hour:   return i18n(chat).Sprintf("%d min", int(d.Minutes()))
+    case d < time.Minute: return i18nl(lang).Sprintf("%d sec", int(d.Seconds()))
+    case d < time.Hour:   return i18nl(lang).Sprintf("%d min", int(d.Minutes()))
     default:
         var h = int(d / time.Hour)
         var m = int(d/time.Minute) % 60
-        if m == 0 { return i18n(chat).Sprintf("%d h", h) }
-        return i18n(chat).Sprintf("%d h %d min", h, m)
+        if m == 0 { return i18nl(lang).Sprintf("%d h", h) }
+        return i18nl(lang).Sprintf("%d h %d min", h, m)
     }
 }
 
@@ -246,13 +246,13 @@ func trimNum(v float64, decimals int) string {
 // "$1.33 T", "$31.9 B". Deliberately not `metric`, which is SI and so says "G"
 // where finance says "B"; market capitalisation reported in gigadollars would
 // read as a units error.
-func money(usd float64, chat int64) string {
+func money(usd float64, lang string) string {
     var sign = ""
     if usd < 0 { sign, usd = "-", -usd }
     var units = []struct {
         scale  float64
         suffix string
-    }{{1e12, i18n(chat).String(" T")}, {1e9, i18n(chat).String(" B")}, {1e6, i18n(chat).String(" M")}}
+    }{{1e12, i18nl(lang).String(" T")}, {1e9, i18nl(lang).String(" B")}, {1e6, i18nl(lang).String(" M")}}
     for _, u := range units {
         if usd >= u.scale {
             return sign + "$" + trimNum(usd/u.scale, 2) + u.suffix
@@ -302,11 +302,11 @@ const notifyBTCThreshold = 5_000_000
 
 // amountText renders an amount for a notification headline: sats up to
 // notifyBTCThreshold, BTC above it, trailing zeros trimmed either way.
-func amountText(sat int64, chat int64) string {
+func amountText(sat int64, lang string) string {
     if sat >= notifyBTCThreshold || sat <= -notifyBTCThreshold {
         return trimNum(toBTC(sat), 8) + " BTC"
     }
-    return group(sat) + " " + i18n(chat).String("sats")
+    return group(sat) + " " + i18nl(lang).String("sats")
 }
 
 func joinAlign(pairs [][2]string) string {

@@ -34,11 +34,11 @@ func TestAmountLineUSD(t *testing.T) {
         t.Fatalf("rates.Init: %v", err)
     }
     // no rate stored yet → sats only, no USD
-    if s := amountLine(150000000, time.Time{}, true, 123); strings.Contains(s, "$") {
+    if s := amountLine(150000000, time.Time{}, true, ""); strings.Contains(s, "$") {
         t.Fatalf("expected no USD without a rate: %q", s)
     }
     rates.Add(60000)
-    var s = amountLine(150000000, time.Time{}, true, 123)
+    var s = amountLine(150000000, time.Time{}, true, "")
     if !strings.Contains(s, "1.5 BTC") || !strings.Contains(s, "$90,000") {
         t.Fatalf("amountLine = %q", s)
     }
@@ -55,7 +55,7 @@ func TestAmountLineFallback(t *testing.T) {
     rates.Add(60000)
     // a confirmed tx whose block time predates our rate history (older than the
     // tolerance) still shows USD, falling back to the latest known rate.
-    var s = amountLine(150000000, time.Now().Add(-5*24*time.Hour), false, 123)
+    var s = amountLine(150000000, time.Now().Add(-5*24*time.Hour), false, "")
     if !strings.Contains(s, "$90,000") {
         t.Fatalf("expected USD via fallback for an old confirmed tx: %q", s)
     }
@@ -124,13 +124,13 @@ func TestMetricWholeUnits(t *testing.T) {
 }
 
 func TestHumSizeDecimals(t *testing.T) {
-    if got := humSize(868934901021, 2, 0); got != "868.93 GB" {
+    if got := humSize(868934901021, 2, ""); got != "868.93 GB" {
         t.Errorf("humSize(.., 2) = %q, want 868.93 GB", got)
     }
-    if got := humSize(868934901021, 0, 0); got != "869 GB" {
+    if got := humSize(868934901021, 0, ""); got != "869 GB" {
         t.Errorf("humSize(.., 0) = %q, want 869 GB", got)
     }
-    if got := humSize(870000000000, 0, 0); got != "870 GB" {
+    if got := humSize(870000000000, 0, ""); got != "870 GB" {
         t.Errorf("humSize(870 GB, 0) = %q, want 870 GB — a trailing zero must survive", got)
     }
 }
@@ -139,10 +139,10 @@ func TestHumSizeDecimals(t *testing.T) {
 // nothing about them, so day drops the clock time when is keeps.
 func TestDayDropsTheTime(t *testing.T) {
     var old = time.Date(2025, time.April, 16, 17, 18, 42, 0, time.UTC).Unix()
-    if got, want := day(old, 0), "16 april 2025"; got != want {
+    if got, want := day(old, ""), "16 april 2025"; got != want {
         t.Errorf("day = %q, want %q", got, want)
     }
-    if got, want := when(old, 0), "16 april 2025 17:18"; got != want {
+    if got, want := when(old, ""), "16 april 2025 17:18"; got != want {
         t.Errorf("when = %q, want %q — only the address dates lose the time", got, want)
     }
 }
@@ -150,10 +150,10 @@ func TestDayDropsTheTime(t *testing.T) {
 // Both keep the relative form for anything recent, which never had a time in it.
 func TestDayKeepsTheRelativeForm(t *testing.T) {
     var recent = time.Now().Add(-48 * time.Hour).Unix()
-    if got := day(recent, 0); got != when(recent, 0) {
-        t.Errorf("day = %q but when = %q; a recent date should read the same either way", got, when(recent, 0))
+    if got := day(recent, ""); got != when(recent, "") {
+        t.Errorf("day = %q but when = %q; a recent date should read the same either way", got, when(recent, ""))
     }
-    if got := day(recent, 0); !strings.Contains(got, "ago") {
+    if got := day(recent, ""); !strings.Contains(got, "ago") {
         t.Errorf("day = %q, want a relative form", got)
     }
 }

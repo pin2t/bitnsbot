@@ -15,7 +15,7 @@ func TestMoney(t *testing.T) {
         -31914279096:  "-$31.91 B",
     }
     for in, want := range cases {
-        if got := money(in, 1); got != want {
+        if got := money(in, ""); got != want {
             t.Errorf("money(%v) = %q, want %q", in, got, want)
         }
     }

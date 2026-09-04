@@ -663,7 +663,7 @@ func TestPeriodText(t *testing.T) {
         {30 * time.Second, "just now"},
     }
     for _, c := range cases {
-        if got := periodText(c.d, 1); got != c.want {
+        if got := periodText(c.d, ""); got != c.want {
             t.Errorf("periodText(%v) = %q, want %q", c.d, got, c.want)
         }
     }
