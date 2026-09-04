@@ -147,8 +147,11 @@ func (appSource) Blocks(lang string, rng app.Range) app.Blocks {
 // page has no chat behind it.
 func (appSource) BlockInfo(lang string, height int64) app.Info {
     // Title is set even when the lookup fails, so the page still names what was
-    // asked for rather than reading "Block ".
-    var out = app.Info{Title: i18nl(lang).String("Block") + " " + group(height)}
+    // asked for rather than reading "Block ". Kind says what this page is, which
+    // the app cannot always tell from the URL: a block hash has a txid's shape,
+    // so it arrives at the transaction endpoint and lands here — and a block has
+    // nothing to watch.
+    var out = app.Info{Title: i18nl(lang).String("Block") + " " + group(height), Kind: "block"}
     var bi, ok = loadBlock(height)
     if !ok {
         if core == nil { return out }

@@ -351,9 +351,9 @@
 {{define "fees"}}<h2>Комиссии сети</h2>
 {{- if .OK}}
 <div class="tiers">
-  <div class="tier"><div class="label">10-20 мин.</div><div class="rate">{{.Fast.Rate}} <span class="unit">sat/vB</span></div><div class="usd">{{.Fast.USD}}</div></div>
-  <div class="tier"><div class="label">~1 час</div><div class="rate">{{.Hour.Rate}} <span class="unit">sat/vB</span></div><div class="usd">{{.Hour.USD}}</div></div>
-  <div class="tier"><div class="label">более 2-х ч</div><div class="rate">{{.Slow.Rate}} <span class="unit">sat/vB</span></div><div class="usd">{{.Slow.USD}}</div></div>
+  <div class="tier"><div class="label">10-20 мин.</div><div class="rate">{{.Fast.Rate}} <span class="unit">сат/вБ</span></div><div class="usd">{{.Fast.USD}}</div></div>
+  <div class="tier"><div class="label">~1 час</div><div class="rate">{{.Hour.Rate}} <span class="unit">сат/вБ</span></div><div class="usd">{{.Hour.USD}}</div></div>
+  <div class="tier"><div class="label">более 2-х ч</div><div class="rate">{{.Slow.Rate}} <span class="unit">сат/вБ</span></div><div class="usd">{{.Slow.USD}}</div></div>
 </div>
 <p class="note">на основе {{.TxCount}} ожидающих транзакций</p>
 {{- else}}
