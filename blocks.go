@@ -292,7 +292,9 @@ func blockPairs(bi *blockInfo, lang string) [][2]string {
     pairs = append(pairs,
         [2]string{i18nl(lang).String("Tx sizes"), ""},
         [2]string{i18nl(lang).String("minimum"), group(int64(bi.TxSizeMin)) + " " + i18nl(lang).String("B")},
-        [2]string{i18nl(lang).String("average"), group(int64(bi.TxSizeAvg)) + " " + i18nl(lang).String("B")},
+        // a size, not a fee: Russian declines the two differently, so this is its
+        // own key rather than the "average" the fee line above uses
+        [2]string{i18nl(lang).String("average-tx"), group(int64(bi.TxSizeAvg)) + " " + i18nl(lang).String("B")},
         [2]string{i18nl(lang).String("maximum"), group(int64(bi.TxSizeMax)) + " " + i18nl(lang).String("B")},
         [2]string{i18nl(lang).String("Reward"), amountLine(bi.Reward, time.Unix(bi.Time, 0), false, lang)},
         [2]string{i18nl(lang).String("Reward + fees"), amountLine(bi.Total, time.Unix(bi.Time, 0), false, lang)},

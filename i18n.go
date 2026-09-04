@@ -10,9 +10,24 @@ import "bitnsbot/lru"
 // original English string.
 type trans map[string]string
 
-// langTrans holds per-language translation maps. English is not stored — it is
-// the default and Sprintf/String fall back to the original format string when no
-// translation is found.
+// english is the default table, and it is deliberately almost empty: an English
+// source string is its own translation, and String returns a key it does not
+// hold unchanged. What it does hold are the **context keys** — a key that is not
+// itself the word to show, because one English word needs different translations
+// in different places. "average-tx" is the average transaction *size*, which
+// Russian declines differently from the average *fee* (`средний` against
+// `средняя`), so those two call sites cannot share one "average" key. Every
+// context key has to be here, or an English reader is shown the key itself.
+//
+// It sits outside the i18n-vet markers on purpose: a marked section must carry
+// every translated string, and this one carries only the keys that need it.
+var english = trans{
+	"average-tx": "average",
+}
+
+// langTrans holds per-language translation maps. English is not among them — it
+// is the default, held separately in english above, and Sprintf/String fall back
+// to the original source string when no translation is found.
 var langTrans = map[string]trans{
 	// i18n-vet:translation ru
 	"ru": {
@@ -153,6 +168,7 @@ var langTrans = map[string]trans{
 		"highest":              "максимальная",
 		"Tx sizes":             "Размеры транзакций",
 		"minimum":              "минимальный",
+		"average-tx":           "средний",
 		"maximum":              "максимальный",
 		"Reward":               "Награда",
 		"Reward + fees":        "Награда + комиссии",
@@ -323,6 +339,7 @@ var langTrans = map[string]trans{
 		"highest":              "más alta",
 		"Tx sizes":             "Tamaños tx",
 		"minimum":              "mínimo",
+		"average-tx":           "promedio",
 		"maximum":              "máximo",
 		"Reward":               "Recompensa",
 		"Reward + fees":        "Recompensa + comisiones",
@@ -392,11 +409,14 @@ func i18n(chatID int64) trans { return i18nl(chatLang(chatID)) }
 // i18nl is the same lookup by language code rather than by chat, and is what the
 // Mini App translates through: its reader's language arrives with the request
 // (signed into initData, or asked for in Accept-Language) and there is no chat
-// behind it at all. Both a language we have no table for and English return nil,
-// which is how the source string stays the default.
+// behind it at all. English and a language we have no table for both return the
+// english table rather than nil — a source string is still its own translation,
+// since String passes a key it does not hold straight through, but a context key
+// has to resolve to a readable word in every language and English is where that
+// word lives.
 func i18nl(lang string) trans {
-    if lang == "" || lang == "en" { return nil }
-    return langTrans[lang]
+    if t, ok := langTrans[lang]; ok { return t }
+    return english
 }
 
 // Sprintf works like fmt.Sprintf but translates the format string first. If no
