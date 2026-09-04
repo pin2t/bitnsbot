@@ -28,7 +28,7 @@ import "bitnsbot/logging"
 import "bitnsbot/lru"
 
 //go:embed app.html app.*.html
-var pages embed.FS
+var htmls embed.FS
 
 //go:embed htmx.min.js
 var htmxJS []byte
@@ -43,21 +43,19 @@ var sseJS []byte
 // second copy of a page drifts.
 var langs = []string{"en", "ru", "es"}
 
-// appTmpl is one parsed page per language: the shell and, inside it, the "fees",
+// templates is one parsed page per language: the shell and, inside it, the "fees",
 // "network" and the other blocks. The initial render and each refresh render
 // those same blocks from the same file, so the card the page ships with and the
 // card that replaces it cannot drift apart.
-var appTmpl = parsePages()
+var templates = parse()
 
-func parsePages() map[string]*template.Template {
+func parse() map[string]*template.Template {
     var out = map[string]*template.Template{}
     for _, lang := range langs {
         var name = "app.html"
         if lang != langs[0] { name = "app." + lang + ".html" }
-        var b, err = pages.ReadFile(name)
+        var b, err = htmls.ReadFile(name)
         if err != nil { panic("mini app: " + err.Error()) }
-        // Named "app" in every language, not after the language: the page is
-        // executed by that name, and it is the whole file's own template.
         out[lang] = template.Must(template.New("app").Parse(string(b)))
     }
     return out
@@ -226,8 +224,8 @@ func cached(c *lru.Cache[string, []byte], w http.ResponseWriter, r *http.Request
 }
 
 func render(lang, name string, data any) []byte {
-    var t, ok = appTmpl[lang]
-    if !ok { t = appTmpl[langs[0]] }
+    var t, ok = templates[lang]
+    if !ok { t = templates[langs[0]] }
     var buf bytes.Buffer
     var err = t.ExecuteTemplate(&buf, name, data)
     if err != nil {
@@ -570,10 +568,10 @@ func heightOf(r *http.Request, name string) int64 {
 }
 
 // watchable reports whether a details page can be watched, and is what keeps the
-// button off block and miner pages.
+// button off block and miner htmls.
 func watchable(kind string) bool { return kind == "address" || kind == "tx" }
 
-// details renders one of the three detail pages. They differ only in which
+// details renders one of the three detail htmls. They differ only in which
 // container they replace and where Back goes, so they share a template.
 //
 // HX-Retarget is what lets one search field reach three tabs: the field cannot
