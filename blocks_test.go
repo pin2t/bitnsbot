@@ -131,7 +131,7 @@ func TestFormatBlock(t *testing.T) {
         TxSizeMin: 110, TxSizeAvg: 445, TxSizeMax: 98000,
         Reward: 312500000, Total: 375500000, Difficulty: 79000000000000,
     }
-    var s = formatBlock(bi, 1)
+    var s = formatBlock(bi, "")
     for _, want := range []string{
         "Block #800000",
         "Size:          1.52 M",
@@ -201,7 +201,7 @@ func TestAppBlocksWindows(t *testing.T) {
         return out
     }
     // the newest batch, newest first, with more below it
-    var top = appSource{}.Blocks(app.Range{})
+    var top = appSource{}.Blocks("", app.Range{})
     if !top.OK || len(top.Rows) != blocksPerPage || !top.More {
         t.Fatalf("newest batch: %d rows more=%v", len(top.Rows), top.More)
     }
@@ -210,20 +210,20 @@ func TestAppBlocksWindows(t *testing.T) {
     }
     // the next batch continues strictly below it — no row is repeated, and none
     // is skipped
-    var next = appSource{}.Blocks(app.Range{Before: top.Next})
+    var next = appSource{}.Blocks("", app.Range{Before: top.Next})
     if len(next.Rows) != blocksPerPage || next.Top != 700037 || next.Next != 700026 {
         t.Fatalf("second batch spans %d..%d, want 700037..700026", next.Top, next.Next)
     }
     // a height the bucket does not hold still starts below it
-    if b := (appSource{}).Blocks(app.Range{Before: 800000}); b.Top != 700049 {
+    if b := (appSource{}).Blocks("", app.Range{Before: 800000}); b.Top != 700049 {
         t.Fatalf("a before above the tip should start at the tip, got %d", b.Top)
     }
-    if b := (appSource{}).Blocks(app.Range{Before: 700000}); b.OK || len(b.Rows) != 0 {
+    if b := (appSource{}).Blocks("", app.Range{Before: 700000}); b.OK || len(b.Rows) != 0 {
         t.Fatalf("nothing is below the oldest block, got %d rows", len(b.Rows))
     }
     // what a new block prepends: everything above the height the list topped out
     // at, and nothing that is already on screen
-    var fresh = appSource{}.Blocks(app.Range{After: 700046})
+    var fresh = appSource{}.Blocks("", app.Range{After: 700046})
     if got := heights(fresh); len(got) != 3 || got[0] != 700049 || got[2] != 700047 {
         t.Fatalf("prepend = %v, want 700049..700047", got)
     }
@@ -231,24 +231,24 @@ func TestAppBlocksWindows(t *testing.T) {
         t.Error("three new blocks fit in a batch; nothing was cut off")
     }
     // nothing new is a legitimate answer, and the sentinel keeps its height
-    var none = appSource{}.Blocks(app.Range{After: 700049})
+    var none = appSource{}.Blocks("", app.Range{After: 700049})
     if len(none.Rows) != 0 || none.Top != 700049 {
         t.Fatalf("nothing new = %d rows top=%d, want 0 rows at 700049", len(none.Rows), none.Top)
     }
     // more new blocks than a batch holds is what tells the app to replace the
     // whole list rather than prepend a piece of it
-    if b := (appSource{}).Blocks(app.Range{After: 700000}); !b.More {
+    if b := (appSource{}).Blocks("", app.Range{After: 700000}); !b.More {
         t.Error("49 new blocks do not fit in one batch; More must say so")
     }
     // Back restores everything from the tip down to the block that was opened
-    var back = appSource{}.Blocks(app.Range{Down: 700030})
+    var back = appSource{}.Blocks("", app.Range{Down: 700030})
     if got := heights(back); len(got) != 20 || got[0] != 700049 || got[19] != 700030 {
         t.Fatalf("restored %d rows spanning %v, want 700049..700030", len(got), got)
     }
     if !back.More {
         t.Error("there are older blocks below the restored list, so it keeps its sentinel")
     }
-    if b := (appSource{}).Blocks(app.Range{Down: 700000}); b.More {
+    if b := (appSource{}).Blocks("", app.Range{Down: 700000}); b.More {
         t.Error("a list restored to the oldest block has nothing more to append")
     }
 }

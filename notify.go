@@ -69,6 +69,7 @@ func startNotifyChat(b *bot, chat int64, watch, alias string) {
 // block. The txid has to sit outside that block — Telegram does not parse
 // entities inside <pre>, so a <code> there would render literally.
 func addressNotification(chat int64, n notification, watchID, alias string) (string, []string, txwatches.Summary, bool) {
+    var lang = chatLang(chat)
     var estimates = map[string]string{
         confETAFast:   i18n(chat).String("~10-20 min"),
         confETAMedium: i18n(chat).String("~1 hour"),
@@ -101,20 +102,20 @@ func addressNotification(chat int64, n notification, watchID, alias string) (str
             return recipients[i].b < recipients[j].b
         })
         summary = txwatches.Summary{Amount: out, Recipients: addrs, Outgoing: true}
-        header = i18n(chat).Sprintf("%s is sending %s to\n", label, amountLine(out, time.Time{}, true, chat))
+        header = i18n(chat).Sprintf("%s is sending %s to\n", label, amountLine(out, time.Time{}, true, lang))
         if len(recipients) == 0 { header += i18n(chat).String("none") + "\n" }
         for i := 0; i < min(len(recipients), shownAddrs); i++ {
-            header += fmt.Sprintf("%s: %s\n", short(recipients[i].a), amountLine(recipients[i].b, time.Now(), true, chat))
+            header += fmt.Sprintf("%s: %s\n", short(recipients[i].a), amountLine(recipients[i].b, time.Now(), true, lang))
             ids = append(ids, recipients[i].a)
         }
         if len(recipients) > shownAddrs { header += "...\n" }
-        pairs = append(pairs, [2]string{i18n(chat).String("Sending"), amountLine(out, time.Time{}, true, chat)})
+        pairs = append(pairs, [2]string{i18n(chat).String("Sending"), amountLine(out, time.Time{}, true, lang)})
         if gotIn {
             // part of the spend came back as change, so the address is only down
             // by the difference
             pairs = append(pairs,
-                [2]string{i18n(chat).String("Change back"), amountLine(in, time.Time{}, true, chat)},
-                [2]string{i18n(chat).String("Net"), amountLine(in-out, time.Time{}, true, chat)},
+                [2]string{i18n(chat).String("Change back"), amountLine(in, time.Time{}, true, lang)},
+                [2]string{i18n(chat).String("Net"), amountLine(in-out, time.Time{}, true, lang)},
             )
         }
         if n.feeOK {
@@ -126,7 +127,7 @@ func addressNotification(chat int64, n notification, watchID, alias string) (str
             }
         }
     } else {
-        var msg = i18n(chat).Sprintf("🔔 %s receiving %s. Transaction <code>%s</code>", label, amountLine(in, time.Time{}, true, chat), n.txid)
+        var msg = i18n(chat).Sprintf("🔔 %s receiving %s. Transaction <code>%s</code>", label, amountLine(in, time.Time{}, true, lang), n.txid)
         if n.confEstimate != "" {
             msg += "\n" + i18n(chat).String("ETA") + " " + estimates[n.confEstimate]
         }
@@ -357,7 +358,8 @@ func stopNotify() {
 // tap-to-copy. The amount and recipients come from the summary recorded when the
 // transaction was first seen, so the block arriving costs no extra lookups.
 func confirmationMessage(chat int64, c txwatches.Confirmed, height int64) (string, []string) {
-    var elapsed = durationText(time.Since(c.WatchedAt), chat)
+    var lang = chatLang(chat)
+    var elapsed = durationText(time.Since(c.WatchedAt), lang)
     var landed = i18n(chat).Sprintf("Confirmed in block #%d after %s. Transaction <code>%s</code>", height, elapsed, c.Txid)
     var ids = []string{c.Txid}
     if c.Addr == "" {
@@ -381,10 +383,10 @@ func confirmationMessage(chat int64, c txwatches.Confirmed, height int64) (strin
         } else {
             saddr = i18n(chat).String("none")
         }
-        msg = i18n(chat).Sprintf("%s sent %s to %s. %s", label, amountLine(c.Summary.Amount, time.Time{}, true, chat), saddr, landed)
+        msg = i18n(chat).Sprintf("%s sent %s to %s. %s", label, amountLine(c.Summary.Amount, time.Time{}, true, lang), saddr, landed)
         ids = append(ids, firstN(c.Summary.Recipients, shownAddrs)...)
     } else {
-        msg = i18n(chat).Sprintf("%s received %s. %s", label, amountLine(c.Summary.Amount, time.Time{}, true, chat), landed)
+        msg = i18n(chat).Sprintf("%s received %s. %s", label, amountLine(c.Summary.Amount, time.Time{}, true, lang), landed)
     }
     ids = append(ids, strconv.FormatInt(height, 10))
     return "🔔 " + msg, ids

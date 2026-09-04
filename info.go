@@ -49,11 +49,11 @@ func info(bot *bot, chat int64, arg string) {
 // txPairs builds the lines a transaction is described by, plus the ids the bot
 // turns into buttons and the node's own spelling of the txid. Shared with the
 // Mini App's transaction page, so the two cannot drift apart.
-func txPairs(ctx context.Context, chat int64, txid string) ([][2]string, []string, string, bool) {
+func txPairs(ctx context.Context, lang string, txid string) ([][2]string, []string, string, bool) {
     var estimates = map[string]string{
-        confETAFast:   i18n(chat).String("~10-20 min"),
-        confETAMedium: i18n(chat).String("~1 hour"),
-        confETASlow:   i18n(chat).String("2+ hours"),
+        confETAFast:   i18nl(lang).String("~10-20 min"),
+        confETAMedium: i18nl(lang).String("~1 hour"),
+        confETASlow:   i18nl(lang).String("2+ hours"),
     }
     var tx, err = core.getRawTransaction(ctx, txid)
     if err != nil { return nil, nil, "", false }
@@ -69,34 +69,34 @@ func txPairs(ctx context.Context, chat int64, txid string) ([][2]string, []strin
     var current = true
     var blockHeight int64
     if tx.Confirmations == 0 {
-        var confText = i18n(chat).String("none (confirms in ~10-20 min)")
+        var confText = i18nl(lang).String("none (confirms in ~10-20 min)")
         if feeOK && tx.Vsize > 0 {
-            confText = i18n(chat).String("none (confirms in") + " " + estimates[confEstimate(float64(fee) / float64(tx.Vsize))] + ")"
+            confText = i18nl(lang).String("none (confirms in") + " " + estimates[confEstimate(float64(fee) / float64(tx.Vsize))] + ")"
         }
-        pairs = append(pairs, [2]string{i18n(chat).String("Confirmations"), confText})
+        pairs = append(pairs, [2]string{i18nl(lang).String("Confirmations"), confText})
     } else {
         at, current = time.Unix(tx.Time, 0), false
         if header, err := core.getBlockHeader(ctx, tx.BlockHash); err == nil {
             blockHeight = header.Height
         }
-        pairs = append(pairs, [2]string{i18n(chat).String("Confirmations"), i18n(chat).Sprintf("%d (block #%d)", tx.Confirmations, blockHeight)})
+        pairs = append(pairs, [2]string{i18nl(lang).String("Confirmations"), i18nl(lang).Sprintf("%d (block #%d)", tx.Confirmations, blockHeight)})
     }
-    pairs = append(pairs, [2]string{i18n(chat).String("Amount"), amountLine(total, at, current, chat)})
+    pairs = append(pairs, [2]string{i18nl(lang).String("Amount"), amountLine(total, at, current, lang)})
     if feeOK {
-        var feeStr = group(fee) + " " + i18n(chat).String("sats")
+        var feeStr = group(fee) + " " + i18nl(lang).String("sats")
         if tx.Vsize > 0 {
             var feeRate = float64(fee) / float64(tx.Vsize)
-            feeStr += " (" + trimNum(feeRate, 1) + i18n(chat).String(" sat/vB") + ")"
+            feeStr += " (" + trimNum(feeRate, 1) + i18nl(lang).String(" sat/vB") + ")"
         }
-        pairs = append(pairs, [2]string{i18n(chat).String("Fee"), feeStr})
+        pairs = append(pairs, [2]string{i18nl(lang).String("Fee"), feeStr})
     }
-    var szMsg = group(int64(tx.Size)) + " " + i18n(chat).String("B")
-    if tx.Vsize > 0 { szMsg += i18n(chat).Sprintf(" (%s vB)", group(int64(tx.Vsize))) }
-    pairs = append(pairs, [2]string{i18n(chat).String("Size"), szMsg})
+    var szMsg = group(int64(tx.Size)) + " " + i18nl(lang).String("B")
+    if tx.Vsize > 0 { szMsg += i18nl(lang).Sprintf(" (%s vB)", group(int64(tx.Vsize))) }
+    pairs = append(pairs, [2]string{i18nl(lang).String("Size"), szMsg})
     if feeOK {
-        pairs = append(pairs, [2]string{i18n(chat).String("Inputs"), compactAddrs(inputs)})
+        pairs = append(pairs, [2]string{i18nl(lang).String("Inputs"), compactAddrs(inputs)})
     }
-    pairs = append(pairs, [2]string{i18n(chat).String("Outputs"), compactAddrs(outputAddrs(tx))})
+    pairs = append(pairs, [2]string{i18nl(lang).String("Outputs"), compactAddrs(outputAddrs(tx))})
     // only the ids the text actually shows get buttons — compactAddrs truncates
     // to shownAddrs with a trailing "...", and a button for something the reader
     // cannot see in the message would be a puzzle rather than a shortcut
@@ -111,7 +111,7 @@ func txPairs(ctx context.Context, chat int64, txid string) ([][2]string, []strin
 }
 
 func transaction(ctx context.Context, bot *bot, chat int64, txid string) {
-    var pairs, ids, canonical, ok = txPairs(ctx, chat, txid)
+    var pairs, ids, canonical, ok = txPairs(ctx, chatLang(chat), txid)
     if !ok {
         send(bot, chat, i18n(chat).Sprintf("Couldn't find transaction %s", short(txid)), nil)
         return
@@ -253,7 +253,7 @@ func compactAddrs(addrs []string) string {
 
 func block(ctx context.Context, bot *bot, chat int64, height int64) {
     if bi, ok := loadBlock(height); ok {
-        send(bot, chat, formatBlock(bi, chat), nil)
+        send(bot, chat, formatBlock(bi, chatLang(chat)), nil)
         return
     }
     var hash, err = core.getBlockHash(ctx, height)
@@ -268,7 +268,7 @@ func block(ctx context.Context, bot *bot, chat int64, height int64) {
         return
     }
     storeBlock(bi)
-    send(bot, chat, formatBlock(bi, chat), nil)
+    send(bot, chat, formatBlock(bi, chatLang(chat)), nil)
 }
 
 // feeStats summarises a block's fee distribution. Core reports each
@@ -385,7 +385,7 @@ func addressStats(txs []*coreTransaction, addr string) (received, sent, fees int
 // addrPairs builds the lines an address is described by. valid is false when the
 // node says it is not an address at all, which is a different answer from the
 // lookup itself failing. Shared with the Mini App's address page.
-func addrPairs(ctx context.Context, chat int64, addr string) ([][2]string, bool, error) {
+func addrPairs(ctx context.Context, lang string, addr string) ([][2]string, bool, error) {
     var addrInfo, err = core.validateAddress(ctx, addr)
     if err != nil { return nil, false, err }
     if !addrInfo.IsValid { return nil, false, nil }
@@ -395,39 +395,39 @@ func addrPairs(ctx context.Context, chat int64, addr string) ([][2]string, bool,
     } else if addrInfo.IsScript {
         addrType = "script hash (P2SH)"
     }
-    var pairs = [][2]string{{i18n(chat).String("Type"), addrType}}
+    var pairs = [][2]string{{i18nl(lang).String("Type"), addrType}}
     var script, decodeErr = hex.DecodeString(addrInfo.ScriptPubKey)
     var txs, complete = []*coreTransaction(nil), false
     if decodeErr == nil {
         txs, complete = addressHistory(ctx, script)
     }
     if _, ok := addrindex.Cursor(); !ok {
-        pairs = append(pairs, [2]string{i18n(chat).String("Activity"), i18n(chat).String("unavailable (address index is still building)")})
+        pairs = append(pairs, [2]string{i18nl(lang).String("Activity"), i18nl(lang).String("unavailable (address index is still building)")})
     } else if len(txs) == 0 && !complete {
-        pairs = append(pairs, [2]string{i18n(chat).String("Activity"), i18n(chat).String("unavailable")})
+        pairs = append(pairs, [2]string{i18nl(lang).String("Activity"), i18nl(lang).String("unavailable")})
     } else {
         var received, sent, fees, firstT, lastT = addressStats(txs, addr)
         var count = group(int64(len(txs)))
         if !complete { count += "+" }
         pairs = append(pairs,
-            [2]string{i18n(chat).String("Balance"), compactBTC(received - sent, chat)},
-            [2]string{i18n(chat).String("Total received"), compactBTC(received, chat)},
-            [2]string{i18n(chat).String("Total sent"), compactBTC(sent, chat)},
-            [2]string{i18n(chat).String("Total flow"), compactBTC(received + sent, chat)},
-            [2]string{i18n(chat).String("Total fees"), compactBTC(fees, chat)},
-            [2]string{i18n(chat).String("Transactions"), count},
+            [2]string{i18nl(lang).String("Balance"), compactBTC(received - sent, lang)},
+            [2]string{i18nl(lang).String("Total received"), compactBTC(received, lang)},
+            [2]string{i18nl(lang).String("Total sent"), compactBTC(sent, lang)},
+            [2]string{i18nl(lang).String("Total flow"), compactBTC(received + sent, lang)},
+            [2]string{i18nl(lang).String("Total fees"), compactBTC(fees, lang)},
+            [2]string{i18nl(lang).String("Transactions"), count},
         )
-        if firstT > 0 { pairs = append(pairs, [2]string{i18n(chat).String("First tx"), day(firstT, chat)}) }
-        if lastT > 0 { pairs = append(pairs, [2]string{i18n(chat).String("Last tx"), day(lastT, chat)}) }
+        if firstT > 0 { pairs = append(pairs, [2]string{i18nl(lang).String("First tx"), day(firstT, lang)}) }
+        if lastT > 0 { pairs = append(pairs, [2]string{i18nl(lang).String("Last tx"), day(lastT, lang)}) }
         if firstT > 0 && lastT > firstT {
-            pairs = append(pairs, [2]string{i18n(chat).String("Activity period"), periodText(time.Duration(lastT-firstT) * time.Second, chat)})
+            pairs = append(pairs, [2]string{i18nl(lang).String("Activity period"), periodText(time.Duration(lastT-firstT) * time.Second, lang)})
         }
     }
     return pairs, true, nil
 }
 
 func address(ctx context.Context, bot *bot, chat int64, addr string) {
-    var pairs, valid, err = addrPairs(ctx, chat, addr)
+    var pairs, valid, err = addrPairs(ctx, chatLang(chat), addr)
     if err != nil {
         logging.Err("validate address: %v", err)
         send(bot, chat, i18n(chat).String("Sorry, something went wrong looking up that address"), nil)

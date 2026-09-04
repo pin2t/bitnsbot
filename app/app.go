@@ -487,15 +487,22 @@ type Watches struct {
 
 // Source supplies the chain data the app renders. main implements it; the app
 // package stays unaware of the fee cache, Bitcoin Core and the price feeds.
+//
+// Everything a call renders text into takes the reader's language, because the
+// words are main's rather than the page's: the details rows are the very lines
+// the bot prints, and a block row's "Unknown" miner or a period's "1w" is a
+// string main chose. The calls that carry no words of their own — the fee tiers
+// and the chain figures are numbers, a watch list is ids — take none, and their
+// labels come from the translated page around them.
 type Source interface {
     Fees() Fees
     Network() Network
-    Market() Market
-    Blocks(Range) Blocks
-    BlockInfo(height int64) Info
-    TxInfo(txid string) Info
-    AddrInfo(address string) Info
-    MinerInfo(name string) Info
+    Market(lang string) Market
+    Blocks(lang string, rng Range) Blocks
+    BlockInfo(lang string, height int64) Info
+    TxInfo(lang, txid string) Info
+    AddrInfo(lang, address string) Info
+    MinerInfo(lang, name string) Info
     Watches(chat int64) Watches
     Watching(chat int64, kind, id string) bool
     SetWatch(chat int64, kind, id string, on bool) (bool, error)
@@ -578,11 +585,11 @@ func watchable(kind string) bool { return kind == "address" || kind == "tx" }
 // know which container the answer belongs in — only the server, having
 // classified the query, does — so it names a target and the response corrects
 // it. Without this an address page lands in the Blocks tab, replacing the list.
-func details(w http.ResponseWriter, r *http.Request, slot, back, swap, kind, id string, load func() Info) {
+func details(w http.ResponseWriter, r *http.Request, slot, back, swap, kind, id string, load func(lang string) Info) {
     w.Header().Set("HX-Retarget", "#"+slot)
     w.Header().Set("HX-Trigger", showtab(tabOf(slot)))
     cached(blocksCache, w, r, func(lang string) []byte {
-        var info = load()
+        var info = load(lang)
         info.Slot, info.Back, info.Swap = slot, back, swap
         if info.OK { info.Kind, info.Id = kind, id }
         return render(lang, "details", info)
@@ -627,7 +634,7 @@ func Start(addr, token string, src Source) *http.Server {
             return
         }
         cached(cardsCache, w, r, func(lang string) []byte {
-            return render(lang, "app", page{Fees: src.Fees(), Network: src.Network(), Market: src.Market(), Blocks: src.Blocks(Range{})})
+            return render(lang, "app", page{Fees: src.Fees(), Network: src.Network(), Market: src.Market(lang), Blocks: src.Blocks(lang, Range{})})
         })
     })
     mux.HandleFunc("/htmx.min.js", func(w http.ResponseWriter, r *http.Request) {
@@ -654,7 +661,7 @@ func Start(addr, token string, src Source) *http.Server {
         cached(cardsCache, w, r, func(lang string) []byte { return render(lang, "network", src.Network()) })
     }))
     mux.HandleFunc("/market", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
-        cached(cardsCache, w, r, func(lang string) []byte { return render(lang, "market", src.Market()) })
+        cached(cardsCache, w, r, func(lang string) []byte { return render(lang, "market", src.Market(lang)) })
     }))
     // The list itself: the newest blocks, or — when Back asked — everything down
     // to the block the reader had opened from it.
@@ -662,7 +669,7 @@ func Start(addr, token string, src Source) *http.Server {
         // Only when Back explicitly asked: an empty list also refreshes through
         // here, and that must never move a reader off their tab.
         if to := r.URL.Query().Get("to"); isPanel(to) { w.Header().Set("HX-Trigger", showtab(to)) }
-        cached(blocksCache, w, r, func(lang string) []byte { return render(lang, "blocks", src.Blocks(Range{Down: heightOf(r, "down")})) })
+        cached(blocksCache, w, r, func(lang string) []byte { return render(lang, "blocks", src.Blocks(lang, Range{Down: heightOf(r, "down")})) })
     }))
     // The batch the sentinel below the rows appends as the reader reaches it.
     mux.HandleFunc("/moreblocks", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
@@ -671,7 +678,7 @@ func Start(addr, token string, src Source) *http.Server {
             http.Error(w, "no such block", http.StatusBadRequest)
             return
         }
-        cached(blocksCache, w, r, func(lang string) []byte { return render(lang, "blockrows", src.Blocks(Range{Before: before})) })
+        cached(blocksCache, w, r, func(lang string) []byte { return render(lang, "blockrows", src.Blocks(lang, Range{Before: before})) })
     }))
     // What the sentinel above the rows prepends when a block is mined. Inserting
     // above the reader leaves the rows they are looking at where they are, where
@@ -687,17 +694,18 @@ func Start(addr, token string, src Source) *http.Server {
             http.Error(w, "no such block", http.StatusBadRequest)
             return
         }
-        var blocks, name = src.Blocks(Range{After: after}), "newblocks"
+        var lang = language(r)
+        var blocks, name = src.Blocks(lang, Range{After: after}), "newblocks"
         // More new blocks than one batch holds — the tab sat open through a
         // catch-up, or the stream was down for hours. Prepending would leave a
         // gap between them and the rows already on screen, so replace the whole
         // list instead: it costs the reader their place, which is the right
         // trade against showing a list with a hole in it.
         if blocks.More {
-            blocks, name = src.Blocks(Range{}), "blocks"
+            blocks, name = src.Blocks(lang, Range{}), "blocks"
             w.Header().Set("HX-Retarget", "#"+blocksSlot)
         }
-        var b = render(language(r), name, blocks)
+        var b = render(lang, name, blocks)
         if b == nil {
             http.Error(w, "internal server error", http.StatusInternalServerError)
             return
@@ -718,7 +726,7 @@ func Start(addr, token string, src Source) *http.Server {
             return
         }
         var back, swap = backToList(r)
-        details(w, r, blocksSlot, back, swap, "", "", func() Info { return src.BlockInfo(height) })
+        details(w, r, blocksSlot, back, swap, "", "", func(lang string) Info { return src.BlockInfo(lang, height) })
     }))
     mux.HandleFunc("/tx", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
         var id = strings.TrimSpace(r.URL.Query().Get("id"))
@@ -727,7 +735,7 @@ func Start(addr, token string, src Source) *http.Server {
             return
         }
         var back, swap = backToList(r)
-        details(w, r, blocksSlot, back, swap, "tx", id, func() Info { return src.TxInfo(id) })
+        details(w, r, blocksSlot, back, swap, "tx", id, func(lang string) Info { return src.TxInfo(lang, id) })
     }))
     mux.HandleFunc("/miner", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
         var name = strings.TrimSpace(r.URL.Query().Get("name"))
@@ -736,7 +744,7 @@ func Start(addr, token string, src Source) *http.Server {
             return
         }
         var back, swap = backToList(r)
-        details(w, r, blocksSlot, back, swap, "", "", func() Info { return src.MinerInfo(name) })
+        details(w, r, blocksSlot, back, swap, "", "", func(lang string) Info { return src.MinerInfo(lang, name) })
     }))
     mux.HandleFunc("/address", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
         var a = strings.TrimSpace(r.URL.Query().Get("a"))
@@ -744,7 +752,7 @@ func Start(addr, token string, src Source) *http.Server {
             http.Error(w, "no address", http.StatusBadRequest)
             return
         }
-        details(w, r, addressSlot, "addresses?to="+origin(r, addressSlot), "outerHTML", "address", a, func() Info { return src.AddrInfo(a) })
+        details(w, r, addressSlot, "addresses?to="+origin(r, addressSlot), "outerHTML", "address", a, func(lang string) Info { return src.AddrInfo(lang, a) })
     }))
     // what Back on an address page returns to: the tab's own content, which is
     // still a placeholder

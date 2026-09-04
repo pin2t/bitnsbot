@@ -264,44 +264,44 @@ func flushBlocks(bis []*blockInfo, cursor int64) error {
 // blockPairs builds the label/value lines a block is described by. Shared with
 // the Mini App's block details page, so the two cannot drift apart. A pair with
 // an empty value is a heading ("Fees", "Tx sizes"), not a field.
-func blockPairs(bi *blockInfo, chat int64) [][2]string {
+func blockPairs(bi *blockInfo, lang string) [][2]string {
     var difficulty = metric(bi.Difficulty, 2)
     var pairs = [][2]string{
-        {i18n(chat).String("Hash"), short(bi.Hash)},
-        {i18n(chat).String("Time"), when(bi.Time, chat)},
-        {i18n(chat).String("Size"), humSize(int64(bi.Size), 2, chat)},
-        {i18n(chat).String("Transactions"), strconv.Itoa(bi.NumTx)},
-        {i18n(chat).String("Miner"), bi.Miner},
-        {i18n(chat).String("Difficulty"), difficulty},
+        {i18nl(lang).String("Hash"), short(bi.Hash)},
+        {i18nl(lang).String("Time"), when(bi.Time, lang)},
+        {i18nl(lang).String("Size"), humSize(int64(bi.Size), 2, lang)},
+        {i18nl(lang).String("Transactions"), strconv.Itoa(bi.NumTx)},
+        {i18nl(lang).String("Miner"), bi.Miner},
+        {i18nl(lang).String("Difficulty"), difficulty},
     }
     switch {
-    case !bi.FeesOK:     pairs = append(pairs, [2]string{i18n(chat).String("Fees"), i18n(chat).String("unavailable")})
-    case bi.NumTx <= 1:  pairs = append(pairs, [2]string{i18n(chat).String("Fees"), i18n(chat).String("none (coinbase only)")})
+    case !bi.FeesOK:     pairs = append(pairs, [2]string{i18nl(lang).String("Fees"), i18nl(lang).String("unavailable")})
+    case bi.NumTx <= 1:  pairs = append(pairs, [2]string{i18nl(lang).String("Fees"), i18nl(lang).String("none (coinbase only)")})
     default:
         var feeLine = func (fee int64, sz int32) string {
-            return group(fee) + " " + i18n(chat).String("sats") +
-                " (" + strings.TrimSuffix(strconv.FormatFloat(float64(fee) / float64(sz), 'f', 1, 64), ".0") + " " + i18n(chat).String("sat/vB") + ")"
+            return group(fee) + " " + i18nl(lang).String("sats") +
+                " (" + strings.TrimSuffix(strconv.FormatFloat(float64(fee) / float64(sz), 'f', 1, 64), ".0") + " " + i18nl(lang).String("sat/vB") + ")"
         }
         pairs = append(pairs,
-            [2]string{i18n(chat).String("Fees"), ""},
-            [2]string{i18n(chat).String("lowest"), feeLine(bi.FeeMin, bi.TxSizeMin)},
-            [2]string{i18n(chat).String("average"), feeLine(bi.FeeAvg, bi.TxSizeAvg)},
-            [2]string{i18n(chat).String("highest"), feeLine(bi.FeeMax, bi.TxSizeMax)},
+            [2]string{i18nl(lang).String("Fees"), ""},
+            [2]string{i18nl(lang).String("lowest"), feeLine(bi.FeeMin, bi.TxSizeMin)},
+            [2]string{i18nl(lang).String("average"), feeLine(bi.FeeAvg, bi.TxSizeAvg)},
+            [2]string{i18nl(lang).String("highest"), feeLine(bi.FeeMax, bi.TxSizeMax)},
         )
     }
     pairs = append(pairs,
-        [2]string{i18n(chat).String("Tx sizes"), ""},
-        [2]string{i18n(chat).String("minimum"), group(int64(bi.TxSizeMin)) + " " + i18n(chat).String("B")},
-        [2]string{i18n(chat).String("average"), group(int64(bi.TxSizeAvg)) + " " + i18n(chat).String("B")},
-        [2]string{i18n(chat).String("maximum"), group(int64(bi.TxSizeMax)) + " " + i18n(chat).String("B")},
-        [2]string{i18n(chat).String("Reward"), amountLine(bi.Reward, time.Unix(bi.Time, 0), false, chat)},
-        [2]string{i18n(chat).String("Reward + fees"), amountLine(bi.Total, time.Unix(bi.Time, 0), false, chat)},
+        [2]string{i18nl(lang).String("Tx sizes"), ""},
+        [2]string{i18nl(lang).String("minimum"), group(int64(bi.TxSizeMin)) + " " + i18nl(lang).String("B")},
+        [2]string{i18nl(lang).String("average"), group(int64(bi.TxSizeAvg)) + " " + i18nl(lang).String("B")},
+        [2]string{i18nl(lang).String("maximum"), group(int64(bi.TxSizeMax)) + " " + i18nl(lang).String("B")},
+        [2]string{i18nl(lang).String("Reward"), amountLine(bi.Reward, time.Unix(bi.Time, 0), false, lang)},
+        [2]string{i18nl(lang).String("Reward + fees"), amountLine(bi.Total, time.Unix(bi.Time, 0), false, lang)},
     )
     return pairs
 }
 
-func formatBlock(bi *blockInfo, chat int64) string {
-    return i18n(chat).Sprintf("Block #%d\n\n<pre>%s</pre>", bi.Height, joinAlign(blockPairs(bi, chat)))
+func formatBlock(bi *blockInfo, lang string) string {
+    return i18nl(lang).Sprintf("Block #%d\n\n<pre>%s</pre>", bi.Height, joinAlign(blockPairs(bi, lang)))
 }
 
 // minerSource adapts the core connection to the miners package's stats collector:

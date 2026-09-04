@@ -175,6 +175,18 @@ var langTrans = map[string]trans{
 		"December":  "декабря",
 		"none (confirms in": "нет (подтвердится через",
 		" (%s vB)":   " (%s вБ)",
+		// the Mini App's block, transaction, address, miner and market sections
+		"Unknown":      "неизвестен",
+		"%s txs":       "%s тр.",
+		"Blocks mined": "Блоков добыто",
+		"Consumption":  "Потребление",
+		"this does not look like a Bitcoin address": "это не похоже на Bitcoin-адрес",
+		"1d":  "1д",
+		"1w":  "1н",
+		"1mo": "1мес",
+		"3mo": "3мес",
+		"1y":  "1г",
+		"5y":  "5л",
 	},
 	// i18n-vet:end translation
 
@@ -340,6 +352,18 @@ var langTrans = map[string]trans{
 		"December":  "diciembre",
 		"none (confirms in": "ninguna (se confirma en",
 		" (%s vB)":   " (%s vB)",
+		// the Mini App's block, transaction, address, miner and market sections
+		"Unknown":      "desconocido",
+		"%s txs":       "%s tx",
+		"Blocks mined": "Bloques minados",
+		"Consumption":  "Consumo",
+		"this does not look like a Bitcoin address": "esto no parece una dirección Bitcoin",
+		"1d":  "1d",
+		"1w":  "1sem",
+		"1mo": "1mes",
+		"3mo": "3mes",
+		"1y":  "1a",
+		"5y":  "5a",
 	},
 	// i18n-vet:end translation
 }
@@ -353,15 +377,26 @@ func SetChatLanguage(chatID int64, lang string) {
 	chatLangs.Put(chatID, lang)
 }
 
+// chatLang is the language Telegram last reported for a chat, "" when it has
+// never sent one.
+func chatLang(chatID int64) string {
+    var lang, _ = chatLangs.Get(chatID)
+    return lang
+}
+
 // i18n returns the trans for the given chat's language, or nil when the
 // language is "en" (the default). Sprintf and String fall back to the original
 // English string when trans is nil or the key is missing.
-func i18n(chatID int64) trans {
-	lang, _ := chatLangs.Get(chatID)
-	if lang == "" || lang == "en" {
-		return nil
-	}
-	return langTrans[lang]
+func i18n(chatID int64) trans { return i18nl(chatLang(chatID)) }
+
+// i18nl is the same lookup by language code rather than by chat, and is what the
+// Mini App translates through: its reader's language arrives with the request
+// (signed into initData, or asked for in Accept-Language) and there is no chat
+// behind it at all. Both a language we have no table for and English return nil,
+// which is how the source string stays the default.
+func i18nl(lang string) trans {
+    if lang == "" || lang == "en" { return nil }
+    return langTrans[lang]
 }
 
 // Sprintf works like fmt.Sprintf but translates the format string first. If no

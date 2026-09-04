@@ -81,7 +81,7 @@ const blocksMaxRows = blocksPerPage * 20
 // backwards yields newest-first order with no sorting and no node round trip,
 // and Seek starts a batch at a given height without stepping over the ones above
 // it — everything the row needs is already in the cached record.
-func (appSource) Blocks(rng app.Range) app.Blocks {
+func (appSource) Blocks(lang string, rng app.Range) app.Blocks {
     var out = app.Blocks{Top: rng.After}
     if db == nil { return out }
     var limit = blocksPerPage
@@ -112,12 +112,12 @@ func (appSource) Blocks(rng app.Range) app.Blocks {
                 break
             }
             var miner = bi.Miner
-            if miner == "" { miner = "Unknown" }
+            if miner == "" { miner = i18nl(lang).String("Unknown") }
             out.Rows = append(out.Rows, app.Block{
                 Height:     group(bi.Height),
                 Num:        bi.Height,
-                Size:       humSize(int64(bi.Size), 2, 0),
-                Txs:        group(int64(bi.NumTx)) + " txs",
+                Size:       humSize(int64(bi.Size), 2, lang),
+                Txs:        i18nl(lang).Sprintf("%s txs", group(int64(bi.NumTx))),
                 Miner:      miner,
                 MinerKnown: bi.Miner != "",
             })
@@ -137,12 +137,13 @@ func (appSource) Blocks(rng app.Range) app.Blocks {
 }
 
 // BlockInfo backs the Mini App's block details page. It loads or computes the
-// same record /info uses and renders the same lines from it, in English —
-// chat 0 has no language, so i18n falls through to the source strings.
-func (appSource) BlockInfo(height int64) app.Info {
+// same record /info uses and renders the same lines from it, in the reader's
+// language — which arrives with the request rather than from a chat, since the
+// page has no chat behind it.
+func (appSource) BlockInfo(lang string, height int64) app.Info {
     // Title is set even when the lookup fails, so the page still names what was
     // asked for rather than reading "Block ".
-    var out = app.Info{Title: "Block " + group(height)}
+    var out = app.Info{Title: i18nl(lang).String("Block") + " " + group(height)}
     var bi, ok = loadBlock(height)
     if !ok {
         if core == nil { return out }
@@ -158,7 +159,7 @@ func (appSource) BlockInfo(height int64) app.Info {
         storeBlock(bi)
     }
     out.OK = true
-    out.Rows = appFields(blockPairs(bi, 0))
+    out.Rows = appFields(blockPairs(bi, lang))
     return out
 }
 
@@ -166,33 +167,33 @@ func (appSource) BlockInfo(height int64) app.Info {
 // shape as a txid and only the node can tell them apart, so — exactly as info()
 // does for the bot — an id the node has a block header for is shown as that
 // block instead. Both live on the Blocks tab, so the handoff is seamless.
-func (appSource) TxInfo(txid string) app.Info {
+func (appSource) TxInfo(lang, txid string) app.Info {
     var out = app.Info{Title: short(txid)}
     if core == nil { return out }
     var ctx, cancel = context.WithTimeout(context.Background(), 60*time.Second)
     defer cancel()
     if header, err := core.getBlockHeader(ctx, txid); err == nil {
-        return appSource{}.BlockInfo(header.Height)
+        return appSource{}.BlockInfo(lang, header.Height)
     }
-    var pairs, _, canonical, ok = txPairs(ctx, 0, txid)
+    var pairs, _, canonical, ok = txPairs(ctx, lang, txid)
     if !ok { return out }
     return app.Info{OK: true, Title: short(canonical), Rows: appFields(pairs)}
 }
 
 // AddrInfo backs the address details page. An input that is not an address at
 // all says so, rather than reporting an empty history as fact.
-func (appSource) AddrInfo(addr string) app.Info {
+func (appSource) AddrInfo(lang, addr string) app.Info {
     var out = app.Info{Title: short(addr)}
     if core == nil { return out }
     var ctx, cancel = context.WithTimeout(context.Background(), 60*time.Second)
     defer cancel()
-    var pairs, valid, err = addrPairs(ctx, 0, addr)
+    var pairs, valid, err = addrPairs(ctx, lang, addr)
     if err != nil {
         logging.Warn("mini app: address %s: %v", short(addr), err)
         return out
     }
     if !valid {
-        out.Rows = []app.Field{{Label: "this does not look like a Bitcoin address"}}
+        out.Rows = []app.Field{{Label: i18nl(lang).String("this does not look like a Bitcoin address")}}
         return out
     }
     out.OK, out.Rows = true, appFields(pairs)
@@ -224,18 +225,18 @@ func (s appSource) SetWatch(chat int64, kind, id string, on bool) (bool, error) 
 
 // MinerInfo backs the miner details page, opened from a pool name in the block
 // list. The figures and their formatting are /miners', so the two agree.
-func (appSource) MinerInfo(name string) app.Info {
+func (appSource) MinerInfo(lang, name string) app.Info {
     var out = app.Info{Title: name}
     var s, ok = miners.Get(name)
     if !ok { return out }
-    var blocks = i18n(0).Sprintf("%d blocks", s.Blocks)
-    if s.Blocks == 1 { blocks = i18n(0).String("1 block") }
+    var blocks = i18nl(lang).Sprintf("%d blocks", s.Blocks)
+    if s.Blocks == 1 { blocks = i18nl(lang).String("1 block") }
     out.OK = true
     out.Rows = []app.Field{
-        {Label: "Blocks mined", Value: blocks},
-        {Label: "Reward", Value: trimNum(toBTC(s.Reward), 2) + " BTC"},
-        {Label: "Fees", Value: trimNum(toBTC(s.Fees), 2) + " BTC"},
-        {Label: "Consumption", Value: trimNum(s.ConsumptionGW, 1) + " GW"},
+        {Label: i18nl(lang).String("Blocks mined"), Value: blocks},
+        {Label: i18nl(lang).String("Reward"), Value: trimNum(toBTC(s.Reward), 2) + " BTC"},
+        {Label: i18nl(lang).String("Fees"), Value: trimNum(toBTC(s.Fees), 2) + " BTC"},
+        {Label: i18nl(lang).String("Consumption"), Value: trimNum(s.ConsumptionGW, 1) + " GW"},
     }
     return out
 }
@@ -260,8 +261,9 @@ func (appSource) Watches(chat int64) app.Watches {
     return out
 }
 
-// appFields turns the bot's label/value pairs into the app's rows. English only:
-// chat 0 has no language, so i18n falls through to the source strings.
+// appFields turns the bot's label/value pairs into the app's rows. The pairs are
+// already in the reader's language — the builders take it — so this only changes
+// their shape.
 func appFields(pairs [][2]string) []app.Field {
     var out = make([]app.Field, 0, len(pairs))
     for _, p := range pairs { out = append(out, app.Field{Label: p[0], Value: p[1]}) }
@@ -270,7 +272,7 @@ func appFields(pairs [][2]string) []app.Field {
 
 // Market reads the rate history straight from the database — cheap enough that
 // the card needs no cache of its own, unlike fees and the chain stats.
-func (appSource) Market() app.Market {
+func (appSource) Market(lang string) app.Market {
     var now, ok = rates.Last()
     if !ok { return app.Market{} }
     var m = app.Market{OK: true, Price: price(now)}
@@ -278,12 +280,12 @@ func (appSource) Market() app.Market {
         label string
         back  time.Duration
     }{
-        {"1d", 24 * time.Hour},
-        {"1w", 7 * 24 * time.Hour},
-        {"1mo", 30 * 24 * time.Hour},
-        {"3mo", 90 * 24 * time.Hour},
-        {"1y", 365 * 24 * time.Hour},
-        {"5y", 5 * 365 * 24 * time.Hour},
+        {i18nl(lang).String("1d"), 24 * time.Hour},
+        {i18nl(lang).String("1w"), 7 * 24 * time.Hour},
+        {i18nl(lang).String("1mo"), 30 * 24 * time.Hour},
+        {i18nl(lang).String("3mo"), 90 * 24 * time.Hour},
+        {i18nl(lang).String("1y"), 365 * 24 * time.Hour},
+        {i18nl(lang).String("5y"), 5 * 365 * 24 * time.Hour},
     }
     for _, p := range periods {
         var then, have = rates.At(time.Now().Add(-p.back))
@@ -1025,7 +1027,7 @@ func refreshNetwork(withNodes bool) {
         Coins:  metric(toBTC(circulatingSupply(info.Blocks)), 1),
         Cap:    "21 M",
         Blocks: group(info.Blocks),
-        Size:   humSize(info.SizeOnDisk, 0, 0),
+        Size:   humSize(info.SizeOnDisk, 0, ""),
         Nodes:  nodes,
         Txs:    txs,
         // A fixed figure: nothing counts distinct addresses yet. The addrindex
@@ -1103,7 +1105,7 @@ func mempoolCmd(bot *bot, chat int64) {
         return
     }
     var pairs = [][2]string{
-        {i18n(chat).String("Size"),         humSize(info.Bytes, 2, chat)},
+        {i18n(chat).String("Size"),         humSize(info.Bytes, 2, chatLang(chat))},
         {i18n(chat).String("Transactions"), group(int64(info.Size))},
     }
     flowMu.Lock()
@@ -1210,12 +1212,12 @@ func marketCmd(bot *bot, chat int64) {
     }
     var pairs = [][2]string{{i18n(chat).String("Price"), price(now)}}
     if haveSnapshot && snapshot.MarketCap > 0 {
-        pairs = append(pairs, [2]string{i18n(chat).String("Market cap"), money(snapshot.MarketCap, chat)})
+        pairs = append(pairs, [2]string{i18n(chat).String("Market cap"), money(snapshot.MarketCap, chatLang(chat))})
     } else {
         pairs = append(pairs, [2]string{i18n(chat).String("Market cap"), i18n(chat).String("unavailable")})
     }
     if haveSnapshot && snapshot.Volume24h > 0 {
-        pairs = append(pairs, [2]string{i18n(chat).String("Volume 24h"), money(snapshot.Volume24h, chat)})
+        pairs = append(pairs, [2]string{i18n(chat).String("Volume 24h"), money(snapshot.Volume24h, chatLang(chat))})
     } else {
         pairs = append(pairs, [2]string{i18n(chat).String("Volume 24h"), i18n(chat).String("unavailable")})
     }

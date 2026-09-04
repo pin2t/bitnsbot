@@ -6,7 +6,7 @@
 //	i18n-vet <directory>
 //
 // The tool walks all .go files recursively under <directory>, finds every
-// i18n(…).Sprintf("format", …) and i18n(…).String("s") call, and verifies that
+// i18n(…)/i18nl(…).Sprintf("format", …) and .String("s") call, and verifies that
 // each format string appears in every translation section of i18n.go. Translation
 // sections are delimited by comments:
 //
@@ -97,7 +97,7 @@ func main() {
 }
 
 // extractI18nStrings walks an AST and returns every string literal passed as the
-// first argument to i18n(…).Sprintf or i18n(…).String.
+// first argument to i18n(…)/i18nl(…).Sprintf or .String.
 func extractI18nStrings(f *ast.File) []string {
 	var strings []string
 	ast.Inspect(f, func(n ast.Node) bool {
@@ -106,11 +106,12 @@ func extractI18nStrings(f *ast.File) []string {
 		sel, ok := call.Fun.(*ast.SelectorExpr)
 		if !ok { return true }
 		if sel.Sel.Name != "Sprintf" && sel.Sel.Name != "String" { return true }
-		// The receiver must be i18n(…)
+		// The receiver must be i18n(…) — a chat's language — or i18nl(…), the
+		// same lookup by language code, which is how the Mini App translates.
 		call2, ok := sel.X.(*ast.CallExpr)
 		if !ok { return true }
 		ident, ok := call2.Fun.(*ast.Ident)
-		if !ok || ident.Name != "i18n" { return true }
+		if !ok || (ident.Name != "i18n" && ident.Name != "i18nl") { return true }
 		// First argument is the format string
 		if len(call.Args) == 0 { return true }
 		lit, ok := call.Args[0].(*ast.BasicLit)

@@ -161,3 +161,70 @@ func TestTranslatedPagesRenderCompletely(t *testing.T) {
         }
     }
 }
+
+// langSpy records the language each Source call was made in. The details rows,
+// a block row's miner and a market period are main's words rather than the
+// page's, so the reader's language has to reach Source — which is invisible in
+// the response when the fake has nothing translated to render.
+type langSpy struct {
+    fakeSource
+    seen *[]string
+}
+
+func (s langSpy) Market(lang string) Market {
+    *s.seen = append(*s.seen, "market:"+lang)
+    return s.fakeSource.Market(lang)
+}
+
+func (s langSpy) Blocks(lang string, rng Range) Blocks {
+    *s.seen = append(*s.seen, "blocks:"+lang)
+    return s.fakeSource.Blocks(lang, rng)
+}
+
+func (s langSpy) BlockInfo(lang string, height int64) Info {
+    *s.seen = append(*s.seen, "block:"+lang)
+    return s.fakeSource.BlockInfo(lang, height)
+}
+
+func (s langSpy) TxInfo(lang, txid string) Info {
+    *s.seen = append(*s.seen, "tx:"+lang)
+    return s.fakeSource.TxInfo(lang, txid)
+}
+
+func (s langSpy) AddrInfo(lang, addr string) Info {
+    *s.seen = append(*s.seen, "address:"+lang)
+    return s.fakeSource.AddrInfo(lang, addr)
+}
+
+func (s langSpy) MinerInfo(lang, name string) Info {
+    *s.seen = append(*s.seen, "miner:"+lang)
+    return s.fakeSource.MinerInfo(lang, name)
+}
+
+func TestSourceIsAskedInTheReadersLanguage(t *testing.T) {
+    var seen []string
+    var h = handler(t, "TESTTOKEN", langSpy{fakeSource{f: liveFees(), n: liveNetwork(),
+        m: liveMarket(), b: liveBlocks(), d: liveBlockInfo(), t: liveTx(), a: liveAddr()}, &seen})
+    var ru = initDataLang("TESTTOKEN", "ru")
+    for _, path := range []string{"/", "/market", "/blocks", "/block?height=963268",
+        "/tx?id=" + liveTxid, "/address?a=" + liveAddress, "/miner?name=AntPool"} {
+        var data = ru
+        if path == "/" { data = "" }
+        getLang(h, path, data, "ru")
+    }
+    for _, want := range []string{"market:ru", "blocks:ru", "block:ru", "tx:ru", "address:ru", "miner:ru"} {
+        var found = false
+        for _, got := range seen {
+            if got == want { found = true }
+        }
+        if !found {
+            t.Errorf("Source was never asked %q; it saw %v", want, seen)
+        }
+    }
+    // and an English reader is asked in English, not in whoever came first
+    seen = nil
+    getLang(h, "/market", freshInitData("TESTTOKEN"), "en")
+    if len(seen) != 1 || seen[0] != "market:en" {
+        t.Errorf("English reader asked Source %v, want [market:en]", seen)
+    }
+}
