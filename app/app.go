@@ -398,9 +398,24 @@ type Block struct {
 // Field is one line of the block details page. An empty Value marks a heading
 // ("Fees", "Tx sizes") rather than a field, which is how the bot's own reply is
 // built — see blockPairs in main.
+//
+// Parts, when main sets them, is the same value cut into the ids it mentions and
+// the text between them, so a reader can tap an address in a transaction's
+// output list or a block's hash and land on that page. Value still carries the
+// whole line: it is what a row without ids renders, and an empty one is still
+// what marks a heading.
 type Field struct {
     Label string
     Value string
+    Parts []Part
+}
+
+// Part is one piece of a row's value. An empty Id is plain text; otherwise the
+// part is tappable and Id is what it opens — handed to /search, which classifies
+// it the way the bot's info() does, so a part needs to carry no kind of its own.
+type Part struct {
+    Text string
+    Id   string
 }
 
 // Info is a details page — a block, a transaction or an address. Title and Rows
@@ -424,6 +439,10 @@ type Info struct {
     // page was opened from the block list, which is what scrolls the row the
     // reader tapped back into view.
     Swap string
+    // From is where a tapped id inside this page sends its own Back: the origin
+    // this page was opened with, carried on so a whole chain of pages returns to
+    // where the reader started rather than to whichever one they came through.
+    From string
 }
 // Blocks is one batch of the recent-block list, newest first. Top and Next are
 // the heights the two sentinels ask about, so the template does no arithmetic.
@@ -602,9 +621,10 @@ func watchable(kind string) bool { return kind == "address" || kind == "tx" }
 func details(w http.ResponseWriter, r *http.Request, slot, back, swap, kind, id string, load func(lang string) Info) {
     w.Header().Set("HX-Retarget", "#"+slot)
     w.Header().Set("HX-Trigger", showtab(tabOf(slot)))
+    var from = origin(r, slot)
     cached(blocksCache, w, r, func(lang string) []byte {
         var info = load(lang)
-        info.Slot, info.Back, info.Swap = slot, back, swap
+        info.Slot, info.Back, info.Swap, info.From = slot, back, swap, from
         if info.OK { info.Kind, info.Id = kind, id }
         return render(lang, "details", info)
     })
@@ -878,17 +898,22 @@ func Start(addr, token string, src Source) *http.Server {
     // height, then a height, then an address as the catch-all.
     mux.HandleFunc("/search", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
         var q = strings.TrimSpace(r.URL.Query().Get("q"))
+        // The search field is on Home and says nothing, so home is the default;
+        // an id tapped inside a details page passes that page's own origin, so
+        // Back still returns where the reader started.
+        var from = r.URL.Query().Get("from")
+        if !isPanel(from) { from = "home" }
         switch {
         case q == "":
             w.WriteHeader(http.StatusNoContent)
         case isTxid(q):
-            http.Redirect(w, r, "tx?id="+url.QueryEscape(q)+"&from=home", http.StatusSeeOther)
+            http.Redirect(w, r, "tx?id="+url.QueryEscape(q)+"&from="+from, http.StatusSeeOther)
         default:
             if height, err := strconv.ParseInt(q, 10, 64); err == nil && height >= 0 {
-                http.Redirect(w, r, "block?height="+strconv.FormatInt(height, 10)+"&from=home", http.StatusSeeOther)
+                http.Redirect(w, r, "block?height="+strconv.FormatInt(height, 10)+"&from="+from, http.StatusSeeOther)
                 return
             }
-            http.Redirect(w, r, "address?a="+url.QueryEscape(q)+"&from=home", http.StatusSeeOther)
+            http.Redirect(w, r, "address?a="+url.QueryEscape(q)+"&from="+from, http.StatusSeeOther)
         }
     }))
     var srv = &http.Server{Addr: addr, Handler: mux}

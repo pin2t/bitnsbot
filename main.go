@@ -10,6 +10,7 @@ import "html"
 import "net/http"
 import "os"
 import "os/signal"
+import "strconv"
 import "strings"
 import "sync"
 import "syscall"
@@ -163,7 +164,7 @@ func (appSource) BlockInfo(lang string, height int64) app.Info {
         storeBlock(bi)
     }
     out.OK = true
-    out.Rows = appFields(blockPairs(bi, lang))
+    out.Rows = linkFields(blockPairs(bi, lang), []linked{{short(bi.Hash), bi.Hash}})
     return out
 }
 
@@ -179,9 +180,20 @@ func (appSource) TxInfo(lang, txid string) app.Info {
     if header, err := core.getBlockHeader(ctx, txid); err == nil {
         return appSource{}.BlockInfo(lang, header.Height)
     }
-    var pairs, _, canonical, ok = txPairs(ctx, lang, txid)
+    var pairs, ids, canonical, ok = txPairs(ctx, lang, txid)
     if !ok { return out }
-    return app.Info{OK: true, Title: short(canonical), Rows: appFields(pairs)}
+    // the same ids the bot gives buttons for, which is already only what the
+    // text shows: the block it confirmed in, and the addresses on either side
+    var links []linked
+    for _, id := range ids {
+        if _, err := strconv.ParseInt(id, 10, 64); err == nil {
+            // a block is named by height there, as "#963268"
+            links = append(links, linked{"#" + id, id})
+            continue
+        }
+        links = append(links, linked{short(id), id})
+    }
+    return app.Info{OK: true, Title: short(canonical), Rows: linkFields(pairs, links)}
 }
 
 // AddrInfo backs the address details page. An input that is not an address at
@@ -277,10 +289,50 @@ func (appSource) Watches(chat int64) app.Watches {
 // appFields turns the bot's label/value pairs into the app's rows. The pairs are
 // already in the reader's language — the builders take it — so this only changes
 // their shape.
-func appFields(pairs [][2]string) []app.Field {
+func appFields(pairs [][2]string) []app.Field { return linkFields(pairs, nil) }
+
+// linked is an id a row mentions: the text it appears as, and the id a tap on it
+// opens. The text is what the line actually shows — an address shortened by
+// short(), or "#963268" where a transaction names its block — since that is what
+// has to be found in the line to be made tappable.
+type linked struct {
+    text string
+    id   string
+}
+
+// linkFields is appFields with the ids marked up: each value is cut into the ids
+// it mentions and the text between them, which is what lets the app render an
+// address inside an output list, or a block's hash, as a tap. The pairs are the
+// bot's own and are not rewritten — a row mentioning no id keeps its whole value
+// — so this changes nothing about what the bot sends.
+func linkFields(pairs [][2]string, links []linked) []app.Field {
     var out = make([]app.Field, 0, len(pairs))
-    for _, p := range pairs { out = append(out, app.Field{Label: p[0], Value: p[1]}) }
+    for _, p := range pairs {
+        out = append(out, app.Field{Label: p[0], Value: p[1], Parts: splitLinks(p[1], links)})
+    }
     return out
+}
+
+// splitLinks cuts one value at the ids it mentions, earliest first so the parts
+// come out in reading order. nil means the value mentions none, which is what
+// tells the page to render the line as it stands.
+func splitLinks(value string, links []linked) []app.Part {
+    var parts []app.Part
+    for {
+        var at, hit = -1, linked{}
+        for _, l := range links {
+            if l.text == "" { continue }
+            var i = strings.Index(value, l.text)
+            if i >= 0 && (at < 0 || i < at) { at, hit = i, l }
+        }
+        if at < 0 { break }
+        if at > 0 { parts = append(parts, app.Part{Text: value[:at]}) }
+        parts = append(parts, app.Part{Text: hit.text, Id: hit.id})
+        value = value[at+len(hit.text):]
+    }
+    if parts == nil { return nil }
+    if value != "" { parts = append(parts, app.Part{Text: value}) }
+    return parts
 }
 
 // Market reads the rate history straight from the database — cheap enough that

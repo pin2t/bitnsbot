@@ -157,6 +157,7 @@
   .det .f .lbl { flex: none; font-size: 0.875rem; color: var(--hint); }
   .det .f .val { flex: 1; min-width: 0; font-size: 0.875rem; text-align: right;
                  overflow-wrap: anywhere; }
+  .det .f .val .lnk { color: var(--link); cursor: pointer; }
   /* A pair with no value is a heading for the lines under it. */
   .det .f.hd { border-top: 1px solid var(--line); }
   .det .f.hd .lbl { font-size: 0.875rem; font-weight: 600; color: var(--fg); }
@@ -489,7 +490,9 @@
 {{- if .OK}}
   <div class="fields">
   {{- range .Rows}}
-    <div class="f{{if not .Value}} hd{{end}}"><span class="lbl">{{.Label}}</span><span class="val">{{.Value}}</span></div>
+    <div class="f{{if not .Value}} hd{{end}}"><span class="lbl">{{.Label}}</span><span class="val">
+      {{- if .Parts}}{{range .Parts}}{{if .Id}}<span class="lnk" hx-get="search?q={{.Id}}&from={{$.From}}" hx-target="#{{$.Slot}}" hx-swap="outerHTML">{{.Text}}</span>{{else}}{{.Text}}{{end}}{{end}}
+      {{- else}}{{.Value}}{{end}}</span></div>
   {{- end}}
   </div>
 {{- else}}
