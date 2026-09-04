@@ -56,25 +56,56 @@ func itob(v uint64) []byte {
 // goroutine and silently stop every later backup. A package var so tests shrink it.
 var backupScriptTimeout = 30 * time.Minute
 
-// startBackup copies the database to path every interval, running script (when
-// set) after each copy. The first copy happens at startup rather than a full
-// interval later whenever the destination is missing or already older than one
-// interval: this bot is redeployed and restarted far more often than a daily
-// backup fires (scripts/update.sh checks for new commits every 5 minutes), so
-// waiting for the first tick after every restart could starve backups completely.
-// The destination's own mtime records when the last backup ran, so that decision
-// needs no extra state.
-func startBackup(path string, interval time.Duration, script string) {
+// backupCheck is how often the goroutine asks whether a backup is due, which is
+// not the same thing as how often one is taken: -backup-interval is how old a
+// backup may get, and this is how often that age is looked at. A package var so
+// tests shrink it.
+var backupCheck = time.Hour
+
+// startBackup keeps a copy of the database at path no older than interval,
+// running script (when set) after each copy, and returns how often it checks
+// plus a stop for that goroutine.
+//
+// The check is hourly rather than once per interval because of the deployment
+// setup: scripts/update.sh restarts the service on every new commit, and a
+// ticker's phase restarts with the process, so a daily one left a backup that
+// was merely *not yet* due at the restart waiting a further full interval — two
+// days old before being retaken. The file's own mtime is the whole state.
+//
+// The wait is the smaller of that and the time the copy has left, so a backup
+// happens *when* it comes due. A plain ticker is not the same thing and was
+// measured getting it wrong: at a 10s interval checked every 10s each check
+// landed a few milliseconds before the file turned due — the wait starts before
+// the copy that resets the mtime — so every other one found nothing to do and
+// backups came every 20s. The cap is what still notices a backup deleted or
+// replaced underneath the bot.
+//
+// shutdown runs the stop before closeDB, the order the webhook server is drained
+// in and for the same reason: a copy in flight is reading the database.
+func startBackup(path string, interval time.Duration, script string) (time.Duration, func()) {
+    var every = backupCheck
+    if interval < every { every = interval }
+    var stop, done = make(chan struct{}), make(chan struct{})
     go func() {
-        if info, err := os.Stat(path); err != nil || time.Since(info.ModTime()) >= interval {
-            backup(path, script)
-        }
-        var t = time.NewTicker(interval)
-        defer t.Stop()
-        for range t.C {
-            backup(path, script)
+        defer close(done)
+        for {
+            var wait = every
+            if info, err := os.Stat(path); err != nil || time.Since(info.ModTime()) >= interval {
+                backup(path, script)
+            } else if due := interval - time.Since(info.ModTime()); due < wait {
+                wait = due
+            }
+            select {
+            case <-time.After(wait):
+            case <-stop:
+                return
+            }
         }
     }()
+    return every, func() {
+        close(stop)
+        <-done
+    }
 }
 
 // backup writes a consistent snapshot of the whole database to path. bbolt's
