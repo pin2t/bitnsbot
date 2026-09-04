@@ -99,7 +99,7 @@ var langTrans = map[string]trans{
 		"Transactions": "Транзакций",
 		"%.1f tx/sec":  "%.1f тр/сек",
 		"Flow rate":    "Скорость поступления",
-		"Total flow":   "Монет всего",
+		"Total flow":   "Оборот",
 		"Total fees":   "Комиссий всего",
 		"No miner statistics yet — still collecting": "Статистика в процессе сборка, подождите",
 		"1 block":      "1 блок",
