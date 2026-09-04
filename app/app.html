@@ -276,8 +276,8 @@
 {{define "fees"}}<h2>Network fees</h2>
 {{- if .OK}}
 <div class="tiers">
-  <div class="tier"><div class="label">Fast</div><div class="rate">{{.Fast.Rate}} <span class="unit">sat/vB</span></div><div class="usd">{{.Fast.USD}}</div></div>
-  <div class="tier"><div class="label">1 hour</div><div class="rate">{{.Hour.Rate}} <span class="unit">sat/vB</span></div><div class="usd">{{.Hour.USD}}</div></div>
+  <div class="tier"><div class="label">Fastest</div><div class="rate">{{.Fast.Rate}} <span class="unit">sat/vB</span></div><div class="usd">{{.Fast.USD}}</div></div>
+  <div class="tier"><div class="label">~ 1 hour</div><div class="rate">{{.Hour.Rate}} <span class="unit">sat/vB</span></div><div class="usd">{{.Hour.USD}}</div></div>
   <div class="tier"><div class="label">2+ hours</div><div class="rate">{{.Slow.Rate}} <span class="unit">sat/vB</span></div><div class="usd">{{.Slow.USD}}</div></div>
 </div>
 <p class="note">projected from {{.TxCount}} mempool transactions</p>
