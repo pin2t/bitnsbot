@@ -60,6 +60,8 @@ func (s *countingSource) Watching(chat int64, kind, id string) bool { return fal
 
 func (s *countingSource) SetWatch(chat int64, kind, id string, on bool) (bool, error) { return on, nil }
 
+func (s *countingSource) SetAlias(chat int64, kind, id, alias string) (bool, error) { return true, nil }
+
 func (s *countingSource) Watches(chat int64) Watches {
     s.hit("watches")
     return Watches{OK: true}

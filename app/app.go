@@ -506,7 +506,12 @@ type Source interface {
     Watches(chat int64) Watches
     Watching(chat int64, kind, id string) bool
     SetWatch(chat int64, kind, id string, on bool) (bool, error)
+    SetAlias(chat int64, kind, id, alias string) (bool, error)
 }
+
+// aliasMax bounds the name a watch can be given from the app, in runes: it is a
+// label on a row and in a notification, and nothing else keeps it small.
+const aliasMax = 64
 
 // The two containers a details page can replace, each the content of one tab.
 const blocksSlot = "blocklist"
@@ -521,6 +526,15 @@ func tabOf(slot string) string {
 // showtab is the HX-Trigger that moves the reader to a panel. The JSON form
 // carries the name, so one listener handles every tab.
 func showtab(panel string) string { return `{"showtab":"` + panel + `"}` }
+
+// trigger builds an HX-Trigger header from a set of events. It is marshalled
+// rather than concatenated because these carry ids a user chose — an address
+// from a URL — where showtab carries only a whitelisted panel name.
+func trigger(events map[string]any) string {
+    var b, err = json.Marshal(events)
+    if err != nil { return "" }
+    return string(b)
+}
 
 // isPanel guards what may go into that header: the name arrives in a URL a user
 // can edit, and it is interpolated into JSON.
@@ -783,8 +797,12 @@ func Start(addr, token string, src Source) *http.Server {
     // something is per-user, and every cache here is keyed by URL alone.
     mux.HandleFunc("/watch", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
         var started = time.Now().UnixNano()
+        // The bell names what it acts on in its URL; the alias dialog's Delete
+        // button posts from inside a form, so there they arrive as form values.
         var kind = r.URL.Query().Get("kind")
         var id = strings.TrimSpace(r.URL.Query().Get("id"))
+        if kind == "" { kind = r.PostFormValue("kind") }
+        if id == "" { id = strings.TrimSpace(r.PostFormValue("id")) }
         if !watchable(kind) || id == "" {
             http.Error(w, "nothing to watch", http.StatusBadRequest)
             return
@@ -801,6 +819,12 @@ func Start(addr, token string, src Source) *http.Server {
                 btn.Error = true
             }
             btn.On = on
+            // A watch that was just filed has no name yet, so the page is asked
+            // to open the alias dialog — the second half of the two-step add.
+            // Either way the watch list has changed and re-fetches itself.
+            var events = map[string]any{"watchtab": ""}
+            if on && !btn.Error { events["askalias"] = map[string]string{"kind": kind, "id": id} }
+            w.Header().Set("HX-Trigger", trigger(events))
         } else {
             btn.On = src.Watching(chat, kind, id)
         }
@@ -811,6 +835,42 @@ func Start(addr, token string, src Source) *http.Server {
         }
         w.Header().Set("Content-Type", "text/html; charset=utf-8")
         w.Write(b)
+        logging.Info("mini app: %s %s %.2f ms", r.Method, r.RequestURI, float64(time.Now().UnixNano() - started) / 1e6)
+    }))
+    // Naming a watch the reader already has: the dialog the bell opens after
+    // filing one, and the same dialog the Watches tab's edit icon opens. Both
+    // post from inside a form, so everything arrives as form values. The answer
+    // is no content and a watchtab event — the list re-fetches itself, and the
+    // dialog is closed by the page.
+    mux.HandleFunc("/alias", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
+        var started = time.Now().UnixNano()
+        if r.Method != http.MethodPost {
+            http.Error(w, "post an alias", http.StatusMethodNotAllowed)
+            return
+        }
+        var kind = r.PostFormValue("kind")
+        var id = strings.TrimSpace(r.PostFormValue("id"))
+        if !watchable(kind) || id == "" {
+            http.Error(w, "nothing to name", http.StatusBadRequest)
+            return
+        }
+        // An empty alias leaves the watch alone rather than clearing its name:
+        // Save on an empty field is what a reader taps to dismiss the dialog.
+        // A long one is cut rather than refused — it is a label, and the field
+        // is capped in the page too, but this endpoint is reachable directly.
+        var alias = strings.TrimSpace(r.PostFormValue("alias"))
+        if len([]rune(alias)) > aliasMax { alias = string([]rune(alias)[:aliasMax]) }
+        if alias == "" {
+            w.WriteHeader(http.StatusNoContent)
+            return
+        }
+        if _, err := src.SetAlias(chatOf(r.Header.Get("X-Telegram-Init-Data")), kind, id, alias); err != nil {
+            logging.Err("mini app: set alias %s: %v", id, err)
+            http.Error(w, "internal server error", http.StatusInternalServerError)
+            return
+        }
+        w.Header().Set("HX-Trigger", trigger(map[string]any{"watchtab": ""}))
+        w.WriteHeader(http.StatusNoContent)
         logging.Info("mini app: %s %s %.2f ms", r.Method, r.RequestURI, float64(time.Now().UnixNano() - started) / 1e6)
     }))
     // search classifies the query and hands off, in the same order info() does:

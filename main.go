@@ -227,6 +227,15 @@ func (s appSource) SetWatch(chat int64, kind, id string, on bool) (bool, error) 
     return true, nil
 }
 
+// SetAlias names a watch the reader already has — the second step of the app's
+// two-step add (the bell files the watch, the dialog names it) and what the
+// Watches tab's edit dialog calls. An empty alias never reaches here: the page
+// treats it as "leave it alone", so clearing a name is not something a stray tap
+// can do.
+func (s appSource) SetAlias(chat int64, kind, id, alias string) (bool, error) {
+    return setAlias(s.bot, chat, id, alias)
+}
+
 // MinerInfo backs the miner details page, opened from a pool name in the block
 // list. The figures and their formatting are /miners', so the two agree.
 func (appSource) MinerInfo(lang, name string) app.Info {
@@ -680,6 +689,23 @@ func removeWatch(chat int64, target string) (bool, error) {
     txwatches.RemoveAddrConfirms(target, chat)
     unwatchScripts(target)
     logging.Info("removed subscription %s for chat %d", target, chat)
+    return true, nil
+}
+
+// setAlias renames an existing watch and reports whether one was there to rename.
+// The notifier goroutine holds its alias by value, so an address watch is
+// restarted rather than only rewritten — otherwise notifications would keep
+// announcing the old name until the next restart. Pending confirmations are
+// renamed too, so one already in flight arrives under the new name.
+func setAlias(b *bot, chat int64, target, alias string) (bool, error) {
+    if isTxid(target) { return txwatches.SetAlias(target, chat, alias) > 0, nil }
+    var renamed, err = watches.SetAlias(chat, target, alias)
+    if err != nil { return false, err }
+    if renamed == 0 { return false, nil }
+    stopNotifyChat(chat, target)
+    startNotifyChat(b, chat, target, alias)
+    txwatches.SetAddrAlias(target, chat, alias)
+    logging.Info("renamed subscription %s for chat %d (alias %q)", target, chat, alias)
     return true, nil
 }
 

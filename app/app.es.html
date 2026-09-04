@@ -171,6 +171,31 @@
                 overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .more { padding: 11px 0 3px; text-align: center; font-size: 0.8125rem; color: var(--hint); }
 
+  .blk .edit { flex: none; display: flex; align-items: center; padding: 3px 4px;
+              border: 0; background: none; color: var(--hint); cursor: pointer; }
+  .blk .edit svg { width: 16px; height: 16px; fill: none; stroke: currentColor;
+                   stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+
+  dialog { width: min(92vw, 380px); padding: 16px; color: var(--fg); background: var(--bg);
+           border: 1px solid var(--line); border-radius: 14px; }
+  dialog::backdrop { background: rgba(0,0,0,.45); }
+  dialog h2 { margin: 0 0 10px; font-size: 1rem; font-weight: 600; text-align: center; }
+  /* 16px is the floor iOS WebKit zooms the page below, the same rule the search
+     field follows. */
+  #aliasin { width: 100%; padding: 12px 14px; font-size: max(1.0625rem, 16px);
+             font-family: inherit; color: var(--fg); background: var(--card);
+             border: 1px solid var(--line); border-radius: 12px; outline: none; }
+  #aliasin:focus { border-color: var(--accent); }
+  .dbtns { display: flex; gap: 8px; margin-top: 12px; }
+  /* min-width: 0 is what lets a long label wrap instead of pushing the row
+     wider than the dialog — a flex item otherwise refuses to shrink below its
+     longest word, which "Удалить наблюдение" exceeded at 320px. */
+  .dbtns button { flex: 1; min-width: 0; padding: 10px 12px; font-size: 0.9375rem;
+                  font-family: inherit; color: var(--bg); background: var(--accent);
+                  border: 1px solid var(--accent); border-radius: 10px; cursor: pointer; }
+  .dbtns button.danger { color: #fff; background: #d92d20; border-color: #d92d20; }
+  .dbtns button[hidden] { display: none; }
+
   nav { display: flex; border-top: 1px solid var(--line); background: var(--bg);
         padding-bottom: env(safe-area-inset-bottom, 0); }
   nav button { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 2px;
@@ -231,6 +256,21 @@
     Seguimiento</button>
 </nav>
 
+<dialog id="aliasdlg">
+  <form hx-post="alias" hx-swap="none">
+    <h2>Alias</h2>
+    <input type="hidden" name="kind">
+    <input type="hidden" name="id">
+    <input id="aliasin" name="alias" type="text" maxlength="64" autocomplete="off" autocapitalize="off"
+           placeholder="Nombre para este seguimiento">
+    <div class="dbtns">
+      <button type="button" class="danger" data-del hidden hx-post="watch?on=0" hx-swap="none">Eliminar seguimiento</button>
+      <button type="submit" data-save>Guardar</button>
+      <button type="submit" data-update hidden>Actualizar alias</button>
+    </div>
+  </form>
+</dialog>
+
 <script>
   var tg = window.Telegram && window.Telegram.WebApp;
   if (tg) { tg.ready(); tg.expand(); }
@@ -269,6 +309,40 @@
   // A details page answers with HX-Trigger: {"showtab":"<panel>"}, so a search
   // made from Home lands on the right tab with the page already swapped in.
   document.body.addEventListener("showtab", function(e) { showPanel(e.detail.value); });
+
+  // The alias dialog, in two shapes from one element: naming a watch just filed
+  // by the bell (the server asks for it with an askalias event, the second half
+  // of the two-step add) offers only Save, while the Watches tab's edit icon can
+  // also delete. Both buttons post from inside the form, so the kind and id in
+  // its hidden fields go with them.
+  function openAlias(kind, id, alias, edit) {
+    var d = document.getElementById("aliasdlg");
+    d.querySelector("[name=kind]").value = kind || "";
+    d.querySelector("[name=id]").value = id || "";
+    var input = document.getElementById("aliasin");
+    input.value = alias || "";
+    d.querySelector("[data-del]").hidden = !edit;
+    d.querySelector("[data-update]").hidden = !edit;
+    d.querySelector("[data-save]").hidden = !!edit;
+    // showModal is what puts it in the top layer and dims the page behind it; a
+    // webview too old for it still gets the dialog, just inline.
+    if (d.showModal) { d.showModal(); } else { d.setAttribute("open", ""); }
+    input.focus();
+  }
+  function closeAlias() {
+    var d = document.getElementById("aliasdlg");
+    if (d.close) { d.close(); } else { d.removeAttribute("open"); }
+  }
+  document.body.addEventListener("askalias", function(e) { openAlias(e.detail.kind, e.detail.id, "", false); });
+  // Watch rows arrive by swap, so the icon is caught on its way up to the body
+  // rather than bound per row.
+  document.body.addEventListener("click", function(e) {
+    var b = e.target.closest && e.target.closest(".edit");
+    if (b) { openAlias(b.dataset.kind, b.dataset.id, b.dataset.alias, true); }
+  });
+  document.body.addEventListener("htmx:afterRequest", function(e) {
+    if (e.detail.elt && e.detail.elt.closest && e.detail.elt.closest("#aliasdlg")) { closeAlias(); }
+  });
 </script>
 </body>
 </html>
@@ -379,6 +453,9 @@
     <div class="blk">
       <span class="h lnk" hx-get="address?a={{.Id}}&from=watches" hx-target="#watchpanel" hx-swap="outerHTML">{{.Short}}</span>
       <span class="alias">{{.Alias}}</span>
+      <button class="edit" data-kind="address" data-id="{{.Id}}" data-alias="{{.Alias}}" title="Editar">
+        <svg viewBox="0 0 24 24"><path d="M4 20h4L18 10a2.8 2.8 0 0 0-4-4L4 16v4z"/><path d="M13.5 6.5l4 4"/></svg>
+      </button>
     </div>
     {{- end}}
   {{- end}}
@@ -388,6 +465,9 @@
     <div class="blk">
       <span class="h lnk" hx-get="tx?id={{.Id}}&from=watches" hx-target="#watchpanel" hx-swap="outerHTML">{{.Short}}</span>
       <span class="alias">{{.Alias}}</span>
+      <button class="edit" data-kind="tx" data-id="{{.Id}}" data-alias="{{.Alias}}" title="Editar">
+        <svg viewBox="0 0 24 24"><path d="M4 20h4L18 10a2.8 2.8 0 0 0-4-4L4 16v4z"/><path d="M13.5 6.5l4 4"/></svg>
+      </button>
     </div>
     {{- end}}
   {{- end}}
