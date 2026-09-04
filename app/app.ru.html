@@ -226,7 +226,7 @@
              placeholder="Транзакция, блок или адрес"
              hx-get="search" hx-trigger="keyup[key=='Enter']"
              hx-target="#blocklist" hx-swap="outerHTML">
-      <p>Вставьте txid, высоту или хеш блока, либо адрес</p>
+      <p>Вставьте ид транзакции, номер блока, либо адрес</p>
     </div>
   </section>
 
@@ -259,15 +259,15 @@
 
 <dialog id="aliasdlg">
   <form hx-post="alias" hx-swap="none">
-    <h2>Алиас</h2>
+    <h2>Псевдоним</h2>
     <input type="hidden" name="kind">
     <input type="hidden" name="id">
     <input id="aliasin" name="alias" type="text" maxlength="64" autocomplete="off" autocapitalize="off"
-           placeholder="Название для наблюдения">
+           placeholder="Псевдоним для наблюдения">
     <div class="dbtns">
       <button type="button" class="danger" data-del hidden hx-post="watch?on=0" hx-swap="none">Удалить</button>
       <button type="submit" data-save>Сохранить</button>
-      <button type="submit" data-update hidden>Изменить алиас</button>
+      <button type="submit" data-update hidden>Изменить псевдоним</button>
     </div>
   </form>
 </dialog>
@@ -352,7 +352,7 @@
 {{- if .OK}}
 <div class="tiers">
   <div class="tier"><div class="label">10-20 мин.</div><div class="rate">{{.Fast.Rate}} <span class="unit">sat/vB</span></div><div class="usd">{{.Fast.USD}}</div></div>
-  <div class="tier"><div class="label">~ 1 час</div><div class="rate">{{.Hour.Rate}} <span class="unit">sat/vB</span></div><div class="usd">{{.Hour.USD}}</div></div>
+  <div class="tier"><div class="label">~1 час</div><div class="rate">{{.Hour.Rate}} <span class="unit">sat/vB</span></div><div class="usd">{{.Hour.USD}}</div></div>
   <div class="tier"><div class="label">более 2-х ч</div><div class="rate">{{.Slow.Rate}} <span class="unit">sat/vB</span></div><div class="usd">{{.Slow.USD}}</div></div>
 </div>
 <p class="note">на основе {{.TxCount}} ожидающих транзакций</p>
@@ -363,12 +363,12 @@
 {{define "network"}}<h2>Блокчейн</h2>
 {{- if .OK}}
 <div class="stats">
-  <div class="stat"><div class="label">Монеты</div><div class="value">{{.Coins}} / {{.Cap}}</div></div>
-  <div class="stat"><div class="label">Блоки</div><div class="value">{{.Blocks}}</div></div>
+  <div class="stat"><div class="label">Монет</div><div class="value">{{.Coins}} / {{.Cap}}</div></div>
+  <div class="stat"><div class="label">Блоков</div><div class="value">{{.Blocks}}</div></div>
   <div class="stat"><div class="label">Размер</div><div class="value">{{.Size}}</div></div>
-  <div class="stat"><div class="label">Активные узлы</div><div class="value">{{.Nodes}}</div></div>
-  <div class="stat"><div class="label">Транзакции</div><div class="value">{{.Txs}}</div></div>
-  <div class="stat"><div class="label">Адреса</div><div class="value">{{.Addresses}}</div></div>
+  <div class="stat"><div class="label">Активных узлов</div><div class="value">{{.Nodes}}</div></div>
+  <div class="stat"><div class="label">Транзакций</div><div class="value">{{.Txs}}</div></div>
+  <div class="stat"><div class="label">Адресов</div><div class="value">{{.Addresses}}</div></div>
 </div>
 {{- else}}
 <p class="note">статистика сети недоступна</p>
@@ -431,7 +431,7 @@
 
 {{define "newblocks"}}{{template "blocktop" .}}{{template "blockrows" .}}{{end}}
 
-{{define "addresses"}}<div id="addrpanel" class="blocklist"><div class="empty">Адреса — скоро</div></div>{{end}}
+{{define "addresses"}}<div id="addrpanel" class="blocklist"><div class="empty">Скоро появятся</div></div>{{end}}
 
 {{define "watchbtn"}}<button id="watchbtn" class="bell{{if .On}} on{{end}}{{if .Error}} err{{end}}"
         hx-post="watch?kind={{.Kind}}&id={{.Id}}&on={{if .On}}0{{else}}1{{end}}"
