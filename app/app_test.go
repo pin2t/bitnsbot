@@ -131,12 +131,17 @@ func (s fakeSource) AddrInfo(lang, addr string) Info {
 // liveTx and liveAddr mirror what main builds from txPairs and addrPairs.
 func liveTx() map[string]Info {
     return map[string]Info{liveTxid: {OK: true, Title: "32e43e...870b16", Rows: []Field{
-        {Label: "Confirmations", Value: "412 (block #963268)"},
+        {Label: "Confirmations", Value: "412 (block #963268)", Parts: []Part{
+            {Text: "412 (block "}, {Text: "#963268", Id: "963268"}, {Text: ")"}}},
         {Label: "Amount", Value: "9 990 000 sats (≈ $6,614)"},
         {Label: "Fee", Value: "1 410 sats (10.0 sat/vB)"},
         {Label: "Size", Value: "223 B (141 vB)"},
-        {Label: "Inputs", Value: "bc1qxy...dayd2g"},
-        {Label: "Outputs", Value: "1A1zP1...DivfNa, bc1qxy...dayd2g"},
+        {Label: "Inputs", Value: "bc1qxy...dayd2g", Parts: []Part{
+            {Text: "bc1qxy...dayd2g", Id: liveAddress}}},
+        {Label: "Outputs", Value: "1A1zP1...DivfNa, bc1qxy...dayd2g", Parts: []Part{
+            {Text: "1A1zP1...DivfNa", Id: "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"},
+            {Text: ", "},
+            {Text: "bc1qxy...dayd2g", Id: liveAddress}}},
     }}}
 }
 
@@ -1030,8 +1035,10 @@ func TestTxDetailsRender(t *testing.T) {
     if rt := get(h, "/tx?id="+liveTxid, freshInitData("TESTTOKEN")).Header().Get("HX-Retarget"); rt != "#blocklist" {
         t.Errorf("HX-Retarget = %q, want #blocklist", rt)
     }
+    // the confirmations line now carries a tappable block number, so it renders
+    // in pieces — the text a reader sees is unchanged, the markup is not
     for _, want := range []string{">Confirmations<", ">Amount<", ">Fee<", ">Size<",
-        ">Inputs<", ">Outputs<", "412 (block #963268)", "9 990 000 sats"} {
+        ">Inputs<", ">Outputs<", "412 (block ", ">#963268<", "9 990 000 sats"} {
         if !strings.Contains(body, want) {
             t.Errorf("transaction page is missing %q", want)
         }
@@ -1831,5 +1838,54 @@ func TestWatchRowsCarryAnEditIcon(t *testing.T) {
         if !strings.Contains(body, want) {
             t.Errorf("no edit icon for %s in:\n%s", want, body)
         }
+    }
+}
+
+
+// An id a details row mentions is tappable, and a tap is the same handoff a
+// search makes — so an address opens on the Addresses tab and a block on Blocks,
+// with no classification of its own.
+func TestDetailsRowsLinkTheirIds(t *testing.T) {
+    var h = handler(t, "TESTTOKEN", fakeSource{t: liveTx(), a: liveAddr(), d: liveBlockInfo()})
+    var data = freshInitData("TESTTOKEN")
+    var body = get(h, "/tx?id="+liveTxid, data).Body.String()
+    for _, want := range []string{
+        `<span class="lnk" hx-get="search?q=` + liveAddress + `&from=blocks"`,
+        `<span class="lnk" hx-get="search?q=1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa&from=blocks"`,
+        `<span class="lnk" hx-get="search?q=963268&from=blocks"`,
+    } {
+        if !strings.Contains(body, want) {
+            t.Errorf("no link for %s in:\n%s", want, body)
+        }
+    }
+    // the text around an id stays plain, and the whole line still reads the same
+    for _, want := range []string{">412 (block ", ">#963268<", ">1A1zP1...DivfNa<", ">, <"} {
+        if !strings.Contains(body, want) {
+            t.Errorf("the line was not kept intact around its ids (%s):\n%s", want, body)
+        }
+    }
+    // a row with no id in it renders as it always did
+    if !strings.Contains(body, `<span class="val">9 990 000 sats (≈ $6,614)</span>`) {
+        t.Errorf("a row with no ids should render plainly:\n%s", body)
+    }
+}
+
+// A tapped id carries the page's own origin, so Back keeps returning to where
+// the reader started rather than to whichever page they came through.
+func TestLinkedIdsKeepTheOrigin(t *testing.T) {
+    var h = handler(t, "TESTTOKEN", fakeSource{t: liveTx(), a: liveAddr()})
+    var data = freshInitData("TESTTOKEN")
+    var body = get(h, "/tx?id="+liveTxid+"&from=home", data).Body.String()
+    if !strings.Contains(body, "&from=home") {
+        t.Errorf("a page opened from Home should hand that on to its links:\n%s", body)
+    }
+    // and /search honours it, rather than sending everything back to Home
+    var res = get(h, "/search?q="+liveAddress+"&from=watches", data)
+    if got := res.Header().Get("Location"); !strings.Contains(got, "from=watches") {
+        t.Errorf("search redirected to %q, dropping the origin", got)
+    }
+    // an origin that is not a panel falls back to Home, since it reaches a URL
+    if res := get(h, "/search?q="+liveAddress+"&from=nonsense", data); !strings.Contains(res.Header().Get("Location"), "from=home") {
+        t.Errorf("an unknown origin should fall back to Home: %q", res.Header().Get("Location"))
     }
 }
