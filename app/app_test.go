@@ -302,7 +302,7 @@ func TestServesPage(t *testing.T) {
 // shipping a placeholder and fetching them in a second round trip.
 func TestPageRendersFeesInline(t *testing.T) {
     var body = get(handler(t, "TESTTOKEN", fakeSource{f: liveFees()}), "/", "").Body.String()
-    for _, want := range []string{"<h2>Network fees</h2>", ">Fast<", ">1 hour<", ">2+ hours<",
+    for _, want := range []string{"<h2>Network fees</h2>", ">Fastest<", ">~ 1 hour<", ">2+ hours<",
         ">12 <", ">4 <", ">1 <", "36 552"} {
         if !strings.Contains(body, want) {
             t.Errorf("page did not render %q inline", want)
@@ -751,7 +751,7 @@ func TestFeesRendersHTML(t *testing.T) {
         t.Errorf("Content-Type = %q, want text/html", ct)
     }
     var body = w.Body.String()
-    for _, want := range []string{"<h2>Network fees</h2>", ">Fast<", ">1 hour<", ">2+ hours<",
+    for _, want := range []string{"<h2>Network fees</h2>", ">Fastest<", ">~ 1 hour<", ">2+ hours<",
         ">12 <", ">4 <", ">1 <", "36 552"} {
         if !strings.Contains(body, want) {
             t.Errorf("fragment is missing %q in: %s", want, body)
