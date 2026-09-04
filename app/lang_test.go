@@ -34,7 +34,7 @@ func initDataLang(token, lang string) string {
 // pinning even though parsePages panics.
 func TestEveryLanguageHasAPage(t *testing.T) {
     for _, lang := range langs {
-        if appTmpl[lang] == nil {
+        if templates[lang] == nil {
             t.Errorf("no page parsed for %q", lang)
         }
     }
