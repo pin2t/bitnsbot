@@ -85,6 +85,34 @@ func RemoveAddrConfirms(addr string, chatID int64) {
     }
 }
 
+// SetAlias renames this chat's direct watches of txid and returns the count, the
+// same entries Remove acts on.
+func SetAlias(txid string, chatID int64, alias string) int {
+    mu.Lock()
+    defer mu.Unlock()
+    var renamed int
+    for i, w := range pending[txid] {
+        if w.chatID == chatID && w.addr == "" {
+            pending[txid][i].alias = alias
+            renamed++
+        }
+    }
+    return renamed
+}
+
+// SetAddrAlias renames the pending confirmations this chat holds for transactions
+// on addr, so a confirmation still in flight when the address is renamed arrives
+// under the new name rather than the old one. The pair to RemoveAddrConfirms.
+func SetAddrAlias(addr string, chatID int64, alias string) {
+    mu.Lock()
+    defer mu.Unlock()
+    for txid, ws := range pending {
+        for i, w := range ws {
+            if w.chatID == chatID && w.addr == addr { pending[txid][i].alias = alias }
+        }
+    }
+}
+
 // Entry is a direct transaction watch, for the /watches listing.
 type Entry struct {
     Txid  string

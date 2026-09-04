@@ -93,6 +93,41 @@ func List() ([]Watch, error) {
     return watches, nil
 }
 
+// SetAlias renames every watch matching both chatID and address — the same
+// chat-scoping Remove applies, so one chat cannot rename another's — and returns
+// how many were renamed. Records are read and rewritten in one transaction, and
+// the writes happen after the walk because bbolt forbids mutating a bucket
+// during ForEach.
+func SetAlias(chatID int64, address, alias string) (int, error) {
+    logging.Db("set alias chat=%d address=%s alias=%s", chatID, address, alias)
+    var renamed int
+    var err = db.Update(func(tx *bbolt.Tx) error {
+        var b = tx.Bucket(bucket)
+        var keys [][]byte
+        var records []watchRecord
+        var err = b.ForEach(func(k, v []byte) error {
+            var r watchRecord
+            if err := json.Unmarshal(v, &r); err != nil { return err }
+            if r.Chat == chatID && r.Watch == address {
+                r.Alias = alias
+                keys = append(keys, append([]byte(nil), k...))
+                records = append(records, r)
+            }
+            return nil
+        })
+        if err != nil { return err }
+        for i, k := range keys {
+            var data, err = json.Marshal(records[i])
+            if err != nil { return err }
+            if err := b.Put(k, data); err != nil { return err }
+            renamed++
+        }
+        return nil
+    })
+    if err != nil { return 0, err }
+    return renamed, nil
+}
+
 // Remove deletes every watch matching both chatID and address (the chatID
 // scoping is what stops one chat from removing another chat's watch) and returns
 // how many were deleted. Keys are collected before deleting because bbolt forbids

@@ -5,6 +5,7 @@ import "html"
 import "crypto/hmac"
 import "crypto/sha256"
 import "encoding/hex"
+import "encoding/json"
 import "fmt"
 import "net"
 import "net/http"
@@ -94,6 +95,16 @@ func (s fakeSource) SetWatch(chat int64, kind, id string, on bool) (bool, error)
         delete(watched[chat], id)
     }
     return on, nil
+}
+
+// aliases is what SetAlias recorded, so a test can prove the alias reached the
+// Source and under which id.
+var aliases = map[int64]map[string]string{}
+
+func (s fakeSource) SetAlias(chat int64, kind, id, alias string) (bool, error) {
+    if aliases[chat] == nil { aliases[chat] = map[string]string{} }
+    aliases[chat][id] = alias
+    return true, nil
 }
 
 func (s fakeSource) Watches(chat int64) Watches {
@@ -246,6 +257,7 @@ func handler(t *testing.T, token string, src Source) http.Handler {
     // test starts from empty rather than seeing the previous one's fixture.
     invalidateAll()
     watched = map[int64]map[string]bool{}
+    aliases = map[int64]map[string]string{}
     var srv = Start("127.0.0.1:0", token, src)
     t.Cleanup(func() { srv.Close() })
     return srv.Handler
@@ -1681,5 +1693,143 @@ func TestShutdownDoesNotWaitForEventStreams(t *testing.T) {
     }
     if n := subscribes(); n != before {
         t.Errorf("%d subscribers left after shutdown, want %d", n, before)
+    }
+}
+
+
+// postForm is how the alias dialog's buttons reach the server: from inside a
+// form, so what they act on arrives as form values rather than in the URL.
+func postForm(h http.Handler, path, initData string, form url.Values) *httptest.ResponseRecorder {
+    var r = httptest.NewRequest("POST", path, strings.NewReader(form.Encode()))
+    r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+    if initData != "" { r.Header.Set("X-Telegram-Init-Data", initData) }
+    var w = httptest.NewRecorder()
+    h.ServeHTTP(w, r)
+    return w
+}
+
+// Filing a watch is only the first half: the answer asks the page to open the
+// alias dialog, which is what names it. Unwatching asks for nothing.
+func TestWatchAsksForAnAlias(t *testing.T) {
+    var h = handler(t, "TESTTOKEN", fakeSource{a: liveAddr()})
+    var data = freshInitData("TESTTOKEN")
+    var link = "/watch?kind=address&id=" + liveAddress
+    var on = post(h, link+"&on=1", data).Header().Get("HX-Trigger")
+    var events map[string]any
+    if err := json.Unmarshal([]byte(on), &events); err != nil {
+        t.Fatalf("HX-Trigger %q is not the JSON form: %v", on, err)
+    }
+    var ask, ok = events["askalias"].(map[string]any)
+    if !ok {
+        t.Fatalf("watching did not ask for an alias: %s", on)
+    }
+    if ask["kind"] != "address" || ask["id"] != liveAddress {
+        t.Errorf("the dialog was asked about %v, want the address just watched", ask)
+    }
+    // and the watch list has changed, so it re-fetches itself
+    if _, ok := events["watchtab"]; !ok {
+        t.Errorf("the watch list was not told to refresh: %s", on)
+    }
+    var off = post(h, link+"&on=0", data).Header().Get("HX-Trigger")
+    if strings.Contains(off, "askalias") {
+        t.Errorf("unwatching asked for an alias: %s", off)
+    }
+    if !strings.Contains(off, "watchtab") {
+        t.Errorf("unwatching did not refresh the list: %s", off)
+    }
+}
+
+// The dialog names the watch the bell just filed.
+func TestSetAlias(t *testing.T) {
+    var h = handler(t, "TESTTOKEN", fakeSource{a: liveAddr()})
+    var data = freshInitData("TESTTOKEN")
+    var res = postForm(h, "/alias", data, url.Values{
+        "kind": {"address"}, "id": {liveAddress}, "alias": {"John"}})
+    if res.Code != http.StatusNoContent {
+        t.Fatalf("status %d, want 204 — the dialog swaps nothing", res.Code)
+    }
+    if got := aliases[42][liveAddress]; got != "John" {
+        t.Errorf("the alias reached the source as %q, want John", got)
+    }
+    if !strings.Contains(res.Header().Get("HX-Trigger"), "watchtab") {
+        t.Errorf("the watch list was not told to refresh: %s", res.Header().Get("HX-Trigger"))
+    }
+}
+
+// Save on an empty field is how a reader dismisses the dialog, so it must leave
+// the watch alone rather than clearing the name it already has.
+func TestEmptyAliasChangesNothing(t *testing.T) {
+    var h = handler(t, "TESTTOKEN", fakeSource{a: liveAddr()})
+    var data = freshInitData("TESTTOKEN")
+    var res = postForm(h, "/alias", data, url.Values{
+        "kind": {"address"}, "id": {liveAddress}, "alias": {"   "}})
+    if res.Code != http.StatusNoContent {
+        t.Fatalf("status %d, want 204", res.Code)
+    }
+    if _, set := aliases[42][liveAddress]; set {
+        t.Errorf("an empty alias was written: %q", aliases[42][liveAddress])
+    }
+    if res.Header().Get("HX-Trigger") != "" {
+        t.Errorf("nothing changed, so nothing should be refreshed: %s", res.Header().Get("HX-Trigger"))
+    }
+}
+
+// A label is all an alias is, and this endpoint is reachable without the page,
+// so an enormous one is cut rather than stored whole.
+func TestLongAliasIsCut(t *testing.T) {
+    var h = handler(t, "TESTTOKEN", fakeSource{a: liveAddr()})
+    postForm(h, "/alias", freshInitData("TESTTOKEN"), url.Values{
+        "kind": {"address"}, "id": {liveAddress}, "alias": {strings.Repeat("é", 500)}})
+    if got := len([]rune(aliases[42][liveAddress])); got != aliasMax {
+        t.Errorf("stored %d runes, want it cut to %d", got, aliasMax)
+    }
+}
+
+// An alias is per-user, like everything else on the Watches tab.
+func TestAliasNeedsInitData(t *testing.T) {
+    var h = handler(t, "TESTTOKEN", fakeSource{a: liveAddr()})
+    var res = postForm(h, "/alias", "", url.Values{
+        "kind": {"address"}, "id": {liveAddress}, "alias": {"John"}})
+    if res.Code != http.StatusUnauthorized {
+        t.Errorf("status %d, want 401 — an unsigned request must not rename anything", res.Code)
+    }
+    if len(aliases) != 0 {
+        t.Errorf("an unsigned request renamed %v", aliases)
+    }
+}
+
+// The dialog's Delete button posts from inside the form, so the id it removes
+// arrives as a form value rather than in the URL.
+func TestDeleteFromTheAliasDialog(t *testing.T) {
+    var h = handler(t, "TESTTOKEN", fakeSource{a: liveAddr()})
+    var data = freshInitData("TESTTOKEN")
+    post(h, "/watch?kind=address&id="+liveAddress+"&on=1", data)
+    if !watched[42][liveAddress] {
+        t.Fatal("the fixture was not watching anything to delete")
+    }
+    var res = postForm(h, "/watch?on=0", data, url.Values{"kind": {"address"}, "id": {liveAddress}})
+    if res.Code != http.StatusOK {
+        t.Fatalf("status %d, want 200", res.Code)
+    }
+    if watched[42][liveAddress] {
+        t.Error("the watch survived a delete from the dialog")
+    }
+    if !strings.Contains(res.Header().Get("HX-Trigger"), "watchtab") {
+        t.Errorf("the list was not told to refresh: %s", res.Header().Get("HX-Trigger"))
+    }
+}
+
+// Every row carries what the edit dialog needs, since the dialog itself is in
+// the shared page and knows nothing until a row tells it.
+func TestWatchRowsCarryAnEditIcon(t *testing.T) {
+    var h = handler(t, "TESTTOKEN", fakeSource{w: liveWatches()})
+    var body = get(h, "/watches", freshInitData("TESTTOKEN")).Body.String()
+    for _, want := range []string{
+        `class="edit" data-kind="address" data-id="` + liveAddress + `" data-alias="John"`,
+        `class="edit" data-kind="tx" data-id="` + liveTxid + `"`,
+    } {
+        if !strings.Contains(body, want) {
+            t.Errorf("no edit icon for %s in:\n%s", want, body)
+        }
     }
 }
