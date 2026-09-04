@@ -56,7 +56,9 @@ func (s summary) String() string {
 // list resolves every touch the index holds for an address and prints one line
 // each, then the totals. The index stores (height, tx index) rather than txids —
 // that is what makes it 10 bytes a touch — so each one costs a block lookup and
-// a transaction lookup against the node.
+// a transaction lookup against the node. The touches come from the bbolt index
+// this tool builds, or, with -dbsqlite, from the SQLite copy tosqlite makes of
+// it; only the storage differs, and the listing is the same either way.
 func list(opt *options, address string) {
     var client, err = newRPC(opt.url, opt.user, opt.pass, opt.cookie)
     if err != nil { logging.Fatal("RPC client: %v", err) }
@@ -66,10 +68,20 @@ func list(opt *options, address string) {
     var script, derr = hex.DecodeString(scriptHex)
     if derr != nil { logging.Fatal("decode scriptPubKey: %v", derr) }
 
-    if _, ok := addrindex.Cursor(); !ok {
-        fmt.Fprintln(os.Stderr, "warning: this index has never been built — run addrindex build first")
+    var touches []addrindex.Touch
+    var capped bool
+    if opt.dbsqlite != "" {
+        // the SQLite copy carries no cursor bucket, so there is nothing to warn
+        // about: an index migrated at all was an index that had been built
+        var err error
+        touches, capped, err = sqliteTouches(opt.dbsqlite, script, opt.limit)
+        if err != nil { logging.Fatal("%s: %v", opt.dbsqlite, err) }
+    } else {
+        if _, ok := addrindex.Cursor(); !ok {
+            fmt.Fprintln(os.Stderr, "warning: this index has never been built — run addrindex build first")
+        }
+        touches, capped = addrindex.Lookup(script, opt.limit)
     }
-    var touches, capped = addrindex.Lookup(script, opt.limit)
     if capped {
         fmt.Fprintf(os.Stderr, "warning: stopped at -limit %d touches; the history is longer\n", opt.limit)
     }

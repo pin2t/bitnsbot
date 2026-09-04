@@ -8,10 +8,13 @@
 //
 //	addrindex build    -db ai.db -url http://127.0.0.1:8332 -cookie ./cookie
 //	addrindex list     -db ai.db -url http://127.0.0.1:8332 -cookie ./cookie <address>
+//	addrindex list     -dbsqlite ai.sqlite.db -url http://127.0.0.1:8332 -cookie ./cookie <address>
 //	addrindex actbuild -db ai.db -blocks ~/.bitcoin/blocks
 //
 // build catches the index up from its cursor to the chain tip and exits; list
-// prints every transaction the index holds for an address, then a summary;
+// prints every transaction the index holds for an address, then a summary —
+// reading the bbolt index, or with -dbsqlite the SQLite copy tools/tosqlite
+// makes of it, which prints the same listing;
 // actbuild reads Core's raw block files and records the addresses whose history
 // is longer than -active transactions. It talks to no node at all — it reads the
 // files and encodes the addresses itself — so it needs neither -url nor -cookie.
@@ -31,21 +34,23 @@ import "bitnsbot/logging"
 // build reads) is served on the same host:port as JSON-RPC (which the lookups
 // use), so one -url covers both; only the RPC half needs credentials.
 type options struct {
-    db      string
-    url     string
-    cookie  string
-    user    string
-    pass    string
-    limit   int
-    active  int
-    blocks  string
-    addrs   int
-    verbose int
+    db       string
+    dbsqlite string
+    url      string
+    cookie   string
+    user     string
+    pass     string
+    limit    int
+    active   int
+    blocks   string
+    addrs    int
+    verbose  int
 }
 
 func flags(fs *flag.FlagSet) *options {
     var o = &options{}
     fs.StringVar(&o.db, "db", "addrindex.db", "path to the bbolt database holding the index")
+    fs.StringVar(&o.dbsqlite, "dbsqlite", "", "list: read the index from this SQLite database (as written by tosqlite) instead of -db")
     fs.StringVar(&o.url, "url", "http://127.0.0.1:8332", "Bitcoin Core base URL, serving both JSON-RPC and REST")
     fs.StringVar(&o.cookie, "cookie", "", "path to Core's .cookie file, for RPC auth")
     fs.StringVar(&o.user, "user", "", "Core RPC username, instead of a cookie")
@@ -63,7 +68,7 @@ func usage() {
     fmt.Fprintln(os.Stderr, "")
     fmt.Fprintln(os.Stderr, "commands:")
     fmt.Fprintln(os.Stderr, "  build     catch the index up from its cursor to the chain tip")
-    fmt.Fprintln(os.Stderr, "  list      print every transaction the index holds for an address")
+    fmt.Fprintln(os.Stderr, "  list      print every transaction the index holds for an address, from -db or -dbsqlite")
     fmt.Fprintln(os.Stderr, "  actbuild  record the addresses with more than -active transactions, from -blocks")
 }
 
@@ -83,13 +88,21 @@ func main() {
     fs.Parse(os.Args[2:])
     logging.SetVerbose(opt.verbose)
 
-    var err error
-    db, err = bbolt.Open(opt.db, 0600, &bbolt.Options{Timeout: 5 * time.Second})
-    if err != nil { logging.Fatal("open %s: %v", opt.db, err) }
-    defer db.Close()
-    // the same buckets the bot's openDB creates, so either can carry on from the
-    // other's cursor
-    if err := addrindex.Init(db); err != nil { logging.Fatal("init index: %v", err) }
+    // -dbsqlite reads the index out of the migrated copy instead, which only a
+    // listing can do — build and actbuild write, and they write bbolt. Opening
+    // -db anyway would create an empty index beside the one being read.
+    if opt.dbsqlite != "" && cmd != "list" {
+        logging.Fatal("-dbsqlite only reads; %s writes the bbolt index named by -db", cmd)
+    }
+    if opt.dbsqlite == "" {
+        var err error
+        db, err = bbolt.Open(opt.db, 0600, &bbolt.Options{Timeout: 5 * time.Second})
+        if err != nil { logging.Fatal("open %s: %v", opt.db, err) }
+        defer db.Close()
+        // the same buckets the bot's openDB creates, so either can carry on from
+        // the other's cursor
+        if err := addrindex.Init(db); err != nil { logging.Fatal("init index: %v", err) }
+    }
 
     switch cmd {
     case "build":
