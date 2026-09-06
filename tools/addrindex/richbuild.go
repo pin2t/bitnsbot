@@ -49,7 +49,9 @@ func richbuild(opt *options) error {
     var from = 0
     if built {
         from = at + 1
-        if err := sameChain(ctx, opt.url, store, at); err != nil { return err }
+        var stored, _, merr = store.meta("hash")
+        if merr != nil { return merr }
+        if err := sameChain(ctx, opt.url, stored, at); err != nil { return err }
     }
     if from > tip {
         return atTip(store, opt, at, tip)
@@ -219,13 +221,14 @@ func stream(ctx context.Context, src *addrindex.REST, from, to, workers int) <-c
 // over the whole chain is hours and a million requests long, and abandoning all
 // of it because the node was busy for a moment would mean starting the scan
 // again from the last stored height. Only the last error is reported, since a
-// height that fails three times is failing for one reason.
+// height that fails three times is failing for one reason. Its warning names no
+// command, since ababuild reads the chain through this too.
 func fetchBlock(ctx context.Context, src *addrindex.REST, height int) (addrindex.Block, error) {
     var blk addrindex.Block
     var err error
     for attempt := 0; attempt < fetchAttempts; attempt++ {
         if attempt > 0 {
-            logging.Warn("richbuild: block %d: %v — trying again", height, err)
+            logging.Warn("block %d: %v — trying again", height, err)
             select {
             case <-time.After(time.Duration(attempt) * fetchBackoff):
             case <-ctx.Done():
@@ -293,10 +296,9 @@ func aggregate(store *richStore, sh *shards, opt *options, tip int, hash string)
 // summed on. A run ends at whatever block was the tip, and a tip can be reorged
 // away minutes later — after which resuming from the stored height would keep
 // counting coins from a block the node no longer has, quietly and for good.
-// Balances written before this check are simply not checked.
-func sameChain(ctx context.Context, baseURL string, store *richStore, at int) error {
-    var stored, ok, err = store.meta("hash")
-    if err != nil || !ok { return err }
+// State written before this check kept no hash, and is simply not checked.
+func sameChain(ctx context.Context, baseURL, stored string, at int) error {
+    if stored == "" { return nil }
     var now, herr = blockHash(ctx, baseURL, at)
     if herr != nil { return fmt.Errorf("read block %d: %w", at, herr) }
     if now == stored { return nil }

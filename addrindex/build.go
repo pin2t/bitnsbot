@@ -360,3 +360,49 @@ func Balances(blk Block) ([]Payment, bool) {
     }
     return out, true
 }
+
+// Movement is one change a block makes to a script's balance and which side it
+// happened on: an output pays the script, a spent prevout takes the same amount
+// back out of it. Balances is this without the side, which is all a running
+// total needs — but a caller that also wants to know when a script was last
+// spent *from* cannot read that off the sign, since an output may legitimately
+// pay zero satoshi and a zero has no sign. tools/addrindex's ababuild is the
+// caller.
+type Movement struct {
+    Script []byte
+    Sat    int64
+    Spend  bool
+}
+
+// Movements is Balances with each change labelled by the side it came from. It
+// runs the same two parsers, so the block format is still read in one place; only
+// the flattening differs, and it is kept separate rather than shared so a balance
+// pass over the whole chain does not pay for a field it never reads.
+func Movements(blk Block) ([]Movement, bool) {
+    var outputs, ok1 = parseBlockOutputs(blk.Raw)
+    var spent, ok2 = parseSpentOutputs(blk.Spent)
+    if !ok1 || !ok2 || len(outputs) != len(spent) { return nil, false }
+    var n int
+    for i := range outputs { n += len(outputs[i]) + len(spent[i]) }
+    var out = make([]Movement, 0, n)
+    for _, perTx := range outputs {
+        for _, o := range perTx {
+            out = append(out, Movement{Script: o.Script, Sat: o.Sat})
+        }
+    }
+    for _, perTx := range spent {
+        for _, o := range perTx {
+            out = append(out, Movement{Script: o.Script, Sat: -o.Sat, Spend: true})
+        }
+    }
+    return out, true
+}
+
+// BlockTime is the timestamp in a serialized block's header — the 4-byte
+// little-endian field at offset 68, after the version, the previous block's hash
+// and the merkle root. It is here rather than at the caller for the reason the
+// rest of the format is: one place knows where the bytes are.
+func BlockTime(raw []byte) (int64, bool) {
+    if len(raw) < 80 { return 0, false }
+    return int64(binary.LittleEndian.Uint32(raw[68:72])), true
+}

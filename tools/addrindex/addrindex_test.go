@@ -75,11 +75,19 @@ func serialTx(inputs int, pays []addrindex.Payment) []byte {
     return out
 }
 
+// blockTime is the fixture's clock: the real chain's genesis, then ten minutes a
+// block. Every height has its own timestamp and a later block is always later,
+// which is what ababuild ranks addresses by.
+func blockTime(height int) int64 { return 1231006505 + int64(height)*600 }
+
 // serialBlock and serialSpent are the two REST payloads for one block. They must
 // describe the same transactions in the same order — that alignment is what lets
-// a touch be keyed by position instead of by txid.
-func serialBlock(txs [][]byte) []byte {
+// a touch be keyed by position instead of by txid. The header is otherwise
+// zeroed, but it carries a real time at offset 68, since that is the only place
+// a block says when it happened.
+func serialBlock(height int, txs [][]byte) []byte {
     var out = make([]byte, 80) // header
+    binary.LittleEndian.PutUint32(out[68:72], uint32(blockTime(height)))
     out = append(out, varint(len(txs))...)
     for _, t := range txs { out = append(out, t...) }
     return out
@@ -107,15 +115,17 @@ func serialSpent(perTx [][]addrindex.Payment) []byte {
 // of the node agree with each other: 20000 in, 20000 spent, 10000 back.
 func chainBlocks() [][2][]byte {
     var coinbase = serialTx(1, []addrindex.Payment{{Script: otherScript, Sat: coinbaseSat}})
-    var plain = [2][]byte{serialBlock([][]byte{coinbase}), serialSpent([][]addrindex.Payment{{}})}
+    var plain = func(height int) [2][]byte {
+        return [2][]byte{serialBlock(height, [][]byte{coinbase}), serialSpent([][]addrindex.Payment{{}})}
+    }
     return [][2][]byte{
-        plain,
-        {serialBlock([][]byte{coinbase, serialTx(1, []addrindex.Payment{{Script: payScript, Sat: 20000}})}),
+        plain(0),
+        {serialBlock(1, [][]byte{coinbase, serialTx(1, []addrindex.Payment{{Script: payScript, Sat: 20000}})}),
             serialSpent([][]addrindex.Payment{{}, {{Script: otherScript, Sat: coinbaseSat}}})},
-        {serialBlock([][]byte{coinbase, serialTx(1, []addrindex.Payment{
+        {serialBlock(2, [][]byte{coinbase, serialTx(1, []addrindex.Payment{
             {Script: otherScript, Sat: 10000}, {Script: payScript, Sat: 10000}, {Script: opReturnScript, Sat: 500}})}),
             serialSpent([][]addrindex.Payment{{}, {{Script: payScript, Sat: 20000}}})},
-        plain,
+        plain(3),
     }
 }
 
