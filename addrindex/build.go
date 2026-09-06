@@ -82,6 +82,15 @@ func Build(src Blockchain) error {
     return nil
 }
 
+// Payment is a scriptPubKey and the satoshi paid to it — one output of a
+// transaction, or one prevout an input spends. The index needs only the script;
+// a balance needs the amount too, so the parsers below read both and each caller
+// takes what it uses.
+type Payment struct {
+    Script []byte
+    Sat    int64
+}
+
 // indexBlock extracts every touch in one block into the running chunk map: every
 // output's script is a funding touch, every spent input's prevout script (read
 // positionally from Spent, aligned to the block's transaction order) is a
@@ -104,17 +113,17 @@ func indexBlock(touches map[string][]Touch, height uint32, blk Block) {
 // indexBlockFromParsed is indexBlock's dedup logic, split out so it can be
 // tested directly against constructed script lists without needing a real
 // serialized block for every case.
-func indexBlockFromParsed(touches map[string][]Touch, height uint32, outputs, spent [][][]byte) {
+func indexBlockFromParsed(touches map[string][]Touch, height uint32, outputs, spent [][]Payment) {
     for txIndex := range outputs {
         var seen = map[string]bool{}
-        for _, s := range outputs[txIndex] {
-            if p := string(Prefix(s)); len(s) > 0 && !seen[p] {
+        for _, o := range outputs[txIndex] {
+            if p := string(Prefix(o.Script)); len(o.Script) > 0 && !seen[p] {
                 seen[p] = true
                 touches[p] = append(touches[p], Touch{Height: height, TxIndex: uint16(txIndex)})
             }
         }
-        for _, s := range spent[txIndex] {
-            if p := string(Prefix(s)); len(s) > 0 && !seen[p] {
+        for _, o := range spent[txIndex] {
+            if p := string(Prefix(o.Script)); len(o.Script) > 0 && !seen[p] {
                 seen[p] = true
                 touches[p] = append(touches[p], Touch{Height: height, TxIndex: uint16(txIndex)})
             }
@@ -124,15 +133,16 @@ func indexBlockFromParsed(touches map[string][]Touch, height uint32, outputs, sp
 
 // parseBlockOutputs reads a serialized block (80-byte header, then the
 // transaction count, then each transaction) and returns each transaction's
-// output scripts, indexed by the transaction's position in the block. It skips
+// outputs — script and amount — indexed by the transaction's position in the
+// block. It skips
 // everything else — inputs, witness data, locktime — since the spending side
 // comes from parseSpentOutputs instead.
-func parseBlockOutputs(raw []byte) ([][][]byte, bool) {
+func parseBlockOutputs(raw []byte) ([][]Payment, bool) {
     var r = &reader{buf: raw}
     r.skip(80) // block header
     var txCount, ok = r.varInt()
     if !ok { return nil, false }
-    var result = make([][][]byte, txCount)
+    var result = make([][]Payment, txCount)
     for i := uint64(0); i < txCount; i++ {
         var scripts, txOK = skipTxKeepOutputs(r)
         if !txOK { return nil, false }
@@ -142,7 +152,7 @@ func parseBlockOutputs(raw []byte) ([][][]byte, bool) {
     return result, true
 }
 
-func skipTxKeepOutputs(r *reader) ([][]byte, bool) {
+func skipTxKeepOutputs(r *reader) ([]Payment, bool) {
     r.skip(4) // version
     var inCount, ok = r.varInt()
     if !ok { return nil, false }
@@ -162,14 +172,15 @@ func skipTxKeepOutputs(r *reader) ([][]byte, bool) {
     }
     var outCount, outOK = r.varInt()
     if !outOK { return nil, false }
-    var scripts = make([][]byte, 0, outCount)
+    var scripts = make([]Payment, 0, outCount)
     for i := uint64(0); i < outCount; i++ {
-        r.skip(8) // value
+        var sat, satOK = r.value()
+        if !satOK { return nil, false }
         var scriptLen, lenOK = r.varInt()
         if !lenOK { return nil, false }
         var script, scriptOK = r.bytes(int(scriptLen))
         if !scriptOK { return nil, false }
-        scripts = append(scripts, script)
+        scripts = append(scripts, Payment{Script: script, Sat: sat})
     }
     if segwit {
         for i := uint64(0); i < inCount; i++ {
@@ -188,26 +199,29 @@ func skipTxKeepOutputs(r *reader) ([][]byte, bool) {
 
 // parseSpentOutputs reads Core's REST spent-outputs format for a block: a
 // transaction count, then per transaction a count of spent outputs and that many
-// serialized TxOuts (8-byte value + script). Coinbase transactions report zero
+// serialized TxOuts (8-byte value + script) — the prevout each real input
+// consumes, which is the only place a spend's script and amount are written
+// down at all. Coinbase transactions report zero
 // spent outputs (they have no real inputs), which is why this, like
 // parseBlockOutputs, is indexed by transaction position rather than skipping the
 // coinbase specially.
-func parseSpentOutputs(raw []byte) ([][][]byte, bool) {
+func parseSpentOutputs(raw []byte) ([][]Payment, bool) {
     var r = &reader{buf: raw}
     var txCount, ok = r.varInt()
     if !ok { return nil, false }
-    var result = make([][][]byte, txCount)
+    var result = make([][]Payment, txCount)
     for i := uint64(0); i < txCount; i++ {
         var outCount, outOK = r.varInt()
         if !outOK { return nil, false }
-        var scripts = make([][]byte, 0, outCount)
+        var scripts = make([]Payment, 0, outCount)
         for j := uint64(0); j < outCount; j++ {
-            r.skip(8) // value
+            var sat, satOK = r.value()
+            if !satOK { return nil, false }
             var scriptLen, lenOK = r.varInt()
             if !lenOK { return nil, false }
             var script, scriptOK = r.bytes(int(scriptLen))
             if !scriptOK { return nil, false }
-            scripts = append(scripts, script)
+            scripts = append(scripts, Payment{Script: script, Sat: sat})
         }
         result[i] = scripts
     }
@@ -236,6 +250,14 @@ func (r *reader) bytes(n int) ([]byte, bool) {
     var out = r.buf[r.pos : r.pos+n]
     r.pos += n
     return out, true
+}
+
+// value reads an output's amount, the 8-byte little-endian satoshi field every
+// TxOut carries in front of its script.
+func (r *reader) value() (int64, bool) {
+    var b, ok = r.bytes(8)
+    if !ok { return 0, false }
+    return int64(binary.LittleEndian.Uint64(b)), true
 }
 
 func (r *reader) varInt() (uint64, bool) {
@@ -270,13 +292,13 @@ func Scripts(blk Block) ([][]byte, bool) {
     if !ok1 || !ok2 || len(outputs) != len(spent) { return nil, false }
     var seen = map[string]bool{}
     var out [][]byte
-    for _, group := range [][][][]byte{outputs, spent} {
+    for _, group := range [][][]Payment{outputs, spent} {
         for _, perTx := range group {
-            for _, s := range perTx {
-                if len(s) == 0 { continue }
-                if seen[string(s)] { continue }
-                seen[string(s)] = true
-                out = append(out, s)
+            for _, o := range perTx {
+                if len(o.Script) == 0 { continue }
+                if seen[string(o.Script)] { continue }
+                seen[string(o.Script)] = true
+                out = append(out, o.Script)
             }
         }
     }
@@ -297,10 +319,10 @@ func OutputScripts(raw []byte) ([][]byte, bool) {
     var seen = map[string]bool{}
     var out [][]byte
     for _, perTx := range outputs {
-        for _, s := range perTx {
-            if len(s) == 0 || seen[string(s)] { continue }
-            seen[string(s)] = true
-            out = append(out, s)
+        for _, o := range perTx {
+            if len(o.Script) == 0 || seen[string(o.Script)] { continue }
+            seen[string(o.Script)] = true
+            out = append(out, o.Script)
         }
     }
     return out, true
@@ -311,4 +333,30 @@ func OutputScripts(raw []byte) ([][]byte, bool) {
 // its distinct scripts, this keeps the transaction boundaries — which is what a
 // caller counting *transactions* per address needs, since an address paid twice
 // by one transaction was involved in one transaction, not two.
-func OutputsByTx(raw []byte) ([][][]byte, bool) { return parseBlockOutputs(raw) }
+func OutputsByTx(raw []byte) ([][]Payment, bool) { return parseBlockOutputs(raw) }
+
+// Balances returns every change one block makes to a script's balance: each
+// output pays its own script, and each spent prevout takes back out of the
+// script it was paid to. Nothing else moves value on the chain, so adding these
+// up from genesis to a height leaves exactly what every script holds at that
+// height — the UTXO set, aggregated by script.
+//
+// The list is flat, in block order, and deliberately not deduplicated: a script
+// paid twice is paid twice, and a caller summing into its own table wants both.
+// Nor is an amount ever dropped, so a block's changes sum to the subsidy its
+// miner claimed. tools/addrindex's richbuild is the caller.
+func Balances(blk Block) ([]Payment, bool) {
+    var outputs, ok1 = parseBlockOutputs(blk.Raw)
+    var spent, ok2 = parseSpentOutputs(blk.Spent)
+    if !ok1 || !ok2 || len(outputs) != len(spent) { return nil, false }
+    var n int
+    for i := range outputs { n += len(outputs[i]) + len(spent[i]) }
+    var out = make([]Payment, 0, n)
+    for _, perTx := range outputs { out = append(out, perTx...) }
+    for _, perTx := range spent {
+        for _, o := range perTx {
+            out = append(out, Payment{Script: o.Script, Sat: -o.Sat})
+        }
+    }
+    return out, true
+}

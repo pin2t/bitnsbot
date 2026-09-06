@@ -98,11 +98,11 @@ func countFile(name string, key []byte, counts *counter) (blocks, scripts int, e
             // one transaction counts once per address, however many of its
             // outputs pay there
             clear(seen)
-            for _, script := range outputs {
-                if len(script) == 0 || seen[string(script)] { continue }
-                seen[string(script)] = true
+            for _, o := range outputs {
+                if len(o.Script) == 0 || seen[string(o.Script)] { continue }
+                seen[string(o.Script)] = true
                 scripts++
-                counts.add(script)
+                counts.add(o.Script)
             }
         }
     }

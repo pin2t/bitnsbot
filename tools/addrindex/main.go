@@ -9,7 +9,8 @@
 //	addrindex build    -db ai.db -url http://127.0.0.1:8332 -cookie ./cookie
 //	addrindex list     -db ai.db -url http://127.0.0.1:8332 -cookie ./cookie <address>
 //	addrindex list     -dbsqlite ai.sqlite.db -url http://127.0.0.1:8332 -cookie ./cookie <address>
-//	addrindex actbuild -db ai.db -blocks ~/.bitcoin/blocks
+//	addrindex actbuild  -db ai.db -blocks ~/.bitcoin/blocks
+//	addrindex richbuild -dbsqlite rich.db -url http://127.0.0.1:8332
 //
 // build catches the index up from its cursor to the chain tip and exits; list
 // prints every transaction the index holds for an address, then a summary —
@@ -17,7 +18,9 @@
 // makes of it, which prints the same listing;
 // actbuild reads Core's raw block files and records the addresses whose history
 // is longer than -active transactions. It talks to no node at all — it reads the
-// files and encodes the addresses itself — so it needs neither -url nor -cookie.
+// files and encodes the addresses itself — so it needs neither -url nor -cookie;
+// richbuild reads the whole chain over REST and writes what every address holds
+// now to a SQLite table named rich, keeping no bbolt index at all.
 package main
 
 import "context"
@@ -44,13 +47,19 @@ type options struct {
     active   int
     blocks   string
     addrs    int
+    batch    int
+    shards   int
+    fetch    int
+    min      int64
+    to       int
+    tmp      string
     verbose  int
 }
 
 func flags(fs *flag.FlagSet) *options {
     var o = &options{}
     fs.StringVar(&o.db, "db", "addrindex.db", "path to the bbolt database holding the index")
-    fs.StringVar(&o.dbsqlite, "dbsqlite", "", "list: read the index from this SQLite database (as written by tosqlite) instead of -db")
+    fs.StringVar(&o.dbsqlite, "dbsqlite", "", "the SQLite database: list reads a migrated index from it, richbuild writes balances to it")
     fs.StringVar(&o.url, "url", "http://127.0.0.1:8332", "Bitcoin Core base URL, serving both JSON-RPC and REST")
     fs.StringVar(&o.cookie, "cookie", "", "path to Core's .cookie file, for RPC auth")
     fs.StringVar(&o.user, "user", "", "Core RPC username, instead of a cookie")
@@ -59,6 +68,12 @@ func flags(fs *flag.FlagSet) *options {
     fs.IntVar(&o.active, "active", 1000, "actbuild: transactions an address needs to count as active")
     fs.StringVar(&o.blocks, "blocks", "", "actbuild: Core's blocks directory, read instead of its REST interface")
     fs.IntVar(&o.addrs, "addrs", 0, "actbuild: distinct addresses to reserve room for, so the set never reallocates")
+    fs.IntVar(&o.batch, "batch", 4000000, "richbuild: movements held in memory before they are written to the shards")
+    fs.IntVar(&o.shards, "shards", 128, "richbuild: files the movements are split into, one summed at a time")
+    fs.IntVar(&o.fetch, "fetch", 4, "richbuild: blocks fetched at once")
+    fs.Int64Var(&o.min, "min", 0, "richbuild: satoshi an address needs before it is written to rich")
+    fs.IntVar(&o.to, "to", 0, "richbuild: stop at this height instead of the chain tip")
+    fs.StringVar(&o.tmp, "tmp", "", "richbuild: directory for the movement shards (default the database's name with .shards)")
     fs.IntVar(&o.verbose, "verbose", 1, "log level: 0 quiet, 1 progress, 2 every request")
     return o
 }
@@ -70,6 +85,7 @@ func usage() {
     fmt.Fprintln(os.Stderr, "  build     catch the index up from its cursor to the chain tip")
     fmt.Fprintln(os.Stderr, "  list      print every transaction the index holds for an address, from -db or -dbsqlite")
     fmt.Fprintln(os.Stderr, "  actbuild  record the addresses with more than -active transactions, from -blocks")
+    fmt.Fprintln(os.Stderr, "  richbuild sum every address's balance over the whole chain into -dbsqlite")
 }
 
 func main() {
@@ -78,7 +94,7 @@ func main() {
         os.Exit(2)
     }
     var cmd = os.Args[1]
-    if cmd != "build" && cmd != "list" && cmd != "actbuild" {
+    if cmd != "build" && cmd != "list" && cmd != "actbuild" && cmd != "richbuild" {
         fmt.Fprintf(os.Stderr, "unknown command %q\n\n", cmd)
         usage()
         os.Exit(2)
@@ -88,13 +104,14 @@ func main() {
     fs.Parse(os.Args[2:])
     logging.SetVerbose(opt.verbose)
 
-    // -dbsqlite reads the index out of the migrated copy instead, which only a
-    // listing can do — build and actbuild write, and they write bbolt. Opening
-    // -db anyway would create an empty index beside the one being read.
-    if opt.dbsqlite != "" && cmd != "list" {
-        logging.Fatal("-dbsqlite only reads; %s writes the bbolt index named by -db", cmd)
+    // -dbsqlite is the SQLite database: list reads a migrated index out of it and
+    // richbuild writes balances to it, while build and actbuild write the bbolt
+    // index named by -db. Opening -db for the two SQLite commands would create an
+    // empty index beside the database actually being worked on.
+    if opt.dbsqlite != "" && cmd != "list" && cmd != "richbuild" {
+        logging.Fatal("-dbsqlite is SQLite; %s writes the bbolt index named by -db", cmd)
     }
-    if opt.dbsqlite == "" {
+    if opt.dbsqlite == "" && cmd != "richbuild" {
         var err error
         db, err = bbolt.Open(opt.db, 0600, &bbolt.Options{Timeout: 5 * time.Second})
         if err != nil { logging.Fatal("open %s: %v", opt.db, err) }
@@ -116,6 +133,8 @@ func main() {
     case "actbuild":
         activeMin = opt.active
         actbuild(opt)
+    case "richbuild":
+        if err := richbuild(opt); err != nil { logging.Fatal("richbuild: %v", err) }
     }
 }
 

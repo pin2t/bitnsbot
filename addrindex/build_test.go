@@ -61,12 +61,12 @@ func TestParseBlock(t *testing.T) {
     }
 }
 
-func hexLists(scripts [][][]byte) [][]string {
+func hexLists(scripts [][]Payment) [][]string {
     var out = make([][]string, len(scripts))
     for i, list := range scripts {
         out[i] = make([]string, len(list))
-        for j, s := range list {
-            out[i][j] = hex.EncodeToString(s)
+        for j, o := range list {
+            out[i][j] = hex.EncodeToString(o.Script)
         }
     }
     return out
@@ -78,8 +78,8 @@ func hexLists(scripts [][][]byte) [][]string {
 // is not present here, so this constructs the case directly against the parsed
 // output/spent shapes rather than needing another mined fixture.
 func TestIndexBlockDedups(t *testing.T) {
-    var outputs = [][][]byte{{[]byte("scriptA"), []byte("scriptA"), []byte("scriptB")}}
-    var spent = [][][]byte{{[]byte("scriptA")}} // same tx also spends from scriptA
+    var outputs = [][]Payment{{{Script: []byte("scriptA")}, {Script: []byte("scriptA")}, {Script: []byte("scriptB")}}}
+    var spent = [][]Payment{{{Script: []byte("scriptA")}}} // same tx also spends from scriptA
     var touches = map[string][]Touch{}
     indexBlockFromParsed(touches, 42, outputs, spent)
     var a = touches[string(Prefix([]byte("scriptA")))]

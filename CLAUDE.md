@@ -30,7 +30,7 @@ Flags (all in `main.go`): `-config` (path to a `name=value` properties file to l
 - `advertise` — announces a Bitcoin node's address to btcd's known peers over the P2P protocol (detailed below).
 - `addresses` — scans the chain from genesis to tip and collects every address seen, resuming from its own cursor bucket.
 - `top-active` — the same scan, ranking addresses by activity.
-- `addrindex` — builds and queries the address index from the command line, driving the same `addrindex` package, buckets and cursor the bot does; `actbuild` adds a second pass that records busy addresses, and `list -dbsqlite` reads the SQLite copy `tosqlite` makes instead of the bbolt original (detailed below).
+- `addrindex` — builds and queries the address index from the command line, driving the same `addrindex` package, buckets and cursor the bot does; `actbuild` adds a second pass that records busy addresses, `richbuild` sums what every address on the chain currently holds into SQLite, and `list -dbsqlite` reads the SQLite copy `tosqlite` makes instead of the bbolt original (detailed below).
 - `addrindex-scan` — an earlier, single-purpose version of `addrindex list`. Largely superseded by it; kept only because nothing has been said about removing it.
 - `dbui` — runs the database admin web UI (the `dbui` package) as its own process, so the database can be inspected without the bot running.
 - `tosqlite` — migrates the bbolt database to SQLite (detailed below). It and `addrindex`'s `-dbsqlite` listing are the only things in the repo that need a database driver, and it is the one dependency the bot itself does not link.
@@ -242,6 +242,44 @@ The backfill reads Core's **REST** interface, not RPC:The backfill reads Core's 
 - **Merging per block instead of per chunk measures a different design.** Calling `merge` once per block rewrites all ~65k shard keys every block: 30.89 bytes/touch and 113s for 900 blocks. The batched merge the backfill actually performs gave 18.15 bytes/touch and 26s over the same blocks.
 
 `rangeBlocks` (1000) is the tuning lever, trading three things at once: the number of keys, how much a lookup must read, and how much memory a backfill chunk holds before flushing. It was not tuned beyond confirming the result lands inside budget.
+
+### Balances: addrindex richbuild
+
+`addrindex richbuild -dbsqlite rich.db -url http://127.0.0.1:8332` reads the whole chain and writes what every address holds now:
+
+    create table rich (addr text primary key, balance integer not null)
+
+The arithmetic is the whole job: an output pays its script, spending that output takes the same amount back out of it, and nothing else on the chain moves value. Summed from genesis to the tip, that *is* the UTXO set aggregated by address.
+
+It reads the same two REST endpoints the address index is built from — `/rest/block/<hash>.bin` and `/rest/spenttxouts/<hash>.bin` — because the spent-outputs blob is the only place a spend's script **and amount** are written down; a block says which outpoint an input consumed, never what it was worth. So `addrindex.Balances(blk)` joins `Scripts`/`OutputScripts` in the shared package, and the two parsers there now keep each output's 8-byte value rather than skipping it (`addrindex.Payment` is a script and its satoshi, and `OutputsByTx` hands those back to `actbuild` unchanged). One parser for both jobs: a second copy of the block format, free to drift from the indexer's, is exactly what that package exists to prevent.
+
+**SQLite cannot be the accumulator, and that is what shapes everything else.** Measured here against `modernc.org/sqlite` — the pure-Go driver, which is the repo's only option since it takes no cgo:
+
+- the cheapest row it can write, an append to an unindexed rowid table with the journal off, costs **5.2 µs** (9.1 µs one row per statement, 5.2 at 500 rows per statement, no better above that — the cost is SQLite's own, not the driver's per-statement overhead);
+- a realistic merge — 2 M sorted upserts into a 10 M-row `without rowid` table keyed by script, plus deleting the rows that reached zero — measured **24 µs a row** (13.4 s to stage the batch, 12.2 s to merge it, 20.3 s to delete).
+
+The chain creates roughly three billion outputs and spends nearly as many, across something like 1.3 billion distinct scripts. At those rates, *touching each distinct script once* is two hours and a real accumulator, which touches most of them repeatedly, is days.
+
+**So the movements go to disk, split by a hash of the script.** `shards.go` writes one record per movement — the script's length, the script, and the signed amount, all varints, about 31 bytes — into one of `-shards` (128) files, chosen by FNV-1a of the script. Every movement of a given script lands in the same file, so each file can then be added up on its own with only that file's scripts in memory. Nothing chain-sized is ever held: `-batch` (4 M) bounds the movements buffered before they are written out, `-shards` bounds what one summing pass holds, and a full mainnet run measured **0.7 GB resident** through the scan.
+
+Four things about the pipeline are deliberate:
+
+- **The buffer is an aggregator, not just a queue.** Movements are summed by script while buffered, and one that nets to **zero** — an address funded and emptied again before the buffer filled, which is most of what a change address ever does — is dropped rather than written. Adding nothing to a balance is nothing.
+- **Blocks are fetched several at a time** (`-fetch`, 4). Each block is three REST requests against a node on the same machine, so a sequential scan mostly waits: measured on this repo's own node, four at a time took recent blocks from **71 to 116 a second, 120 to 197 MB/s**. Order still matters — a balance is a running total — so each height gets a one-slot channel and the results are read back in the order the heights were queued. A failed fetch is retried three times before the run gives up, since abandoning hours of scanning because the node was busy for a moment is the wrong trade.
+- **The progress line measures bytes against the node's own `size_on_disk`**, not blocks. A 2011 block is a few hundred bytes and a 2026 one is over a megabyte, so a share of the block count promises the tip in minutes for most of a run that takes hours.
+- **The shard files are working state, not a checkpoint.** An interrupted run throws them away and starts from the last stored height; that is why the directory is removed on the way out, whether the run succeeded or not.
+
+**Three mainnet outputs are undone, because Core's UTXO set never held them** — all three confirmed against a live node rather than taken from documentation. The **genesis coinbase** is not in the set at all (`gettxout` on `4a5e1e4b…` returns null), and **BIP-30**: the coinbase transactions of blocks **91722** and **91812** were mined again byte for byte in 91880 and 91842, and the second copy overwrote the first, so 50 BTC of each pair belongs to nobody (the surviving copies are still unspent, 50 BTC each). All three are one rule — outputs that never entered the set — so `voided()` undoes all three the same way, and only when the node says it is on `main`: on regtest or testnet those heights are ordinary blocks.
+
+**One address can be paid by more than one script**, which is why `rich` is built with a `group by addr` rather than copied row for row. An early miner paid by `<pubkey> OP_CHECKSIG` and later by an ordinary pay-to-pubkey-hash holds both under the same address, and on mainnet there are hundreds of thousands of them. This was not foreseen — a real run to block 200000 failed on `rich`'s primary key, which is what a real run is for. Note the related convention: this repo's `scriptAddress` gives a **P2PK** output the P2PKH address of its key, the way explorers do, where Core's own `gettxout` reports no address for one at all.
+
+**A run resumes, and can extend an old database.** The SQLite file keeps two more tables beside `rich`: `balances` (script, addr, balance) is the state the rich table is built from, and `meta` holds two heights — `height`, where the balances stand, and `rich`, the height rich was last built at. A run that finds a stored height carries every balance back in as one movement and scans only what is new, so catching a week-old database up to the tip is minutes rather than hours. The two heights are separate because rich is *rebuilt* from balances rather than accumulated: a run interrupted between committing the state and rebuilding rich finishes the job next time instead of rescanning. The new state is written under a second name and swapped in with its height in one transaction, so a run that dies partway leaves the previous state exactly as it was — which is also why the database is opened WAL with `synchronous=NORMAL` rather than tosqlite's journal-off bulk-load settings: here a committed height has to survive the process.
+
+Two smaller decisions: `balances` carries **no index at all** (nothing looks a row up in it — it is written once and read start to finish), and `SQLITE_TMPDIR` is pointed at the database's own directory before opening, because rebuilding rich sorts every stored balance by address and SQLite would otherwise put gigabytes of scratch in `/tmp`, which on this repo's own machine is memory-backed.
+
+**Measured against this repo's own mainnet node.** Blocks 0..200000 summed to 879 775 funded scripts in about 90 seconds; carrying those forward and adding blocks 200001..250000 took 3 min 33 sec, ending at 1 841 486 scripts. Both totals check against what the chain issued: at block 200000 the balances hold **9 999 889.98 BTC** against a theoretical 9 999 900 (210 000 blocks of 50 BTC less genesis and the two BIP-30 coinbases), and at 250000 **11 499 864.80** against 11 499 875 — the ~10 BTC gap in each being subsidy that miners never claimed, which is coin that was never created rather than coin this misses. Peak resident memory over a full mainnet run was under 1 GB with the default 128 shards and 4 M buffer.
+
+`-min` (satoshi) keeps small balances out of `rich` — a rich list rather than every address on the chain — while `balances` keeps them regardless, or the next run would carry a wrong total forward. `-to` stops at a height instead of the tip, which is how the partial runs below were checked. `-tmp` puts the shard files somewhere other than beside the database.
 
 ### The /info lookup
 
