@@ -12,7 +12,7 @@ Bitcoin blockchain explorer and events notification bot. It can send notificatio
 
 #### Prerequisites
 
-- Bitcoin Core node running with RPC, REST, ZMQ notification and transactions index enabled. Fully synced and **not** pruned
+- Bitcoin Core 31+ node running with RPC, REST, ZMQ notification and transactions index enabled. Fully synced and **not** pruned
 - [telegram-bot-api](https://github.com/tdlib/telegram-bot-api) running locally on the same machine
 
 #### Command-line flags
