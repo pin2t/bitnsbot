@@ -41,13 +41,20 @@ func varint(n int) []byte {
     return b
 }
 
+// coinbaseSat is what every fixture block pays its miner, and opReturnScript is
+// an output no address can be derived from — richbuild has to carry its coins in
+// the balances it stores and leave them out of the rich table.
+const coinbaseSat = 5000000000
+
+var opReturnScript = mustHex("6a0b68656c6c6f20776f726c64")
+
 // serialTx builds a non-segwit transaction with inputs inputs and one output
-// per script in pays. The input scripts are not written here: the spending side
+// per payment in pays. The input scripts are not written here: the spending side
 // of a touch comes from the separate spent-outputs blob, not from the block.
 //
 // inputs is never 0 — a zero input count is the segwit marker, so even a
 // coinbase carries one input, as it does on the real chain.
-func serialTx(inputs int, pays [][]byte) []byte {
+func serialTx(inputs int, pays []addrindex.Payment) []byte {
     var out []byte
     out = append(out, 1, 0, 0, 0) // version
     out = append(out, varint(inputs)...)
@@ -57,10 +64,12 @@ func serialTx(inputs int, pays [][]byte) []byte {
         out = append(out, 0xff, 0xff, 0xff, 0xff)
     }
     out = append(out, varint(len(pays))...)
-    for _, s := range pays {
-        out = append(out, make([]byte, 8)...) // value, unread by the indexer
-        out = append(out, varint(len(s))...)
-        out = append(out, s...)
+    for _, p := range pays {
+        var value = make([]byte, 8)
+        binary.LittleEndian.PutUint64(value, uint64(p.Sat))
+        out = append(out, value...)
+        out = append(out, varint(len(p.Script))...)
+        out = append(out, p.Script...)
     }
     out = append(out, 0, 0, 0, 0) // locktime
     return out
@@ -76,14 +85,16 @@ func serialBlock(txs [][]byte) []byte {
     return out
 }
 
-func serialSpent(perTx [][][]byte) []byte {
+func serialSpent(perTx [][]addrindex.Payment) []byte {
     var out = varint(len(perTx))
-    for _, scripts := range perTx {
-        out = append(out, varint(len(scripts))...)
-        for _, s := range scripts {
-            out = append(out, make([]byte, 8)...)
-            out = append(out, varint(len(s))...)
-            out = append(out, s...)
+    for _, spent := range perTx {
+        out = append(out, varint(len(spent))...)
+        for _, p := range spent {
+            var value = make([]byte, 8)
+            binary.LittleEndian.PutUint64(value, uint64(p.Sat))
+            out = append(out, value...)
+            out = append(out, varint(len(p.Script))...)
+            out = append(out, p.Script...)
         }
     }
     return out
@@ -91,15 +102,19 @@ func serialSpent(perTx [][][]byte) []byte {
 
 // chainBlocks is the fixture, indexed by height from genesis. Block 1 pays the
 // address, block 2 spends from it and pays change back; 0 and 3 are unrelated.
+// The amounts are the ones the fake node reports for the same transactions, so
+// the balance richbuild sums out of the blocks and the history list resolves out
+// of the node agree with each other: 20000 in, 20000 spent, 10000 back.
 func chainBlocks() [][2][]byte {
-    var coinbase = serialTx(1, [][]byte{otherScript})
-    var plain = [2][]byte{serialBlock([][]byte{coinbase}), serialSpent([][][]byte{{}})}
+    var coinbase = serialTx(1, []addrindex.Payment{{Script: otherScript, Sat: coinbaseSat}})
+    var plain = [2][]byte{serialBlock([][]byte{coinbase}), serialSpent([][]addrindex.Payment{{}})}
     return [][2][]byte{
         plain,
-        {serialBlock([][]byte{coinbase, serialTx(1, [][]byte{payScript})}),
-            serialSpent([][][]byte{{}, {otherScript}})},
-        {serialBlock([][]byte{coinbase, serialTx(1, [][]byte{otherScript, payScript})}),
-            serialSpent([][][]byte{{}, {payScript}})},
+        {serialBlock([][]byte{coinbase, serialTx(1, []addrindex.Payment{{Script: payScript, Sat: 20000}})}),
+            serialSpent([][]addrindex.Payment{{}, {{Script: otherScript, Sat: coinbaseSat}}})},
+        {serialBlock([][]byte{coinbase, serialTx(1, []addrindex.Payment{
+            {Script: otherScript, Sat: 10000}, {Script: payScript, Sat: 10000}, {Script: opReturnScript, Sat: 500}})}),
+            serialSpent([][]addrindex.Payment{{}, {{Script: payScript, Sat: 20000}}})},
         plain,
     }
 }
@@ -109,6 +124,12 @@ func txidAt(height uint32, index int) string {
     return strings.Repeat(string(rune('a'+height)), 63) + string(rune('0'+index))
 }
 
+// fakeChain is what the fake node calls itself. The fixture is a chain of its
+// own, so it is not mainnet — which matters, because richbuild undoes three
+// mainnet outputs that Core's UTXO set never held, and those heights are
+// ordinary blocks here.
+var fakeChain = "regtest"
+
 // fakeCore serves both halves of what the tool needs: Core's REST interface for
 // the build, and its JSON-RPC for the lookups.
 func fakeCore(t *testing.T, tip int) *httptest.Server {
@@ -117,9 +138,16 @@ func fakeCore(t *testing.T, tip int) *httptest.Server {
         var p = r.URL.Path
         switch {
         case p == "/rest/chaininfo.json":
-            json.NewEncoder(w).Encode(map[string]int{"blocks": tip})
+            json.NewEncoder(w).Encode(map[string]interface{}{"blocks": tip, "chain": fakeChain})
         case strings.HasPrefix(p, "/rest/blockhashbyheight/"):
-            var h, _ = strconv.Atoi(strings.TrimSuffix(strings.TrimPrefix(p, "/rest/blockhashbyheight/"), ".bin"))
+            var name = strings.TrimPrefix(p, "/rest/blockhashbyheight/")
+            var h, _ = strconv.Atoi(strings.TrimSuffix(strings.TrimSuffix(name, ".bin"), ".json"))
+            // Core serves the same answer in both formats, and the tool asks for
+            // each: the build reads the raw bytes, the reorg check the JSON
+            if strings.HasSuffix(name, ".json") {
+                json.NewEncoder(w).Encode(map[string]string{"blockhash": hashOfHeight(h)})
+                return
+            }
             // the client reverses these bytes to render the hash, so the height
             // goes last here to come out first in the hex
             var raw = make([]byte, 32)
