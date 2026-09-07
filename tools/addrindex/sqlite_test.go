@@ -50,7 +50,7 @@ func TestListFromSQLite(t *testing.T) {
     if got != want {
         t.Errorf("the SQLite listing differs from the bbolt one:\ngot:\n%swant:\n%s", got, want)
     }
-    if !strings.Contains(got, "bbbbbbbb..bbbbbbb1    20000 sat") {
+    if !strings.Contains(got, "bbbbbbbb..bbbbbbb1    20 000 sats") {
         t.Errorf("the funding transaction is missing from:\n%s", got)
     }
 }

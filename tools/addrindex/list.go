@@ -4,7 +4,6 @@ import "context"
 import "encoding/hex"
 import "fmt"
 import "os"
-import "strconv"
 import "strings"
 import "time"
 
@@ -89,9 +88,6 @@ func list(opt *options, address string) {
         fmt.Printf("No transactions in the index for %s\n", address)
         return
     }
-
-    // Resolve first, print after: the amount column is right-aligned to the
-    // widest value, which is not known until every entry is in.
     var entries []entry
     var txids = map[uint32][]string{}
     for _, t := range touches {
@@ -116,7 +112,6 @@ func list(opt *options, address string) {
         var received, sent = tx.moved(address)
         entries = append(entries, entry{at: tx.Time, txid: tx.Txid, received: received, sent: sent})
     }
-
     var totals summary
     var width int
     for _, e := range entries {
@@ -133,7 +128,7 @@ func list(opt *options, address string) {
 
 // amount is a signed satoshi figure. The sign is what makes the column readable
 // as a ledger: a spend is a negative line, and they sum to the balance.
-func amount(sat int64) string { return strconv.FormatInt(sat, 10) + " sat" }
+func amount(sat int64) string { return group(sat) + " sats" }
 
 // stamp and day render times the way the listing shows them: lowercase, day
 // first. A transaction line carries the clock time, the activity range does not.
