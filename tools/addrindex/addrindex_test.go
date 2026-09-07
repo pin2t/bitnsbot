@@ -335,10 +335,10 @@ func TestBuildThenList(t *testing.T) {
         t.Fatalf("want two transactions and a summary, got:\n%s", out)
     }
     // the funding transaction, then the spend that paid change back
-    if want := "21 oct 2021 21:00 bbbbbbbb..bbbbbbb1    20000 sat"; lines[0] != want {
+    if want := "21 oct 2021 21:00 bbbbbbbb..bbbbbbb1    20 000 sats"; lines[0] != want {
         t.Errorf("line 1 = %q, want %q", lines[0], want)
     }
-    if want := "1 nov 2022 11:00  cccccccc..ccccccc1   -10000 sat"; lines[1] != want {
+    if want := "1 nov 2022 11:00  cccccccc..ccccccc1   -10 000 sats"; lines[1] != want {
         t.Errorf("line 2 = %q, want %q", lines[1], want)
     }
     var wantSummary = "Summary: Balance 10000 sats, Received 30000 sats, Sent 20000 sats, " +
@@ -386,7 +386,7 @@ func TestFormatting(t *testing.T) {
         t.Errorf("shortID mangled a short id: %q", got)
     }
     // a spend is a negative line, so a column of them sums to the balance
-    if got := amount(-10000); got != "-10000 sat" {
+    if got := amount(-10000); got != "-10 000 sats" {
         t.Errorf("amount = %q", got)
     }
 }
