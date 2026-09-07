@@ -307,9 +307,6 @@ func events(w http.ResponseWriter, r *http.Request, closing <-chan struct{}) {
         logging.Err("mini app: event stream needs a flushable writer: %v", err)
         return
     }
-    for k, v := range r.Header {
-        logging.Err("mini app: events header %s: %v", k, v)
-    }
     var ch = subscribe()
     defer unsubscribe(ch)
     var t = time.NewTicker(keepAlive)
@@ -825,7 +822,7 @@ func Start(addr, token string, src Source) *http.Server {
         }
         w.Header().Set("Content-Type", "text/html; charset=utf-8")
         w.Write(b)
-        logging.Info("mini app: %s %s %.2f ms", r.Method, r.RequestURI, float64(time.Now().UnixNano() - started) / 1e6)
+        logging.Info("mini app: %s %s [%.2f ms]", r.Method, r.RequestURI, float64(time.Now().UnixNano() - started) / 1e6)
     }))
     // The watch button. GET renders it for the calling user, POST sets the watch
     // and renders the result. Never cached: whether a given reader watches
