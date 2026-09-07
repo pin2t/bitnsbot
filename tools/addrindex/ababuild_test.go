@@ -7,14 +7,14 @@ import "path/filepath"
 import "strings"
 import "testing"
 
-// The fixture chain pays otherScript a coinbase in each of its four blocks and
-// pays it again in block 2, but the last time anything was spent *from* it was
-// block 1. payScript is paid in block 1 and spends in block 2. So otherScript is
-// the more abandoned of the two even though it was paid most recently, which is
-// the whole distinction this command draws.
+// The fixture chain pays otherScript a coinbase in every one of its four blocks
+// and spends from it in block 1, so its last operation is block 3's coinbase.
+// payScript is paid in block 1, spends and is paid again in block 2, and is
+// never touched afterwards — so it is the more abandoned of the two, even though
+// it is the only one of them that ever spent. Either side counts.
 var wantLast = map[string]int64{
-    scriptAddress(otherScript): blockTime(1),
     scriptAddress(payScript):   blockTime(2),
+    scriptAddress(otherScript): blockTime(3),
 }
 
 func abaOptions(t *testing.T, url string) *options {
@@ -58,14 +58,14 @@ func TestAbaBuild(t *testing.T) {
     if len(addrs) != 2 {
         t.Fatalf("abandoned = %v, want exactly the two addresses that hold coins", addrs)
     }
-    // the ranking itself: the address paid most recently is the one that has
-    // gone longest without spending, and it comes first
-    if addrs[0] != scriptAddress(otherScript) || addrs[1] != scriptAddress(payScript) {
-        t.Errorf("abandoned ranks %v; the address that last spent earliest comes first", addrs)
+    // the ranking itself: the address whose coins last moved earliest comes
+    // first, whichever side that movement was
+    if addrs[0] != scriptAddress(payScript) || addrs[1] != scriptAddress(otherScript) {
+        t.Errorf("abandoned ranks %v; the address whose coins moved least recently comes first", addrs)
     }
     for addr, want := range wantLast {
         if last[addr] != want {
-            t.Errorf("%s last moved at %d, want %d — its last spend, not its last payment",
+            t.Errorf("%s last moved at %d, want %d — the later of its payments and its spends",
                 addr, last[addr], want)
         }
     }
@@ -99,8 +99,8 @@ func abaBalances(t *testing.T, path string) map[string]move {
     if err != nil { t.Fatalf("open %s: %v", path, err) }
     defer store.close()
     var out = map[string]move{}
-    if err := store.each(func(script []byte, balance, spent, paid int64) error {
-        out[hex.EncodeToString(script)] = move{sat: balance, spent: spent, paid: paid}
+    if err := store.each(func(script []byte, balance, last int64) error {
+        out[hex.EncodeToString(script)] = move{sat: balance, last: last}
         return nil
     }); err != nil {
         t.Fatalf("read the state: %v", err)
@@ -109,18 +109,22 @@ func abaBalances(t *testing.T, path string) map[string]move {
 }
 
 // The rule the ranking rests on, driven straight at the shards so each case is
-// one row rather than a chain that has to produce it: a spend outranks a later
-// payment, and an address that has never spent is ranked by when it was paid.
+// one row rather than a chain that has to produce it: an address's date is the
+// last time its coins moved at all, and a spend is not privileged over the
+// payment that came after it. Dates fall as well as rise here, since a reader
+// taking the last record rather than the latest date would otherwise pass.
 func TestAbaLastMovedRule(t *testing.T) {
     var dir = filepath.Join(t.TempDir(), "shards")
     var sh, err = newTimedShards(dir, 4, 4)
     if err != nil { t.Fatalf("newTimedShards: %v", err) }
     defer sh.remove()
-    // paid twice and never spent, so the later payment is its date
-    if err := sh.putAt(string(payScript), 400, 0, 100); err != nil { t.Fatalf("put: %v", err) }
-    if err := sh.putAt(string(payScript), 100, 0, 700); err != nil { t.Fatalf("put: %v", err) }
-    // spent long ago and paid since, so the spend is its date
-    if err := sh.putAt(string(otherScript), 900, 300, 800); err != nil { t.Fatalf("put: %v", err) }
+    // paid at 700 and then again at 100, so the earlier record is the later date
+    if err := sh.putAt(string(payScript), 400, 700); err != nil { t.Fatalf("put: %v", err) }
+    if err := sh.putAt(string(payScript), 100, 100); err != nil { t.Fatalf("put: %v", err) }
+    // spent at 300 and paid at 800 since, so the payment is its date and it is
+    // the less abandoned of the two despite being the only one that ever spent
+    if err := sh.putAt(string(otherScript), -100, 300); err != nil { t.Fatalf("put: %v", err) }
+    if err := sh.putAt(string(otherScript), 1000, 800); err != nil { t.Fatalf("put: %v", err) }
     if err := sh.flush(); err != nil { t.Fatalf("flush: %v", err) }
     var opt = &options{dbsqlite: filepath.Join(t.TempDir(), "abandoned.db"), shards: 4, sum: 2, top: 10}
     var store, oerr = openAba(opt.dbsqlite)
@@ -132,17 +136,21 @@ func TestAbaLastMovedRule(t *testing.T) {
     })
     var addrs, balance, last = abandonedRows(t, opt.dbsqlite)
     if len(addrs) != 2 { t.Fatalf("abandoned = %v, want both scripts", addrs) }
-    if got := last[scriptAddress(otherScript)]; got != 300 {
-        t.Errorf("the script that spent at 300 and was paid at 800 reports %d, want 300", got)
+    if got := last[scriptAddress(otherScript)]; got != 800 {
+        t.Errorf("the script that spent at 300 and was paid at 800 reports %d, want 800 — "+
+            "the payment is the later operation", got)
     }
     if got := last[scriptAddress(payScript)]; got != 700 {
-        t.Errorf("the script that never spent reports %d, want 700 — the last time it was paid", got)
+        t.Errorf("the script paid at 700 and 100 reports %d, want 700 — the later of its dates", got)
     }
-    if addrs[0] != scriptAddress(otherScript) {
+    if addrs[0] != scriptAddress(payScript) {
         t.Errorf("abandoned ranks %v, want the older date first", addrs)
     }
     if got := balance[scriptAddress(payScript)]; got != 500 {
         t.Errorf("the twice-paid script holds %d, want its two payments summed", got)
+    }
+    if got := balance[scriptAddress(otherScript)]; got != 900 {
+        t.Errorf("the script that spent 100 of 1000 holds %d, want 900", got)
     }
 }
 
@@ -166,8 +174,8 @@ func TestAbaCombinesScriptsOfOneAddress(t *testing.T) {
     var sh, err = newTimedShards(dir, 4, 4)
     if err != nil { t.Fatalf("newTimedShards: %v", err) }
     defer sh.remove()
-    if err := sh.putAt(string(p2pk), 5000, 200, 100); err != nil { t.Fatalf("put: %v", err) }
-    if err := sh.putAt(string(p2pkh), 3000, 600, 400); err != nil { t.Fatalf("put: %v", err) }
+    if err := sh.putAt(string(p2pk), 5000, 200); err != nil { t.Fatalf("put: %v", err) }
+    if err := sh.putAt(string(p2pkh), 3000, 600); err != nil { t.Fatalf("put: %v", err) }
     if err := sh.flush(); err != nil { t.Fatalf("flush: %v", err) }
     var opt = &options{dbsqlite: filepath.Join(t.TempDir(), "abandoned.db"), shards: 4, sum: 2, top: 10}
     var store, oerr = openAba(opt.dbsqlite)
@@ -185,7 +193,7 @@ func TestAbaCombinesScriptsOfOneAddress(t *testing.T) {
         t.Errorf("%s holds %d, want both scripts' coins", addrs[0], balance[addrs[0]])
     }
     if last[addrs[0]] != 600 {
-        t.Errorf("%s last spent at %d, want 600 — the later of its two scripts", addrs[0], last[addrs[0]])
+        t.Errorf("%s last moved at %d, want 600 — the later of its two scripts", addrs[0], last[addrs[0]])
     }
 }
 
@@ -242,7 +250,7 @@ func TestAbaBuildTop(t *testing.T) {
         if err := ababuild(opt); err != nil { t.Fatalf("ababuild: %v", err) }
     })
     var addrs, _, _ = abandonedRows(t, opt.dbsqlite)
-    if len(addrs) != 1 || addrs[0] != scriptAddress(otherScript) {
+    if len(addrs) != 1 || addrs[0] != scriptAddress(payScript) {
         t.Errorf("abandoned = %v, want only the most abandoned address", addrs)
     }
     // the state keeps every script whatever -top says, or the next run would
@@ -290,7 +298,7 @@ func TestAbaBuildNeedsADatabase(t *testing.T) {
     }
 }
 
-// A timed shard has to hand back the dates as well as the amounts, since a date
+// A timed shard has to hand back the date as well as the amount, since a date
 // lost is an address ranked on the wrong day. The untimed round trip is
 // TestShardsRoundTrip; this is the same guarantee for the wider record.
 func TestTimedShardsRoundTrip(t *testing.T) {
@@ -306,22 +314,19 @@ func TestTimedShardsRoundTrip(t *testing.T) {
             if n%3 == 0 { sat = -sat }
             // dates that rise and fall, so a reader taking the last one rather
             // than the latest would be caught
-            var spent = int64(1231006505 + (n%4)*600)
-            var paid = int64(1231006505 + (7-n%5)*600)
+            var when = int64(1231006505 + (7-n%5)*600)
             var e = want[script]
-            e.at(sat, spent, true)
-            e.at(0, paid, false)
+            e.at(sat, when)
             want[script] = e
-            if err := sh.putAt(script, sat, spent, paid); err != nil { t.Fatalf("put: %v", err) }
+            if err := sh.putAt(script, sat, when); err != nil { t.Fatalf("put: %v", err) }
         }
     }
     if err := sh.flush(); err != nil { t.Fatalf("flush: %v", err) }
     var got = map[string]move{}
     for i := 0; i < 8; i++ {
-        if err := sh.eachAt(i, func(script []byte, sat, spent, paid int64) error {
+        if err := sh.eachAt(i, func(script []byte, sat, when int64) error {
             var e = got[string(script)]
-            e.at(sat, spent, true)
-            e.at(0, paid, false)
+            e.at(sat, when)
             got[string(script)] = e
             return nil
         }); err != nil {

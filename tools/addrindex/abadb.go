@@ -5,9 +5,9 @@ import "strconv"
 import "strings"
 
 // abaStore is the SQLite database ababuild writes. `abandoned` is the table that
-// was asked for — the addresses holding coins whose owner has been silent
-// longest — and `balances` is the state it is selected from: every funded
-// script, what it holds, and the last block time it was spent from and paid at.
+// was asked for — the addresses holding coins that have gone longest without
+// moving any — and `balances` is the state it is selected from: every funded
+// script, what it holds, and the block time it last moved coins at.
 //
 // The state is what makes the answer exact as well as resumable. One address can
 // be paid by more than one script, and those scripts hash to different shards,
@@ -33,12 +33,11 @@ type abaStore struct {
 const abandonedDDL = `create table abandoned (addr text primary key, balance integer not null, lastTx integer not null)`
 
 // abaBalancesDDL is used twice, since a run builds the new state beside the old
-// one and swaps it in at the end. spent and paid are block times, zero meaning
-// it never happened — a script that has never been spent from is the ordinary
-// case here, and the one this command exists to find.
+// one and swaps it in at the end. last is a block time — the most recent block
+// in which this script either received coins or had some spent from it.
 func abaBalancesDDL(name string) string {
     return `create table ` + name + ` (script blob not null, addr text not null,
-        balance integer not null, spent integer not null, paid integer not null)`
+        balance integer not null, last integer not null)`
 }
 
 func openAba(path string) (*abaStore, error) {
@@ -48,17 +47,17 @@ func openAba(path string) (*abaStore, error) {
 }
 
 // each hands over every balance the last run stored, which is how a new run
-// starts from that height rather than from genesis. The two times come back with
-// it, or a carried-forward script would look like one first seen today.
-func (s *abaStore) each(f func(script []byte, balance, spent, paid int64) error) error {
-    var rows, err = s.db.Query("select script, balance, spent, paid from balances")
+// starts from that height rather than from genesis. The time comes back with it,
+// or a carried-forward script would look like one first seen today.
+func (s *abaStore) each(f func(script []byte, balance, last int64) error) error {
+    var rows, err = s.db.Query("select script, balance, last from balances")
     if err != nil { return err }
     defer rows.Close()
     for rows.Next() {
         var script []byte
-        var balance, spent, paid int64
-        if err := rows.Scan(&script, &balance, &spent, &paid); err != nil { return err }
-        if err := f(script, balance, spent, paid); err != nil { return err }
+        var balance, last int64
+        if err := rows.Scan(&script, &balance, &last); err != nil { return err }
+        if err := f(script, balance, last); err != nil { return err }
     }
     return rows.Err()
 }
@@ -103,7 +102,7 @@ func (s *abaState) begin() error {
 // address at all — kept anyway, since it holds coins the next run has to carry
 // forward, and left out of the answer table by the select that builds it.
 func (s *abaState) add(r abaRow) error {
-    s.pending = append(s.pending, r.script, r.addr, r.m.sat, r.m.spent, r.m.paid)
+    s.pending = append(s.pending, r.script, r.addr, r.m.sat, r.m.last)
     s.rows++
     if s.rows%rowsPerStatement != 0 { return nil }
     return s.write()
@@ -111,10 +110,10 @@ func (s *abaState) add(r abaRow) error {
 
 func (s *abaState) write() error {
     if len(s.pending) == 0 { return nil }
-    var n = len(s.pending) / 5
-    var values = strings.TrimSuffix(strings.Repeat("(?,?,?,?,?),", n), ",")
+    var n = len(s.pending) / 4
+    var values = strings.TrimSuffix(strings.Repeat("(?,?,?,?),", n), ",")
     var _, err = s.tx.Exec(
-        "insert into balances_new(script, addr, balance, spent, paid) values "+values, s.pending...)
+        "insert into balances_new(script, addr, balance, last) values "+values, s.pending...)
     s.pending = s.pending[:0]
     s.since += n
     if err != nil { return err }
@@ -151,11 +150,10 @@ func (s *abaState) rollback() {
 // least min satoshi, ranked by how long ago each last moved coins, and the first
 // top of them kept.
 //
-// lastTx is the address's last spend, and where it has never spent at all, the
-// last time it was paid. A spend is the only evidence anybody still holds the
-// key — an address can be paid by a stranger long after its owner is gone — so
-// silence on the spending side is what the ranking measures, and an address that
-// has never spent has been silent since the coins arrived.
+// lastTx is the last operation of either kind: the later of when the address was
+// last paid and when coins were last spent from it. Both count, because both are
+// the coins moving — an address that received a payment last year has not been
+// silent, whoever sent it.
 //
 // The balances are summed per address rather than read row by row, because one
 // address can be paid by more than one script: an early miner paid by `<pubkey>
@@ -167,11 +165,10 @@ func (s *abaStore) shortlist(min int64, top, height int) (int, error) {
     if _, err := s.db.Exec(`drop table if exists abandoned`); err != nil { return 0, err }
     if _, err := s.db.Exec(abandonedDDL); err != nil { return 0, err }
     var res, err = s.db.Exec(`insert into abandoned(addr, balance, lastTx)
-        select addr, sum(balance) as bal,
-               case when max(spent) > 0 then max(spent) else max(paid) end as last
+        select addr, sum(balance) as bal, max(last) as lastTx
         from balances where addr <> ''
         group by addr having bal >= ?
-        order by last, addr limit ?`, min, top)
+        order by lastTx, addr limit ?`, min, top)
     if err != nil { return 0, err }
     var rows, rerr = res.RowsAffected()
     if rerr != nil { return 0, rerr }

@@ -46,8 +46,8 @@ func newShards(dir string, count, bufKB int) (*shards, error) {
 // newTimedShards is newShards with room in every record for when the movement
 // happened, which is what ababuild needs and richbuild does not. It is a
 // constructor rather than a flag on put because the two have to agree: a shard
-// written with the times is unreadable without them, and the reader can only
-// know from how the file was opened.
+// written with the time is unreadable without it, and the reader can only know
+// from how the file was opened.
 func newTimedShards(dir string, count, bufKB int) (*shards, error) {
     return openShards(dir, count, bufKB, true)
 }
@@ -71,13 +71,12 @@ func openShards(dir string, count, bufKB int, times bool) (*shards, error) {
 // length, the script, and the amount — varints, because a script is 22 to 34
 // bytes and the amounts are mostly small, and three billion records pay for
 // every byte saved.
-func (s *shards) put(script string, sat int64) error { return s.putAt(script, sat, 0, 0) }
+func (s *shards) put(script string, sat int64) error { return s.putAt(script, sat, 0) }
 
-// putAt is put carrying the two timestamps a timed shard holds: when the script
-// was last spent from, and when it was last paid. Both are block times, and zero
-// means it did not happen — which is the common case for one of them, and costs
-// a single byte as a varint.
-func (s *shards) putAt(script string, sat, spent, paid int64) error {
+// putAt is put carrying the timestamp a timed shard holds: the block time of the
+// last movement this record covers, whichever side it happened on. Zero means no
+// movement, which only a caller that writes one can produce.
+func (s *shards) putAt(script string, sat, when int64) error {
     var w = s.writers[fnvHash(script)%uint64(len(s.writers))]
     var n = binary.PutUvarint(s.scratch[:], uint64(len(script)))
     if _, err := w.Write(s.scratch[:n]); err != nil { return err }
@@ -87,11 +86,9 @@ func (s *shards) putAt(script string, sat, spent, paid int64) error {
     s.records++
     s.bytes += int64(n + len(script) + m)
     if !s.times { return nil }
-    for _, t := range [2]int64{spent, paid} {
-        var k = binary.PutUvarint(s.scratch[:], uint64(t))
-        if _, err := w.Write(s.scratch[:k]); err != nil { return err }
-        s.bytes += int64(k)
-    }
+    var k = binary.PutUvarint(s.scratch[:], uint64(when))
+    if _, err := w.Write(s.scratch[:k]); err != nil { return err }
+    s.bytes += int64(k)
     return nil
 }
 
@@ -99,13 +96,13 @@ func (s *shards) putAt(script string, sat, spent, paid int64) error {
 // hands over is reused between calls, so a caller keeping one must copy it —
 // which the aggregation does, since it keys a map by it.
 func (s *shards) each(i int, f func(script []byte, sat int64) error) error {
-    return s.eachAt(i, func(script []byte, sat, spent, paid int64) error { return f(script, sat) })
+    return s.eachAt(i, func(script []byte, sat, when int64) error { return f(script, sat) })
 }
 
-// eachAt is each with the timestamps putAt wrote. On a shard opened without them
-// both are zero, so the two readers are one and a caller takes what its records
+// eachAt is each with the timestamp putAt wrote. On a shard opened without it the
+// time is zero, so the two readers are one and a caller takes what its records
 // actually carry.
-func (s *shards) eachAt(i int, f func(script []byte, sat, spent, paid int64) error) error {
+func (s *shards) eachAt(i int, f func(script []byte, sat, when int64) error) error {
     if err := s.writers[i].Flush(); err != nil { return err }
     var file, err = os.Open(shardName(s.dir, i))
     if err != nil { return err }
@@ -121,13 +118,12 @@ func (s *shards) eachAt(i int, f func(script []byte, sat, spent, paid int64) err
         if _, rerr := io.ReadFull(r, script); rerr != nil { return fmt.Errorf("shard %d: %w", i, rerr) }
         var sat, serr = binary.ReadVarint(r)
         if serr != nil { return fmt.Errorf("shard %d: %w", i, serr) }
-        var spent, paid uint64
+        var when uint64
         if s.times {
             var terr error
-            if spent, terr = binary.ReadUvarint(r); terr != nil { return fmt.Errorf("shard %d: %w", i, terr) }
-            if paid, terr = binary.ReadUvarint(r); terr != nil { return fmt.Errorf("shard %d: %w", i, terr) }
+            if when, terr = binary.ReadUvarint(r); terr != nil { return fmt.Errorf("shard %d: %w", i, terr) }
         }
-        if err := f(script, sat, int64(spent), int64(paid)); err != nil { return err }
+        if err := f(script, sat, int64(when)); err != nil { return err }
     }
 }
 

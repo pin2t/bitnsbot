@@ -22,8 +22,8 @@
 // files and encodes the addresses itself — so it needs neither -url nor -cookie;
 // richbuild reads the whole chain over REST and writes what every address holds
 // now to a SQLite table named rich, keeping no bbolt index at all; ababuild
-// reads it the same way and writes the addresses that still hold coins but have
-// gone longest without spending any, to a SQLite table named abandoned.
+// reads it the same way and writes the addresses that still hold coins but whose
+// coins have gone longest without moving, to a SQLite table named abandoned.
 package main
 
 import "context"
@@ -93,7 +93,7 @@ func usage() {
     fmt.Fprintln(os.Stderr, "  list      print every transaction the index holds for an address, from -db or -dbsqlite")
     fmt.Fprintln(os.Stderr, "  actbuild  record the addresses with more than -active transactions, from -blocks")
     fmt.Fprintln(os.Stderr, "  richbuild sum every address's balance over the whole chain into -dbsqlite")
-    fmt.Fprintln(os.Stderr, "  ababuild  rank the addresses that hold coins by how long since they last spent")
+    fmt.Fprintln(os.Stderr, "  ababuild  rank the addresses that hold coins by how long since their coins last moved")
 }
 
 func main() {

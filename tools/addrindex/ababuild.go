@@ -9,17 +9,18 @@ import "bitnsbot/addrindex"
 import "bitnsbot/logging"
 
 // ababuild finds the coins nobody has touched for longest: the addresses that
-// hold a balance and whose owner last spent from them further back than anyone
-// else's. It reads the chain exactly as richbuild does — every block and the
-// prevouts its inputs spend, over Core's REST interface — and keeps one more
-// thing per script as it goes: when that script was last spent from, and when it
-// was last paid.
+// hold a balance and whose last operation — coins received, or coins spent from
+// them — is further back than anyone else's. It reads the chain exactly as
+// richbuild does, every block and the prevouts its inputs spend over Core's REST
+// interface, and keeps one more thing per script as it goes: the block time it
+// last moved coins at.
 //
-// A spend is the only evidence that somebody still holds the key. An address can
-// be paid by a stranger at any time, so receiving says nothing about whether its
-// owner is still there; signing a spend says everything. That is why the ranking
-// is by last spend, and why an address that has never spent at all is ranked by
-// when its coins arrived — it has been silent for the whole of its life.
+// Either side counts, because either side is the coins moving. An address paid
+// last year has not been silent for a decade, whoever sent the payment, so a
+// receipt resets the clock exactly as a spend does. That is also what makes a
+// resumed run exact: the only scripts a stored state leaves out are those holding
+// nothing, and the payment that ever brings one back is itself later than
+// anything it did before.
 //
 // The shape of the run is richbuild's, and for the same reasons: movements go to
 // sharded files as the chain is read, because neither the movements nor the
@@ -67,28 +68,22 @@ func ababuild(opt *options) error {
     var sh, serr = newTimedShards(dir, opt.shards, shardBufferKB)
     if serr != nil { return serr }
     defer sh.remove()
-    fmt.Printf("Tracking balances and spends over blocks %d..%d of %s into %s (%d shards under %s)\n",
+    fmt.Printf("Tracking balances and last movements over blocks %d..%d of %s into %s (%d shards under %s)\n",
         from, tip, chain, opt.dbsqlite, opt.shards, dir)
     var started = time.Now()
     // A run that carries on from a stored height starts with what that height
-    // left: every balance goes back in as one movement, carrying the dates it
-    // was stored with, so the shards hold the whole history and not just this
-    // run's part of it.
-    //
-    // The one thing a resumed run cannot recover is the spending date of a
-    // script that held nothing at the height it stopped at and was paid again
-    // afterwards: only funded scripts are stored, so that script comes back as
-    // one this run has never seen spend, and is ranked by the payment instead.
-    // Keeping the emptied ones would mean storing every script the chain has
-    // ever had — over a billion rows against sixty million — to hold a date for
-    // the few that are ever refunded. So a resumed run can rank such an address
-    // as less abandoned than a run from genesis would; nothing else differs, and
-    // TestAbaBuildCarriesStateForward pins that.
+    // left: every balance goes back in as one movement, carrying the date it was
+    // stored with, so the shards hold the whole history and not just this run's
+    // part of it. A script that held nothing at that height is not stored and so
+    // is not carried, which costs nothing: it can only reach the answer table by
+    // being paid again, and that payment is later than anything the dropped row
+    // knew. TestAbaBuildCarriesStateForward pins the two runs landing on one
+    // list.
     if built {
         var seeded int
-        if err := store.each(func(script []byte, balance, spent, paid int64) error {
+        if err := store.each(func(script []byte, balance, last int64) error {
             seeded++
-            return sh.putAt(string(script), balance, spent, paid)
+            return sh.putAt(string(script), balance, last)
         }); err != nil {
             return fmt.Errorf("read stored balances: %w", err)
         }
@@ -104,28 +99,21 @@ func ababuild(opt *options) error {
 }
 
 // move is what one script did over the stretch of chain a buffer or a shard
-// covers: how much its balance changed, and the latest block time on each side.
-// The times are kept apart rather than reduced to one, because which side a date
-// came from is the whole ranking — a payment received does not answer for a
-// spend that never happened.
+// covers: how much its balance changed, and when it last changed.
 type move struct {
-    sat   int64
-    spent int64
-    paid  int64
+    sat  int64
+    last int64
 }
 
 // at folds one movement in, taking the later of two dates rather than the one
 // from the later block. Block timestamps are not strictly ordered — a miner's
-// clock may legitimately run up to two hours behind the block before it — so the
-// last spend by height can carry an earlier date than one before it, and reading
-// the ranking off that would make an address look more abandoned than it is.
-func (m *move) at(sat, when int64, spend bool) {
+// clock may legitimately run up to two hours behind the block before it — so a
+// movement in a later block can carry an earlier date than one before it, and
+// reading the ranking off that would make an address look more abandoned than it
+// is.
+func (m *move) at(sat, when int64) {
     m.sat += sat
-    if spend {
-        if when > m.spent { m.spent = when }
-        return
-    }
-    if when > m.paid { m.paid = when }
+    if when > m.last { m.last = when }
 }
 
 // track walks the blocks, turning each into the movements it makes and the dates
@@ -138,18 +126,18 @@ func track(ctx context.Context, src *addrindex.REST, sh *shards, opt *options,
     var last string
     for f := range stream(ctx, src, from, tip, opt.fetch) {
         if f.err != nil { return "", fmt.Errorf("block %d: %w", f.height, f.err) }
-        var moves, ok = addrindex.Movements(f.blk)
+        var moves, ok = addrindex.Balances(f.blk)
         if !ok { return "", fmt.Errorf("could not parse block %d (%s)", f.height, f.blk.Hash) }
         var when, timed = addrindex.BlockTime(f.blk.Raw)
         if !timed { return "", fmt.Errorf("block %d (%s) is shorter than its own header", f.height, f.blk.Hash) }
         last = f.blk.Hash
         for _, m := range moves {
             var e = buf[string(m.Script)]
-            e.at(m.Sat, when, m.Spend)
+            e.at(m.Sat, when)
             buf[string(m.Script)] = e
         }
         // The outputs Core's UTXO set never held are taken back out of the
-        // balance, but not out of the dates: a script whose only payment is one
+        // balance, but not out of the date: a script whose only payment is one
         // of these ends up holding nothing and never reaches the answer table,
         // and every other script involved was paid again by the copy that did
         // survive, which is later and therefore wins the max anyway.
@@ -175,13 +163,17 @@ func track(ctx context.Context, src *addrindex.REST, sh *shards, opt *options,
 //
 // Nothing is dropped for netting to zero, which is where this parts company with
 // richbuild's flush: an address funded and emptied again inside one buffer adds
-// nothing to anybody's balance, but it did spend, and the date it spent on is
-// the thing being measured. Should it ever be paid again it will end the run
-// holding coins, and its last spend has to be that date and not the payment
-// that followed. The cost is a fuller shard file, which is disk.
+// nothing to anybody's balance, but it did move coins, and when it last moved
+// them is what is being measured. Dropping it would be very nearly safe — a
+// script never paid again holds nothing and is left out of the answer anyway,
+// and one that is paid again is paid in a later block. The exception is that
+// block timestamps are not strictly ordered: a later block may carry an earlier
+// time, so the date dropped here can be the latest that script ever had. Which
+// movements share a buffer is an accident of -batch, and the answer should not
+// be. The cost of keeping them is a fuller shard file, which is disk.
 func spill(sh *shards, buf map[string]move) error {
     for script, m := range buf {
-        if err := sh.putAt(script, m.sat, m.spent, m.paid); err != nil { return err }
+        if err := sh.putAt(script, m.sat, m.last); err != nil { return err }
     }
     clear(buf)
     return nil
@@ -222,10 +214,9 @@ func combine(store *abaStore, sh *shards, opt *options, tip int, hash string) er
                 next++
                 mu.Unlock()
                 var sums = map[string]move{}
-                if err := sh.eachAt(i, func(script []byte, sat, spent, paid int64) error {
+                if err := sh.eachAt(i, func(script []byte, sat, when int64) error {
                     var e = sums[string(script)]
-                    e.at(sat, spent, true)
-                    e.at(0, paid, false)
+                    e.at(sat, when)
                     sums[string(script)] = e
                     return nil
                 }); err != nil {
