@@ -26,6 +26,7 @@ type shards struct {
     files   []*os.File
     writers []*bufio.Writer
     scratch [binary.MaxVarintLen64]byte
+    times   bool
     records int64
     bytes   int64
 }
@@ -39,8 +40,21 @@ func shardName(dir string, i int) string { return filepath.Join(dir, fmt.Sprintf
 // each one gets: the movements arrive interleaved, so without a buffer per shard
 // every record would be its own small write to a different place on the disk.
 func newShards(dir string, count, bufKB int) (*shards, error) {
+    return openShards(dir, count, bufKB, false)
+}
+
+// newTimedShards is newShards with room in every record for when the movement
+// happened, which is what ababuild needs and richbuild does not. It is a
+// constructor rather than a flag on put because the two have to agree: a shard
+// written with the time is unreadable without it, and the reader can only know
+// from how the file was opened.
+func newTimedShards(dir string, count, bufKB int) (*shards, error) {
+    return openShards(dir, count, bufKB, true)
+}
+
+func openShards(dir string, count, bufKB int, times bool) (*shards, error) {
     if err := os.MkdirAll(dir, 0755); err != nil { return nil, err }
-    var s = &shards{dir: dir}
+    var s = &shards{dir: dir, times: times}
     for i := 0; i < count; i++ {
         var f, err = os.Create(shardName(dir, i))
         if err != nil {
@@ -57,7 +71,12 @@ func newShards(dir string, count, bufKB int) (*shards, error) {
 // length, the script, and the amount — varints, because a script is 22 to 34
 // bytes and the amounts are mostly small, and three billion records pay for
 // every byte saved.
-func (s *shards) put(script string, sat int64) error {
+func (s *shards) put(script string, sat int64) error { return s.putAt(script, sat, 0) }
+
+// putAt is put carrying the timestamp a timed shard holds: the block time of the
+// last movement this record covers, whichever side it happened on. Zero means no
+// movement, which only a caller that writes one can produce.
+func (s *shards) putAt(script string, sat, when int64) error {
     var w = s.writers[fnvHash(script)%uint64(len(s.writers))]
     var n = binary.PutUvarint(s.scratch[:], uint64(len(script)))
     if _, err := w.Write(s.scratch[:n]); err != nil { return err }
@@ -66,6 +85,10 @@ func (s *shards) put(script string, sat int64) error {
     if _, err := w.Write(s.scratch[:m]); err != nil { return err }
     s.records++
     s.bytes += int64(n + len(script) + m)
+    if !s.times { return nil }
+    var k = binary.PutUvarint(s.scratch[:], uint64(when))
+    if _, err := w.Write(s.scratch[:k]); err != nil { return err }
+    s.bytes += int64(k)
     return nil
 }
 
@@ -73,6 +96,13 @@ func (s *shards) put(script string, sat int64) error {
 // hands over is reused between calls, so a caller keeping one must copy it —
 // which the aggregation does, since it keys a map by it.
 func (s *shards) each(i int, f func(script []byte, sat int64) error) error {
+    return s.eachAt(i, func(script []byte, sat, when int64) error { return f(script, sat) })
+}
+
+// eachAt is each with the timestamp putAt wrote. On a shard opened without it the
+// time is zero, so the two readers are one and a caller takes what its records
+// actually carry.
+func (s *shards) eachAt(i int, f func(script []byte, sat, when int64) error) error {
     if err := s.writers[i].Flush(); err != nil { return err }
     var file, err = os.Open(shardName(s.dir, i))
     if err != nil { return err }
@@ -88,7 +118,12 @@ func (s *shards) each(i int, f func(script []byte, sat int64) error) error {
         if _, rerr := io.ReadFull(r, script); rerr != nil { return fmt.Errorf("shard %d: %w", i, rerr) }
         var sat, serr = binary.ReadVarint(r)
         if serr != nil { return fmt.Errorf("shard %d: %w", i, serr) }
-        if err := f(script, sat); err != nil { return err }
+        var when uint64
+        if s.times {
+            var terr error
+            if when, terr = binary.ReadUvarint(r); terr != nil { return fmt.Errorf("shard %d: %w", i, terr) }
+        }
+        if err := f(script, sat, int64(when)); err != nil { return err }
     }
 }
 

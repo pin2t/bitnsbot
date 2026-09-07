@@ -11,6 +11,7 @@
 //	addrindex list     -dbsqlite ai.sqlite.db -url http://127.0.0.1:8332 -cookie ./cookie <address>
 //	addrindex actbuild  -db ai.db -blocks ~/.bitcoin/blocks
 //	addrindex richbuild -dbsqlite rich.db -url http://127.0.0.1:8332
+//	addrindex ababuild  -dbsqlite abandoned.db -url http://127.0.0.1:8332
 //
 // build catches the index up from its cursor to the chain tip and exits; list
 // prints every transaction the index holds for an address, then a summary —
@@ -20,7 +21,9 @@
 // is longer than -active transactions. It talks to no node at all — it reads the
 // files and encodes the addresses itself — so it needs neither -url nor -cookie;
 // richbuild reads the whole chain over REST and writes what every address holds
-// now to a SQLite table named rich, keeping no bbolt index at all.
+// now to a SQLite table named rich, keeping no bbolt index at all; ababuild
+// reads it the same way and writes the addresses that still hold coins but whose
+// coins have gone longest without moving, to a SQLite table named abandoned.
 package main
 
 import "context"
@@ -53,13 +56,15 @@ type options struct {
     min      int64
     to       int
     tmp      string
+    top      int
+    sum      int
     verbose  int
 }
 
 func flags(fs *flag.FlagSet) *options {
     var o = &options{}
     fs.StringVar(&o.db, "db", "addrindex.db", "path to the bbolt database holding the index")
-    fs.StringVar(&o.dbsqlite, "dbsqlite", "", "the SQLite database: list reads a migrated index from it, richbuild writes balances to it")
+    fs.StringVar(&o.dbsqlite, "dbsqlite", "", "the SQLite database: list reads a migrated index from it, richbuild and ababuild write their tables to it")
     fs.StringVar(&o.url, "url", "http://127.0.0.1:8332", "Bitcoin Core base URL, serving both JSON-RPC and REST")
     fs.StringVar(&o.cookie, "cookie", "", "path to Core's .cookie file, for RPC auth")
     fs.StringVar(&o.user, "user", "", "Core RPC username, instead of a cookie")
@@ -68,12 +73,14 @@ func flags(fs *flag.FlagSet) *options {
     fs.IntVar(&o.active, "active", 1000, "actbuild: transactions an address needs to count as active")
     fs.StringVar(&o.blocks, "blocks", "", "actbuild: Core's blocks directory, read instead of its REST interface")
     fs.IntVar(&o.addrs, "addrs", 0, "actbuild: distinct addresses to reserve room for, so the set never reallocates")
-    fs.IntVar(&o.batch, "batch", 4000000, "richbuild: movements held in memory before they are written to the shards")
-    fs.IntVar(&o.shards, "shards", 128, "richbuild: files the movements are split into, one summed at a time")
-    fs.IntVar(&o.fetch, "fetch", 4, "richbuild: blocks fetched at once")
-    fs.Int64Var(&o.min, "min", 0, "richbuild: satoshi an address needs before it is written to rich")
-    fs.IntVar(&o.to, "to", 0, "richbuild: stop at this height instead of the chain tip")
-    fs.StringVar(&o.tmp, "tmp", "", "richbuild: directory for the movement shards (default the database's name with .shards)")
+    fs.IntVar(&o.batch, "batch", 4000000, "richbuild, ababuild: movements held in memory before they are written to the shards")
+    fs.IntVar(&o.shards, "shards", 128, "richbuild, ababuild: files the movements are split into")
+    fs.IntVar(&o.fetch, "fetch", 4, "richbuild, ababuild: blocks fetched at once")
+    fs.Int64Var(&o.min, "min", 0, "richbuild, ababuild: satoshi an address needs before it is written to the answer table")
+    fs.IntVar(&o.to, "to", 0, "richbuild, ababuild: stop at this height instead of the chain tip")
+    fs.StringVar(&o.tmp, "tmp", "", "richbuild, ababuild: directory for the movement shards (default the database's name with .shards)")
+    fs.IntVar(&o.top, "top", 10000, "ababuild: addresses to keep in the abandoned table")
+    fs.IntVar(&o.sum, "sum", 4, "ababuild: shards summed at once, which is also what multiplies the run's peak memory")
     fs.IntVar(&o.verbose, "verbose", 1, "log level: 0 quiet, 1 progress, 2 every request")
     return o
 }
@@ -86,6 +93,7 @@ func usage() {
     fmt.Fprintln(os.Stderr, "  list      print every transaction the index holds for an address, from -db or -dbsqlite")
     fmt.Fprintln(os.Stderr, "  actbuild  record the addresses with more than -active transactions, from -blocks")
     fmt.Fprintln(os.Stderr, "  richbuild sum every address's balance over the whole chain into -dbsqlite")
+    fmt.Fprintln(os.Stderr, "  ababuild  rank the addresses that hold coins by how long since their coins last moved")
 }
 
 func main() {
@@ -94,7 +102,7 @@ func main() {
         os.Exit(2)
     }
     var cmd = os.Args[1]
-    if cmd != "build" && cmd != "list" && cmd != "actbuild" && cmd != "richbuild" {
+    if cmd != "build" && cmd != "list" && cmd != "actbuild" && cmd != "richbuild" && cmd != "ababuild" {
         fmt.Fprintf(os.Stderr, "unknown command %q\n\n", cmd)
         usage()
         os.Exit(2)
@@ -108,10 +116,10 @@ func main() {
     // richbuild writes balances to it, while build and actbuild write the bbolt
     // index named by -db. Opening -db for the two SQLite commands would create an
     // empty index beside the database actually being worked on.
-    if opt.dbsqlite != "" && cmd != "list" && cmd != "richbuild" {
+    if opt.dbsqlite != "" && cmd != "list" && cmd != "richbuild" && cmd != "ababuild" {
         logging.Fatal("-dbsqlite is SQLite; %s writes the bbolt index named by -db", cmd)
     }
-    if opt.dbsqlite == "" && cmd != "richbuild" {
+    if opt.dbsqlite == "" && cmd != "richbuild" && cmd != "ababuild" {
         var err error
         db, err = bbolt.Open(opt.db, 0600, &bbolt.Options{Timeout: 5 * time.Second})
         if err != nil { logging.Fatal("open %s: %v", opt.db, err) }
@@ -135,6 +143,8 @@ func main() {
         actbuild(opt)
     case "richbuild":
         if err := richbuild(opt); err != nil { logging.Fatal("richbuild: %v", err) }
+    case "ababuild":
+        if err := ababuild(opt); err != nil { logging.Fatal("ababuild: %v", err) }
     }
 }
 

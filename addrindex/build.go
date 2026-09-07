@@ -360,3 +360,12 @@ func Balances(blk Block) ([]Payment, bool) {
     }
     return out, true
 }
+
+// BlockTime is the timestamp in a serialized block's header — the 4-byte
+// little-endian field at offset 68, after the version, the previous block's hash
+// and the merkle root. It is here rather than at the caller for the reason the
+// rest of the format is: one place knows where the bytes are.
+func BlockTime(raw []byte) (int64, bool) {
+    if len(raw) < 80 { return 0, false }
+    return int64(binary.LittleEndian.Uint32(raw[68:72])), true
+}
