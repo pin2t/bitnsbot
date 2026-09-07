@@ -27,7 +27,14 @@ type REST struct {
 }
 
 func NewREST(baseURL string) *REST {
-    return &REST{baseURL: baseURL, client: &http.Client{Timeout: 30 * time.Second}}
+    return &REST{baseURL: baseURL, client: &http.Client{
+        Timeout: time.Second * 15,
+        Transport: &http.Transport{
+            MaxIdleConns:        20,
+            MaxIdleConnsPerHost: 10,
+            IdleConnTimeout:     60 * time.Second,
+        },
+    }}
 }
 
 func (s *REST) get(ctx context.Context, path string) ([]byte, error) {

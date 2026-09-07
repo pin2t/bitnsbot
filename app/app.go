@@ -220,7 +220,9 @@ func cached(c *lru.Cache[string, []byte], w http.ResponseWriter, r *http.Request
     w.Header().Set("Content-Type", "text/html; charset=utf-8")
     w.Header().Set("Content-Language", lang)
     w.Write(b)
-    logging.Info("mini app: %s %s [%s] %.2f ms cached = %v", r.Method, r.RequestURI, lang, float64(time.Now().UnixNano() - started) / 1e6, hit)
+    var m = ""
+    if hit { m = "cached" }
+    logging.Info("mini app: %s %s [%s] [%.2f ms] [%s]", r.Method, r.RequestURI, lang, float64(time.Now().UnixNano() - started) / 1e6, m)
 }
 
 func render(lang, name string, data any) []byte {
@@ -305,6 +307,9 @@ func events(w http.ResponseWriter, r *http.Request, closing <-chan struct{}) {
         logging.Err("mini app: event stream needs a flushable writer: %v", err)
         return
     }
+    for k, v := range r.Header {
+        logging.Err("mini app: events header %s: %v", k, v)
+    }
     var ch = subscribe()
     defer unsubscribe(ch)
     var t = time.NewTicker(keepAlive)
@@ -315,9 +320,11 @@ func events(w http.ResponseWriter, r *http.Request, closing <-chan struct{}) {
         case <-closing:            return
         case name := <-ch:
             fmt.Fprintf(w, "event: %s\ndata: 1\n\n", name)
+            logging.Info("mini app: event %s to %s", name, r.RemoteAddr)
             if rc.Flush() != nil { return }
         case <-t.C:
             fmt.Fprint(w, ": keepalive\n\n")
+            logging.Info("mini app: keepalive")
             if rc.Flush() != nil { return }
         }
     }
