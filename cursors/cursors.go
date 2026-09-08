@@ -12,10 +12,10 @@
 //	addrindex      the address index's build (addrindex/)
 //	actbuild-file  the busy-address pass over Core's block files (tools/addrindex)
 //
-// Init carries the old buckets forward, so a database written before this keeps
-// its place rather than rescanning the chain. The old buckets are left where
-// they are: an address index that had to be built again is hours of work, and
-// leaving them costs three keys and makes going back free.
+// Init also removes the three buckets those cursors used to live in. The values
+// were carried across by the version that introduced this bucket; what is left
+// behind is an empty shell that nothing reads, and a place to edit a number and
+// wonder why it changes nothing.
 package cursors
 
 import "strconv"
@@ -36,30 +36,25 @@ var bucket = []byte("cursors")
 
 var db *bbolt.DB
 
-// carried is where each cursor used to live. Only the value is moved, and only
-// when this bucket has nothing under that name yet, so running Init again — it
-// is called from every package that keeps a cursor, and by tools/addrindex —
-// cannot walk a scan backwards.
-var carried = []struct{ bucket, key, name string }{
-    {"blocks-cursor", "cursor", Blocks},
-    {"miners-cursor", "cursor", Miners},
-    {"addrindex-cursor", "cursor", AddrIndex},
-    {"addrindex-cursor", "actbuild-file", ActBuild},
-}
+// obsolete are the buckets each cursor used to live in, dropped on the first
+// start that finds them. A database that has not been through the version which
+// carried their values across loses them here, and the scans start over — for
+// the address index, hours of work — so that version is the upgrade step between
+// an older database and this one.
+var obsolete = []string{"blocks-cursor", "miners-cursor", "addrindex-cursor"}
 
+// Init is called from every package that keeps a cursor, and by tools/addrindex,
+// so it runs several times a start and must be safe to repeat: creating the
+// bucket and dropping the old ones are both no-ops the second time.
 func Init(handle *bbolt.DB) error {
     db = handle
     return db.Update(func(tx *bbolt.Tx) error {
-        var b, err = tx.CreateBucketIfNotExists(bucket)
+        var _, err = tx.CreateBucketIfNotExists(bucket)
         if err != nil { return err }
-        for _, c := range carried {
-            if b.Get([]byte(c.name)) != nil { continue }
-            var old = tx.Bucket([]byte(c.bucket))
-            if old == nil { continue }
-            var v = old.Get([]byte(c.key))
-            if v == nil { continue }
-            if err := b.Put([]byte(c.name), v); err != nil { return err }
-            logging.Status("cursors: carried %s/%s forward as %s (%s)", c.bucket, c.key, c.name, v)
+        for _, name := range obsolete {
+            if tx.Bucket([]byte(name)) == nil { continue }
+            if err := tx.DeleteBucket([]byte(name)); err != nil { return err }
+            logging.Status("cursors: removed the obsolete %s bucket", name)
         }
         return nil
     })

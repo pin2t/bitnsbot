@@ -14,7 +14,8 @@ func open(t *testing.T) *bbolt.DB {
 }
 
 // seedOld writes a cursor the way it was kept before this package: one bucket
-// per scan, each holding a single key.
+// per scan, each holding a single key. Only the buckets survive into these
+// tests; their values were carried across a version ago.
 func seedOld(t *testing.T, db *bbolt.DB, bucket, key, value string) {
     t.Helper()
     var err = db.Update(func(tx *bbolt.Tx) error {
@@ -33,34 +34,36 @@ func get(t *testing.T, name string, want int64) {
     }
 }
 
-// A database written before this keeps its place. Losing one is not a lost
-// setting: the address index would rebuild from genesis, which is hours.
-func TestInitCarriesTheOldBucketsForward(t *testing.T) {
+// The buckets each cursor used to live in are dropped on the first start that
+// finds them. Their values were carried across by the version before this one;
+// what is left is an empty shell nothing reads.
+func TestInitRemovesTheObsoleteBuckets(t *testing.T) {
     var db = open(t)
     seedOld(t, db, "blocks-cursor", "cursor", "812345")
     seedOld(t, db, "miners-cursor", "cursor", "964000")
     seedOld(t, db, "addrindex-cursor", "cursor", "700100")
-    seedOld(t, db, "addrindex-cursor", "actbuild-file", "57")
+    // a database already through the carrying version: its places are here
     if err := Init(db); err != nil { t.Fatalf("init: %v", err) }
-    get(t, Blocks, 812345)
-    get(t, Miners, 964000)
-    get(t, AddrIndex, 700100)
-    get(t, ActBuild, 57)
-    // the old buckets are left alone, so going back to the previous binary
-    // costs nothing
+    if err := db.Update(func(tx *bbolt.Tx) error {
+        if err := Set(tx, Blocks, 812345); err != nil { return err }
+        return Set(tx, AddrIndex, 700100)
+    }); err != nil { t.Fatal(err) }
+    if err := Init(db); err != nil { t.Fatalf("init again: %v", err) }
     db.View(func(tx *bbolt.Tx) error {
-        if tx.Bucket([]byte("blocks-cursor")) == nil {
-            t.Error("the old bucket was removed; a rollback would rescan the chain")
+        for _, name := range obsolete {
+            if tx.Bucket([]byte(name)) != nil { t.Errorf("%s is still there", name) }
         }
         return nil
     })
+    // and dropping them left this bucket alone
+    get(t, Blocks, 812345)
+    get(t, AddrIndex, 700100)
 }
 
 // Init runs from every package that keeps a cursor, and again on every start, so
-// it must never walk a scan backwards to where the old bucket was left.
-func TestInitDoesNotOverwriteProgress(t *testing.T) {
+// repeating it must never disturb a place already stored.
+func TestInitLeavesStoredCursorsAlone(t *testing.T) {
     var db = open(t)
-    seedOld(t, db, "blocks-cursor", "cursor", "100")
     if err := Init(db); err != nil { t.Fatalf("init: %v", err) }
     if err := db.Update(func(tx *bbolt.Tx) error { return Set(tx, Blocks, 900) }); err != nil {
         t.Fatal(err)
