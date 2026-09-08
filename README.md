@@ -4,9 +4,11 @@
 
 Bitcoin blockchain explorer and events notification bot. It can send notifications on watched addresses and transactions. It also sends various information and statistics on Bitcoin network
 
-<img src="./img/2.png" alt="address notification" width="300"><img src="./img/3.png" alt="Address notification" width="300">
+<img src="./img/1.jpeg" alt="transaction notification" width="300"><img src="./img/2.jpeg" alt="Address notification" width="300">
 
-<img src="./img/4.png" alt="Info" width="300"><img src="./img/5.png" alt="Info" width="300">
+#### Mini App
+
+<img src="./img/3.jpeg" alt="Info" width="300"><img src="./img/4.jpeg" alt="Info" width="300"><img src="./img/5.jpeg" alt="Info" width="300">
 
 ### How to run
 
@@ -110,7 +112,7 @@ Another option: there are [scripts](scripts) to deploy a bot as a systemd servic
 
 [advertise](tools/advertise) - simple command line tool which sends advertising packets with a specific IP to all nodes in Bitcoin network
 
-dbui - simple web interface to manage bot database. Embedded into a bot itself 
+bboltwui - simple web interface to manage bot database. Embedded into a bot itself 
                    
 i18n-vet - check translation 
 
@@ -120,6 +122,6 @@ addrindex - build transaction history index on addresses. Gather other statistic
 
 - [x] I18N
 - [x] Mini App
-- [ ] Addresses statistics
+- [x] Addresses statistics
 - [ ] Daily statistics. Send every day market, transactions volume, moved coins, etc statistics
 - [ ] Improve data quality. More reliable and correct answers on addresses
