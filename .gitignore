@@ -10,7 +10,8 @@ bitnsbot.conf
 /addrindex-scan
 /top-active
 /tools/addresses/addresses
-/tools/dbui/dbui
+/tools/bboltwui/bboltwui
+/bboltwui
 /tools/i18n-vet/i18n-vet
 /tools/addrindex/addrindex
 /tools/csvimport/csvimport

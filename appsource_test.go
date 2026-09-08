@@ -9,6 +9,7 @@ import "path/filepath"
 import "strconv"
 import "strings"
 import "testing"
+import "time"
 import "bitnsbot/app"
 import "bitnsbot/rates"
 import "bitnsbot/txwatches"
@@ -513,31 +514,102 @@ func TestAddrIndexKeepsCollidingValues(t *testing.T) {
     }
 }
 
-// An index already there is left alone, so a start after the first costs
-// nothing. The flip side is that it does not notice its source changing, which
-// is what dropping the index is for.
-func TestAddrIndexIsBuiltOnceAndRebuildable(t *testing.T) {
+// The index is rebuilt from its bucket, from scratch, so a bucket replaced
+// wholesale by tools/csvimport is picked up whole — rows added, rows gone, and a
+// bucket emptied altogether.
+func TestAddrIndexRebuildsFromItsBucket(t *testing.T) {
     if err := openDB(filepath.Join(t.TempDir(), "watches.db")); err != nil {
         t.Fatalf("open db: %v", err)
     }
     defer closeDB()
     seedAddrBucket(t, "rich", map[string]string{"aaa": "100000000"})
-    // a row added behind the index's back is not in the list, and a rebuild does
-    // not happen just because the source grew
+    // a row added behind the index's back is picked up by the next rebuild
     db.Update(func(tx *bbolt.Tx) error {
         return tx.Bucket([]byte("rich")).Put([]byte("bbb"), []byte("900000000"))
     })
     buildAddrIndexes()
-    var kept = appSource{}.Addresses("", app.AddrRange{Kind: "rich"})
-    if len(kept.Rows) != 1 {
-        t.Errorf("an existing index should be left alone, got %+v", kept.Rows)
+    var grown = appSource{}.Addresses("", app.AddrRange{Kind: "rich"})
+    if len(grown.Rows) != 2 || grown.Rows[0].Id != "bbb" {
+        t.Errorf("a rebuild should take the new row, got %+v", grown.Rows)
     }
-    // dropping it is what makes the next start pick the new row up
-    db.Update(func(tx *bbolt.Tx) error { return tx.DeleteBucket([]byte("richindex")) })
+    // and so is one that went away
+    db.Update(func(tx *bbolt.Tx) error {
+        return tx.Bucket([]byte("rich")).Delete([]byte("bbb"))
+    })
     buildAddrIndexes()
-    var got = appSource{}.Addresses("", app.AddrRange{Kind: "rich"})
-    if len(got.Rows) != 2 || got.Rows[0].Id != "bbb" {
-        t.Errorf("after dropping the index the list should be rebuilt, got %+v", got.Rows)
+    var shrunk = appSource{}.Addresses("", app.AddrRange{Kind: "rich"})
+    if len(shrunk.Rows) != 1 || shrunk.Rows[0].Id != "aaa" {
+        t.Errorf("a rebuild should drop the removed row, got %+v", shrunk.Rows)
+    }
+    // an emptied bucket leaves no index at all, not the last one built from it
+    db.Update(func(tx *bbolt.Tx) error {
+        tx.DeleteBucket([]byte("rich"))
+        var _, err = tx.CreateBucket([]byte("rich"))
+        return err
+    })
+    buildAddrIndexes()
+    var gone = appSource{}.Addresses("", app.AddrRange{Kind: "rich"})
+    if gone.OK || len(gone.Rows) != 0 {
+        t.Errorf("an emptied bucket still serves %+v", gone.Rows)
+    }
+    var exists bool
+    db.View(func(tx *bbolt.Tx) error {
+        exists = tx.Bucket([]byte("richindex")) != nil
+        return nil
+    })
+    if exists {
+        t.Error("a stale index outlived the rows it was built from")
+    }
+}
+
+// The rebuild runs on its own goroutine: once at once, so a freshly imported
+// database is not three empty lists until the first hour is up, then on the
+// interval. The stop waits for a rebuild in flight, since shutdown closes the
+// database right after it.
+func TestAddrIndexRebuildsOnATicker(t *testing.T) {
+    if err := openDB(filepath.Join(t.TempDir(), "watches.db")); err != nil {
+        t.Fatalf("open db: %v", err)
+    }
+    defer closeDB()
+    var old = addrIndexInterval
+    addrIndexInterval = 20 * time.Millisecond
+    defer func() { addrIndexInterval = old }()
+    db.Update(func(tx *bbolt.Tx) error {
+        var b, err = tx.CreateBucketIfNotExists([]byte("active"))
+        if err != nil { return err }
+        return b.Put([]byte("aaa"), []byte("10"))
+    })
+    var stop = startAddrIndexes()
+    // the first build is immediate, not an interval away
+    var listed bool
+    for i := 0; i < 200 && !listed; i++ {
+        listed = len(appSource{}.Addresses("", app.AddrRange{Kind: "active"}).Rows) == 1
+        time.Sleep(5 * time.Millisecond)
+    }
+    if !listed {
+        t.Fatal("the first rebuild never ran")
+    }
+    // a later change is taken on a tick, with nothing else prompting it
+    db.Update(func(tx *bbolt.Tx) error {
+        return tx.Bucket([]byte("active")).Put([]byte("bbb"), []byte("99"))
+    })
+    var picked bool
+    for i := 0; i < 200 && !picked; i++ {
+        picked = len(appSource{}.Addresses("", app.AddrRange{Kind: "active"}).Rows) == 2
+        time.Sleep(5 * time.Millisecond)
+    }
+    if !picked {
+        t.Error("the ticker never rebuilt the index")
+    }
+    stop()
+    // stop is what lets shutdown close the database safely, so it must return
+    // rather than leaving the goroutine writing
+    db.Update(func(tx *bbolt.Tx) error {
+        return tx.Bucket([]byte("active")).Put([]byte("ccc"), []byte("1"))
+    })
+    time.Sleep(60 * time.Millisecond)
+    if n := len(appSource{}.Addresses("", app.AddrRange{Kind: "active"}).Rows); n != 2 {
+        t.Errorf("the goroutine kept running after stop: %d rows", n)
     }
 }
 

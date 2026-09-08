@@ -57,6 +57,10 @@ var core *coreConn
 var dbuiSrv *http.Server
 var appSrv *http.Server
 
+// stopAddrIndexes ends the address-index rebuild goroutine. shutdown runs it
+// before closing the database, since a rebuild in flight is writing to it.
+var stopAddrIndexes func()
+
 // stopBackup ends the backup goroutine, set when -backup started one. shutdown
 // runs it before closing the database, since a copy in flight is reading it.
 var stopBackup func()
@@ -415,7 +419,7 @@ func main() {
     if err = openDB(*dbPath); err != nil {
         logging.Fatal("open database: %v", err)
     }
-    buildAddrIndexes()
+    stopAddrIndexes = startAddrIndexes()
     rates.SetHistoryFile(*historyFile)
     rates.Start()
     if *dbuiListen != "" {
@@ -507,7 +511,9 @@ func shutdown(bot *bot, srv *http.Server) {
         }
     }
     stopNotify()
-    // before closeDB, so the database is not closed under a copy in flight
+    // both before closeDB, so the database is not closed under a copy in flight
+    // or a rebuild that is writing to it
+    if stopAddrIndexes != nil { stopAddrIndexes() }
     if stopBackup != nil { stopBackup() }
     if err := closeDB(); err != nil {
         logging.Err("close watches database: %v", err)
