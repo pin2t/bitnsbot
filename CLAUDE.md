@@ -375,17 +375,18 @@ The bbolt connection is a plain package-level `var db *bbolt.DB` (in `db.go`), o
 
 ### The cursors bucket
 
-Every scan over the chain resumes where it stopped, so its place is the only thing between a restart and starting over — for the address index, a rebuild measured in hours. Each used to keep that place in a bucket of its own (`blocks-cursor`, `miners-cursor`, `addrindex-cursor`), and each of those held exactly one key, called `cursor`. Those buckets are gone: `Init` removes them, having no values left to hold.
+Every scan over the chain resumes where it stopped, so its place is the only thing between a restart and starting over — for the address index, a rebuild measured in hours. Each used to keep that place in a bucket of its own (`blocks-cursor`, `miners-cursor`, `addrindex-cursor`), and each of those held exactly one key, called `cursor`. Those buckets are gone.
 
-They hold the same thing in the same form — a block height, or a file number, as decimal text — so `cursors/` is one bucket keyed by the scan's own name: `blocks` (the block-info backfill), `miners` (the per-pool statistics collector), `addrindex` (the index build) and `actbuild-file` (tools/addrindex's pass over Core's raw block files, which counts files rather than heights).
+Every one of those places is the same thing in the same form — a block height, or a file number, as decimal text — so `cursors/` is one bucket keyed by the scan's own name: `blocks` (the block-info backfill), `miners` (the per-pool statistics collector), `addrindex` (the index build) and `actbuild-file` (tools/addrindex's pass over Core's raw block files, which counts files rather than heights).
 
 - **The names are constants, not string literals at the call sites.** A name that does not match is not an error — it is a scan that silently starts from the beginning, which for the address index is hours of work.
 - **`Set` takes the caller's transaction**, which is the whole point of its signature: a scan advances its place in the same commit as the batch that reached it, so a crash between the two cannot skip work or repeat it. `TestSetIsPartOfTheCallersTransaction` pins that a rolled-back batch leaves the cursor where it was.
 - **Not found is not zero.** A scan that has never run picks its own starting point — genesis for the block cache, height 1 for the miner statistics — which is not where a scan that stopped at height 0 resumes, so `Get` reports the two separately.
-- **`Init` drops the three buckets these cursors used to live in** — `blocks-cursor`, `miners-cursor`, `addrindex-cursor` — on the first start that finds them. It is called from `blockInit`, `miners.Init` and `addrindex.Init`, so it runs several times a start and both halves are no-ops the second time: the bucket is created if missing, the old ones removed if present. That `addrindex.Init` is one of them matters — it is the *only* setup `tools/addrindex` performs, so it is what gives the tool the bucket at all.
-- **There is no migration any more.** The version that introduced this bucket carried the old values across (`cursors: carried addrindex-cursor/cursor forward as addrindex (700100)`); that version is therefore the **upgrade step** between an older database and this one. Going straight from before it to after it loses every cursor and starts each scan over — for the address index, hours of work.
+- **`Init` only creates the bucket.** It is called from `blockInit`, `miners.Init` and `addrindex.Init`, so it runs several times a start and has to be safe to repeat. That `addrindex.Init` is one of them matters — it is the *only* setup `tools/addrindex` performs, so it is what gives the tool the bucket at all.
 
-Verified against a real database still carrying all three old buckets: one start removed them and logged each, a second printed nothing, and all four places came through both starts unchanged (`addrindex` still 700100, `actbuild-file` still 57).
+Two versions did the moving, and both are gone from the code: #178 carried the old values across, #180 dropped the three empty buckets they had lived in. **They are the upgrade path**, so a database older than #178 has to pass through it — going straight to a later version leaves every scan without a place and starts it over, which for the address index is hours of work.
+
+
 
 ### Database backups
 
