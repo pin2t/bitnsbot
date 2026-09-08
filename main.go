@@ -141,6 +141,133 @@ func (appSource) Blocks(lang string, rng app.Range) app.Blocks {
     return out
 }
 
+// The three ranked address lists the Addresses tab shows, each its own bucket:
+// how busy an address is, what it holds now, and how long its coins have sat
+// still. tools/csvimport fills them from the exports tools/addrindex produces —
+// nothing in the bot writes them.
+var addrBuckets = map[string][]byte{
+    "active":    []byte("active"),
+    "rich":      []byte("rich"),
+    "abandoned": []byte("abandoned"),
+}
+
+// addrsFirstPage is the batch the tab opens with, addrsPage what each scroll
+// adds. The first is larger because it has a screen to fill.
+const addrsFirstPage = 15
+const addrsPage = 10
+
+// addrsMaxRows is how deep the lists go. A bucket is keyed by address and ranked
+// by value, so reaching row N means selecting the top N of the whole bucket —
+// the cost is the buffer that selection holds, which is what this bounds, and
+// what stops an edited from= from asking for a huge one. Ten thousand is far
+// past where anyone scrolls, and is also the whole of an `ababuild -top 10000`
+// list, so the abandoned ranking is browsable to its end.
+const addrsMaxRows = 10000
+
+// addrsRestoreRows bounds a list restored by Back, which is a separate limit
+// from how deep the scroll goes: those rows arrive a batch at a time, where a
+// restore renders every one of them into a single response. Twenty batches is
+// the same depth the block list restores, and a reader who had scrolled past it
+// loses some of it rather than being sent a megabyte of rows.
+const addrsRestoreRows = addrsFirstPage + 20 * addrsPage
+
+// addrEntry is one bucket row as it is read: the address and the number the list
+// ranks by.
+type addrEntry struct {
+    addr string
+    val  int64
+}
+
+// Addresses reads one window of one ranked address list. The bucket is keyed by
+// address and ordered by it, so there is no cursor trick that yields value order
+// the way the block list's big-endian heights do — the whole bucket is scanned
+// and the top rows selected from it, per request.
+//
+// That is affordable because these buckets hold a ranked shortlist rather than
+// the chain. Measured end to end against the real exports: a first batch costs
+// 9.8 ms over 120 119 active addresses, 6.5 ms over 66 417 rich ones and 2.2 ms
+// over 10 000 abandoned, and 20 ms at row 900, where the selection has more to
+// hold. The cost is linear in the bucket, so one loaded with every address on
+// the chain would not be servable this way — which is what tools/addrindex's own
+// -min and -top flags exist to prevent.
+//
+// Selection trims rather than sorts: rows accumulate until twice the wanted
+// count, then are sorted and cut back, which keeps the buffer bounded no matter
+// how large the bucket is. The comparator falls back to the address so that
+// equal values — which are common, a great many addresses holding exactly one
+// round amount — order the same way on every request, or paging by offset would
+// repeat and skip rows.
+func (appSource) Addresses(lang string, rng app.AddrRange) app.Addrs {
+    var out = app.Addrs{Kind: rng.Kind}
+    var bucket, known = addrBuckets[rng.Kind]
+    if db == nil || !known || rng.From >= addrsMaxRows { return out }
+    var want = addrsPage
+    if rng.From == 0 { want = addrsFirstPage }
+    // A restored list is as deep as the reader had scrolled, and always at least
+    // the batch the tab opens with — restoring row 0 alone would be a one-row
+    // list that the sentinel then had to refill.
+    if rng.Restore && rng.Down + 1 > want {
+        want = rng.Down + 1
+        if want > addrsRestoreRows { want = addrsRestoreRows }
+    }
+    if rng.From + want > addrsMaxRows { want = addrsMaxRows - rng.From }
+    var max = rng.From + want
+    var desc = rng.Kind != "abandoned"
+    var rows []addrEntry
+    var trim = func() {
+        sort.Slice(rows, func(i, j int) bool {
+            if rows[i].val != rows[j].val {
+                if desc { return rows[i].val > rows[j].val }
+                return rows[i].val < rows[j].val
+            }
+            return rows[i].addr < rows[j].addr
+        })
+        if len(rows) > max { rows = rows[:max] }
+    }
+    var total int
+    db.View(func(tx *bbolt.Tx) error {
+        var b = tx.Bucket(bucket)
+        if b == nil { return nil }
+        return b.ForEach(func(k, v []byte) error {
+            // csvimport writes these values as decimal text. Anything else is a
+            // row from somewhere this cannot read, skipped the way a block
+            // record that fails to decode is rather than ending the scan.
+            var n, err = strconv.ParseInt(string(v), 10, 64)
+            if err != nil { return nil }
+            total++
+            rows = append(rows, addrEntry{string(k), n})
+            if len(rows) == 2 * max { trim() }
+            return nil
+        })
+    })
+    trim()
+    if rng.From >= len(rows) { return out }
+    for i, e := range rows[rng.From:] {
+        var value string
+        switch rng.Kind {
+        case "active":
+            value = i18nl(lang).Sprintf("%s txs", group(e.val))
+        case "rich":
+            // The same shape btcAmount gives, without its USD tail: a list row
+            // has one column for this, and the price belongs on the details
+            // page. Under a whole coin the satoshi are kept, or every small
+            // balance would render as "0 BTC".
+            if e.val >= 1e8 {
+                value = strconv.FormatFloat(toBTC(e.val), 'f', 2, 64) + " BTC"
+            } else {
+                value = trimZeros(strconv.FormatFloat(toBTC(e.val), 'f', 8, 64)) + " BTC"
+            }
+        case "abandoned":
+            value = day(e.val, lang)
+        }
+        out.Rows = append(out.Rows, app.Addr{Short: short(e.addr), Id: e.addr, Value: value, Idx: rng.From + i})
+    }
+    out.Next = rng.From + len(out.Rows)
+    out.More = out.Next < total && out.Next < addrsMaxRows
+    out.OK = len(out.Rows) > 0
+    return out
+}
+
 // BlockInfo backs the Mini App's block details page. It loads or computes the
 // same record /info uses and renders the same lines from it, in the reader's
 // language — which arrives with the request rather than from a chat, since the

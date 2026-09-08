@@ -181,6 +181,11 @@ func (s langSpy) Blocks(lang string, rng Range) Blocks {
     return s.fakeSource.Blocks(lang, rng)
 }
 
+func (s langSpy) Addresses(lang string, rng AddrRange) Addrs {
+    *s.seen = append(*s.seen, "addresses:"+lang)
+    return s.fakeSource.Addresses(lang, rng)
+}
+
 func (s langSpy) BlockInfo(lang string, height int64) Info {
     *s.seen = append(*s.seen, "block:"+lang)
     return s.fakeSource.BlockInfo(lang, height)
@@ -204,15 +209,16 @@ func (s langSpy) MinerInfo(lang, name string) Info {
 func TestSourceIsAskedInTheReadersLanguage(t *testing.T) {
     var seen []string
     var h = handler(t, "TESTTOKEN", langSpy{fakeSource{f: liveFees(), n: liveNetwork(),
-        m: liveMarket(), b: liveBlocks(), d: liveBlockInfo(), t: liveTx(), a: liveAddr()}, &seen})
+        m: liveMarket(), b: liveBlocks(), d: liveBlockInfo(), t: liveTx(), a: liveAddr(),
+        al: liveAddrs()}, &seen})
     var ru = initDataLang("TESTTOKEN", "ru")
-    for _, path := range []string{"/", "/market", "/blocks", "/block?height=963268",
+    for _, path := range []string{"/", "/market", "/blocks", "/addresses", "/block?height=963268",
         "/tx?id=" + liveTxid, "/address?a=" + liveAddress, "/miner?name=AntPool"} {
         var data = ru
         if path == "/" { data = "" }
         getLang(h, path, data, "ru")
     }
-    for _, want := range []string{"market:ru", "blocks:ru", "block:ru", "tx:ru", "address:ru", "miner:ru"} {
+    for _, want := range []string{"market:ru", "blocks:ru", "addresses:ru", "block:ru", "tx:ru", "address:ru", "miner:ru"} {
         var found = false
         for _, got := range seen {
             if got == want { found = true }

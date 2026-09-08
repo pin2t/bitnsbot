@@ -2,7 +2,9 @@ package main
 
 import "encoding/json"
 import "errors"
+import "fmt"
 import "path/filepath"
+import "strconv"
 import "strings"
 import "testing"
 import "bitnsbot/app"
@@ -287,5 +289,183 @@ func TestTxInfoOnABlockHashIsABlockPage(t *testing.T) {
     // and the block endpoint says the same thing about the same page
     if got := (appSource{}).BlockInfo("", 700001); got.Kind != "block" {
         t.Errorf("BlockInfo Kind = %q, want block", got.Kind)
+    }
+}
+
+// seedAddrBucket fills one of the three ranked buckets the way tools/csvimport
+// does — the address as the key, the figure as decimal text.
+func seedAddrBucket(t *testing.T, name string, rows map[string]string) {
+    t.Helper()
+    var err = db.Update(func(tx *bbolt.Tx) error {
+        var b, berr = tx.CreateBucketIfNotExists([]byte(name))
+        if berr != nil { return berr }
+        for k, v := range rows {
+            if err := b.Put([]byte(k), []byte(v)); err != nil { return err }
+        }
+        return nil
+    })
+    if err != nil { t.Fatalf("seed %s: %v", name, err) }
+}
+
+// The three lists are ranked by their value, which the bucket is not ordered by
+// — it is keyed by address. This is the line that does the ranking, and it is
+// only reachable from main: the app package's tests page a list that is already
+// in order.
+func TestAppAddressListsAreRanked(t *testing.T) {
+    if err := openDB(filepath.Join(t.TempDir(), "watches.db")); err != nil {
+        t.Fatalf("open db: %v", err)
+    }
+    defer closeDB()
+    // deliberately in an order the bucket's own key order would not produce
+    seedAddrBucket(t, "active", map[string]string{"aaa": "10", "bbb": "9000", "ccc": "300"})
+    seedAddrBucket(t, "rich", map[string]string{"aaa": "100000000", "bbb": "2500000000000", "ccc": "9990000"})
+    seedAddrBucket(t, "abandoned", map[string]string{"aaa": "1500000000", "bbb": "1233636834", "ccc": "1400000000"})
+    var cases = []struct {
+        kind  string
+        order []string
+        first string
+    }{
+        {"active", []string{"bbb", "ccc", "aaa"}, "9 000 txs"},
+        {"rich", []string{"bbb", "aaa", "ccc"}, "25000.00 BTC"},
+        // ascending: the oldest last transaction is the most abandoned
+        {"abandoned", []string{"bbb", "ccc", "aaa"}, "3 february 2009"},
+    }
+    for _, c := range cases {
+        var got = appSource{}.Addresses("", app.AddrRange{Kind: c.kind})
+        if !got.OK || len(got.Rows) != len(c.order) {
+            t.Fatalf("%s: got %d rows, want %d (%+v)", c.kind, len(got.Rows), len(c.order), got)
+        }
+        for i, want := range c.order {
+            if got.Rows[i].Id != want {
+                t.Errorf("%s: row %d is %q, want %q", c.kind, i, got.Rows[i].Id, want)
+            }
+            if got.Rows[i].Idx != i {
+                t.Errorf("%s: row %d carries offset %d", c.kind, i, got.Rows[i].Idx)
+            }
+        }
+        if got.Rows[0].Value != c.first {
+            t.Errorf("%s: top row reads %q, want %q", c.kind, got.Rows[0].Value, c.first)
+        }
+        if got.More {
+            t.Errorf("%s: a list shorter than a batch has nothing more to fetch", c.kind)
+        }
+    }
+    // a balance under a whole coin keeps its satoshi rather than rounding away
+    var rich = appSource{}.Addresses("", app.AddrRange{Kind: "rich"})
+    if rich.Rows[2].Value != "0.0999 BTC" {
+        t.Errorf("small balance reads %q, want 0.0999 BTC", rich.Rows[2].Value)
+    }
+}
+
+// Paging is by offset, which is exact because these lists never grow at the
+// head: the batches must partition the ranking with no row repeated or skipped.
+func TestAppAddressListPages(t *testing.T) {
+    if err := openDB(filepath.Join(t.TempDir(), "watches.db")); err != nil {
+        t.Fatalf("open db: %v", err)
+    }
+    defer closeDB()
+    var vals = map[string]int{}
+    var rows = map[string]string{}
+    for i := 0; i < 40; i++ {
+        var addr = string(rune('a'+i/26)) + string(rune('a'+i%26))
+        vals[addr] = 1000 - i
+        rows[addr] = strconv.Itoa(vals[addr])
+    }
+    seedAddrBucket(t, "active", rows)
+    var seen []string
+    var from, batches int
+    for {
+        var got = appSource{}.Addresses("", app.AddrRange{Kind: "active", From: from})
+        if batches == 0 && len(got.Rows) != addrsFirstPage {
+            t.Fatalf("first batch has %d rows, want %d", len(got.Rows), addrsFirstPage)
+        }
+        if batches > 0 && got.More && len(got.Rows) != addrsPage {
+            t.Fatalf("batch %d has %d rows, want %d", batches, len(got.Rows), addrsPage)
+        }
+        for _, r := range got.Rows { seen = append(seen, r.Id) }
+        batches++
+        if !got.More { break }
+        if got.Next <= from { t.Fatalf("batch %d did not advance past %d", batches, from) }
+        from = got.Next
+    }
+    if len(seen) != 40 {
+        t.Fatalf("paged %d rows over %d batches, want 40", len(seen), batches)
+    }
+    // strictly descending, so nothing was repeated or skipped across batches
+    for i := 1; i < len(seen); i++ {
+        if vals[seen[i-1]] <= vals[seen[i]] {
+            t.Fatalf("rows %d and %d are out of order: %s (%d) then %s (%d)",
+                i-1, i, seen[i-1], vals[seen[i-1]], seen[i], vals[seen[i]])
+        }
+    }
+    // and a restored list reaches the row Back returns to, in one batch
+    var back = appSource{}.Addresses("", app.AddrRange{Kind: "active", Down: 22, Restore: true})
+    if len(back.Rows) != 23 || back.Rows[22].Idx != 22 {
+        t.Errorf("restored list has %d rows, want 23 reaching offset 22", len(back.Rows))
+    }
+    if back.Rows[22].Id != seen[22] {
+        t.Errorf("restored row 22 is %q, want %q — the same row the scroll reached", back.Rows[22].Id, seen[22])
+    }
+}
+
+// A value this cannot read is skipped the way a block record that fails to
+// decode is, rather than ending the scan and truncating the ranking.
+func TestAppAddressListSkipsUnreadableRows(t *testing.T) {
+    if err := openDB(filepath.Join(t.TempDir(), "watches.db")); err != nil {
+        t.Fatalf("open db: %v", err)
+    }
+    defer closeDB()
+    seedAddrBucket(t, "active", map[string]string{
+        "aaa": "10", "bad": "hex:0000000000000064", "bbb": "9000", "zzz": "", "ccc": "300",
+    })
+    var got = appSource{}.Addresses("", app.AddrRange{Kind: "active"})
+    if len(got.Rows) != 3 {
+        t.Fatalf("got %d rows, want the 3 readable ones: %+v", len(got.Rows), got.Rows)
+    }
+    if got.Rows[0].Id != "bbb" || got.Rows[2].Id != "aaa" {
+        t.Errorf("the readable rows are misordered: %+v", got.Rows)
+    }
+}
+
+// An absent bucket is a bot whose lists were never imported, and an unknown kind
+// can only come from an edited URL. Neither is an error, and neither may serve
+// another list's rows.
+func TestAppAddressListMissing(t *testing.T) {
+    if err := openDB(filepath.Join(t.TempDir(), "watches.db")); err != nil {
+        t.Fatalf("open db: %v", err)
+    }
+    defer closeDB()
+    seedAddrBucket(t, "active", map[string]string{"aaa": "10"})
+    for _, kind := range []string{"rich", "abandoned", "nonesuch", ""} {
+        var got = appSource{}.Addresses("", app.AddrRange{Kind: kind})
+        if got.OK || len(got.Rows) != 0 {
+            t.Errorf("kind %q served %+v", kind, got.Rows)
+        }
+        if got.Kind != kind {
+            t.Errorf("kind %q came back as %q", kind, got.Kind)
+        }
+    }
+}
+
+// A restore renders every row into one response, where a scroll delivers them a
+// batch at a time — so however deep the reader had scrolled, Back is bounded
+// separately. Without this an edited down= is a request for a megabyte of rows.
+func TestAppAddressListBoundsARestore(t *testing.T) {
+    if err := openDB(filepath.Join(t.TempDir(), "watches.db")); err != nil {
+        t.Fatalf("open db: %v", err)
+    }
+    defer closeDB()
+    var rows = map[string]string{}
+    for i := 0; i < addrsRestoreRows + 50; i++ {
+        rows[fmt.Sprintf("a%05d", i)] = strconv.Itoa(100000 - i)
+    }
+    seedAddrBucket(t, "rich", rows)
+    var got = appSource{}.Addresses("", app.AddrRange{Kind: "rich", Down: addrsRestoreRows + 40, Restore: true})
+    if len(got.Rows) != addrsRestoreRows {
+        t.Errorf("a restore returned %d rows, want it capped at %d", len(got.Rows), addrsRestoreRows)
+    }
+    // and it still continues from where it stopped rather than claiming the end
+    if !got.More || got.Next != addrsRestoreRows {
+        t.Errorf("capped restore says Next=%d More=%v; the scroll must carry on", got.Next, got.More)
     }
 }

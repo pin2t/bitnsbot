@@ -168,9 +168,19 @@
 
   .wsec { font-size: 0.875rem; font-weight: 600; color: var(--hint); margin: 12px 0 6px; }
   .wsec:first-child { margin-top: 0; }
-  .blk .alias { flex: 1; min-width: 0; font-size: 0.8125rem; text-align: right; color: var(--hint);
+  .blk .alias, .blk .amt { flex: 1; min-width: 0; font-size: 0.8125rem; text-align: right; color: var(--hint);
                 overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .more { padding: 11px 0 3px; text-align: center; font-size: 0.8125rem; color: var(--hint); }
+
+  /* The Addresses tab's list picker, at the foot of the panel. min-width: 0 so a
+     long translation shrinks its button instead of pushing the row out — a flex
+     item will not otherwise go below its longest word. */
+  .seg { display: flex; gap: 6px; padding: 10px 0 2px; }
+  .seg button { flex: 1; min-width: 0; padding: 8px 0; font-size: 0.8125rem; font-family: inherit;
+                color: var(--hint); background: var(--card); border: 1px solid var(--line);
+                border-radius: 10px; cursor: pointer; overflow: hidden; text-overflow: ellipsis;
+                white-space: nowrap; }
+  .seg button.on { color: var(--bg); background: var(--accent); border-color: var(--accent); }
 
   .blk .edit { flex: none; display: flex; align-items: center; padding: 3px 4px;
               border: 0; background: none; color: var(--hint); cursor: pointer; }
@@ -233,7 +243,7 @@
   <section id="blocks" class="panel">
     {{template "blocks" .Blocks}}
   </section>
-  <section id="addresses" class="panel">{{template "addresses" .}}</section>
+  <section id="addresses" class="panel">{{template "addresses" .Addrs}}</section>
   <section id="watches" class="panel">
     <div id="watchpanel" class="blocklist" hx-get="watches"
          hx-trigger="watchtab from:body" hx-swap="outerHTML">
@@ -431,7 +441,48 @@
 
 {{define "newblocks"}}{{template "blocktop" .}}{{template "blockrows" .}}{{end}}
 
-{{define "addresses"}}<div id="addrpanel" class="blocklist"><div class="empty">Addresses — coming soon</div></div>{{end}}
+{{define "addresses"}}<div id="addrpanel" class="blocklist">
+{{- if .OK}}
+  <div class="rows">
+  {{- template "addrrows" .}}
+  </div>
+{{- else}}
+  <div class="empty">no addresses yet</div>
+{{- end}}
+{{- template "addrtabs" .}}
+</div>{{end}}
+
+{{/* The rows, and below them the sentinel that appends the next batch when the
+     reader scrolls it into view — the same "intersect once" the block list uses,
+     and for the same reason: the rows are their own scroller. Nothing is ever
+     inserted above them, so unlike the block list there is no sentinel on top
+     and no event to wait for. */}}
+{{define "addrrows"}}
+  {{- range .Rows}}
+    <div class="blk" id="adr{{.Idx}}">
+      <span class="h lnk" hx-get="address?a={{.Id}}&kind={{$.Kind}}&down={{.Idx}}"
+            hx-target="#addrpanel" hx-swap="outerHTML">{{.Short}}</span>
+      <span class="amt">{{.Value}}</span>
+    </div>
+  {{- end}}
+  {{- if .More}}
+    <div class="more" hx-get="moreaddrs?kind={{.Kind}}&from={{.Next}}"
+         hx-trigger="intersect once" hx-swap="outerHTML">loading…</div>
+  {{- end}}{{end}}
+
+{{/* Which of the three lists is showing, chosen at the foot of the panel so the
+     buttons sit under the reader's thumb, right above the tab bar. Each
+     re-renders the whole panel, which is what keeps the lit button and the rows
+     it belongs to in step with no state kept in the page. */}}
+{{define "addrtabs"}}
+  <div class="seg">
+    <button class="{{if eq .Kind "active"}}on{{end}}" hx-get="addresses?kind=active"
+            hx-target="#addrpanel" hx-swap="outerHTML">Active</button>
+    <button class="{{if eq .Kind "rich"}}on{{end}}" hx-get="addresses?kind=rich"
+            hx-target="#addrpanel" hx-swap="outerHTML">Rich</button>
+    <button class="{{if eq .Kind "abandoned"}}on{{end}}" hx-get="addresses?kind=abandoned"
+            hx-target="#addrpanel" hx-swap="outerHTML">Abandoned</button>
+  </div>{{end}}
 
 {{define "watchbtn"}}<button id="watchbtn" class="bell{{if .On}} on{{end}}{{if .Error}} err{{end}}"
         hx-post="watch?kind={{.Kind}}&id={{.Id}}&on={{if .On}}0{{else}}1{{end}}"
