@@ -28,7 +28,7 @@ Bitcoin blockchain explorer and events notification bot. It can send notificatio
 | `-api-base-url` | `http://localhost:8081` | Base URL of the local `telegram-bot-api` server |
 | `-secret-token` | | Optional secret checked against the `X-Telegram-Bot-Api-Secret-Token` header |
 | `-register-webhook` | `true` | Call `setWebhook` on startup |
-| `-db` | `watches.db` | Path to the bbolt watches database |
+| `-db` | `watches.db` | Path to the database |
 | `-core-url` | | Bitcoin Core JSON-RPC URL, e.g. `http://127.0.0.1:8332` (leave empty to skip connecting to the node) |
 | `-core-user` | | Bitcoin Core RPC username (or use `-core-cookie`) |
 | `-core-pass` | | Bitcoin Core RPC password (or use `-core-cookie`) |
@@ -112,7 +112,7 @@ Another option: there are [scripts](scripts) to deploy a bot as a systemd servic
 
 [advertise](tools/advertise) - simple command line tool which sends advertising packets with a specific IP to all nodes in Bitcoin network
 
-bboltwui - simple web interface to manage bot database. Embedded into a bot itself 
+[bboltwui](tools/bboltwui) - simple web interface to manage bot database. Embedded into a bot itself 
                    
 i18n-vet - check translation 
 
