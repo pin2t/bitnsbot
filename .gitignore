@@ -13,3 +13,4 @@ bitnsbot.conf
 /tools/dbui/dbui
 /tools/i18n-vet/i18n-vet
 /tools/addrindex/addrindex
+/tools/csvimport/csvimport
