@@ -1,5 +1,7 @@
 package main
 
+import "bytes"
+import "encoding/binary"
 import "encoding/json"
 import "errors"
 import "fmt"
@@ -293,7 +295,8 @@ func TestTxInfoOnABlockHashIsABlockPage(t *testing.T) {
 }
 
 // seedAddrBucket fills one of the three ranked buckets the way tools/csvimport
-// does — the address as the key, the figure as decimal text.
+// does — the address as the key, the figure as decimal text — and then builds
+// the index, which is what startup does and what every read goes through.
 func seedAddrBucket(t *testing.T, name string, rows map[string]string) {
     t.Helper()
     var err = db.Update(func(tx *bbolt.Tx) error {
@@ -305,6 +308,7 @@ func seedAddrBucket(t *testing.T, name string, rows map[string]string) {
         return nil
     })
     if err != nil { t.Fatalf("seed %s: %v", name, err) }
+    buildAddrIndexes()
 }
 
 // The three lists are ranked by their value, which the bucket is not ordered by
@@ -467,5 +471,154 @@ func TestAppAddressListBoundsARestore(t *testing.T) {
     // and it still continues from where it stopped rather than claiming the end
     if !got.More || got.Next != addrsRestoreRows {
         t.Errorf("capped restore says Next=%d More=%v; the scroll must carry on", got.Next, got.More)
+    }
+}
+
+// The index key is the value with the address appended, and the address half is
+// load-bearing: values collide heavily on real data — 120 119 active addresses
+// hold 14 269 distinct counts — so a bare value key would keep one address per
+// value and silently drop the rest.
+func TestAddrIndexKeepsCollidingValues(t *testing.T) {
+    if err := openDB(filepath.Join(t.TempDir(), "watches.db")); err != nil {
+        t.Fatalf("open db: %v", err)
+    }
+    defer closeDB()
+    // eight addresses, two distinct values between them
+    var rows = map[string]string{}
+    for i := 0; i < 8; i++ {
+        rows[fmt.Sprintf("addr%02d", i)] = strconv.Itoa(500 + i%2)
+    }
+    seedAddrBucket(t, "active", rows)
+    var n int
+    db.View(func(tx *bbolt.Tx) error {
+        n = tx.Bucket([]byte("activeindex")).Stats().KeyN
+        return nil
+    })
+    if n != 8 {
+        t.Fatalf("the index holds %d entries for 8 addresses; colliding values were overwritten", n)
+    }
+    var got = appSource{}.Addresses("", app.AddrRange{Kind: "active"})
+    if len(got.Rows) != 8 {
+        t.Fatalf("the list shows %d of 8 addresses: %+v", len(got.Rows), got.Rows)
+    }
+    // the four highest come first, and every address appears exactly once
+    var seen = map[string]int{}
+    for i, r := range got.Rows {
+        seen[r.Id]++
+        if i < 4 && r.Value != "501 txs" { t.Errorf("row %d is %q, want the higher value first", i, r.Value) }
+        if i >= 4 && r.Value != "500 txs" { t.Errorf("row %d is %q, want the lower value last", i, r.Value) }
+    }
+    for addr, c := range seen {
+        if c != 1 { t.Errorf("%s appears %d times", addr, c) }
+    }
+}
+
+// An index already there is left alone, so a start after the first costs
+// nothing. The flip side is that it does not notice its source changing, which
+// is what dropping the index is for.
+func TestAddrIndexIsBuiltOnceAndRebuildable(t *testing.T) {
+    if err := openDB(filepath.Join(t.TempDir(), "watches.db")); err != nil {
+        t.Fatalf("open db: %v", err)
+    }
+    defer closeDB()
+    seedAddrBucket(t, "rich", map[string]string{"aaa": "100000000"})
+    // a row added behind the index's back is not in the list, and a rebuild does
+    // not happen just because the source grew
+    db.Update(func(tx *bbolt.Tx) error {
+        return tx.Bucket([]byte("rich")).Put([]byte("bbb"), []byte("900000000"))
+    })
+    buildAddrIndexes()
+    var kept = appSource{}.Addresses("", app.AddrRange{Kind: "rich"})
+    if len(kept.Rows) != 1 {
+        t.Errorf("an existing index should be left alone, got %+v", kept.Rows)
+    }
+    // dropping it is what makes the next start pick the new row up
+    db.Update(func(tx *bbolt.Tx) error { return tx.DeleteBucket([]byte("richindex")) })
+    buildAddrIndexes()
+    var got = appSource{}.Addresses("", app.AddrRange{Kind: "rich"})
+    if len(got.Rows) != 2 || got.Rows[0].Id != "bbb" {
+        t.Errorf("after dropping the index the list should be rebuilt, got %+v", got.Rows)
+    }
+}
+
+// A source bucket that is missing, or holds nothing this can read, is left
+// without an index rather than with an empty one — an empty index would be
+// "already there" and a later import would never be picked up.
+func TestAddrIndexNotBuiltForNothing(t *testing.T) {
+    if err := openDB(filepath.Join(t.TempDir(), "watches.db")); err != nil {
+        t.Fatalf("open db: %v", err)
+    }
+    defer closeDB()
+    seedAddrBucket(t, "abandoned", map[string]string{"aaa": "not a number"})
+    buildAddrIndexes()
+    var exists bool
+    db.View(func(tx *bbolt.Tx) error {
+        exists = tx.Bucket([]byte("abandonedindex")) != nil
+        return nil
+    })
+    if exists {
+        t.Error("an index was created for a bucket with nothing indexable in it")
+    }
+    // and once there is something to index, the next build takes it
+    seedAddrBucket(t, "abandoned", map[string]string{"bbb": "1233636834"})
+    var got = appSource{}.Addresses("", app.AddrRange{Kind: "abandoned"})
+    if len(got.Rows) != 1 || got.Rows[0].Id != "bbb" {
+        t.Errorf("a later import should be indexed, got %+v", got.Rows)
+    }
+}
+
+// The abandoned index packs its date into four bytes. A value too wide would
+// truncate and rank as something else entirely, so it is left out instead.
+func TestAddrIndexSkipsOversizedValues(t *testing.T) {
+    if err := openDB(filepath.Join(t.TempDir(), "watches.db")); err != nil {
+        t.Fatalf("open db: %v", err)
+    }
+    defer closeDB()
+    seedAddrBucket(t, "abandoned", map[string]string{
+        "good": "1233636834", "huge": "4294967296", "later": "1500000000",
+    })
+    var got = appSource{}.Addresses("", app.AddrRange{Kind: "abandoned"})
+    if len(got.Rows) != 2 {
+        t.Fatalf("got %d rows, want the 2 that fit: %+v", len(got.Rows), got.Rows)
+    }
+    if got.Rows[0].Id != "good" || got.Rows[1].Id != "later" {
+        t.Errorf("oldest first was not preserved: %+v", got.Rows)
+    }
+}
+
+// The whole entry is the key — the value big-endian, then the address — and
+// nothing is stored as the bbolt value. A read slices the address back out, so a
+// key written any other way would come back as the wrong address rather than as
+// an error.
+func TestAddrIndexKeyFormat(t *testing.T) {
+    if err := openDB(filepath.Join(t.TempDir(), "watches.db")); err != nil {
+        t.Fatalf("open db: %v", err)
+    }
+    defer closeDB()
+    seedAddrBucket(t, "rich", map[string]string{"bc1qexample": "2500000000000"})
+    seedAddrBucket(t, "abandoned", map[string]string{"1AbandonedOne": "1233636834"})
+    var cases = []struct {
+        index string
+        want  []byte
+    }{
+        {"richindex", append(binary.BigEndian.AppendUint64(nil, 2500000000000), "bc1qexample"...)},
+        {"abandonedindex", append(binary.BigEndian.AppendUint32(nil, 1233636834), "1AbandonedOne"...)},
+    }
+    for _, c := range cases {
+        db.View(func(tx *bbolt.Tx) error {
+            var k, v = tx.Bucket([]byte(c.index)).Cursor().First()
+            if !bytes.Equal(k, c.want) {
+                t.Errorf("%s key = %x, want %x", c.index, k, c.want)
+            }
+            if len(v) != 0 {
+                t.Errorf("%s stores %q as its value; the key carries everything", c.index, v)
+            }
+            return nil
+        })
+    }
+    // and the address the list shows is the one sliced back out of that key
+    var got = appSource{}.Addresses("", app.AddrRange{Kind: "rich"})
+    if len(got.Rows) != 1 || got.Rows[0].Id != "bc1qexample" {
+        t.Errorf("the address did not survive the round trip: %+v", got.Rows)
     }
 }
