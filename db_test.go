@@ -1,9 +1,9 @@
 package main
 
 import "path/filepath"
+import "strings"
 import "testing"
 
-import "bitnsbot/cursors"
 import "go.etcd.io/bbolt"
 
 // Every package that owns buckets is Init'd by openDB. This is pinned because
@@ -42,25 +42,18 @@ func TestOpenDBBuckets(t *testing.T) {
     }
 }
 
-// A database written before the cursors bucket existed keeps every scan's place
-// through openDB. This is the end of the migration that matters: main's own
-// startup path, with each package's Init doing the carrying. Losing the address
-// index's place alone would be a rebuild measured in hours.
-func TestOpenDBCarriesOldCursorsForward(t *testing.T) {
+// The three buckets each cursor used to live in are gone after a start, through
+// main's own startup path — every package's Init drops them, so whichever runs
+// first does it.
+func TestOpenDBRemovesObsoleteCursorBuckets(t *testing.T) {
     var path = filepath.Join(t.TempDir(), "old.db")
     var handle, err = bbolt.Open(path, 0600, nil)
     if err != nil { t.Fatalf("open: %v", err) }
     err = handle.Update(func(tx *bbolt.Tx) error {
-        for bucket, rows := range map[string]map[string]string{
-            "blocks-cursor":    {"cursor": "812345"},
-            "miners-cursor":    {"cursor": "964000"},
-            "addrindex-cursor": {"cursor": "700100", "actbuild-file": "57"},
-        } {
-            var b, berr = tx.CreateBucketIfNotExists([]byte(bucket))
+        for _, name := range []string{"blocks-cursor", "miners-cursor", "addrindex-cursor"} {
+            var b, berr = tx.CreateBucketIfNotExists([]byte(name))
             if berr != nil { return berr }
-            for k, v := range rows {
-                if perr := b.Put([]byte(k), []byte(v)); perr != nil { return perr }
-            }
+            if perr := b.Put([]byte("cursor"), []byte("812345")); perr != nil { return perr }
         }
         return nil
     })
@@ -69,13 +62,12 @@ func TestOpenDBCarriesOldCursorsForward(t *testing.T) {
 
     if err := openDB(path); err != nil { t.Fatalf("openDB: %v", err) }
     defer closeDB()
-    for name, want := range map[string]int64{
-        cursors.Blocks: 812345, cursors.Miners: 964000,
-        cursors.AddrIndex: 700100, cursors.ActBuild: 57,
-    } {
-        var got, ok = cursors.Get(name)
-        if !ok || got != want {
-            t.Errorf("%s = %d (found %v), want %d", name, got, ok, want)
-        }
-    }
+    db.View(func(tx *bbolt.Tx) error {
+        return tx.ForEach(func(name []byte, _ *bbolt.Bucket) error {
+            if strings.HasSuffix(string(name), "-cursor") {
+                t.Errorf("bucket %q survived the start", name)
+            }
+            return nil
+        })
+    })
 }
