@@ -57,7 +57,42 @@ const addrsMaxRows = 10000
 // loses some of it rather than being sent a megabyte of rows.
 const addrsRestoreRows = addrsFirstPage + 20 * addrsPage
 
-// buildAddrIndexes creates each list's index, once, at startup.
+// addrIndexInterval is how often the indexes are rebuilt from the buckets they
+// rank. A var so tests can drive the loop without waiting an hour.
+var addrIndexInterval = time.Hour
+
+// startAddrIndexes keeps the three indexes in step with their buckets, rebuilding
+// every addrIndexInterval, and returns a stop that waits for a rebuild in flight
+// — shutdown runs it before closeDB, since that rebuild is holding a write
+// transaction.
+//
+// It rebuilds once immediately and then on the interval, the same shape every
+// other collector here has (startBlockCache, StartStats, miners.Start). Waiting
+// out the first interval instead would leave a freshly imported database showing
+// three empty lists for an hour.
+func startAddrIndexes() func() {
+    var stop, done = make(chan struct{}), make(chan struct{})
+    go func() {
+        defer close(done)
+        for {
+            buildAddrIndexes()
+            select {
+            case <-time.After(addrIndexInterval):
+            case <-stop:
+                return
+            }
+        }
+    }()
+    return func() {
+        close(stop)
+        <-done
+    }
+}
+
+// buildAddrIndexes rebuilds each list's index from the bucket it ranks, from
+// scratch: the index is dropped and written again rather than diffed, because
+// the buckets are replaced wholesale by tools/csvimport and there is nothing
+// cheaper to compare against.
 //
 // The key is the whole entry: the value big-endian — so the index sorts by it
 // naturally — followed by the address, and **nothing is stored as the value**.
@@ -71,19 +106,17 @@ const addrsRestoreRows = addrsFirstPage + 20 * addrsPage
 // own touches, and electrs' bindex-rs before it: everything in the key, an empty
 // value.
 //
-// An index that is already there is left alone, so this costs nothing after the
-// first start — and so it does not notice its source changing. The buckets are
-// loaded offline by tools/csvimport, so re-importing one means dropping its
-// index (the database UI does that) for the next start to rebuild it. A source
-// bucket that is missing or holds nothing indexable is left without an index at
-// all rather than with an empty one, or a later import would never be indexed.
+// The drop and the refill are **one transaction**, so a reader is served either
+// the whole old index or the whole new one — never the empty middle of a
+// rebuild. A source bucket that is missing or holds nothing indexable ends with
+// no index rather than a stale one, which is what makes an emptied bucket show
+// as an empty list.
 func buildAddrIndexes() {
     if db == nil { return }
     for _, l := range addrLists {
         var started = time.Now()
         var keys [][]byte
         var err = db.View(func(tx *bbolt.Tx) error {
-            if tx.Bucket(l.index) != nil { return nil }
             var b = tx.Bucket(l.bucket)
             if b == nil { return nil }
             return b.ForEach(func(k, v []byte) error {
@@ -109,7 +142,6 @@ func buildAddrIndexes() {
             logging.Err("build %s: %v", l.index, err)
             continue
         }
-        if len(keys) == 0 { continue }
         // Sorted before they are written, which is the whole cost of this: rows
         // come out of the source in address order, which is random against the
         // index key, and bbolt rebalances on every such insert. Measured on the
@@ -117,6 +149,10 @@ func buildAddrIndexes() {
         // 106 ms.
         sort.Slice(keys, func(i, j int) bool { return string(keys[i]) < string(keys[j]) })
         err = db.Update(func(tx *bbolt.Tx) error {
+            if tx.Bucket(l.index) != nil {
+                if derr := tx.DeleteBucket(l.index); derr != nil { return derr }
+            }
+            if len(keys) == 0 { return nil }
             var b, berr = tx.CreateBucket(l.index)
             if berr != nil { return berr }
             for _, key := range keys {
@@ -128,7 +164,7 @@ func buildAddrIndexes() {
             logging.Err("build %s: %v", l.index, err)
             continue
         }
-        logging.Status("built %s: %d addresses in %s", l.index, len(keys), time.Since(started).Round(time.Millisecond))
+        logging.Info("rebuilt %s: %d addresses in %s", l.index, len(keys), time.Since(started).Round(time.Millisecond))
     }
 }
 
