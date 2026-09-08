@@ -1,16 +1,17 @@
 # bboltwui
 
 A small web UI for a [bbolt](https://github.com/etcd-io/bbolt) database. Point it
-at a file and browse, edit, delete, export or import any bucket from a browser.
+at a bbolt file and browse, edit, delete, export or import any bucket from a browser.
 
-It is the same interface the bot serves under `-dbui-listen` (the `dbui`
-package), running as its own process — so a database can be inspected without
-the bot running, or on a copy taken by `-backup`.
+## Building
+
+```
+go build -o bboltwui ./tools/bboltwui/
+```
 
 ## Running
 
 ```
-go build -o bboltwui ./tools/bboltwui/
 ./bboltwui -db bitnsbot.db -listen 127.0.0.1:8090
 ```
 
@@ -25,10 +26,7 @@ Then open <http://127.0.0.1:8090>. Both flags are required:
 delete any bucket, so it must never be exposed to a network.
 
 bbolt locks the file exclusively, so it cannot open a database another process
-already has open. It **waits for the lock rather than failing**, so against a
-running bot it simply hangs with nothing printed — no error, and no `database UI
-listening` line. That silence is the symptom: stop the bot first, or point it at
-a copy (`-backup` takes consistent ones while the bot runs).
+already has open. It **waits for the lock rather than failing**
 
 ## What it looks like
 
