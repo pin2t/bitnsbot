@@ -1,6 +1,6 @@
 # bboltwui
 
-A small web UI for a [bbolt](https://github.com/etcd-io/bbolt) database. Point it
+Simple web UI for a [bbolt](https://github.com/etcd-io/bbolt) database. Point it
 at a bbolt file and browse, edit, delete, export or import any bucket from a browser.
 
 ## Building
@@ -31,7 +31,7 @@ already has open. It **waits for the lock rather than failing**
 ## What it looks like
 
 Pick a bucket, press **View**, and the rows come back a page at a time. Keys and
-values that are not text — big-endian heights, the packed address index — are
+values that are not text — are
 shown behind a `hex:` marker, which is also how you type one back in.
 
 ![Browsing a bucket](screenshot-data.png)
