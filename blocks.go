@@ -11,9 +11,9 @@ import "go.etcd.io/bbolt"
 import "bitnsbot/app"
 import "bitnsbot/logging"
 import "bitnsbot/miners"
+import "bitnsbot/cursors"
 
 var blocksBucket = []byte("blocks-stat")
-var blocksCursorBucket = []byte("blocks-cursor")
 
 // blockCacheInterval is how often the collector catches up from the last
 // processed block to the chain tip. A package var so tests can shrink it.
@@ -42,11 +42,13 @@ type blockInfo struct {
     Difficulty float64  `json:"difficulty"`
 }
 
-// blockInit creates the blocks-stat and blocks-cursor buckets inside the shared
-// bbolt file. Called once by openDB before any goroutine reads or writes them.
+// blockInit creates the blocks-stat bucket inside the shared bbolt file, and
+// ensures the shared cursors bucket the backfill keeps its place in. Called once
+// by openDB before any goroutine reads or writes them.
 func blockInit(handle *bbolt.DB) error {
+    if err := cursors.Init(handle); err != nil { return err }
     return handle.Update(func(tx *bbolt.Tx) error {
-        for _, name := range [][]byte{blocksBucket, blocksCursorBucket} {
+        for _, name := range [][]byte{blocksBucket} {
             if _, err := tx.CreateBucketIfNotExists(name); err != nil { return err }
         }
         return nil
@@ -190,19 +192,7 @@ func collectBlocks() {
         logging.Warn("blocksstat: %v", err)
         return
     }
-    // read the last processed height from the blocks-cursor bucket
-    var cursor int64
-    var haveCursor bool
-    if db != nil {
-        db.View(func(tx *bbolt.Tx) error {
-            if v := tx.Bucket(blocksCursorBucket).Get([]byte("cursor")); v != nil {
-                var e error
-                cursor, e = strconv.ParseInt(string(v), 10, 64)
-                if e == nil { haveCursor = true }
-            }
-            return nil
-        })
-    }
+    var cursor, haveCursor = cursors.Get(cursors.Blocks)
     var from int64
     if !haveCursor {
         // No cursor yet: rescan from genesis.
@@ -255,8 +245,7 @@ func flushBlocks(bis []*blockInfo, cursor int64) error {
             if err != nil { return err }
             if err := b.Put(itob(uint64(bi.Height)), data); err != nil { return err }
         }
-        return tx.Bucket(blocksCursorBucket).Put(
-            []byte("cursor"), []byte(strconv.FormatInt(cursor, 10)))
+        return cursors.Set(tx, cursors.Blocks, cursor)
     })
 }
 

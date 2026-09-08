@@ -48,13 +48,12 @@ import "bytes"
 import "crypto/sha256"
 import "encoding/binary"
 import "errors"
-import "strconv"
 
 import "go.etcd.io/bbolt"
+import "bitnsbot/cursors"
 
 var db *bbolt.DB
 var bucket = []byte("addrindex")
-var cursorBucket = []byte("addrindex-cursor")
 
 // prefixLen is the script-hash prefix width, the same 8 bytes bindex uses: wide
 // enough that collisions are astronomically rare, narrow enough to stay small.
@@ -84,11 +83,15 @@ type Touch struct {
     TxIndex uint16
 }
 
-// Init stores the shared bbolt handle and ensures the index buckets exist.
+// Init stores the shared bbolt handle and ensures the index bucket exists, along
+// with the shared cursors bucket the build keeps its place in — which is why
+// tools/addrindex, whose only setup call this is, still resumes where it left
+// off rather than rebuilding the chain.
 func Init(handle *bbolt.DB) error {
     db = handle
+    if err := cursors.Init(handle); err != nil { return err }
     return db.Update(func(tx *bbolt.Tx) error {
-        for _, name := range [][]byte{bucket, cursorBucket} {
+        for _, name := range [][]byte{bucket} {
             if _, err := tx.CreateBucketIfNotExists(name); err != nil { return err }
         }
         return nil
@@ -182,30 +185,19 @@ func Lookup(script []byte, limit int) (touches []Touch, capped bool) {
     return touches, capped
 }
 
-func updateCursor(tx *bbolt.Tx, height int) error { return setCursor(tx, "cursor", height) }
+func updateCursor(tx *bbolt.Tx, height int) error { return cursors.Set(tx, cursors.AddrIndex, int64(height)) }
 
-func setCursor(tx *bbolt.Tx, name string, height int) error {
-    return tx.Bucket(cursorBucket).Put([]byte(name), []byte(strconv.FormatInt(int64(height), 10)))
-}
+func Cursor() (h int, ok bool) { return GetCursor(cursors.AddrIndex) }
 
-func Cursor() (h int, ok bool) { return GetCursor("cursor") }
-
-// GetCursor and SetCursor read and write a named cursor in the cursor bucket.
-// The index's own is "cursor"; a second pass over the chain — tools/addrindex's
-// actbuild — keeps its place beside it under its own name, so neither disturbs
-// the other.
+// GetCursor and SetCursorIn read and write a named cursor in the shared cursors
+// bucket. The index's own is cursors.AddrIndex; a second pass over the chain —
+// tools/addrindex's actbuild — keeps its place beside it under its own name, so
+// neither disturbs the other.
 func GetCursor(name string) (h int, ok bool) {
-    if db == nil { return 0, false }
-    db.View(func(tx *bbolt.Tx) error {
-        if v := tx.Bucket(cursorBucket).Get([]byte(name)); v != nil {
-            var hh, err = strconv.ParseInt(string(v), 10, 64)
-            if err == nil { h, ok = int(hh), true }
-        }
-        return nil
-    })
-    return
+    var v, found = cursors.Get(name)
+    return int(v), found
 }
 
 // SetCursorIn writes a named cursor inside the caller's transaction, so a pass
 // can advance its place atomically with the batch that reached it.
-func SetCursorIn(tx *bbolt.Tx, name string, height int) error { return setCursor(tx, name, height) }
+func SetCursorIn(tx *bbolt.Tx, name string, height int) error { return cursors.Set(tx, name, int64(height)) }

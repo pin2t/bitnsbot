@@ -3,14 +3,13 @@ package miners
 import "context"
 import "encoding/json"
 import "sort"
-import "strconv"
 import "time"
 
 import "go.etcd.io/bbolt"
 import "bitnsbot/logging"
+import "bitnsbot/cursors"
 
 var statBucket = []byte("miners-stat")
-var cursorBucket = []byte("miners-cursor")
 
 // statInterval is how often the collector processes new blocks. A package var so
 // tests can shrink it.
@@ -144,23 +143,11 @@ func flush(deltas map[string]*stat, last int64) error {
             if err != nil { return err }
             if err := sb.Put([]byte(name), data); err != nil { return err }
         }
-        return tx.Bucket(cursorBucket).Put(
-            []byte("cursor"), []byte(strconv.FormatInt(last, 10)))
+        return cursors.Set(tx, cursors.Miners, last)
     })
 }
 
-func cursor() (last int64, ok bool) {
-    if db == nil { return 0, false }
-    db.View(func(tx *bbolt.Tx) error {
-        if v := tx.Bucket(cursorBucket).Get([]byte("cursor")); v != nil {
-            var err error
-            last, err = strconv.ParseInt(string(v), 10, 64)
-            if err == nil { ok = true }
-        }
-        return nil
-    })
-    return
-}
+func cursor() (last int64, ok bool) { return cursors.Get(cursors.Miners) }
 
 // Stat is the public per-miner view returned by Top.
 type Stat struct {
