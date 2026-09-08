@@ -6,9 +6,12 @@ package dbui
 
 import "bytes"
 import _ "embed"
+import "encoding/csv"
 import "encoding/hex"
 import "encoding/json"
 import "errors"
+import "fmt"
+import "io"
 import "net/http"
 import "strconv"
 import "strings"
@@ -291,78 +294,175 @@ func clearBucket(db *bbolt.DB, w http.ResponseWriter, r *http.Request) {
     writeJSON(w, map[string]any{"ok": true, "deleted": count})
 }
 
+// importBatch is how many rows one write transaction carries. Streaming is the
+// point of this pair, so neither side may hold the file: the reader keeps a
+// batch, not a table.
+const importBatch = 1000
+
+// exportBucket streams a bucket out as CSV, a row at a time, straight into the
+// response — the table is never assembled anywhere, so exporting a bucket of any
+// size costs the same memory as exporting one row.
+//
+// The headers go out only once the bucket is known to exist, because after the
+// first byte there is no status line left to change: a failure partway can only
+// be logged, and the client is left with a truncated file. The alternative — a
+// counting pass first — reads the whole bucket twice to be able to say 500 on a
+// failure nothing recovers from anyway.
+//
+// It holds one read transaction open for the whole download. bbolt readers do
+// not block the writer, but they do hold back page reuse, so a very large export
+// to a very slow client grows the file for as long as it runs. That is a trade
+// this tool can afford: it is a localhost admin page, and the alternative is
+// buffering the bucket, which is what this replaces.
 func exportBucket(db *bbolt.DB, w http.ResponseWriter, r *http.Request) {
     var bucket = r.URL.Query().Get("bucket")
     if bucket == "" {
         http.Error(w, "bucket is required", http.StatusBadRequest)
         return
     }
-    var rows = []kvRow{}
+    var started bool
+    var rows int
     var err = db.View(func(tx *bbolt.Tx) error {
         var b = tx.Bucket([]byte(bucket))
         if b == nil { return errNoBucket }
-        return b.ForEach(func(k, v []byte) error {
-            rows = append(rows, kvRow{encodeField(k), encodeField(v)})
-            return nil
+        w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+        w.Header().Set("Content-Disposition", `attachment; filename="`+filename(bucket)+`"`)
+        started = true
+        var cw = csv.NewWriter(w)
+        if err := cw.Write([]string{"key", "value"}); err != nil { return err }
+        var ferr = b.ForEach(func(k, v []byte) error {
+            rows++
+            return cw.Write([]string{encodeField(k), encodeField(v)})
         })
+        if ferr != nil { return ferr }
+        cw.Flush()
+        return cw.Error()
     })
-    if err != nil {
-        if err == errNoBucket { http.Error(w, err.Error(), http.StatusNotFound); return }
-        http.Error(w, err.Error(), http.StatusInternalServerError)
+    if err == nil {
+        logging.Info("database UI: exported %d keys from %s", rows, bucket)
         return
     }
-    writeJSON(w, map[string]any{"rows": rows})
+    if !started {
+        var code = http.StatusInternalServerError
+        if err == errNoBucket { code = http.StatusNotFound }
+        http.Error(w, err.Error(), code)
+        return
+    }
+    logging.Err("database UI: export %s failed after %d rows: %v", bucket, rows, err)
 }
 
+// filename makes a bucket name safe to put in a Content-Disposition header.
+// Buckets can now be created from this UI under any name, and a quote would end
+// the quoted string the header is built from.
+func filename(bucket string) string {
+    var safe = strings.Map(func(r rune) rune {
+        if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '.' || r == '-' || r == '_' {
+            return r
+        }
+        return '_'
+    }, bucket)
+    return safe + ".csv"
+}
+
+// importBucket reads CSV straight off the request body and writes it as it
+// arrives, so an import is bounded by importBatch rather than by the size of the
+// file. bucket and strategy ride in the query, which is what lets the body be
+// the file itself and nothing else — the browser hands `fetch` the File and
+// never reads it into the page.
+//
+// The write is therefore not one transaction. That is the same trade
+// tools/csvimport makes and safe for the same reason: every row is written by
+// key, so an import that fails partway is recovered by running it again.
 func importBucket(db *bbolt.DB, w http.ResponseWriter, r *http.Request) {
     if r.Method != http.MethodPost {
         http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
         return
     }
-    var body struct {
-        Bucket   string  `json:"bucket"`
-        Strategy string  `json:"strategy"` // "skip" or "replace"
-        Rows     []kvRow `json:"rows"`
-    }
-    if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-        http.Error(w, "bad request", http.StatusBadRequest)
-        return
-    }
-    if body.Bucket == "" {
+    var q = r.URL.Query()
+    var bucket = q.Get("bucket")
+    var strategy = q.Get("strategy")
+    if bucket == "" {
         http.Error(w, "bucket is required", http.StatusBadRequest)
         return
     }
-    if body.Strategy != "skip" && body.Strategy != "replace" {
+    if strategy != "skip" && strategy != "replace" {
         http.Error(w, "strategy must be 'skip' or 'replace'", http.StatusBadRequest)
         return
     }
+    var cr = csv.NewReader(r.Body)
+    cr.FieldsPerRecord = 2
+    var batch [][2][]byte
     var imported, skipped int
-    var err = db.Update(func(tx *bbolt.Tx) error {
-        var b = tx.Bucket([]byte(body.Bucket))
-        if b == nil { return errNoBucket }
-        for _, row := range body.Rows {
-            var key, kerr = decodeField(row.Key)
-            if kerr != nil { return kerr }
-            var value, verr = decodeField(row.Value)
-            if verr != nil { return verr }
-            var exists = b.Get(key) != nil
-            if exists && body.Strategy == "skip" {
-                skipped++
-                continue
+    var flush = func() error {
+        if len(batch) == 0 { return nil }
+        var put, skip int
+        var err = db.Update(func(tx *bbolt.Tx) error {
+            put, skip = 0, 0
+            var b = tx.Bucket([]byte(bucket))
+            if b == nil { return errNoBucket }
+            for _, row := range batch {
+                if b.Get(row[0]) != nil && strategy == "skip" {
+                    skip++
+                    continue
+                }
+                if err := b.Put(row[0], row[1]); err != nil { return err }
+                put++
             }
-            if err := b.Put(key, value); err != nil { return err }
-            imported++
-        }
+            return nil
+        })
+        if err != nil { return err }
+        imported += put
+        skipped += skip
+        batch = batch[:0]
         return nil
-    })
-    if err != nil {
-        var code = http.StatusBadRequest
-        if err == errNoBucket { code = http.StatusNotFound }
-        http.Error(w, err.Error(), code)
+    }
+    for first := true; ; first = false {
+        var rec, rerr = cr.Read()
+        if rerr == io.EOF { break }
+        if rerr != nil {
+            http.Error(w, rerr.Error(), http.StatusBadRequest)
+            return
+        }
+        // The export writes a header; a file that has one starts with it, and a
+        // file that does not starts with data. Only the first record can be one.
+        if first && strings.EqualFold(rec[0], "key") && strings.EqualFold(rec[1], "value") {
+            continue
+        }
+        var key, kerr = decodeField(rec[0])
+        if kerr != nil {
+            http.Error(w, "bad key: "+kerr.Error(), http.StatusBadRequest)
+            return
+        }
+        if len(key) == 0 {
+            var line, _ = cr.FieldPos(0)
+            http.Error(w, fmt.Sprintf("line %d: empty key", line), http.StatusBadRequest)
+            return
+        }
+        var value, verr = decodeField(rec[1])
+        if verr != nil {
+            http.Error(w, "bad value: "+verr.Error(), http.StatusBadRequest)
+            return
+        }
+        batch = append(batch, [2][]byte{key, value})
+        if len(batch) == importBatch {
+            if err := flush(); err != nil {
+                importFailed(w, err)
+                return
+            }
+        }
+    }
+    if err := flush(); err != nil {
+        importFailed(w, err)
         return
     }
-    logging.Info("database UI: imported %d keys into %s (%d skipped)", imported, body.Bucket, skipped)
+    logging.Info("database UI: imported %d keys into %s (%d skipped)", imported, bucket, skipped)
     writeJSON(w, map[string]any{"ok": true, "imported": imported, "skipped": skipped})
+}
+
+func importFailed(w http.ResponseWriter, err error) {
+    var code = http.StatusBadRequest
+    if err == errNoBucket { code = http.StatusNotFound }
+    http.Error(w, err.Error(), code)
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

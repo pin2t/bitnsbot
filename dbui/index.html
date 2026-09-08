@@ -340,77 +340,23 @@
         if (!r.ok) return r.text().then(function(t) { throw new Error(t.trim() || r.status); });
         return r.json();
       })
-      .then(function(d) { status("cleared bucket " + bucket + " (" + d.deleted + " keys)", "ok"); })
-      .then(function() { page = 0; return loadView(); })
+      // reload first, then report — loadView clears the status line on success
+      .then(function(d) {
+        page = 0;
+        return loadView().then(function() {
+          status("cleared bucket " + bucket + " (" + d.deleted + " keys)", "ok");
+        });
+      })
       .catch(function(e) { status("clear failed: " + e, "err"); });
-  }
-
-  function csvEscape(s) {
-    if (s.indexOf('"') === -1 && s.indexOf(',') === -1 && s.indexOf('\n') === -1 && s.indexOf('\r') === -1) return s;
-    return '"' + s.replace(/"/g, '""') + '"';
   }
 
   function exportBucket() {
     var bucket = $("bucket").value;
     if (!bucket) { status("no bucket selected", "err"); return; }
-    status("exporting...", "");
-    fetch("api/export?bucket=" + encodeURIComponent(bucket))
-      .then(function(r) { if (!r.ok) throw new Error(r.status); return r.json(); })
-      .then(function(d) {
-        var lines = ["key,value"];
-        (d.rows || []).forEach(function(row) {
-          lines.push(csvEscape(row.key) + "," + csvEscape(row.value));
-        });
-        var csv = lines.join("\n");
-        var blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
-        var url = URL.createObjectURL(blob);
-        var a = document.createElement("a");
-        a.href = url; a.download = bucket + ".csv";
-        document.body.appendChild(a); a.click();
-        document.body.removeChild(a); URL.revokeObjectURL(url);
-        status("exported " + (d.rows ? d.rows.length : 0) + " keys", "ok");
-      })
-      .catch(function(e) { status("export failed: " + e, "err"); });
-  }
-
-  function parseCSV(text) {
-    var rows = [];
-    var row = [];
-    var field = "";
-    var inQuotes = false;
-    for (var i = 0; i < text.length; i++) {
-      var ch = text[i];
-      if (inQuotes) {
-        if (ch === '"') {
-          if (i + 1 < text.length && text[i + 1] === '"') {
-            field += '"'; i++;
-          } else {
-            inQuotes = false;
-          }
-        } else {
-          field += ch;
-        }
-      } else {
-        if (ch === '"') {
-          inQuotes = true;
-        } else if (ch === ',') {
-          row.push(field); field = "";
-        } else if (ch === '\n') {
-          row.push(field); field = "";
-          rows.push(row); row = [];
-        } else if (ch !== '\r') {
-          field += ch;
-        }
-      }
-    }
-    if (field !== "" || row.length > 0) {
-      row.push(field);
-      rows.push(row);
-    }
-    if (rows.length > 0 && rows[0].length === 2 && rows[0][0] === "key" && rows[0][1] === "value") {
-      rows.shift();
-    }
-    return rows;
+    // The server streams the CSV with a Content-Disposition, so the browser
+    // saves it straight to disk — the page never holds the file.
+    window.location = "api/export?bucket=" + encodeURIComponent(bucket);
+    status("");
   }
 
   function showImportDialog() {
@@ -426,31 +372,26 @@
     var file = $("importFileInput").files[0];
     if (!file) { status("no file selected", "err"); return; }
     status("importing...", "");
-    var reader = new FileReader();
-    reader.onload = function(e) {
-      var parsed = parseCSV(e.target.result);
-      var rows = [];
-      for (var i = 0; i < parsed.length; i++) {
-        if (parsed[i].length >= 2) {
-          rows.push({ key: parsed[i][0], value: parsed[i][1] });
-        }
-      }
-      fetch("api/import", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ bucket: bucket, strategy: strategy, rows: rows })
+    // The File is handed to fetch as the body, so the browser streams it and the
+    // server reads CSV off the request — neither side holds the table.
+    fetch("api/import?bucket=" + encodeURIComponent(bucket) +
+          "&strategy=" + encodeURIComponent(strategy), {
+      method: "POST",
+      headers: { "Content-Type": "text/csv" },
+      body: file
+    })
+      .then(function(r) {
+        if (!r.ok) return r.text().then(function(t) { throw new Error(t.trim() || r.status); });
+        return r.json();
       })
-        .then(function(r) {
-          if (!r.ok) return r.text().then(function(t) { throw new Error(t.trim() || r.status); });
-          return r.json();
-        })
-        .then(function(d) {
+      // reload first, then report — loadView clears the status line on success
+      .then(function(d) {
+        page = 0;
+        return loadView().then(function() {
           status("imported " + d.imported + " keys" + (d.skipped ? ", skipped " + d.skipped : ""), "ok");
-          page = 0; return loadView();
-        })
-        .catch(function(e) { status("import failed: " + e, "err"); });
-    };
-    reader.readAsText(file, "utf-8");
+        });
+      })
+      .catch(function(e) { status("import failed: " + e, "err"); });
     $("importDialog").hidden = true;
     $("importFileInput").value = "";
   }
