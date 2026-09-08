@@ -41,6 +41,10 @@ keys are binary.
 
 ![Browsing a bucket](screenshot-data.png)
 
+**Export** downloads the selected bucket as CSV and **Import** reads one back
+in, replacing or skipping keys that are already there. Both stream, so the size
+of a bucket is not the size of anything held in memory.
+
 Clicking a row opens its value in the **Value** tab, where **Put** writes it
 back. **Get** does the same for a key typed in directly, and the trash icon on a
 row deletes that key straight away — no confirmation, since clearing a bucket a

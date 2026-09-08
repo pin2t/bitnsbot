@@ -1,8 +1,12 @@
 package dbui
 
+import "bytes"
 import "encoding/json"
+import "fmt"
+import "io"
 import "net/http"
 import "net/http/httptest"
+import "net/url"
 import "path/filepath"
 import "strings"
 import "testing"
@@ -427,4 +431,206 @@ func TestViewPrefixHex(t *testing.T) {
     if berr != nil { t.Fatal(berr) }
     defer bad.Body.Close()
     if bad.StatusCode != 400 { t.Errorf("bad hex prefix = %d, want 400", bad.StatusCode) }
+}
+
+func httpGet(t *testing.T, url string) *http.Response {
+    t.Helper()
+    var resp, err = http.Get(url)
+    if err != nil { t.Fatal(err) }
+    return resp
+}
+
+// Export writes CSV straight into the response: a header row, then one row per
+// key, with binary fields behind the hex: marker the rest of the UI uses.
+func TestExportStreamsCSV(t *testing.T) {
+    var srv = httptest.NewServer(handler(testDB(t)))
+    defer srv.Close()
+    var resp = httpGet(t, srv.URL+"/api/export?bucket=miners")
+    defer resp.Body.Close()
+    if resp.StatusCode != 200 { t.Fatalf("export = %d", resp.StatusCode) }
+    if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/csv") {
+        t.Errorf("Content-Type = %q, want text/csv", ct)
+    }
+    if cd := resp.Header.Get("Content-Disposition"); cd != `attachment; filename="miners.csv"` {
+        t.Errorf("Content-Disposition = %q", cd)
+    }
+    var body, _ = io.ReadAll(resp.Body)
+    var want = "key,value\naddrA,PoolA\naddrB,PoolB\n"
+    if string(body) != want {
+        t.Errorf("body =\n%q\nwant\n%q", body, want)
+    }
+    // a binary bucket comes out hex-encoded, which is what makes it importable
+    var bin = httpGet(t, srv.URL+"/api/export?bucket=addrindex")
+    defer bin.Body.Close()
+    body, _ = io.ReadAll(bin.Body)
+    if string(body) != "key,value\nhex:000100000000,hex:deadbeef\n" {
+        t.Errorf("binary export = %q", body)
+    }
+}
+
+// The status can only be set before the first byte, so a bucket that is not
+// there must be caught before anything is written.
+func TestExportMissingBucket(t *testing.T) {
+    var srv = httptest.NewServer(handler(testDB(t)))
+    defer srv.Close()
+    var resp = httpGet(t, srv.URL+"/api/export?bucket=nosuch")
+    defer resp.Body.Close()
+    if resp.StatusCode != 404 { t.Errorf("missing bucket = %d, want 404", resp.StatusCode) }
+    if cd := resp.Header.Get("Content-Disposition"); cd != "" {
+        t.Errorf("a failed export set %q; the headers must wait for the bucket", cd)
+    }
+    var none = httpGet(t, srv.URL+"/api/export")
+    defer none.Body.Close()
+    if none.StatusCode != 400 { t.Errorf("no bucket = %d, want 400", none.StatusCode) }
+}
+
+// Buckets can be created from this UI under any name, and the name goes into a
+// quoted header value.
+func TestExportFilenameIsSafe(t *testing.T) {
+    var db = testDB(t)
+    var nasty = `we"ird name`
+    if err := db.Update(func(tx *bbolt.Tx) error {
+        var _, err = tx.CreateBucket([]byte(nasty))
+        return err
+    }); err != nil { t.Fatal(err) }
+    var srv = httptest.NewServer(handler(db))
+    defer srv.Close()
+    var resp = httpGet(t, srv.URL+"/api/export?bucket="+url.QueryEscape(nasty))
+    defer resp.Body.Close()
+    if cd := resp.Header.Get("Content-Disposition"); cd != `attachment; filename="we_ird_name.csv"` {
+        t.Errorf("Content-Disposition = %q; the quote must not escape the header", cd)
+    }
+}
+
+func postCSV(t *testing.T, url, body string) *http.Response {
+    t.Helper()
+    var resp, err = http.Post(url, "text/csv", strings.NewReader(body))
+    if err != nil { t.Fatal(err) }
+    return resp
+}
+
+// Import reads the CSV off the request body, with the bucket and the strategy in
+// the query — so the body is the file and nothing else.
+func TestImportStreamsCSV(t *testing.T) {
+    var db = testDB(t)
+    var srv = httptest.NewServer(handler(db))
+    defer srv.Close()
+    var resp = postCSV(t, srv.URL+"/api/import?bucket=miners&strategy=skip",
+        "key,value\naddrA,Changed\naddrC,PoolC\n")
+    defer resp.Body.Close()
+    if resp.StatusCode != 200 { t.Fatalf("import = %d", resp.StatusCode) }
+    var out struct{ Imported, Skipped int }
+    json.NewDecoder(resp.Body).Decode(&out)
+    if out.Imported != 1 || out.Skipped != 1 {
+        t.Errorf("imported %d skipped %d, want 1 and 1", out.Imported, out.Skipped)
+    }
+    db.View(func(tx *bbolt.Tx) error {
+        var b = tx.Bucket([]byte("miners"))
+        if string(b.Get([]byte("addrA"))) != "PoolA" { t.Error("skip overwrote an existing key") }
+        if string(b.Get([]byte("addrC"))) != "PoolC" { t.Error("the new key was not written") }
+        return nil
+    })
+    // replace does overwrite
+    var rep = postCSV(t, srv.URL+"/api/import?bucket=miners&strategy=replace", "key,value\naddrA,Changed\n")
+    defer rep.Body.Close()
+    json.NewDecoder(rep.Body).Decode(&out)
+    if out.Imported != 1 || out.Skipped != 0 { t.Errorf("replace imported %d skipped %d", out.Imported, out.Skipped) }
+    db.View(func(tx *bbolt.Tx) error {
+        if string(tx.Bucket([]byte("miners")).Get([]byte("addrA"))) != "Changed" {
+            t.Error("replace did not overwrite")
+        }
+        return nil
+    })
+    // a file with no header row is data from its first line
+    var noHead = postCSV(t, srv.URL+"/api/import?bucket=miners&strategy=replace", "addrD,PoolD\n")
+    defer noHead.Body.Close()
+    json.NewDecoder(noHead.Body).Decode(&out)
+    if out.Imported != 1 { t.Errorf("headerless import took %d rows", out.Imported) }
+}
+
+// The batching loop is the whole point of streaming, so a file longer than one
+// batch has to land in full.
+func TestImportBatches(t *testing.T) {
+    var db = testDB(t)
+    var srv = httptest.NewServer(handler(db))
+    defer srv.Close()
+    var body strings.Builder
+    body.WriteString("key,value\n")
+    var n = importBatch*2 + 137
+    for i := 0; i < n; i++ {
+        fmt.Fprintf(&body, "k%06d,v%06d\n", i, i)
+    }
+    var resp = postCSV(t, srv.URL+"/api/import?bucket=miners&strategy=replace", body.String())
+    defer resp.Body.Close()
+    if resp.StatusCode != 200 { t.Fatalf("import = %d", resp.StatusCode) }
+    var out struct{ Imported, Skipped int }
+    json.NewDecoder(resp.Body).Decode(&out)
+    if out.Imported != n { t.Errorf("imported %d of %d rows", out.Imported, n) }
+    db.View(func(tx *bbolt.Tx) error {
+        var b = tx.Bucket([]byte("miners"))
+        for _, i := range []int{0, importBatch - 1, importBatch, n - 1} {
+            var k = fmt.Sprintf("k%06d", i)
+            if string(b.Get([]byte(k))) != fmt.Sprintf("v%06d", i) {
+                t.Errorf("row %d (%s) is missing", i, k)
+            }
+        }
+        return nil
+    })
+}
+
+func TestImportRejectsBadRequests(t *testing.T) {
+    var srv = httptest.NewServer(handler(testDB(t)))
+    defer srv.Close()
+    var cases = []struct {
+        name, query, body string
+        want              int
+    }{
+        {"no bucket", "strategy=skip", "key,value\na,1\n", 400},
+        {"no strategy", "bucket=miners", "key,value\na,1\n", 400},
+        {"bad strategy", "bucket=miners&strategy=merge", "key,value\na,1\n", 400},
+        {"unknown bucket", "bucket=nosuch&strategy=skip", "key,value\na,1\n", 404},
+        {"ragged csv", "bucket=miners&strategy=skip", "key,value\na,1,extra\n", 400},
+        {"empty key", "bucket=miners&strategy=skip", "key,value\n,1\n", 400},
+        {"bad hex key", "bucket=miners&strategy=skip", "key,value\nhex:zz,1\n", 400},
+    }
+    for _, c := range cases {
+        var resp = postCSV(t, srv.URL+"/api/import?"+c.query, c.body)
+        if resp.StatusCode != c.want {
+            t.Errorf("%s = %d, want %d", c.name, resp.StatusCode, c.want)
+        }
+        resp.Body.Close()
+    }
+    var g = httpGet(t, srv.URL+"/api/import?bucket=miners&strategy=skip")
+    defer g.Body.Close()
+    if g.StatusCode != 405 { t.Errorf("GET = %d, want 405", g.StatusCode) }
+}
+
+// The two halves have to agree, binary fields included: what export writes,
+// import must read back into an identical bucket.
+func TestExportImportRoundTrip(t *testing.T) {
+    var db = testDB(t)
+    var srv = httptest.NewServer(handler(db))
+    defer srv.Close()
+    var resp = httpGet(t, srv.URL+"/api/export?bucket=addrindex")
+    var csvText, _ = io.ReadAll(resp.Body)
+    resp.Body.Close()
+    if err := db.Update(func(tx *bbolt.Tx) error {
+        var _, err = tx.CreateBucket([]byte("copy"))
+        return err
+    }); err != nil { t.Fatal(err) }
+    var imp = postCSV(t, srv.URL+"/api/import?bucket=copy&strategy=replace", string(csvText))
+    defer imp.Body.Close()
+    if imp.StatusCode != 200 { t.Fatalf("import = %d", imp.StatusCode) }
+    db.View(func(tx *bbolt.Tx) error {
+        var src, dst = tx.Bucket([]byte("addrindex")), tx.Bucket([]byte("copy"))
+        if src.Stats().KeyN != dst.Stats().KeyN {
+            t.Fatalf("copy has %d keys, source has %d", dst.Stats().KeyN, src.Stats().KeyN)
+        }
+        return src.ForEach(func(k, v []byte) error {
+            if !bytes.Equal(dst.Get(k), v) {
+                t.Errorf("key %x came back as %x, want %x", k, dst.Get(k), v)
+            }
+            return nil
+        })
+    })
 }
