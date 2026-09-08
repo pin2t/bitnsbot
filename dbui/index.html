@@ -22,16 +22,21 @@
   }
   .wrap { max-width: 900px; margin: 0 auto; padding: 24px 16px 48px; }
   h1 { font-size: 18px; font-weight: 600; margin: 0 0 16px; text-align: center; }
+  /* The gap here separates the groups; .group's own gap holds each together, so
+     Create/bucket/View read as one control and Prefix/Scan as another. */
   .controls {
-    display: flex; flex-wrap: wrap; gap: 8px; justify-content: center;
+    display: flex; flex-wrap: wrap; gap: 22px; justify-content: center;
     align-items: center; margin-bottom: 16px;
   }
+  .group { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
   select, input, button, textarea {
     font: inherit; color: var(--text); background: var(--panel);
     border: 1px solid var(--line); border-radius: 6px; padding: 7px 10px;
   }
   select { height: 37px; }
   input { min-width: 220px; }
+  input.narrow { min-width: 130px; }
+  .dialog input.wide { min-width: 0; width: 100%; box-sizing: border-box; }
   button { cursor: pointer; }
   button.primary { background: var(--accent); color: var(--accent-text); border-color: transparent; }
   button:hover { background: var(--hover); }
@@ -97,10 +102,19 @@
   <h1>bitnsbot database</h1>
 
   <div class="controls">
-    <select id="bucket" title="bucket"></select>
-    <button id="view">View</button>
-    <input id="key" placeholder="key" autocomplete="off">
-    <button id="get">Get</button>
+    <div class="group">
+      <button id="createBtn" title="create a new bucket">Create</button>
+      <select id="bucket" title="bucket"></select>
+      <button id="view">View</button>
+    </div>
+    <div class="group">
+      <input id="prefix" class="narrow" placeholder="prefix" autocomplete="off" spellcheck="false">
+      <button id="scan">Scan</button>
+    </div>
+    <div class="group">
+      <input id="key" placeholder="key" autocomplete="off">
+      <button id="get">Get</button>
+    </div>
   </div>
 
   <div class="tabs">
@@ -133,6 +147,17 @@
     </div>
   </div>
 
+  <div id="createDialog" class="dialog-overlay" hidden>
+    <div class="dialog">
+      <p>Create bucket</p>
+      <input id="createName" class="wide" placeholder="Bucket name" autocomplete="off" spellcheck="false">
+      <div class="dialog-buttons">
+        <button id="createCancel">Cancel</button>
+        <button id="createGo" class="primary">Create</button>
+      </div>
+    </div>
+  </div>
+
   <div id="importDialog" class="dialog-overlay" hidden>
     <div class="dialog">
       <p>Import CSV into <strong id="importBucketLabel"></strong></p>
@@ -161,6 +186,11 @@
 
 <script>
   var page = 0;
+  // The prefix the listing is currently under, "" for the whole bucket. It is
+  // held here rather than read from the field so that Prev/Next stay in whichever
+  // mode View or Scan put them in, and so typing in the field changes nothing
+  // until Scan is pressed.
+  var prefix = "";
   var $ = function(id) { return document.getElementById(id); };
 
   function status(msg, kind) {
@@ -183,22 +213,25 @@
     });
   });
 
-  function loadBuckets() {
-    fetch("api/buckets").then(function(r) { return r.json(); }).then(function(d) {
+  function loadBuckets(select) {
+    return fetch("api/buckets").then(function(r) { return r.json(); }).then(function(d) {
       var sel = $("bucket");
+      var keep = select || sel.value;
       sel.innerHTML = "";
       (d.buckets || []).forEach(function(name) {
         var o = document.createElement("option");
         o.value = name; o.textContent = name;
         sel.appendChild(o);
       });
+      if (keep) { sel.value = keep; }
     }).catch(function(e) { status("could not load buckets: " + e, "err"); });
   }
 
   function loadView() {
     var bucket = $("bucket").value;
     if (!bucket) { status("no bucket selected", "err"); return Promise.resolve(); }
-    return fetch("api/view?bucket=" + encodeURIComponent(bucket) + "&page=" + page)
+    return fetch("api/view?bucket=" + encodeURIComponent(bucket) + "&page=" + page +
+                 (prefix ? "&prefix=" + encodeURIComponent(prefix) : ""))
       .then(function(r) { if (!r.ok) throw new Error(r.status); return r.json(); })
       .then(function(d) {
         var body = $("rows");
@@ -228,7 +261,7 @@
           body.appendChild(tr);
         });
         $("empty").hidden = (d.rows && d.rows.length > 0);
-        $("pageLabel").textContent = "page " + (d.page + 1);
+        $("pageLabel").textContent = "page " + (d.page + 1) + (prefix ? ' \u00b7 prefix "' + prefix + '"' : "");
         $("prev").disabled = d.page === 0;
         $("next").disabled = !d.hasNext;
         showTab("data");
@@ -422,7 +455,42 @@
     $("importFileInput").value = "";
   }
 
-  $("view").addEventListener("click", function() { page = 0; loadView(); });
+  function showCreateDialog() {
+    $("createName").value = "";
+    $("createDialog").hidden = false;
+    $("createName").focus();
+  }
+
+  function createBucket() {
+    var name = $("createName").value.trim();
+    if (!name) { status("bucket name is required", "err"); return; }
+    fetch("api/createbucket", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ bucket: name })
+    })
+      .then(function(r) {
+        if (!r.ok) return r.text().then(function(t) { throw new Error(t.trim() || r.status); });
+        return r.json();
+      })
+      .then(function() {
+        $("createDialog").hidden = true;
+        status("created bucket " + name, "ok");
+        return loadBuckets(name);
+      })
+      .catch(function(e) { status("create failed: " + e, "err"); });
+  }
+
+  $("view").addEventListener("click", function() { prefix = ""; page = 0; loadView(); });
+  $("scan").addEventListener("click", function() { prefix = $("prefix").value; page = 0; loadView(); });
+  $("prefix").addEventListener("keydown", function(e) { if (e.key === "Enter") { $("scan").click(); } });
+  $("createBtn").addEventListener("click", showCreateDialog);
+  $("createGo").addEventListener("click", createBucket);
+  $("createCancel").addEventListener("click", function() { $("createDialog").hidden = true; });
+  $("createName").addEventListener("keydown", function(e) {
+    if (e.key === "Enter") { createBucket(); }
+    if (e.key === "Escape") { $("createDialog").hidden = true; }
+  });
   $("get").addEventListener("click", loadValue);
   $("put").addEventListener("click", putValue);
   $("prev").addEventListener("click", function() { if (page > 0) { page--; loadView(); } });
@@ -435,7 +503,6 @@
   $("importFileInput").addEventListener("change", doImport);
   $("empty").hidden = false;
   loadBuckets();
-  loadBucketStats();
 </script>
 </body>
 </html>
