@@ -308,3 +308,123 @@ func TestClearBucket(t *testing.T) {
         t.Fatalf("GET /api/clearbucket returned %d, want 405", getResp.StatusCode)
     }
 }
+
+// Create makes an empty bucket, and says so when there is already one of that
+// name — bbolt treats that as an error, and a Create that silently did nothing
+// would look like it had worked.
+func TestCreateBucket(t *testing.T) {
+    var db = testDB(t)
+    var srv = httptest.NewServer(handler(db))
+    defer srv.Close()
+    var post = func(body string) int {
+        var resp, err = http.Post(srv.URL+"/api/createbucket", "application/json", strings.NewReader(body))
+        if err != nil { t.Fatal(err) }
+        defer resp.Body.Close()
+        return resp.StatusCode
+    }
+    if code := post(`{"bucket":"newthing"}`); code != 200 {
+        t.Fatalf("create = %d, want 200", code)
+    }
+    var found bool
+    db.View(func(tx *bbolt.Tx) error {
+        found = tx.Bucket([]byte("newthing")) != nil
+        return nil
+    })
+    if !found { t.Fatal("the bucket was not created") }
+    // and it is in the list the dropdown is built from
+    var resp, err = http.Get(srv.URL + "/api/buckets")
+    if err != nil { t.Fatal(err) }
+    defer resp.Body.Close()
+    var out struct{ Buckets []string }
+    json.NewDecoder(resp.Body).Decode(&out)
+    if strings.Join(out.Buckets, ",") != "addrindex,miners,newthing" {
+        t.Errorf("buckets = %v, want the new one listed", out.Buckets)
+    }
+    if code := post(`{"bucket":"newthing"}`); code != 400 {
+        t.Errorf("creating it twice = %d, want 400", code)
+    }
+    if code := post(`{"bucket":""}`); code != 400 {
+        t.Errorf("empty name = %d, want 400", code)
+    }
+    if code := post(`not json`); code != 400 {
+        t.Errorf("malformed body = %d, want 400", code)
+    }
+    var g, gerr = http.Get(srv.URL + "/api/createbucket")
+    if gerr != nil { t.Fatal(gerr) }
+    defer g.Body.Close()
+    if g.StatusCode != 405 {
+        t.Errorf("GET = %d, want 405 — creating a bucket is not a read", g.StatusCode)
+    }
+}
+
+// A prefix narrows the listing to the keys under it, and pages within them:
+// Seek goes straight to the first match, so the rest of the bucket is not walked.
+func TestViewPrefix(t *testing.T) {
+    var db = testDB(t)
+    if err := db.Update(func(tx *bbolt.Tx) error {
+        var b = tx.Bucket([]byte("miners"))
+        for _, k := range []string{"bc1a", "bc1b", "bc1c", "zz"} {
+            if err := b.Put([]byte(k), []byte("Pool")); err != nil { return err }
+        }
+        return nil
+    }); err != nil { t.Fatal(err) }
+    var srv = httptest.NewServer(handler(db))
+    defer srv.Close()
+    var list = func(query string) (keys []string, hasNext bool) {
+        var resp, err = http.Get(srv.URL + "/api/view?bucket=miners&" + query)
+        if err != nil { t.Fatal(err) }
+        defer resp.Body.Close()
+        if resp.StatusCode != 200 { t.Fatalf("%s = %d", query, resp.StatusCode) }
+        var out struct {
+            Rows    []kvRow
+            HasNext bool `json:"hasNext"`
+        }
+        json.NewDecoder(resp.Body).Decode(&out)
+        for _, r := range out.Rows { keys = append(keys, r.Key) }
+        return keys, out.HasNext
+    }
+    var got, _ = list("prefix=bc1")
+    if strings.Join(got, ",") != "bc1a,bc1b,bc1c" {
+        t.Errorf("prefix bc1 gave %v", got)
+    }
+    // an empty prefix is the whole bucket, exactly as before
+    got, _ = list("")
+    if len(got) != 6 { t.Errorf("no prefix gave %d rows, want all 6", len(got)) }
+    // paging stays inside the prefix, and hasNext must not point outside it
+    got, hasNext := list("prefix=bc1&size=2")
+    if strings.Join(got, ",") != "bc1a,bc1b" || !hasNext {
+        t.Errorf("first page = %v hasNext=%v", got, hasNext)
+    }
+    got, hasNext = list("prefix=bc1&size=2&page=1")
+    if strings.Join(got, ",") != "bc1c" || hasNext {
+        t.Errorf("second page = %v hasNext=%v; zz is outside the prefix", got, hasNext)
+    }
+    // one that matches nothing is an empty listing, not the whole bucket
+    got, _ = list("prefix=nothing")
+    if len(got) != 0 { t.Errorf("unmatched prefix gave %v", got) }
+}
+
+// Keys are binary in places, so a prefix goes through the same hex: marker the
+// rest of the UI uses — without it the packed buckets could not be scanned.
+func TestViewPrefixHex(t *testing.T) {
+    var srv = httptest.NewServer(handler(testDB(t)))
+    defer srv.Close()
+    var resp, err = http.Get(srv.URL + "/api/view?bucket=addrindex&prefix=hex:0001")
+    if err != nil { t.Fatal(err) }
+    defer resp.Body.Close()
+    var out struct{ Rows []kvRow }
+    json.NewDecoder(resp.Body).Decode(&out)
+    if len(out.Rows) != 1 || out.Rows[0].Key != "hex:000100000000" {
+        t.Fatalf("rows = %+v, want the one packed key", out.Rows)
+    }
+    var miss, merr = http.Get(srv.URL + "/api/view?bucket=addrindex&prefix=hex:ffff")
+    if merr != nil { t.Fatal(merr) }
+    defer miss.Body.Close()
+    json.NewDecoder(miss.Body).Decode(&out)
+    if len(out.Rows) != 0 { t.Errorf("a prefix past the end gave %+v", out.Rows) }
+    // a prefix that is not hex at all is refused rather than taken literally
+    var bad, berr = http.Get(srv.URL + "/api/view?bucket=addrindex&prefix=hex:zz")
+    if berr != nil { t.Fatal(berr) }
+    defer bad.Body.Close()
+    if bad.StatusCode != 400 { t.Errorf("bad hex prefix = %d, want 400", bad.StatusCode) }
+}

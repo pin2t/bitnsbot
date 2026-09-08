@@ -4,6 +4,7 @@
 // it can write any bucket, so it must never face the network.
 package dbui
 
+import "bytes"
 import _ "embed"
 import "encoding/hex"
 import "encoding/json"
@@ -54,6 +55,7 @@ func handler(db *bbolt.DB) http.Handler {
     mux.HandleFunc("/api/get", func(w http.ResponseWriter, r *http.Request) { get(db, w, r) })
     mux.HandleFunc("/api/put", func(w http.ResponseWriter, r *http.Request) { put(db, w, r) })
     mux.HandleFunc("/api/delete", func(w http.ResponseWriter, r *http.Request) { del(db, w, r) })
+    mux.HandleFunc("/api/createbucket", func(w http.ResponseWriter, r *http.Request) { createBucket(db, w, r) })
     mux.HandleFunc("/api/clearbucket", func(w http.ResponseWriter, r *http.Request) { clearBucket(db, w, r) })
     mux.HandleFunc("/api/export", func(w http.ResponseWriter, r *http.Request) { exportBucket(db, w, r) })
     mux.HandleFunc("/api/import", func(w http.ResponseWriter, r *http.Request) { importBucket(db, w, r) })
@@ -76,6 +78,10 @@ type kvRow struct {
     Value string `json:"value"`
 }
 
+// view lists a page of a bucket, or of the keys under a prefix. The prefix goes
+// through decodeField like every other key here, so a binary one is given as
+// "hex:0000", and the scan is a Seek to it rather than a walk from the start —
+// which is what makes a prefix on a large bucket cheap.
 func view(db *bbolt.DB, w http.ResponseWriter, r *http.Request) {
     var q = r.URL.Query()
     var page, _ = strconv.Atoi(q.Get("page"))
@@ -83,6 +89,11 @@ func view(db *bbolt.DB, w http.ResponseWriter, r *http.Request) {
     var size, _ = strconv.Atoi(q.Get("size"))
     if size <= 0 { size = defaultPageSize }
     if size > maxPageSize { size = maxPageSize }
+    var prefix, perr = decodeField(q.Get("prefix"))
+    if perr != nil {
+        http.Error(w, "bad prefix: "+perr.Error(), http.StatusBadRequest)
+        return
+    }
     var rows = []kvRow{}
     var hasNext bool
     var err = db.View(func(tx *bbolt.Tx) error {
@@ -90,14 +101,18 @@ func view(db *bbolt.DB, w http.ResponseWriter, r *http.Request) {
         if b == nil { return errNoBucket }
         var c = b.Cursor()
         var k, v = c.First()
-        for i := 0; i < page*size && k != nil; i++ {
+        // Seek lands on the first key at or above the prefix, so everything
+        // matching runs from there until a key stops carrying it.
+        if len(prefix) > 0 { k, v = c.Seek(prefix) }
+        var matches = func() bool { return k != nil && bytes.HasPrefix(k, prefix) }
+        for i := 0; i < page*size && matches(); i++ {
             k, v = c.Next()
         }
-        for n := 0; n < size && k != nil; n++ {
+        for n := 0; n < size && matches(); n++ {
             rows = append(rows, kvRow{encodeField(k), encodeField(v)})
             k, v = c.Next()
         }
-        hasNext = k != nil
+        hasNext = matches()
         return nil
     })
     if err != nil {
@@ -205,6 +220,37 @@ func del(db *bbolt.DB, w http.ResponseWriter, r *http.Request) {
         return
     }
     logging.Info("database UI: deleted %s/%s", body.Bucket, encodeField(key))
+    writeJSON(w, map[string]any{"ok": true})
+}
+
+// createBucket makes an empty top-level bucket. bbolt reports one that is
+// already there as an error rather than a no-op, which is what the UI wants to
+// say out loud: a Create that silently did nothing would look like it worked.
+func createBucket(db *bbolt.DB, w http.ResponseWriter, r *http.Request) {
+    if r.Method != http.MethodPost {
+        http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+        return
+    }
+    var body struct {
+        Bucket string `json:"bucket"`
+    }
+    if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+        http.Error(w, "bad request", http.StatusBadRequest)
+        return
+    }
+    if body.Bucket == "" {
+        http.Error(w, "bucket is required", http.StatusBadRequest)
+        return
+    }
+    var err = db.Update(func(tx *bbolt.Tx) error {
+        var _, berr = tx.CreateBucket([]byte(body.Bucket))
+        return berr
+    })
+    if err != nil {
+        http.Error(w, err.Error(), http.StatusBadRequest)
+        return
+    }
+    logging.Info("database UI: created bucket %s", body.Bucket)
     writeJSON(w, map[string]any{"ok": true})
 }
 

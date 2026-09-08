@@ -26,13 +26,18 @@ Then open <http://127.0.0.1:8090>. Both flags are required:
 delete any bucket, so it must never be exposed to a network.
 
 bbolt locks the file exclusively, so it cannot open a database another process
-already has open. It **waits for the lock rather than failing**
+already has open. It **waits for the lock rather than failing**, printing nothing
+at all — so point it at a copy, or stop whatever holds the file.
 
 ## What it looks like
 
-Pick a bucket, press **View**, and the rows come back a page at a time. Keys and
-values that are not text — are
-shown behind a `hex:` marker, which is also how you type one back in.
+Pick a bucket, press **View**, and the rows come back a page at a time.
+**Create** makes a new empty bucket, and **Scan** narrows the listing to the keys
+under a prefix, paging within them.
+
+Keys and values that are not text are shown behind a `hex:` marker, which is also
+how you type one back in — a prefix included, so `hex:0a1b` scans a bucket whose
+keys are binary.
 
 ![Browsing a bucket](screenshot-data.png)
 
@@ -44,5 +49,6 @@ dialog at a time would be unusable.
 ![Editing a value](screenshot-value.png)
 
 The page is a single embedded HTML file that fetches nothing external, and the
-whole UI is eight JSON endpoints: `/api/buckets`, `/api/view`, `/api/get`,
-`/api/put`, `/api/delete`, `/api/clearbucket`, `/api/export` and `/api/import`.
+whole UI is nine JSON endpoints: `/api/buckets`, `/api/view`, `/api/get`,
+`/api/put`, `/api/delete`, `/api/createbucket`, `/api/clearbucket`,
+`/api/export` and `/api/import`.
