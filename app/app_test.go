@@ -54,12 +54,16 @@ type fakeSource struct {
     t map[string]Info
     a map[string]Info
     w map[int64]Watches
+    // al is one ranked list per kind, already in the order Source would return
+    // it, so the fake only has to page.
+    al map[string][]Addr
 }
 
 func (s fakeSource) Fees() Fees       { return s.f }
 func (s fakeSource) Network() Network { return s.n }
 func (s fakeSource) Market(lang string) Market { return s.m }
 func (s fakeSource) Blocks(lang string, rng Range) Blocks { return window(s.b, rng) }
+func (s fakeSource) Addresses(lang string, rng AddrRange) Addrs { return addrWindow(s.al[rng.Kind], rng) }
 
 func (s fakeSource) BlockInfo(lang string, height int64) Info {
     if d, ok := s.d[height]; ok { return d }
@@ -235,6 +239,45 @@ func window(all []Block, rng Range) Blocks {
     }
     if len(out.Rows) > 0 { out.Top, out.Next = out.Rows[0].Num, out.Rows[len(out.Rows)-1].Num }
     out.OK = len(out.Rows) > 0
+    return out
+}
+
+// fakeAddrFirst / fakeAddrPage mirror main's batch sizes, small enough that a
+// test can count rows by hand.
+const fakeAddrFirst = 15
+const fakeAddrPage = 10
+
+// addrWindow pages a ranked list the way main's Addresses does: a larger first
+// batch, and a restored list at least as deep as the row Back returns to.
+func addrWindow(all []Addr, rng AddrRange) Addrs {
+    var out = Addrs{Kind: rng.Kind}
+    var want = fakeAddrPage
+    if rng.From == 0 { want = fakeAddrFirst }
+    if rng.Restore && rng.Down + 1 > want { want = rng.Down + 1 }
+    if rng.From >= len(all) { return out }
+    var end = rng.From + want
+    if end > len(all) { end = len(all) }
+    out.Rows = append(out.Rows, all[rng.From:end]...)
+    out.Next, out.More = end, end < len(all)
+    out.OK = len(out.Rows) > 0
+    return out
+}
+
+// liveAddrs builds the three lists the Addresses tab pages through, each row
+// carrying its own offset the way main sets it.
+func liveAddrs() map[string][]Addr {
+    var out = map[string][]Addr{}
+    for _, kind := range []string{"active", "rich", "abandoned"} {
+        for i := 0; i < 40; i++ {
+            var id = fmt.Sprintf("bc1q%s%036d", kind[:1], i)
+            var value = fmt.Sprintf("%d txs", 4000 - i)
+            switch kind {
+            case "rich":      value = fmt.Sprintf("%d.50 BTC", 900 - i)
+            case "abandoned": value = fmt.Sprintf("%d december 2013", 1 + i)
+            }
+            out[kind] = append(out[kind], Addr{Short: id[:6] + "..." + id[len(id)-6:], Id: id, Value: value, Idx: i})
+        }
+    }
     return out
 }
 
@@ -1081,14 +1124,14 @@ func TestAddressDetailsRender(t *testing.T) {
         }
     }
     var head = body[strings.Index(body, `class="head"`):strings.Index(body, `class="fields"`)]
-    if !strings.Contains(head, `hx-get="addresses?to=addresses"`) {
+    if !strings.Contains(head, `hx-get="addresses?kind=active&amp;to=addresses"`) {
         t.Errorf("Back should return to the Addresses tab: %s", head)
     }
 }
 
 // Back from an address restores the tab's own content in the same slot.
 func TestAddressesBackTarget(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{})
+    var h = handler(t, "TESTTOKEN", fakeSource{al: liveAddrs()})
     var w = get(h, "/addresses", freshInitData("TESTTOKEN"))
     if w.Code != 200 {
         t.Fatalf("GET /addresses = %d, want 200", w.Code)
@@ -1096,8 +1139,8 @@ func TestAddressesBackTarget(t *testing.T) {
     if !strings.Contains(w.Body.String(), `id="addrpanel"`) {
         t.Errorf("the fragment must carry the slot it replaces: %s", w.Body.String())
     }
-    if !strings.Contains(w.Body.String(), "Addresses — coming soon") {
-        t.Error("Back should restore the tab's placeholder")
+    if !strings.Contains(w.Body.String(), `id="adr0"`) {
+        t.Errorf("Back should restore the list itself: %s", w.Body.String())
     }
 }
 
@@ -1272,8 +1315,8 @@ func TestBackReturnsToOrigin(t *testing.T) {
         {"block from list", "/block?height=963268&down=963257", "blocks?down=963257&amp;to=blocks", "blocks"},
         {"tx from search", "/tx?id=" + liveTxid + "&from=home", "blocks?to=home", "home"},
         {"tx from watches", "/tx?id=" + liveTxid + "&from=watches", "blocks?to=watches", "watches"},
-        {"address from search", "/address?a=" + liveAddress + "&from=home", "addresses?to=home", "home"},
-        {"address from watches", "/address?a=" + liveAddress + "&from=watches", "addresses?to=watches", "watches"},
+        {"address from search", "/address?a=" + liveAddress + "&from=home", "addresses?kind=active&amp;to=home", "home"},
+        {"address from watches", "/address?a=" + liveAddress + "&from=watches", "addresses?kind=active&amp;to=watches", "watches"},
         {"miner from list", "/miner?name=AntPool&down=963260", "blocks?down=963260&amp;to=blocks", "blocks"},
     }
     for _, c := range cases {
@@ -1915,5 +1958,194 @@ func TestBlockByHashHasNoWatchButton(t *testing.T) {
     // a real transaction at the same endpoint still has its bell
     if body := get(h, "/tx?id="+liveTxid, data).Body.String(); !strings.Contains(body, `hx-get="watch?kind=tx&id=`+liveTxid+`"`) {
         t.Errorf("a transaction page lost its watch button:\n%s", body)
+    }
+}
+
+// The Addresses tab opens on Active: a first batch of rows, the button for that
+// list lit, and the sentinel that fetches the next batch below them.
+func TestAddressListOpensOnActive(t *testing.T) {
+    var h = handler(t, "TESTTOKEN", fakeSource{al: liveAddrs()})
+    var body = get(h, "/addresses", freshInitData("TESTTOKEN")).Body.String()
+    if n := strings.Count(body, `class="blk" id="adr`); n != fakeAddrFirst {
+        t.Errorf("first batch has %d rows, want %d", n, fakeAddrFirst)
+    }
+    if !strings.Contains(body, `hx-get="moreaddrs?kind=active&from=15"`) {
+        t.Errorf("the sentinel should continue at row 15: %s", body)
+    }
+    if !strings.Contains(body, `class="on" hx-get="addresses?kind=active"`) {
+        t.Errorf("Active should be the lit button: %s", body)
+    }
+    // and the other two are offered, unlit
+    for _, kind := range []string{"rich", "abandoned"} {
+        if !strings.Contains(body, `class="" hx-get="addresses?kind=`+kind+`"`) {
+            t.Errorf("%s should be offered and unlit: %s", kind, body)
+        }
+    }
+}
+
+// Each button re-renders the whole panel, which is what keeps the lit button and
+// the rows under it in step without the page tracking which list it is showing.
+func TestAddressListSwitchesKind(t *testing.T) {
+    var h = handler(t, "TESTTOKEN", fakeSource{al: liveAddrs()})
+    var data = freshInitData("TESTTOKEN")
+    for _, kind := range []string{"rich", "abandoned"} {
+        var w = get(h, "/addresses?kind="+kind, data)
+        var body = w.Body.String()
+        if !strings.Contains(body, `id="addrpanel"`) {
+            t.Errorf("%s: a switch must re-render the whole panel: %s", kind, body)
+        }
+        if !strings.Contains(body, `class="on" hx-get="addresses?kind=`+kind+`"`) {
+            t.Errorf("%s: its own button should be lit: %s", kind, body)
+        }
+        if !strings.Contains(body, `hx-get="moreaddrs?kind=`+kind+`&from=15"`) {
+            t.Errorf("%s: the sentinel should carry the kind on: %s", kind, body)
+        }
+        if rt := w.Header().Get("HX-Retarget"); rt != "#addrpanel" {
+            t.Errorf("%s: HX-Retarget = %q, want #addrpanel", kind, rt)
+        }
+    }
+}
+
+// A kind arrives in a URL a user can edit and goes straight back out into the
+// links the batch renders, so an unknown one becomes the list the tab opens on.
+func TestAddressListKindIsValidated(t *testing.T) {
+    var h = handler(t, "TESTTOKEN", fakeSource{al: liveAddrs()})
+    var body = get(h, `/addresses?kind="},"evil":{"`, freshInitData("TESTTOKEN")).Body.String()
+    if !strings.Contains(body, `class="on" hx-get="addresses?kind=active"`) {
+        t.Errorf("an unknown kind should fall back to Active: %s", body)
+    }
+    if strings.Contains(body, "evil") {
+        t.Errorf("the raw kind reached the page: %s", body)
+    }
+}
+
+// The scroll sentinel appends rows alone — no panel, no buttons — and hands the
+// next offset to a fresh sentinel below them.
+func TestAddressListAppends(t *testing.T) {
+    var h = handler(t, "TESTTOKEN", fakeSource{al: liveAddrs()})
+    var body = get(h, "/moreaddrs?kind=rich&from=15", freshInitData("TESTTOKEN")).Body.String()
+    if n := strings.Count(body, `class="blk" id="adr`); n != fakeAddrPage {
+        t.Errorf("a scroll batch has %d rows, want %d", n, fakeAddrPage)
+    }
+    if strings.Contains(body, `id="addrpanel"`) || strings.Contains(body, `class="seg"`) {
+        t.Errorf("an append must carry rows only: %s", body)
+    }
+    if !strings.Contains(body, `id="adr15"`) || !strings.Contains(body, `id="adr24"`) {
+        t.Errorf("rows 15..24 should be the batch: %s", body)
+    }
+    if !strings.Contains(body, `hx-get="moreaddrs?kind=rich&from=25"`) {
+        t.Errorf("the next sentinel should continue at row 25: %s", body)
+    }
+}
+
+// The end of the list simply has no sentinel, so the scroll stops rather than
+// asking forever.
+func TestAddressListEnds(t *testing.T) {
+    var h = handler(t, "TESTTOKEN", fakeSource{al: liveAddrs()})
+    var body = get(h, "/moreaddrs?kind=active&from=35", freshInitData("TESTTOKEN")).Body.String()
+    if strings.Contains(body, "moreaddrs") {
+        t.Errorf("the last batch should carry no sentinel: %s", body)
+    }
+    if n := strings.Count(body, `class="blk" id="adr`); n != 5 {
+        t.Errorf("the last batch has %d rows, want the 5 that are left", n)
+    }
+}
+
+// from=0 would append the first batch underneath itself, so it is refused rather
+// than read as the top of the list.
+func TestAddressListRejectsBadOffset(t *testing.T) {
+    var h = handler(t, "TESTTOKEN", fakeSource{al: liveAddrs()})
+    for _, p := range []string{"/moreaddrs?kind=active&from=0", "/moreaddrs?kind=active",
+        "/moreaddrs?kind=active&from=-3", "/moreaddrs?kind=active&from=x"} {
+        if code := get(h, p, freshInitData("TESTTOKEN")).Code; code != 400 {
+            t.Errorf("GET %s = %d, want 400", p, code)
+        }
+    }
+}
+
+// Nothing is ever inserted above these rows — the buckets are loaded offline —
+// so unlike the block list there is no sentinel on top and nothing waits on an
+// event.
+func TestAddressListDoesNotWaitForEvents(t *testing.T) {
+    var h = handler(t, "TESTTOKEN", fakeSource{al: liveAddrs()})
+    var data = freshInitData("TESTTOKEN")
+    for _, p := range []string{"/addresses", "/addresses?kind=rich", "/moreaddrs?kind=active&from=15"} {
+        var body = get(h, p, data).Body.String()
+        if strings.Contains(body, "sse:") || strings.Contains(body, "every 10m") {
+            t.Errorf("%s: the address lists must not refresh on an event: %s", p, body)
+        }
+    }
+}
+
+// A row opens the address page, and Back returns to the list it was opened from
+// — that list, at that row.
+func TestAddressRowLinksBackToItsList(t *testing.T) {
+    var h = handler(t, "TESTTOKEN", fakeSource{al: liveAddrs(), a: liveAddr()})
+    var data = freshInitData("TESTTOKEN")
+    var list = get(h, "/addresses?kind=abandoned", data).Body.String()
+    if !strings.Contains(list, `hx-get="address?a=bc1qa`) {
+        t.Errorf("a row should open its address: %s", list)
+    }
+    if !strings.Contains(list, `&kind=abandoned&down=3"`) {
+        t.Errorf("a row should name its list and its own offset: %s", list)
+    }
+    var page = get(h, "/address?a="+liveAddress+"&kind=abandoned&down=7", data).Body.String()
+    var head = page[strings.Index(page, `class="head"`):strings.Index(page, `class="fields"`)]
+    if !strings.Contains(head, `hx-get="addresses?kind=abandoned&amp;down=7&amp;to=addresses"`) {
+        t.Errorf("Back should restore the abandoned list down to row 7: %s", head)
+    }
+    if !strings.Contains(head, `hx-swap="outerHTML show:#adr7:top"`) {
+        t.Errorf("Back should scroll the tapped row back into view: %s", head)
+    }
+}
+
+// Row 0 is the top of the list and an ordinary answer, so it must not be read as
+// "Back did not ask" the way a zero block height is.
+func TestAddressListRestoresRowZero(t *testing.T) {
+    var h = handler(t, "TESTTOKEN", fakeSource{al: liveAddrs(), a: liveAddr()})
+    var page = get(h, "/address?a="+liveAddress+"&kind=rich&down=0", freshInitData("TESTTOKEN")).Body.String()
+    var head = page[strings.Index(page, `class="head"`):strings.Index(page, `class="fields"`)]
+    if !strings.Contains(head, `hx-swap="outerHTML show:#adr0:top"`) {
+        t.Errorf("row 0 should still be restored and scrolled to: %s", head)
+    }
+}
+
+// A restored list is as deep as the reader had scrolled, so the row Back returns
+// to is actually in it.
+func TestAddressListRestoresDepth(t *testing.T) {
+    var h = handler(t, "TESTTOKEN", fakeSource{al: liveAddrs()})
+    var body = get(h, "/addresses?kind=rich&down=22", freshInitData("TESTTOKEN")).Body.String()
+    if !strings.Contains(body, `id="adr22"`) {
+        t.Errorf("the restored list should reach row 22: %s", body)
+    }
+    if n := strings.Count(body, `class="blk" id="adr`); n != 23 {
+        t.Errorf("the restored list has %d rows, want 23", n)
+    }
+}
+
+// The tab is rendered into the page, so opening it costs no round trip — and the
+// copy in the page must be the very fragment the endpoint serves.
+func TestAddressListIsInThePage(t *testing.T) {
+    var h = handler(t, "TESTTOKEN", fakeSource{al: liveAddrs()})
+    var page = get(h, "/", "").Body.String()
+    var fragment = strings.TrimSpace(get(h, "/addresses", freshInitData("TESTTOKEN")).Body.String())
+    if !strings.Contains(page, fragment) {
+        t.Errorf("the page does not embed the exact /addresses fragment:\n--- fragment ---\n%s", fragment)
+    }
+}
+
+// An empty bucket says so and still offers the other two lists, rather than
+// rendering a panel with no way out of it.
+func TestAddressListEmpty(t *testing.T) {
+    var h = handler(t, "TESTTOKEN", fakeSource{})
+    var body = get(h, "/addresses?kind=rich", freshInitData("TESTTOKEN")).Body.String()
+    if strings.Contains(body, `class="blk"`) {
+        t.Errorf("an empty list should have no rows: %s", body)
+    }
+    if !strings.Contains(body, `class="on" hx-get="addresses?kind=rich"`) {
+        t.Errorf("the empty list should still be the lit one: %s", body)
+    }
+    if !strings.Contains(body, `hx-get="addresses?kind=active"`) {
+        t.Errorf("the other lists must stay reachable: %s", body)
     }
 }

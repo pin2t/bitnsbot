@@ -13,10 +13,11 @@ type countingSource struct {
     mu    sync.Mutex
     calls map[string]int
     b     []Block
+    al    map[string][]Addr
 }
 
 func newCounting() *countingSource {
-    return &countingSource{calls: map[string]int{}, b: liveBlocks()}
+    return &countingSource{calls: map[string]int{}, b: liveBlocks(), al: liveAddrs()}
 }
 
 func (s *countingSource) count(name string) int {
@@ -65,6 +66,11 @@ func (s *countingSource) SetAlias(chat int64, kind, id, alias string) (bool, err
 func (s *countingSource) Watches(chat int64) Watches {
     s.hit("watches")
     return Watches{OK: true}
+}
+
+func (s *countingSource) Addresses(lang string, rng AddrRange) Addrs {
+    s.hit("addresses:" + rng.Kind + ":" + strconv.Itoa(rng.From))
+    return addrWindow(s.al[rng.Kind], rng)
 }
 
 func (s *countingSource) Blocks(lang string, rng Range) Blocks {

@@ -133,6 +133,7 @@ type page struct {
     Network Network
     Market  Market
     Blocks  Blocks
+    Addrs   Addrs
 }
 
 // cacheTTL is the longest a rendered card is served from memory. The expiry
@@ -147,6 +148,10 @@ var cacheTTL = 10 * time.Minute
 // screens and stops, so twenty covers the depth anyone reaches, while bounding
 // what an edited before= parameter can make the process hold.
 const blocksCached = 20
+
+// addrsCached is the same bound for the Addresses tab, which scrolls the same
+// way: batches on the way down, plus the deeper list a Back restores.
+const addrsCached = 20
 
 // cardsCached is exactly the number of single-valued renders — the three cards
 // plus the shell page — in every language, so nothing is ever evicted for space.
@@ -168,6 +173,13 @@ var cardsCache = lru.New[string, []byte](cardsCached)
 // another is exactly what a URL-only key would do.
 func key(lang, uri string) string { return lang + uri }
 var blocksCache = lru.New[string, []byte](blocksCached)
+
+// addrsCache holds the Addresses tab's batches, keyed by URL like the block
+// list's and bounded for the same reason — a reader scrolling accumulates one
+// entry per batch. Nothing invalidates it by event: the buckets behind it are
+// filled by tools/csvimport, which needs bbolt's exclusive lock and so cannot
+// run against a live bot, leaving cacheTTL the only expiry these entries need.
+var addrsCache = lru.New[string, []byte](addrsCached)
 
 // invalidate drops one card's rendered HTML. Notify calls it *before* announcing
 // the event, so a page reacting immediately cannot be handed the very copy it
@@ -194,6 +206,7 @@ func invalidateAll() {
     cacheMu.Lock()
     cardsCache.Clear()
     blocksCache.Clear()
+    addrsCache.Clear()
     cacheMu.Unlock()
 }
 
@@ -483,6 +496,50 @@ type Range struct {
     Down int64
 }
 
+// Addr is one row of an address list: the shortened form the row shows, the full
+// address its link carries, and the one figure that list ranks by — a
+// transaction count, a balance, or the date the coins last moved — already
+// formatted in the reader's language.
+//
+// Idx is the row's offset in the list, which is the mark Back returns to. An
+// offset is exact here in a way it could not be for blocks: these lists are
+// static, so no row shifts under a reader mid-scroll.
+type Addr struct {
+    Short string
+    Id    string
+    Value string
+    Idx   int
+}
+
+// Addrs is one batch of one address list. Kind is carried back out because every
+// link the batch renders — the next sentinel, a row's details page, the buttons
+// at the foot of the panel — has to name the list it belongs to.
+type Addrs struct {
+    OK   bool
+    Kind string
+    Rows []Addr
+    // Next is the offset the sentinel below the rows continues at, and More
+    // whether there is anything there to fetch.
+    Next int
+    More bool
+}
+
+// AddrRange is the window of an address list a request wants.
+type AddrRange struct {
+    // Kind is which list: "active", "rich" or "abandoned". Anything else has
+    // already been turned into the default by the handler.
+    Kind string
+    // From is the offset the batch starts at — a plain offset, where the block
+    // list needs a height, because nothing is ever inserted above these rows.
+    From int
+    // Down restores a list Back returns to: everything from the top down to the
+    // row the reader had opened. Restore says whether one was asked for at all,
+    // since row 0 is the top of the list and a legitimate answer, so the value
+    // alone cannot mean both that and "not asked".
+    Down    int
+    Restore bool
+}
+
 // watchButton is the bell in a details page's title row: what it acts on, and
 // whether this reader is currently watching it. Error marks a set that failed,
 // so the button can say so instead of silently lying about the state.
@@ -525,6 +582,7 @@ type Source interface {
     Network() Network
     Market(lang string) Market
     Blocks(lang string, rng Range) Blocks
+    Addresses(lang string, rng AddrRange) Addrs
     BlockInfo(lang string, height int64) Info
     TxInfo(lang, txid string) Info
     AddrInfo(lang, address string) Info
@@ -594,6 +652,41 @@ func backToList(r *http.Request) (string, string) {
     var down = downOf(r)
     if down == "" { return "blocks?to=" + to, "outerHTML" }
     return "blocks?down=" + down + "&to=" + to, "outerHTML show:#blk" + down + ":top"
+}
+
+// addrKindOf is which of the three ranked lists a request wants. It arrives in a
+// URL a user can edit and goes straight back out into the links the batch
+// renders, so anything unrecognised becomes the list the tab opens on rather
+// than being carried through.
+func addrKindOf(r *http.Request) string {
+    switch k := r.URL.Query().Get("kind"); k {
+    case "active", "rich", "abandoned":
+        return k
+    }
+    return "active"
+}
+
+// addrDownOf is the row a details page was opened from, and whether the URL
+// named one at all. Unlike a block height, row 0 is an ordinary answer — the top
+// of the list — so the caller is told separately rather than reading zero as
+// absent.
+func addrDownOf(r *http.Request) (int, bool) {
+    var n, err = strconv.Atoi(r.URL.Query().Get("down"))
+    if err != nil || n < 0 { return 0, false }
+    return n, true
+}
+
+// backToAddrList is the Back target for a page opened from the Addresses tab,
+// and the swap that goes with it: restore the list the reader was on — which of
+// the three, and down to the row they tapped — then scroll that row back into
+// view. A page reached any other way (a search, a watch row, an id tapped inside
+// another page) carries neither, and lands on the list's first batch.
+func backToAddrList(r *http.Request) (string, string) {
+    var kind, to = addrKindOf(r), origin(r, addressSlot)
+    var down, ok = addrDownOf(r)
+    if !ok { return "addresses?kind=" + kind + "&to=" + to, "outerHTML" }
+    var n = strconv.Itoa(down)
+    return "addresses?kind=" + kind + "&down=" + n + "&to=" + to, "outerHTML show:#adr" + n + ":top"
 }
 
 // downOf is the block a details page was opened from, as it rides in the URL:
@@ -680,7 +773,7 @@ func Start(addr, token string, src Source) *http.Server {
             return
         }
         cached(cardsCache, w, r, func(lang string) []byte {
-            return render(lang, "app", page{Fees: src.Fees(), Network: src.Network(), Market: src.Market(lang), Blocks: src.Blocks(lang, Range{})})
+            return render(lang, "app", page{Fees: src.Fees(), Network: src.Network(), Market: src.Market(lang), Blocks: src.Blocks(lang, Range{}), Addrs: src.Addresses(lang, AddrRange{Kind: "active"})})
         })
     })
     mux.HandleFunc("/htmx.min.js", func(w http.ResponseWriter, r *http.Request) {
@@ -798,16 +891,37 @@ func Start(addr, token string, src Source) *http.Server {
             http.Error(w, "no address", http.StatusBadRequest)
             return
         }
-        details(w, r, addressSlot, "addresses?to="+origin(r, addressSlot), "outerHTML", "address", a, func(lang string) Info { return src.AddrInfo(lang, a) })
+        var back, swap = backToAddrList(r)
+        details(w, r, addressSlot, back, swap, "address", a, func(lang string) Info { return src.AddrInfo(lang, a) })
     }))
-    // what Back on an address page returns to: the tab's own content, which is
-    // still a placeholder
+    // The Addresses tab: one of three ranked lists, and what Back on an address
+    // page returns to. The whole panel re-renders on a switch — the buttons at
+    // its foot are part of it — so which list is showing is server-rendered
+    // rather than state the page has to keep.
+    //
+    // No SSE trigger rides on any of this, unlike the block list: the buckets
+    // are loaded offline by tools/csvimport, so there is nothing to announce.
     mux.HandleFunc("/addresses", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
         var to = r.URL.Query().Get("to")
         if !isPanel(to) { to = "addresses" }
+        var rng = AddrRange{Kind: addrKindOf(r)}
+        rng.Down, rng.Restore = addrDownOf(r)
         w.Header().Set("HX-Retarget", "#"+addressSlot)
         w.Header().Set("HX-Trigger", showtab(to))
-        cached(cardsCache, w, r, func(lang string) []byte { return render(lang, "addresses", nil) })
+        cached(addrsCache, w, r, func(lang string) []byte { return render(lang, "addresses", src.Addresses(lang, rng)) })
+    }))
+    // The batch the sentinel below the rows appends as the reader reaches it.
+    // from=0 is refused rather than read as the top: it would append the first
+    // batch underneath itself, which is what an edited URL would otherwise do.
+    mux.HandleFunc("/moreaddrs", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
+        var from, err = strconv.Atoi(r.URL.Query().Get("from"))
+        if err != nil || from <= 0 {
+            http.Error(w, "no such row", http.StatusBadRequest)
+            return
+        }
+        cached(addrsCache, w, r, func(lang string) []byte {
+            return render(lang, "addrrows", src.Addresses(lang, AddrRange{Kind: addrKindOf(r), From: from}))
+        })
     }))
     // Never cached: every cache here is keyed by URL, which is identical for
     // every user, so a cached watch list would be handed to the wrong person.
