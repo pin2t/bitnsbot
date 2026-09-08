@@ -11,6 +11,7 @@ import "strings"
 import "testing"
 import "time"
 import "bitnsbot/app"
+import "bitnsbot/cursors"
 import "bitnsbot/rates"
 import "bitnsbot/txwatches"
 import "bitnsbot/watches"
@@ -126,7 +127,7 @@ func TestAppSectionsAreTranslated(t *testing.T) {
             "Fees": 40000000, "Work": 3.6e24, "LastWork": 6.0e23})
         if err != nil { return err }
         if err := tx.Bucket([]byte("miners-stat")).Put([]byte("AntPool"), data); err != nil { return err }
-        return tx.Bucket([]byte("miners-cursor")).Put([]byte("cursor"), []byte("9"))
+        return cursors.Set(tx, cursors.Miners, 9)
     }); err != nil {
         t.Fatalf("seed miner stats: %v", err)
     }

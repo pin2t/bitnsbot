@@ -9,6 +9,7 @@ import "path/filepath"
 import "strings"
 import "testing"
 import "time"
+import "bitnsbot/cursors"
 import "go.etcd.io/bbolt"
 import "bitnsbot/lru"
 
@@ -712,7 +713,7 @@ func TestMinersFlow(t *testing.T) {
             if err != nil { return err }
             if err := b.Put([]byte(p.name), data); err != nil { return err }
         }
-        return tx.Bucket([]byte("miners-cursor")).Put([]byte("cursor"), []byte("9"))
+        return cursors.Set(tx, cursors.Miners, 9)
     }); err != nil {
         t.Fatalf("seed stats: %v", err)
     }

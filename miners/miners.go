@@ -12,6 +12,7 @@ import "net/http"
 import "time"
 
 import "go.etcd.io/bbolt"
+import "bitnsbot/cursors"
 import "bitnsbot/logging"
 
 var db *bbolt.DB
@@ -28,12 +29,14 @@ var httpClient = &http.Client{Timeout: 15 * time.Second}
 var updateInterval = 24 * time.Hour
 
 // Init stores the shared bbolt handle and ensures the buckets exist: `miners`
-// (address → pool name), `miners-tag` (coinbase tag → pool name), `miners-stat`
-// (pool name → aggregated stats), and `miners-cursor` (the collector's cursor).
+// (address → pool name), `miners-tag` (coinbase tag → pool name) and
+// `miners-stat` (pool name → aggregated stats). The collector's place lives in
+// the shared cursors bucket, which this ensures too.
 func Init(handle *bbolt.DB) error {
     db = handle
+    if err := cursors.Init(handle); err != nil { return err }
     return db.Update(func(tx *bbolt.Tx) error {
-        for _, name := range [][]byte{bucket, tagBucket, statBucket, cursorBucket} {
+        for _, name := range [][]byte{bucket, tagBucket, statBucket} {
             if _, err := tx.CreateBucketIfNotExists(name); err != nil { return err }
         }
         return nil
