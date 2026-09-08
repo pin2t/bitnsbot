@@ -1,6 +1,7 @@
-// Command dbui starts the database admin web UI as a standalone process,
-// serving the same interface the main bot exposes under -dbui-listen. Use it
-// when you need to inspect or edit the bbolt database without running the bot.
+// Command bboltwui is a web UI for a bbolt database: it serves the same
+// interface the bot exposes under -dbui-listen (the dbui package), as a
+// standalone process against any bbolt file. Use it when you need to inspect or
+// edit a database without running the bot — see the README beside this file.
 package main
 
 import "context"
@@ -15,7 +16,7 @@ import "go.etcd.io/bbolt"
 import "bitnsbot/dbui"
 import "bitnsbot/logging"
 
-var dbPath = flag.String("db", "", "path to the bbolt watches database (required)")
+var dbPath = flag.String("db", "", "path to the bbolt database (required)")
 var listenAddr = flag.String("listen", "", "listen address, e.g. 127.0.0.1:8090 (required; bind to localhost only — the UI can write any bucket)")
 
 func main() {
