@@ -7,6 +7,8 @@ import "encoding/hex"
 import "encoding/json"
 import "math"
 import "sort"
+import "strconv"
+import "strings"
 import "time"
 
 import "go.etcd.io/bbolt"
@@ -55,6 +57,10 @@ type rateRecord struct {
     Cents int64 `json:"cents"`
 }
 
+// watchRecord is the stored value. The chat and the address moved into the key —
+// "<chat>,<address>" — leaving these two behind; Chat and Watch are kept so a
+// database written before that move still reads, since this tool is pointed at
+// backups as often as at a live file.
 type watchRecord struct {
     Created int64  `json:"created"`
     Chat    int64  `json:"chat"`
@@ -283,10 +289,12 @@ func copyRates(source *bbolt.DB, target *sql.DB) (rows, skipped int, err error) 
     return rows, skipped, w.flush()
 }
 
-// copyWatches collapses duplicates. The bucket stores one record per /watch under
-// an auto-incrementing key and never deduplicates, so one chat can hold the same
-// address twice, which the table's (chat, addr) key cannot; the last record wins,
-// and how many were folded away is reported.
+// copyWatches reads both shapes of the bucket. Current records carry the chat
+// and the address in the key, as "<chat>,<address>", which is already the
+// table's (chat, addr) key. Older ones carry an auto-incrementing key with both
+// fields inside the value, and never deduplicated, so one chat could hold the
+// same address twice — the last record wins and how many were folded away is
+// reported.
 func copyWatches(source *bbolt.DB, target *sql.DB) (rows, skipped int, err error) {
     var w = newWriter(target, "watches", "insert or replace into watches (chat, addr, alias, created) values (?, ?, ?, ?)")
     var seen = map[string]bool{}
@@ -300,9 +308,15 @@ func copyWatches(source *bbolt.DB, target *sql.DB) (rows, skipped int, err error
                 skipped++
                 return nil
             }
-            logging.Db("watches: chat=%d addr=%s", r.Chat, r.Watch)
-            if err := w.add(r.Chat, r.Watch, r.Alias, r.Created); err != nil { return err }
-            var key = string(itob(uint64(r.Chat))) + r.Watch
+            var chat, address = r.Chat, r.Watch
+            if c, a, ok := watchKey(k); ok { chat, address = c, a }
+            if address == "" {
+                skipped++
+                return nil
+            }
+            logging.Db("watches: chat=%d addr=%s", chat, address)
+            if err := w.add(chat, address, r.Alias, r.Created); err != nil { return err }
+            var key = strconv.FormatInt(chat, 10) + "," + address
             if seen[key] {
                 duplicates++
             } else {
@@ -316,6 +330,16 @@ func copyWatches(source *bbolt.DB, target *sql.DB) (rows, skipped int, err error
         logging.Warn("watches: %d duplicate (chat, address) watches collapsed", duplicates)
     }
     return rows, skipped, w.flush()
+}
+
+// watchKey splits the current key form, "<chat>,<address>". An old numeric key
+// does not parse, which is how the two are told apart.
+func watchKey(k []byte) (int64, string, bool) {
+    var chat, address, found = strings.Cut(string(k), ",")
+    if !found || address == "" { return 0, "", false }
+    var id, err = strconv.ParseInt(chat, 10, 64)
+    if err != nil { return 0, "", false }
+    return id, address, true
 }
 
 // copyAddrindex packs the bbolt key into the single shard column. That key is a
