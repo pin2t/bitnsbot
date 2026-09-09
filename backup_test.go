@@ -33,7 +33,7 @@ func readBackup(t *testing.T, path string) []string {
     var got []string
     copied.View(func(tx *bbolt.Tx) error {
         return tx.Bucket([]byte("watches")).ForEach(func(k, v []byte) error {
-            got = append(got, string(v))
+            got = append(got, string(k)+" "+string(v))
             return nil
         })
     })
