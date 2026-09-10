@@ -1,6 +1,7 @@
 package main
 
 import "context"
+import "encoding/json"
 import "fmt"
 import "path/filepath"
 import "strings"
@@ -42,6 +43,46 @@ func TestCirculatingSupply(t *testing.T) {
     if got := circulatingSupply(100000000); got > 2100000000000000 {
         t.Errorf("supply at a far-future height = %d, above the 21M cap", got)
     }
+}
+
+// The cache moved out of blocks-stat and into blocks, so a database written
+// before that has to come across on the first start after it — and blocks-stat
+// has to be gone afterwards, since it is the whole signal that there is nothing
+// left to move.
+func TestBlocksMigrateOutOfBlocksStat(t *testing.T) {
+    var path = filepath.Join(t.TempDir(), "bitnsbot.db")
+    var handle, err = bbolt.Open(path, 0600, nil)
+    if err != nil { t.Fatalf("open: %v", err) }
+    if err := handle.Update(func(tx *bbolt.Tx) error {
+        var b, berr = tx.CreateBucket(oldBlocksBucket)
+        if berr != nil { return berr }
+        for h := int64(700000); h < 700025; h++ {
+            var data, merr = json.Marshal(&blockInfo{Height: h, Hash: fmt.Sprintf("hash%d", h), Miner: "PoolX"})
+            if merr != nil { return merr }
+            if perr := b.Put(itob(uint64(h)), data); perr != nil { return perr }
+        }
+        return nil
+    }); err != nil { t.Fatalf("seed: %v", err) }
+    handle.Close()
+    // fewer records per transaction than were seeded, so the batching is exercised
+    var restore = blocksMigrateBatch
+    blocksMigrateBatch = 10
+    defer func() { blocksMigrateBatch = restore }()
+    if err := openDB(path); err != nil { t.Fatalf("openDB: %v", err) }
+    defer closeDB()
+    for h := int64(700000); h < 700025; h++ {
+        var bi, ok = loadBlock(h)
+        if !ok || bi.Hash != fmt.Sprintf("hash%d", h) || bi.Miner != "PoolX" {
+            t.Fatalf("block %d: %+v ok=%v", h, bi, ok)
+        }
+    }
+    db.View(func(tx *bbolt.Tx) error {
+        if tx.Bucket(oldBlocksBucket) != nil { t.Error("blocks-stat survived the migration") }
+        return nil
+    })
+    // and a start after that has nothing to do
+    if err := migrateBlocks(db); err != nil { t.Fatalf("second migration: %v", err) }
+    if _, ok := loadBlock(700024); !ok { t.Error("a second migration lost the records the first moved") }
 }
 
 func TestStoreLoadBlock(t *testing.T) {
@@ -181,7 +222,7 @@ func TestBlockNotification(t *testing.T) {
     }
 }
 
-// The Mini App's block list windows the blocks-stat bucket by height rather than
+// The Mini App's block list windows the blocks bucket by height rather than
 // by an offset, which is what keeps a batch stable while the chain grows at the
 // head. The cursor arithmetic is where that can go wrong, so this drives it
 // against a real database.

@@ -86,7 +86,7 @@ const blocksPerPage = 12
 const blocksMaxRows = blocksPerPage * 20
 
 // Blocks reads one window of the recent-block list straight out of the
-// blocks-stat bucket. The keys are big-endian heights, so walking the cursor
+// blocks bucket. The keys are big-endian heights, so walking the cursor
 // backwards yields newest-first order with no sorting and no node round trip,
 // and Seek starts a batch at a given height without stepping over the ones above
 // it — everything the row needs is already in the cached record.
