@@ -15,17 +15,6 @@ import "bitnsbot/cursors"
 
 var blocksBucket = []byte("blocks")
 
-// oldBlocksBucket is where the cache used to live. blockInit moves whatever is
-// still in it across and drops it.
-var oldBlocksBucket = []byte("blocks-stat")
-
-// blocksMigrateBatch is how many records one migration transaction moves. The
-// cache is chain-sized — a real one holds nearly a million blocks — so a single
-// transaction would hold every one of them before it committed, and would give
-// bbolt no chance to reuse the pages the old bucket is freeing. A package var so
-// tests can shrink it.
-var blocksMigrateBatch = 10000
-
 // blockCacheInterval is how often the collector catches up from the last
 // processed block to the chain tip. A package var so tests can shrink it.
 var blockCacheInterval = 10 * time.Minute
@@ -53,70 +42,15 @@ type blockInfo struct {
     Difficulty float64  `json:"difficulty"`
 }
 
-// blockInit creates the blocks bucket inside the shared bbolt file, ensures the
-// shared cursors bucket the backfill keeps its place in, and carries across
-// anything left in the bucket the cache used to live in. Called once by openDB
-// before any goroutine reads or writes them.
+// blockInit creates the blocks bucket inside the shared bbolt file, and ensures
+// the shared cursors bucket the backfill keeps its place in. Called once by
+// openDB before any goroutine reads or writes them.
 func blockInit(handle *bbolt.DB) error {
     if err := cursors.Init(handle); err != nil { return err }
-    var err = handle.Update(func(tx *bbolt.Tx) error {
-        var _, berr = tx.CreateBucketIfNotExists(blocksBucket)
-        return berr
+    return handle.Update(func(tx *bbolt.Tx) error {
+        var _, err = tx.CreateBucketIfNotExists(blocksBucket)
+        return err
     })
-    if err != nil { return err }
-    return migrateBlocks(handle)
-}
-
-// migrateBlocks moves the cache out of blocks-stat, the bucket it used to live
-// in, and then drops that bucket. It is a no-op on every start after the first,
-// the bucket being gone.
-//
-// A record moves by key, a batch at a time, rather than the whole bucket moving
-// in one transaction: the cache is chain-sized — a mainnet one holds nearly a
-// million blocks — so one transaction would be a commit of the entire cache, and
-// the pages the old bucket frees only become available to the new one once the
-// transaction that freed them is closed. Moving by key is also what makes an
-// interrupted run recoverable: whatever is left is still in blocks-stat, and the
-// next start carries on from there.
-func migrateBlocks(handle *bbolt.DB) error {
-    var began = time.Now()
-    var moved int
-    for {
-        var done bool
-        var err = handle.Update(func(tx *bbolt.Tx) error {
-            var old = tx.Bucket(oldBlocksBucket)
-            if old == nil {
-                done = true
-                return nil
-            }
-            // The bytes a cursor yields belong to the transaction and the puts
-            // below may move the pages holding them, so the batch is collected
-            // into copies before anything is written.
-            type record struct{ key, value []byte }
-            var batch []record
-            var c = old.Cursor()
-            for k, v := c.First(); k != nil && len(batch) < blocksMigrateBatch; k, v = c.Next() {
-                batch = append(batch, record{append([]byte(nil), k...), append([]byte(nil), v...)})
-            }
-            if len(batch) == 0 {
-                done = true
-                return tx.DeleteBucket(oldBlocksBucket)
-            }
-            var b = tx.Bucket(blocksBucket)
-            for _, r := range batch {
-                if err := b.Put(r.key, r.value); err != nil { return err }
-                if err := old.Delete(r.key); err != nil { return err }
-            }
-            moved += len(batch)
-            return nil
-        })
-        if err != nil { return err }
-        if done { break }
-    }
-    if moved > 0 {
-        logging.Status("blocks: moved %d records out of blocks-stat in %s", moved, time.Since(began).Round(time.Millisecond))
-    }
-    return nil
 }
 
 func storeBlock(bi *blockInfo) error {
