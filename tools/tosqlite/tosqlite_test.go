@@ -47,14 +47,14 @@ func count(t *testing.T, db *sql.DB, query string, args ...any) int {
 
 func TestCopyBlocks(t *testing.T) {
     var source, target = setup(t, func(tx *bbolt.Tx) error {
-        put(t, tx, "blocks-stat", itob(963268), blockInfo{
+        put(t, tx, "blocks", itob(963268), blockInfo{
             Height: 963268, Hash: "0000abc", Time: 1756771200, Size: 1398242, NumTx: 3105,
             Miner: "Foundry USA", FeesOK: true, FeeMin: 1, FeeAvg: 4, FeeMax: 900,
             TxSizeMin: 188, TxSizeAvg: 450, TxSizeMax: 99000,
             Reward: 312500000, Total: 320000000, Difficulty: 1.4e14,
         })
-        put(t, tx, "blocks-stat", itob(963269), blockInfo{Height: 963269, Hash: "0000def", Miner: "Unknown"})
-        put(t, tx, "blocks-stat", itob(963270), []byte("{not json"))
+        put(t, tx, "blocks", itob(963269), blockInfo{Height: 963269, Hash: "0000def", Miner: "Unknown"})
+        put(t, tx, "blocks", itob(963270), []byte("{not json"))
         return nil
     })
     var rows, skipped, err = copyBlocks(source, target)
@@ -77,6 +77,21 @@ func TestCopyBlocks(t *testing.T) {
     if got := count(t, target, "select feesOK from blocks where height = 963269"); got != 0 {
         t.Errorf("feesOK = %d for a block without fee stats, want 0", got)
     }
+}
+
+// A database written before the cache moved out of blocks-stat still migrates:
+// this tool is pointed at backups as often as at a live file.
+func TestCopyBlocksReadsTheOldBucket(t *testing.T) {
+    var source, target = setup(t, func(tx *bbolt.Tx) error {
+        put(t, tx, "blocks-stat", itob(963268), blockInfo{Height: 963268, Hash: "0000abc", Miner: "AntPool"})
+        return nil
+    })
+    var rows, _, err = copyBlocks(source, target)
+    if err != nil { t.Fatal(err) }
+    if rows != 1 { t.Fatalf("rows = %d, want 1", rows) }
+    var miner string
+    if err := target.QueryRow("select miner from blocks where height = 963268").Scan(&miner); err != nil { t.Fatal(err) }
+    if miner != "AntPool" { t.Errorf("miner = %q, want AntPool", miner) }
 }
 
 func TestCopyMarketToCents(t *testing.T) {

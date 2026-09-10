@@ -2,7 +2,7 @@
 //
 //	tosqlite -src bitnsbot.db -dst bitnsbot.sqlite.db
 //
-// Seven buckets become six tables: addrindex, blocks-stat, market, rates and
+// Seven buckets become six tables: addrindex, blocks, market, rates and
 // watches map one to one, and the three miner buckets (miners, miners-tag,
 // miners-stat) combine into one. The source is opened read-only and never
 // written; the destination must not already exist.

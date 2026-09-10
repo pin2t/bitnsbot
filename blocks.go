@@ -13,7 +13,18 @@ import "bitnsbot/logging"
 import "bitnsbot/miners"
 import "bitnsbot/cursors"
 
-var blocksBucket = []byte("blocks-stat")
+var blocksBucket = []byte("blocks")
+
+// oldBlocksBucket is where the cache used to live. blockInit moves whatever is
+// still in it across and drops it.
+var oldBlocksBucket = []byte("blocks-stat")
+
+// blocksMigrateBatch is how many records one migration transaction moves. The
+// cache is chain-sized — a real one holds nearly a million blocks — so a single
+// transaction would hold every one of them before it committed, and would give
+// bbolt no chance to reuse the pages the old bucket is freeing. A package var so
+// tests can shrink it.
+var blocksMigrateBatch = 10000
 
 // blockCacheInterval is how often the collector catches up from the last
 // processed block to the chain tip. A package var so tests can shrink it.
@@ -42,22 +53,75 @@ type blockInfo struct {
     Difficulty float64  `json:"difficulty"`
 }
 
-// blockInit creates the blocks-stat bucket inside the shared bbolt file, and
-// ensures the shared cursors bucket the backfill keeps its place in. Called once
-// by openDB before any goroutine reads or writes them.
+// blockInit creates the blocks bucket inside the shared bbolt file, ensures the
+// shared cursors bucket the backfill keeps its place in, and carries across
+// anything left in the bucket the cache used to live in. Called once by openDB
+// before any goroutine reads or writes them.
 func blockInit(handle *bbolt.DB) error {
     if err := cursors.Init(handle); err != nil { return err }
-    return handle.Update(func(tx *bbolt.Tx) error {
-        for _, name := range [][]byte{blocksBucket} {
-            if _, err := tx.CreateBucketIfNotExists(name); err != nil { return err }
-        }
-        return nil
+    var err = handle.Update(func(tx *bbolt.Tx) error {
+        var _, berr = tx.CreateBucketIfNotExists(blocksBucket)
+        return berr
     })
+    if err != nil { return err }
+    return migrateBlocks(handle)
+}
+
+// migrateBlocks moves the cache out of blocks-stat, the bucket it used to live
+// in, and then drops that bucket. It is a no-op on every start after the first,
+// the bucket being gone.
+//
+// A record moves by key, a batch at a time, rather than the whole bucket moving
+// in one transaction: the cache is chain-sized — a mainnet one holds nearly a
+// million blocks — so one transaction would be a commit of the entire cache, and
+// the pages the old bucket frees only become available to the new one once the
+// transaction that freed them is closed. Moving by key is also what makes an
+// interrupted run recoverable: whatever is left is still in blocks-stat, and the
+// next start carries on from there.
+func migrateBlocks(handle *bbolt.DB) error {
+    var began = time.Now()
+    var moved int
+    for {
+        var done bool
+        var err = handle.Update(func(tx *bbolt.Tx) error {
+            var old = tx.Bucket(oldBlocksBucket)
+            if old == nil {
+                done = true
+                return nil
+            }
+            // The bytes a cursor yields belong to the transaction and the puts
+            // below may move the pages holding them, so the batch is collected
+            // into copies before anything is written.
+            type record struct{ key, value []byte }
+            var batch []record
+            var c = old.Cursor()
+            for k, v := c.First(); k != nil && len(batch) < blocksMigrateBatch; k, v = c.Next() {
+                batch = append(batch, record{append([]byte(nil), k...), append([]byte(nil), v...)})
+            }
+            if len(batch) == 0 {
+                done = true
+                return tx.DeleteBucket(oldBlocksBucket)
+            }
+            var b = tx.Bucket(blocksBucket)
+            for _, r := range batch {
+                if err := b.Put(r.key, r.value); err != nil { return err }
+                if err := old.Delete(r.key); err != nil { return err }
+            }
+            moved += len(batch)
+            return nil
+        })
+        if err != nil { return err }
+        if done { break }
+    }
+    if moved > 0 {
+        logging.Status("blocks: moved %d records out of blocks-stat in %s", moved, time.Since(began).Round(time.Millisecond))
+    }
+    return nil
 }
 
 func storeBlock(bi *blockInfo) error {
     if db == nil { return nil }
-    logging.Db("blocksstat: store %d", bi.Height)
+    logging.Db("blocks: store %d", bi.Height)
     var data, err = json.Marshal(bi)
     if err != nil { return err }
     return db.Update(func(tx *bbolt.Tx) error {
@@ -67,7 +131,7 @@ func storeBlock(bi *blockInfo) error {
 
 func loadBlock(height int64) (*blockInfo, bool) {
     if db == nil { return nil, false }
-    logging.Db("blocksstat: load %d", height)
+    logging.Db("blocks: load %d", height)
     var bi blockInfo
     var found bool
     db.View(func(tx *bbolt.Tx) error {
@@ -155,14 +219,14 @@ func processBlock(hash string) {
     defer cancel()
     var bi, err = computeBlockInfo(ctx, hash)
     if err != nil {
-        logging.Warn("blocksstat: process %s: %v", short(hash), err)
+        logging.Warn("blocks: process %s: %v", short(hash), err)
         return
     }
     if err := storeBlock(bi); err != nil {
-        logging.Err("blocksstat: store %d: %v", bi.Height, err)
+        logging.Err("blocks: store %d: %v", bi.Height, err)
         return
     }
-    logging.Info("blocksstat: processed %d mined by %s", bi.Height, bi.Miner)
+    logging.Info("blocks: processed %d mined by %s", bi.Height, bi.Miner)
     // Notify only once the block is actually stored: the Blocks tab reads the
     // cache, so announcing earlier would have the page re-fetch the old list.
     app.Notify("blocks")
@@ -170,7 +234,7 @@ func processBlock(hash string) {
 
 // startBlockCache runs a goroutine that catches up from the last processed block
 // to the current tip every blockCacheInterval, storing each block's stats in the
-// blocks-stat bucket. New blocks also arrive over ZMQ (see zmq.go), so the
+// blocks bucket. New blocks also arrive over ZMQ (see zmq.go), so the
 // interval is only a safety net — the typical case is a no-op.
 func startBlockCache() {
     go func() {
@@ -189,7 +253,7 @@ func collectBlocks() {
     defer cancel()
     var tip, err = core.getBlockCount(ctx)
     if err != nil {
-        logging.Warn("blocksstat: %v", err)
+        logging.Warn("blocks: %v", err)
         return
     }
     var cursor, haveCursor = cursors.Get(cursors.Blocks)
@@ -210,27 +274,27 @@ func collectBlocks() {
             var hash, herr = core.getBlockHash(bctx, h)
             bcancel()
             if herr != nil {
-                logging.Warn("blocksstat: block %d hash: %v — retrying next run", h, herr)
+                logging.Warn("blocks: block %d hash: %v — retrying next run", h, herr)
                 return
             }
             bctx, bcancel = context.WithTimeout(context.Background(), 60*time.Second)
             var bi, cerr = computeBlockInfo(bctx, hash)
             bcancel()
             if cerr != nil {
-                logging.Warn("blocksstat: block %d: %v — retrying next run", h, herr)
+                logging.Warn("blocks: block %d: %v — retrying next run", h, herr)
                 return
             }
             infos = append(infos, bi)
         }
         if err := flushBlocks(infos, to); err != nil {
-            logging.Err("blocksstat: flush %v", err)
+            logging.Err("blocks: flush %v", err)
             return
         }
         if from < tip { time.Sleep(1 * time.Minute) }
         from = to + 1
     }
     if from-1 > began {
-        logging.Info("blocksstat: processed %d blocks, up to %d", from-1-began, from-1)
+        logging.Info("blocks: processed %d blocks, up to %d", from-1-began, from-1)
     }
 }
 

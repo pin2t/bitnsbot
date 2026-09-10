@@ -135,7 +135,10 @@ func copyBlocks(source *bbolt.DB, target *sql.DB) (rows, skipped int, err error)
         feesOK, minFee, avgFee, maxFee, txSizeMin, txSizeAvg, txSizeMax, reward, fees, difficulty)
         values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     err = source.View(func(tx *bbolt.Tx) error {
-        var b = tx.Bucket([]byte("blocks-stat"))
+        // the cache moved out of blocks-stat and into blocks; this is pointed at
+        // backups as often as at a live file, so it reads either
+        var b = tx.Bucket([]byte("blocks"))
+        if b == nil { b = tx.Bucket([]byte("blocks-stat")) }
         if b == nil { return nil }
         return b.ForEach(func(k, v []byte) error {
             var bi blockInfo
