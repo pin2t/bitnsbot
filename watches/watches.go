@@ -49,68 +49,13 @@ func parseKey(k []byte) (int64, string, bool) {
     return id, address, true
 }
 
-// Init stores the shared bbolt handle, ensures the watches bucket exists, and
-// carries any record still in the old format across.
+// Init stores the shared bbolt handle and ensures the watches bucket exists.
 func Init(handle *bbolt.DB) error {
     db = handle
     return db.Update(func(tx *bbolt.Tx) error {
         var _, err = tx.CreateBucketIfNotExists(bucket)
-        if err != nil { return err }
-        var moved, merr = migrate(tx)
-        if merr != nil { return merr }
-        if moved > 0 { logging.Status("watches: moved %d records to the chat,address key", moved) }
-        return nil
+        return err
     })
-}
-
-// migrate rewrites the records written under the old format — an
-// auto-incrementing numeric key, with the chat and the address inside the value
-// — under the key they belong to now. A record already in the new format is
-// recognised by its key parsing, and left alone, so this is a no-op on every
-// start after the first.
-//
-// Two old records can name the same chat and address, which the old format
-// allowed and the new key cannot: they are written in the order the bucket holds
-// them, which is the order they were added, so the newest wins and its alias is
-// the one that survives.
-//
-// A value that does not decode at all is left where it is rather than dropped —
-// it is not this function's to throw away, and a bucket that lost records
-// silently would be worse than one with a stray key in it.
-func migrate(tx *bbolt.Tx) (int, error) {
-    var b = tx.Bucket(bucket)
-    type stored struct {
-        Created int64  `json:"created"`
-        Chat    int64  `json:"chat"`
-        Watch   string `json:"watch"`
-        Alias   string `json:"alias"`
-    }
-    var oldKeys [][]byte
-    var records []stored
-    var err = b.ForEach(func(k, v []byte) error {
-        if _, _, ok := parseKey(k); ok { return nil }
-        var r stored
-        if json.Unmarshal(v, &r) != nil || r.Watch == "" {
-            logging.Warn("watches: leaving a record this cannot read under key %x", k)
-            return nil
-        }
-        oldKeys = append(oldKeys, append([]byte(nil), k...))
-        records = append(records, r)
-        return nil
-    })
-    if err != nil { return 0, err }
-    for _, r := range records {
-        var data, merr = json.Marshal(watchRecord{Created: r.Created, Alias: r.Alias})
-        if merr != nil { return 0, merr }
-        if err := b.Put(key(r.Chat, r.Watch), data); err != nil { return 0, err }
-    }
-    // after the writes, since one of the old keys could otherwise be a new key
-    // that was just written — they cannot collide in practice, but deleting last
-    // is what makes that true rather than lucky
-    for _, k := range oldKeys {
-        if err := b.Delete(k); err != nil { return 0, err }
-    }
-    return len(records), nil
 }
 
 // Add stores an address watch for a chat. Watching an address the chat already
