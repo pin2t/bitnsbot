@@ -28,21 +28,29 @@ func (f *fakeSource) Block(ctx context.Context, height int64) (Block, error) {
     return f.blocks[height], nil
 }
 
+// seedAddresses writes the addresses into their pools' records the way update
+// would, and rebuilds the in-memory mappings attribution reads.
 func seedAddresses(t *testing.T, addrs map[string]string) {
     var err = db.Update(func(tx *bbolt.Tx) error {
         var b = tx.Bucket(bucket)
         for a, n := range addrs {
-            if err := b.Put([]byte(a), []byte(n)); err != nil { return err }
+            var r record
+            if v := b.Get([]byte(n)); v != nil { json.Unmarshal(v, &r) }
+            r.Addresses = merge(r.Addresses, []string{a})
+            var data, merr = json.Marshal(r)
+            if merr != nil { return merr }
+            if err := b.Put([]byte(n), data); err != nil { return err }
         }
         return nil
     })
     if err != nil { t.Fatalf("seed addresses: %v", err) }
+    if err := loadIndex(); err != nil { t.Fatalf("load index: %v", err) }
 }
 
-func statOf(t *testing.T, name string) stat {
-    var s stat
+func statOf(t *testing.T, name string) record {
+    var s record
     db.View(func(tx *bbolt.Tx) error {
-        if v := tx.Bucket(statBucket).Get([]byte(name)); v != nil {
+        if v := tx.Bucket(bucket).Get([]byte(name)); v != nil {
             if err := json.Unmarshal(v, &s); err != nil { t.Fatalf("unmarshal %s: %v", name, err) }
         }
         return nil
@@ -215,6 +223,9 @@ func TestCollectWaitsForAddresses(t *testing.T) {
     if _, ok := cursor(); ok { t.Fatal("cursor was stored with no pool addresses loaded") }
 }
 
+// The pool definitions live in the same records as the statistics, so a pool
+// that has mined nothing this counted must not be reported as a miner with zero
+// blocks — fixtureDB defines two pools and neither has mined.
 func TestTopEmpty(t *testing.T) {
     fixtureDB(t)
     if got := Top(10); len(got) != 0 { t.Fatalf("Top on an empty bucket = %+v, want none", got) }

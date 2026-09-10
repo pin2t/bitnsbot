@@ -704,7 +704,7 @@ func TestMinersFlow(t *testing.T) {
         {"F2Pool", 1, 325000000, 2000000, 5.6e23},
     }
     if err := db.Update(func(tx *bbolt.Tx) error {
-        var b = tx.Bucket([]byte("miners-stat"))
+        var b = tx.Bucket([]byte("miners"))
         for _, p := range pools {
             var data, err = json.Marshal(map[string]any{
                 "Blocks": p.blocks, "Reward": p.reward, "Fees": p.fees,

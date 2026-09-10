@@ -113,7 +113,54 @@ func TestCopyMarketToCents(t *testing.T) {
     if volume != 3191000000000 { t.Errorf("volume24h = %d, want 3191000000000 cents", volume) }
 }
 
+// poolRecord is what the miners bucket holds now: a pool's aggregate together
+// with the addresses and tags it is recognised by.
+type poolRecord struct {
+    minerStat
+    Addresses []string `json:"addresses"`
+    Tags      []string `json:"tags"`
+}
+
 func TestCopyMinersPairsAddressesAndTags(t *testing.T) {
+    var source, target = setup(t, func(tx *bbolt.Tx) error {
+        put(t, tx, "miners", []byte("F2Pool"), poolRecord{
+            minerStat: minerStat{Blocks: 12, Reward: 3801, Fees: 39, Work: 8.5, LastWork: 6.0},
+            Addresses: []string{"addr-f2-1", "addr-f2-2"}, Tags: []string{"/f2pool/"},
+        })
+        put(t, tx, "miners", []byte("AntPool"), poolRecord{
+            Addresses: []string{"addr-ant"}, Tags: []string{"Mined by AntPool"},
+        })
+        put(t, tx, "miners", []byte("Foundry USA"), poolRecord{Tags: []string{"/Foundry USA Pool/"}})
+        put(t, tx, "miners", []byte("Braiins"), poolRecord{minerStat: minerStat{Blocks: 1, Reward: 312, Fees: 4, Work: 1.5, LastWork: 1.5}})
+        return nil
+    })
+    var rows, skipped, err = copyMiners(source, target)
+    if err != nil { t.Fatal(err) }
+    if skipped != 0 { t.Fatalf("skipped = %d", skipped) }
+    // F2Pool: 2 addresses zipped against 1 tag = 2 rows; AntPool 1; Foundry USA
+    // tag-only 1; Braiins, which has mined but carries no definitions, 1
+    if rows != 5 { t.Fatalf("rows = %d, want 5", rows) }
+    var tag string
+    var blocks int64
+    var q = "select tag, blocks from miners where name = 'F2Pool' and address = ?"
+    if err := target.QueryRow(q, "addr-f2-1").Scan(&tag, &blocks); err != nil { t.Fatal(err) }
+    if tag != "/f2pool/" || blocks != 12 { t.Errorf("first row: tag=%q blocks=%d", tag, blocks) }
+    if err := target.QueryRow(q, "addr-f2-2").Scan(&tag, &blocks); err != nil { t.Fatal(err) }
+    if tag != "" || blocks != 12 { t.Errorf("unpaired row: tag=%q blocks=%d", tag, blocks) }
+    var address string
+    if err := target.QueryRow("select address, tag from miners where name = 'Foundry USA'").Scan(&address, &tag); err != nil {
+        t.Fatal(err)
+    }
+    if address != "" || tag != "/Foundry USA Pool/" { t.Errorf("tag-only pool: address=%q tag=%q", address, tag) }
+    if err := target.QueryRow("select address, tag, blocks from miners where name = 'Braiins'").Scan(&address, &tag, &blocks); err != nil {
+        t.Fatal(err)
+    }
+    if address != "" || tag != "" || blocks != 1 { t.Errorf("stats-only pool: address=%q tag=%q blocks=%d", address, tag, blocks) }
+}
+
+// A database written before the three buckets became one is read in its own
+// shape, which is what a backup taken before the migration still holds.
+func TestCopyMinersReadsTheOldBuckets(t *testing.T) {
     var source, target = setup(t, func(tx *bbolt.Tx) error {
         put(t, tx, "miners", []byte("addr-f2-1"), []byte("F2Pool"))
         put(t, tx, "miners", []byte("addr-f2-2"), []byte("F2Pool"))
