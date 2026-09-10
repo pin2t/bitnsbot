@@ -9,8 +9,6 @@ import "go.etcd.io/bbolt"
 import "bitnsbot/logging"
 import "bitnsbot/cursors"
 
-var statBucket = []byte("miners-stat")
-
 // statInterval is how often the collector processes new blocks. A package var so
 // tests can shrink it.
 var statInterval = 10 * time.Minute
@@ -46,13 +44,18 @@ type Source interface {
     Block(ctx context.Context, height int64) (Block, error)
 }
 
-// stat is the stored per-miner aggregate (keyed by miner name in miners-stat).
-type stat struct {
-    Blocks   int64   `json:"blocks"`
-    Reward   int64   `json:"reward"`   // satoshi (subsidy + fees)
-    Fees     int64   `json:"fees"`     // satoshi
-    Work     float64 `json:"work"`     // Σ per-block work (difficulty × 2^32 hashes)
-    LastWork float64 `json:"lastWork"` // work of this miner's most recent block
+// record is what the miners bucket holds under a pool's name: what that pool has
+// mined, and the coinbase addresses and tags it is recognised by. The two lists
+// are the pool definitions — they are written by update and by the migration,
+// never by the collector, which reads a record only to add to its aggregates.
+type record struct {
+    Blocks    int64    `json:"blocks"`
+    Reward    int64    `json:"reward"`   // satoshi (subsidy + fees)
+    Fees      int64    `json:"fees"`     // satoshi
+    Work      float64  `json:"work"`     // Σ per-block work (difficulty × 2^32 hashes)
+    LastWork  float64  `json:"lastWork"` // work of this miner's most recent block
+    Addresses []string `json:"addresses"`
+    Tags      []string `json:"tags"`
 }
 
 // StartStats runs the by-miner statistics collector: it catches up from the last
@@ -90,7 +93,7 @@ func collect(src Source) {
     for from <= tip {
         var to = from + chunkSize - 1
         if to > tip { to = tip }
-        var deltas = map[string]*stat{}
+        var deltas = map[string]*record{}
         for h := from; h <= to; h++ {
             var b, berr = src.Block(ctx, h)
             if berr != nil {
@@ -102,7 +105,7 @@ func collect(src Source) {
             var w = b.Difficulty * workPerDifficulty
             var d = deltas[name]
             if d == nil {
-                d = &stat{}
+                d = &record{}
                 deltas[name] = d
             }
             d.Blocks++
@@ -124,15 +127,16 @@ func collect(src Source) {
     }
 }
 
-// flush merges a chunk's in-memory deltas into miners-stat and advances the
+// flush merges a chunk's in-memory deltas into the pool records and advances the
 // cursor, in one transaction. Blocks/Reward/Fees/Work accumulate; LastWork is
 // overwritten with the most recent (chunks run oldest-first, so the last write
-// wins).
-func flush(deltas map[string]*stat, last int64) error {
+// wins). The record is read and written whole, so the addresses and tags in it
+// come through untouched.
+func flush(deltas map[string]*record, last int64) error {
     return db.Update(func(tx *bbolt.Tx) error {
-        var sb = tx.Bucket(statBucket)
+        var sb = tx.Bucket(bucket)
         for name, d := range deltas {
-            var s stat
+            var s record
             if v := sb.Get([]byte(name)); v != nil { json.Unmarshal(v, &s) }
             s.Blocks += d.Blocks
             s.Reward += d.Reward
@@ -187,9 +191,14 @@ func all() []Stat {
     var out []Stat
     var totalBlocks int64
     db.View(func(tx *bbolt.Tx) error {
-        return tx.Bucket(statBucket).ForEach(func(k, v []byte) error {
-            var s stat
+        return tx.Bucket(bucket).ForEach(func(k, v []byte) error {
+            var s record
             if json.Unmarshal(v, &s) != nil { return nil }
+            // A record with no blocks is a pool the definitions name and the
+            // collector has never attributed a block to. It is not a statistic:
+            // reporting it would fill /miners with zeroes on a fresh install,
+            // and hand the app's miner page zeroes to present as fact.
+            if s.Blocks == 0 { return nil }
             totalBlocks += s.Blocks
             out = append(out, Stat{Name: string(k), Blocks: s.Blocks, Reward: s.Reward, Fees: s.Fees, lastWork: s.LastWork})
             return nil

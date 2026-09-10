@@ -10,6 +10,7 @@ import "time"
 import "go.etcd.io/bbolt"
 
 import "bitnsbot/app"
+import "bitnsbot/miners"
 
 func TestSubsidy(t *testing.T) {
     var cases = map[int64]int64{0: 5000000000, 209999: 5000000000, 210000: 2500000000, 420000: 1250000000, 630000: 625000000, 840000: 312500000}
@@ -67,11 +68,14 @@ func TestComputeBlockInfo(t *testing.T) {
         t.Fatalf("openDB: %v", err)
     }
     defer closeDB()
+    // a pool record the way the definitions are stored, then a second Init so the
+    // package rebuilds the address→pool mapping it attributes from
     if err := db.Update(func(tx *bbolt.Tx) error {
-        return tx.Bucket([]byte("miners")).Put([]byte("mineraddr"), []byte("TestPool"))
+        return tx.Bucket([]byte("miners")).Put([]byte("TestPool"), []byte(`{"addresses":["mineraddr"]}`))
     }); err != nil {
         t.Fatalf("seed miners: %v", err)
     }
+    if err := miners.Init(db); err != nil { t.Fatalf("reload miners: %v", err) }
     var srv = newFakeCoreServer(t, func(method string, params []interface{}) (interface{}, error) {
         var p = params
         _ = p

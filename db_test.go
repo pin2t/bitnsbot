@@ -20,7 +20,7 @@ func TestOpenDBBuckets(t *testing.T) {
         "blocks",                                          // blocks cache
         "rates", "market",                                 // rates
         "watches",                                         // watches
-        "miners", "miners-tag", "miners-stat",             // miners
+        "miners",                                          // miners
         "addrindex",                                       // addrindex
         "cursors",                                         // every scan's place
     }

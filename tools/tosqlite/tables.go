@@ -187,17 +187,44 @@ func copyMarket(source *bbolt.DB, target *sql.DB) (rows, skipped int, err error)
 
 func cents(usd float64) int64 { return int64(math.Round(usd * 100)) }
 
-// copyMiners folds three buckets into one table: miners maps a coinbase output
-// address to its pool, miners-tag a coinbase tag to the same pool, and miners-stat
-// holds that pool's aggregate. A pool's addresses and tags are zipped positionally
-// into rows and padded with "" — the buckets record which pool each belongs to but
-// no link between an individual address and an individual tag, so the pairing
-// within a pool carries no meaning beyond keeping the table narrow.
+// readPools reads the one bucket the three became: a pool's name is the key and
+// its record carries the aggregate and both lists.
+func readPools(tx *bbolt.Tx, addrs, tags map[string][]string, stats map[string]minerStat, skipped *int) error {
+    var b = tx.Bucket([]byte("miners"))
+    if b == nil { return nil }
+    return b.ForEach(func(k, v []byte) error {
+        var r struct {
+            minerStat
+            Addresses []string `json:"addresses"`
+            Tags      []string `json:"tags"`
+        }
+        if json.Unmarshal(v, &r) != nil {
+            *skipped++
+            return nil
+        }
+        var name = string(k)
+        addrs[name], tags[name], stats[name] = r.Addresses, r.Tags, r.minerStat
+        return nil
+    })
+}
+
+// copyMiners writes one table from the pool records: each holds what that pool
+// mined together with the coinbase addresses and tags it is recognised by, and
+// they are zipped positionally into rows and padded with "" — a record says which
+// addresses and which tags belong to the pool but nothing links an individual
+// address to an individual tag, so the pairing within a pool carries no meaning
+// beyond keeping the table narrow.
+//
+// A database written before those three buckets became one is read in its own
+// shape instead: miners mapping an address to its pool, miners-tag a tag to the
+// same pool, and miners-stat holding the aggregate. This is pointed at backups as
+// often as at a live file, and miners-stat existing is what tells them apart.
 func copyMiners(source *bbolt.DB, target *sql.DB) (rows, skipped int, err error) {
     var addrs = map[string][]string{}
     var tags = map[string][]string{}
     var stats = map[string]minerStat{}
     err = source.View(func(tx *bbolt.Tx) error {
+        if tx.Bucket([]byte("miners-stat")) == nil { return readPools(tx, addrs, tags, stats, &skipped) }
         for _, b := range []struct {
             bucket string
             into   map[string][]string
@@ -213,7 +240,6 @@ func copyMiners(source *bbolt.DB, target *sql.DB) (rows, skipped int, err error)
             if err != nil { return err }
         }
         var bucket = tx.Bucket([]byte("miners-stat"))
-        if bucket == nil { return nil }
         return bucket.ForEach(func(k, v []byte) error {
             var s minerStat
             if json.Unmarshal(v, &s) != nil {

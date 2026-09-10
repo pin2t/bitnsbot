@@ -126,7 +126,7 @@ func TestAppSectionsAreTranslated(t *testing.T) {
         var data, err = json.Marshal(map[string]any{"Blocks": 6, "Reward": 1950000000,
             "Fees": 40000000, "Work": 3.6e24, "LastWork": 6.0e23})
         if err != nil { return err }
-        if err := tx.Bucket([]byte("miners-stat")).Put([]byte("AntPool"), data); err != nil { return err }
+        if err := tx.Bucket([]byte("miners")).Put([]byte("AntPool"), data); err != nil { return err }
         return cursors.Set(tx, cursors.Miners, 9)
     }); err != nil {
         t.Fatalf("seed miner stats: %v", err)

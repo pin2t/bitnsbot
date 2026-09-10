@@ -2,10 +2,11 @@
 //
 //	tosqlite -src bitnsbot.db -dst bitnsbot.sqlite.db
 //
-// Seven buckets become six tables: addrindex, blocks, market, rates and
-// watches map one to one, and the three miner buckets (miners, miners-tag,
-// miners-stat) combine into one. The source is opened read-only and never
-// written; the destination must not already exist.
+// Six buckets become six tables: addrindex, blocks, market, rates and
+// watches map one to one, and miners — a record per pool, carrying its aggregate
+// and the addresses and tags it is recognised by — is unzipped into rows. The
+// source is opened read-only and never written; the destination must not already
+// exist.
 //
 // The SQLite driver is modernc.org/sqlite (gitlab.com/cznic/sqlite), a pure-Go
 // translation of SQLite with no cgo, so this still cross-compiles like the rest
