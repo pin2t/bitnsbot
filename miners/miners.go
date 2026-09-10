@@ -50,10 +50,9 @@ var indexMu sync.RWMutex
 var addrIndex = map[string]string{}
 var tagIndex []tagged
 
-// Init stores the shared bbolt handle, ensures the miners bucket exists, carries
-// across the two buckets the definitions used to live in, and builds the
-// in-memory mappings from what is there. The collector's place lives in the
-// shared cursors bucket, which this ensures too.
+// Init stores the shared bbolt handle, ensures the miners bucket exists, and
+// builds the in-memory mappings from what is in it. The collector's place lives
+// in the shared cursors bucket, which this ensures too.
 func Init(handle *bbolt.DB) error {
     db = handle
     if err := cursors.Init(handle); err != nil { return err }
@@ -62,7 +61,6 @@ func Init(handle *bbolt.DB) error {
         return berr
     })
     if err != nil { return err }
-    if err := migrate(); err != nil { return err }
     return loadIndex()
 }
 
