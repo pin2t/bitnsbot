@@ -49,7 +49,7 @@ func TestView(t *testing.T) {
     var resp, _ = http.Get(srv.URL + "/api/view?bucket=miners")
     defer resp.Body.Close()
     var out struct {
-        Rows    []kvRow
+        Rows    []row
         HasNext bool
     }
     json.NewDecoder(resp.Body).Decode(&out)
@@ -93,7 +93,7 @@ func TestViewPaginates(t *testing.T) {
 }
 
 type viewOut struct {
-    Rows    []kvRow
+    Rows    []row
     HasNext bool
     Page    int
 }
@@ -150,7 +150,7 @@ func TestBinaryRoundTrip(t *testing.T) {
     defer srv.Close()
     var resp, _ = http.Get(srv.URL + "/api/view?bucket=addrindex")
     defer resp.Body.Close()
-    var out struct{ Rows []kvRow }
+    var out struct{ Rows []row }
     json.NewDecoder(resp.Body).Decode(&out)
     if len(out.Rows) != 1 || out.Rows[0].Key != "hex:000100000000" || out.Rows[0].Value != "hex:deadbeef" {
         t.Fatalf("binary row = %+v", out.Rows)
@@ -380,7 +380,7 @@ func TestViewPrefix(t *testing.T) {
         defer resp.Body.Close()
         if resp.StatusCode != 200 { t.Fatalf("%s = %d", query, resp.StatusCode) }
         var out struct {
-            Rows    []kvRow
+            Rows    []row
             HasNext bool `json:"hasNext"`
         }
         json.NewDecoder(resp.Body).Decode(&out)
@@ -416,7 +416,7 @@ func TestViewPrefixHex(t *testing.T) {
     var resp, err = http.Get(srv.URL + "/api/view?bucket=addrindex&prefix=hex:0001")
     if err != nil { t.Fatal(err) }
     defer resp.Body.Close()
-    var out struct{ Rows []kvRow }
+    var out struct{ Rows []row }
     json.NewDecoder(resp.Body).Decode(&out)
     if len(out.Rows) != 1 || out.Rows[0].Key != "hex:000100000000" {
         t.Fatalf("rows = %+v, want the one packed key", out.Rows)

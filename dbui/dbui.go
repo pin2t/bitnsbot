@@ -76,7 +76,7 @@ func buckets(db *bbolt.DB, w http.ResponseWriter) {
     writeJSON(w, map[string]any{"buckets": names})
 }
 
-type kvRow struct {
+type row struct {
     Key   string `json:"key"`
     Value string `json:"value"`
 }
@@ -97,7 +97,7 @@ func view(db *bbolt.DB, w http.ResponseWriter, r *http.Request) {
         http.Error(w, "bad prefix: "+perr.Error(), http.StatusBadRequest)
         return
     }
-    var rows = []kvRow{}
+    var rows = []row{}
     var hasNext bool
     var err = db.View(func(tx *bbolt.Tx) error {
         var b = tx.Bucket([]byte(q.Get("bucket")))
@@ -112,7 +112,7 @@ func view(db *bbolt.DB, w http.ResponseWriter, r *http.Request) {
             k, v = c.Next()
         }
         for n := 0; n < size && matches(); n++ {
-            rows = append(rows, kvRow{encodeField(k), encodeField(v)})
+            rows = append(rows, row{encodeField(k), encodeField(v)})
             k, v = c.Next()
         }
         hasNext = matches()
@@ -476,8 +476,13 @@ func writeJSON(w http.ResponseWriter, v any) {
 // "hex:" marker so they survive a round trip through the text UI. The marker
 // can't collide in practice — no bucket stores a text value beginning "hex:".
 func encodeField(b []byte) string {
-    if isText(b) { return string(b) }
-    return "hex:" + hex.EncodeToString(b)
+    if !utf8.Valid(b) { return "hex:" + hex.EncodeToString(b) }
+    for _, r := range string(b) {
+        if r < 0x20 && r != '\n' && r != '\r' && r != '\t' {
+            return "hex:" + hex.EncodeToString(b)
+        }
+    }
+    return string(b)
 }
 
 // decodeField is encodeField's inverse: a "hex:"-prefixed string is decoded from
@@ -487,14 +492,4 @@ func decodeField(s string) ([]byte, error) {
         return hex.DecodeString(s[len("hex:"):])
     }
     return []byte(s), nil
-}
-
-// isText reports whether b is safe to show directly: valid UTF-8 with no control
-// characters other than the whitespace that appears in formatted JSON.
-func isText(b []byte) bool {
-    if !utf8.Valid(b) { return false }
-    for _, r := range string(b) {
-        if r < 0x20 && r != '\n' && r != '\r' && r != '\t' { return false }
-    }
-    return true
 }
