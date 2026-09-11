@@ -13,10 +13,14 @@ import "testing"
 
 import "go.etcd.io/bbolt"
 
-func testDB(t *testing.T) *bbolt.DB {
-    var db, err = bbolt.Open(filepath.Join(t.TempDir(), "t.db"), 0600, nil)
+// testDB opens a seeded database and makes it the one the handlers read. The
+// package holds its handle in a global, so a test sets that rather than passing
+// it in — and every later db.Update here is that same global.
+func testDB(t *testing.T) {
+    var handle, err = bbolt.Open(filepath.Join(t.TempDir(), "t.db"), 0600, nil)
     if err != nil { t.Fatalf("open: %v", err) }
-    t.Cleanup(func() { db.Close() })
+    t.Cleanup(func() { handle.Close(); db = nil })
+    db = handle
     if err := db.Update(func(tx *bbolt.Tx) error {
         var b, _ = tx.CreateBucket([]byte("miners"))
         b.Put([]byte("addrA"), []byte("PoolA"))
@@ -27,11 +31,11 @@ func testDB(t *testing.T) *bbolt.DB {
     }); err != nil {
         t.Fatalf("seed: %v", err)
     }
-    return db
 }
 
 func TestBuckets(t *testing.T) {
-    var srv = httptest.NewServer(handler(testDB(t)))
+    testDB(t)
+    var srv = httptest.NewServer(handler())
     defer srv.Close()
     var resp, err = http.Get(srv.URL + "/api/buckets")
     if err != nil { t.Fatal(err) }
@@ -44,12 +48,13 @@ func TestBuckets(t *testing.T) {
 }
 
 func TestView(t *testing.T) {
-    var srv = httptest.NewServer(handler(testDB(t)))
+    testDB(t)
+    var srv = httptest.NewServer(handler())
     defer srv.Close()
     var resp, _ = http.Get(srv.URL + "/api/view?bucket=miners")
     defer resp.Body.Close()
     var out struct {
-        Rows    []kvRow
+        Rows    []row
         HasNext bool
     }
     json.NewDecoder(resp.Body).Decode(&out)
@@ -72,7 +77,7 @@ func TestView(t *testing.T) {
 // A bigger bucket must page: each page returns `size` rows and flags whether more
 // follow, and the second page continues where the first stopped.
 func TestViewPaginates(t *testing.T) {
-    var db = testDB(t)
+    testDB(t)
     db.Update(func(tx *bbolt.Tx) error {
         var b, _ = tx.CreateBucket([]byte("big"))
         for i := 0; i < 5; i++ {
@@ -80,7 +85,7 @@ func TestViewPaginates(t *testing.T) {
         }
         return nil
     })
-    var srv = httptest.NewServer(handler(db))
+    var srv = httptest.NewServer(handler())
     defer srv.Close()
     var p0 = viewPage(t, srv.URL, "big", 0, 2)
     if len(p0.Rows) != 2 || !p0.HasNext || p0.Rows[0].Key != "a" {
@@ -93,7 +98,7 @@ func TestViewPaginates(t *testing.T) {
 }
 
 type viewOut struct {
-    Rows    []kvRow
+    Rows    []row
     HasNext bool
     Page    int
 }
@@ -111,8 +116,8 @@ func viewPage(t *testing.T, base, bucket string, page, size int) viewOut {
 func itoa(n int) string { return string(rune('0' + n)) }
 
 func TestGetAndPut(t *testing.T) {
-    var db = testDB(t)
-    var srv = httptest.NewServer(handler(db))
+    testDB(t)
+    var srv = httptest.NewServer(handler())
     defer srv.Close()
     var resp, _ = http.Get(srv.URL + "/api/get?bucket=miners&key=addrA")
     defer resp.Body.Close()
@@ -145,12 +150,12 @@ func TestGetAndPut(t *testing.T) {
 // Binary keys and values survive a round trip through the text UI via the "hex:"
 // convention — without it a Put would corrupt the packed address index.
 func TestBinaryRoundTrip(t *testing.T) {
-    var db = testDB(t)
-    var srv = httptest.NewServer(handler(db))
+    testDB(t)
+    var srv = httptest.NewServer(handler())
     defer srv.Close()
     var resp, _ = http.Get(srv.URL + "/api/view?bucket=addrindex")
     defer resp.Body.Close()
-    var out struct{ Rows []kvRow }
+    var out struct{ Rows []row }
     json.NewDecoder(resp.Body).Decode(&out)
     if len(out.Rows) != 1 || out.Rows[0].Key != "hex:000100000000" || out.Rows[0].Value != "hex:deadbeef" {
         t.Fatalf("binary row = %+v", out.Rows)
@@ -192,7 +197,8 @@ func TestEncodeField(t *testing.T) {
 }
 
 func TestPutRejectsWrongMethod(t *testing.T) {
-    var srv = httptest.NewServer(handler(testDB(t)))
+    testDB(t)
+    var srv = httptest.NewServer(handler())
     defer srv.Close()
     var resp, _ = http.Get(srv.URL + "/api/put")
     if resp.StatusCode != http.StatusMethodNotAllowed {
@@ -201,8 +207,8 @@ func TestPutRejectsWrongMethod(t *testing.T) {
 }
 
 func TestDelete(t *testing.T) {
-    var db = testDB(t)
-    var srv = httptest.NewServer(handler(db))
+    testDB(t)
+    var srv = httptest.NewServer(handler())
     defer srv.Close()
     var body = `{"bucket":"miners","key":"addrA"}`
     var resp, _ = http.Post(srv.URL+"/api/delete", "application/json", strings.NewReader(body))
@@ -238,8 +244,8 @@ func TestDelete(t *testing.T) {
 // A binary key must be deletable by the same "hex:" form the table displays,
 // otherwise the trash icon would silently fail on the packed address index.
 func TestDeleteBinaryKey(t *testing.T) {
-    var db = testDB(t)
-    var srv = httptest.NewServer(handler(db))
+    testDB(t)
+    var srv = httptest.NewServer(handler())
     defer srv.Close()
     var body = `{"bucket":"addrindex","key":"hex:000100000000"}`
     var resp, _ = http.Post(srv.URL+"/api/delete", "application/json", strings.NewReader(body))
@@ -257,7 +263,8 @@ func TestDeleteBinaryKey(t *testing.T) {
 }
 
 func TestDeleteRejectsWrongMethod(t *testing.T) {
-    var srv = httptest.NewServer(handler(testDB(t)))
+    testDB(t)
+    var srv = httptest.NewServer(handler())
     defer srv.Close()
     var resp, _ = http.Get(srv.URL + "/api/delete")
     if resp.StatusCode != http.StatusMethodNotAllowed {
@@ -266,8 +273,8 @@ func TestDeleteRejectsWrongMethod(t *testing.T) {
 }
 
 func TestClearBucket(t *testing.T) {
-    var db = testDB(t)
-    var srv = httptest.NewServer(handler(db))
+    testDB(t)
+    var srv = httptest.NewServer(handler())
     defer srv.Close()
     var body = `{"bucket":"miners"}`
     var resp, _ = http.Post(srv.URL+"/api/clearbucket", "application/json", strings.NewReader(body))
@@ -317,8 +324,8 @@ func TestClearBucket(t *testing.T) {
 // name — bbolt treats that as an error, and a Create that silently did nothing
 // would look like it had worked.
 func TestCreateBucket(t *testing.T) {
-    var db = testDB(t)
-    var srv = httptest.NewServer(handler(db))
+    testDB(t)
+    var srv = httptest.NewServer(handler())
     defer srv.Close()
     var post = func(body string) int {
         var resp, err = http.Post(srv.URL+"/api/createbucket", "application/json", strings.NewReader(body))
@@ -364,7 +371,7 @@ func TestCreateBucket(t *testing.T) {
 // A prefix narrows the listing to the keys under it, and pages within them:
 // Seek goes straight to the first match, so the rest of the bucket is not walked.
 func TestViewPrefix(t *testing.T) {
-    var db = testDB(t)
+    testDB(t)
     if err := db.Update(func(tx *bbolt.Tx) error {
         var b = tx.Bucket([]byte("miners"))
         for _, k := range []string{"bc1a", "bc1b", "bc1c", "zz"} {
@@ -372,7 +379,7 @@ func TestViewPrefix(t *testing.T) {
         }
         return nil
     }); err != nil { t.Fatal(err) }
-    var srv = httptest.NewServer(handler(db))
+    var srv = httptest.NewServer(handler())
     defer srv.Close()
     var list = func(query string) (keys []string, hasNext bool) {
         var resp, err = http.Get(srv.URL + "/api/view?bucket=miners&" + query)
@@ -380,7 +387,7 @@ func TestViewPrefix(t *testing.T) {
         defer resp.Body.Close()
         if resp.StatusCode != 200 { t.Fatalf("%s = %d", query, resp.StatusCode) }
         var out struct {
-            Rows    []kvRow
+            Rows    []row
             HasNext bool `json:"hasNext"`
         }
         json.NewDecoder(resp.Body).Decode(&out)
@@ -411,12 +418,13 @@ func TestViewPrefix(t *testing.T) {
 // Keys are binary in places, so a prefix goes through the same hex: marker the
 // rest of the UI uses — without it the packed buckets could not be scanned.
 func TestViewPrefixHex(t *testing.T) {
-    var srv = httptest.NewServer(handler(testDB(t)))
+    testDB(t)
+    var srv = httptest.NewServer(handler())
     defer srv.Close()
     var resp, err = http.Get(srv.URL + "/api/view?bucket=addrindex&prefix=hex:0001")
     if err != nil { t.Fatal(err) }
     defer resp.Body.Close()
-    var out struct{ Rows []kvRow }
+    var out struct{ Rows []row }
     json.NewDecoder(resp.Body).Decode(&out)
     if len(out.Rows) != 1 || out.Rows[0].Key != "hex:000100000000" {
         t.Fatalf("rows = %+v, want the one packed key", out.Rows)
@@ -443,7 +451,8 @@ func httpGet(t *testing.T, url string) *http.Response {
 // Export writes CSV straight into the response: a header row, then one row per
 // key, with binary fields behind the hex: marker the rest of the UI uses.
 func TestExportStreamsCSV(t *testing.T) {
-    var srv = httptest.NewServer(handler(testDB(t)))
+    testDB(t)
+    var srv = httptest.NewServer(handler())
     defer srv.Close()
     var resp = httpGet(t, srv.URL+"/api/export?bucket=miners")
     defer resp.Body.Close()
@@ -471,7 +480,8 @@ func TestExportStreamsCSV(t *testing.T) {
 // The status can only be set before the first byte, so a bucket that is not
 // there must be caught before anything is written.
 func TestExportMissingBucket(t *testing.T) {
-    var srv = httptest.NewServer(handler(testDB(t)))
+    testDB(t)
+    var srv = httptest.NewServer(handler())
     defer srv.Close()
     var resp = httpGet(t, srv.URL+"/api/export?bucket=nosuch")
     defer resp.Body.Close()
@@ -487,13 +497,13 @@ func TestExportMissingBucket(t *testing.T) {
 // Buckets can be created from this UI under any name, and the name goes into a
 // quoted header value.
 func TestExportFilenameIsSafe(t *testing.T) {
-    var db = testDB(t)
+    testDB(t)
     var nasty = `we"ird name`
     if err := db.Update(func(tx *bbolt.Tx) error {
         var _, err = tx.CreateBucket([]byte(nasty))
         return err
     }); err != nil { t.Fatal(err) }
-    var srv = httptest.NewServer(handler(db))
+    var srv = httptest.NewServer(handler())
     defer srv.Close()
     var resp = httpGet(t, srv.URL+"/api/export?bucket="+url.QueryEscape(nasty))
     defer resp.Body.Close()
@@ -512,8 +522,8 @@ func postCSV(t *testing.T, url, body string) *http.Response {
 // Import reads the CSV off the request body, with the bucket and the strategy in
 // the query — so the body is the file and nothing else.
 func TestImportStreamsCSV(t *testing.T) {
-    var db = testDB(t)
-    var srv = httptest.NewServer(handler(db))
+    testDB(t)
+    var srv = httptest.NewServer(handler())
     defer srv.Close()
     var resp = postCSV(t, srv.URL+"/api/import?bucket=miners&strategy=skip",
         "key,value\naddrA,Changed\naddrC,PoolC\n")
@@ -551,8 +561,8 @@ func TestImportStreamsCSV(t *testing.T) {
 // The batching loop is the whole point of streaming, so a file longer than one
 // batch has to land in full.
 func TestImportBatches(t *testing.T) {
-    var db = testDB(t)
-    var srv = httptest.NewServer(handler(db))
+    testDB(t)
+    var srv = httptest.NewServer(handler())
     defer srv.Close()
     var body strings.Builder
     body.WriteString("key,value\n")
@@ -579,7 +589,8 @@ func TestImportBatches(t *testing.T) {
 }
 
 func TestImportRejectsBadRequests(t *testing.T) {
-    var srv = httptest.NewServer(handler(testDB(t)))
+    testDB(t)
+    var srv = httptest.NewServer(handler())
     defer srv.Close()
     var cases = []struct {
         name, query, body string
@@ -608,8 +619,8 @@ func TestImportRejectsBadRequests(t *testing.T) {
 // The two halves have to agree, binary fields included: what export writes,
 // import must read back into an identical bucket.
 func TestExportImportRoundTrip(t *testing.T) {
-    var db = testDB(t)
-    var srv = httptest.NewServer(handler(db))
+    testDB(t)
+    var srv = httptest.NewServer(handler())
     defer srv.Close()
     var resp = httpGet(t, srv.URL+"/api/export?bucket=addrindex")
     var csvText, _ = io.ReadAll(resp.Body)

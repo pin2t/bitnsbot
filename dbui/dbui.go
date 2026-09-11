@@ -24,6 +24,12 @@ var indexHTML []byte
 
 var errNoBucket = errors.New("no such bucket")
 
+// db is the bot's own handle, handed over by Start. It is a package global
+// rather than a parameter on every handler because there is exactly one of it —
+// this UI is started from main with the same handle everything else uses, the
+// way the watches, rates and miners packages hold theirs.
+var db *bbolt.DB
+
 // defaultPageSize is how many key/value rows the Data table loads at once when
 // the client doesn't ask for a specific size.
 const defaultPageSize = 50
@@ -32,8 +38,9 @@ const maxPageSize = 500
 // Start serves the UI on addr in a background goroutine and returns the server so
 // the caller can shut it down before closing the database (a request mid-flight
 // against a closed handle would otherwise error). Bind addr to localhost.
-func Start(db *bbolt.DB, addr string) *http.Server {
-    var srv = &http.Server{Addr: addr, Handler: handler(db)}
+func Start(handle *bbolt.DB, addr string) *http.Server {
+    db = handle
+    var srv = &http.Server{Addr: addr, Handler: handler()}
     go func() {
         logging.Status("database UI listening on %s", addr)
         if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -43,29 +50,31 @@ func Start(db *bbolt.DB, addr string) *http.Server {
     return srv
 }
 
-func handler(db *bbolt.DB) http.Handler {
+func handler() http.Handler {
     var mux = http.NewServeMux()
-    mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-        if r.URL.Path != "/" {
-            http.NotFound(w, r)
-            return
-        }
-        w.Header().Set("Content-Type", "text/html; charset=utf-8")
-        w.Write(indexHTML)
-    })
-    mux.HandleFunc("/api/buckets", func(w http.ResponseWriter, r *http.Request) { buckets(db, w) })
-    mux.HandleFunc("/api/view", func(w http.ResponseWriter, r *http.Request) { view(db, w, r) })
-    mux.HandleFunc("/api/get", func(w http.ResponseWriter, r *http.Request) { get(db, w, r) })
-    mux.HandleFunc("/api/put", func(w http.ResponseWriter, r *http.Request) { put(db, w, r) })
-    mux.HandleFunc("/api/delete", func(w http.ResponseWriter, r *http.Request) { del(db, w, r) })
-    mux.HandleFunc("/api/createbucket", func(w http.ResponseWriter, r *http.Request) { createBucket(db, w, r) })
-    mux.HandleFunc("/api/clearbucket", func(w http.ResponseWriter, r *http.Request) { clearBucket(db, w, r) })
-    mux.HandleFunc("/api/export", func(w http.ResponseWriter, r *http.Request) { exportBucket(db, w, r) })
-    mux.HandleFunc("/api/import", func(w http.ResponseWriter, r *http.Request) { importBucket(db, w, r) })
+    mux.HandleFunc("/", index)
+    mux.HandleFunc("/api/buckets", buckets)
+    mux.HandleFunc("/api/view", view)
+    mux.HandleFunc("/api/get", get)
+    mux.HandleFunc("/api/put", put)
+    mux.HandleFunc("/api/delete", del)
+    mux.HandleFunc("/api/createbucket", createBucket)
+    mux.HandleFunc("/api/clearbucket", clearBucket)
+    mux.HandleFunc("/api/export", exportBucket)
+    mux.HandleFunc("/api/import", importBucket)
     return mux
 }
 
-func buckets(db *bbolt.DB, w http.ResponseWriter) {
+func index(w http.ResponseWriter, r *http.Request) {
+    if r.URL.Path != "/" {
+        http.NotFound(w, r)
+        return
+    }
+    w.Header().Set("Content-Type", "text/html; charset=utf-8")
+    w.Write(indexHTML)
+}
+
+func buckets(w http.ResponseWriter, _ *http.Request) {
     var names = []string{}
     db.View(func(tx *bbolt.Tx) error {
         return tx.ForEach(func(name []byte, _ *bbolt.Bucket) error {
@@ -76,7 +85,7 @@ func buckets(db *bbolt.DB, w http.ResponseWriter) {
     writeJSON(w, map[string]any{"buckets": names})
 }
 
-type kvRow struct {
+type row struct {
     Key   string `json:"key"`
     Value string `json:"value"`
 }
@@ -85,7 +94,7 @@ type kvRow struct {
 // through decodeField like every other key here, so a binary one is given as
 // "hex:0000", and the scan is a Seek to it rather than a walk from the start —
 // which is what makes a prefix on a large bucket cheap.
-func view(db *bbolt.DB, w http.ResponseWriter, r *http.Request) {
+func view(w http.ResponseWriter, r *http.Request) {
     var q = r.URL.Query()
     var page, _ = strconv.Atoi(q.Get("page"))
     if page < 0 { page = 0 }
@@ -97,7 +106,7 @@ func view(db *bbolt.DB, w http.ResponseWriter, r *http.Request) {
         http.Error(w, "bad prefix: "+perr.Error(), http.StatusBadRequest)
         return
     }
-    var rows = []kvRow{}
+    var rows = []row{}
     var hasNext bool
     var err = db.View(func(tx *bbolt.Tx) error {
         var b = tx.Bucket([]byte(q.Get("bucket")))
@@ -112,7 +121,7 @@ func view(db *bbolt.DB, w http.ResponseWriter, r *http.Request) {
             k, v = c.Next()
         }
         for n := 0; n < size && matches(); n++ {
-            rows = append(rows, kvRow{encodeField(k), encodeField(v)})
+            rows = append(rows, row{encodeField(k), encodeField(v)})
             k, v = c.Next()
         }
         hasNext = matches()
@@ -125,7 +134,7 @@ func view(db *bbolt.DB, w http.ResponseWriter, r *http.Request) {
     writeJSON(w, map[string]any{"rows": rows, "page": page, "hasNext": hasNext})
 }
 
-func get(db *bbolt.DB, w http.ResponseWriter, r *http.Request) {
+func get(w http.ResponseWriter, r *http.Request) {
     var q = r.URL.Query()
     var key, err = decodeField(q.Get("key"))
     if err != nil {
@@ -154,7 +163,7 @@ func get(db *bbolt.DB, w http.ResponseWriter, r *http.Request) {
     writeJSON(w, map[string]any{"value": encodeField(value)})
 }
 
-func put(db *bbolt.DB, w http.ResponseWriter, r *http.Request) {
+func put(w http.ResponseWriter, r *http.Request) {
     if r.Method != http.MethodPost {
         http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
         return
@@ -193,7 +202,7 @@ func put(db *bbolt.DB, w http.ResponseWriter, r *http.Request) {
     writeJSON(w, map[string]any{"ok": true})
 }
 
-func del(db *bbolt.DB, w http.ResponseWriter, r *http.Request) {
+func del(w http.ResponseWriter, r *http.Request) {
     if r.Method != http.MethodPost {
         http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
         return
@@ -229,7 +238,7 @@ func del(db *bbolt.DB, w http.ResponseWriter, r *http.Request) {
 // createBucket makes an empty top-level bucket. bbolt reports one that is
 // already there as an error rather than a no-op, which is what the UI wants to
 // say out loud: a Create that silently did nothing would look like it worked.
-func createBucket(db *bbolt.DB, w http.ResponseWriter, r *http.Request) {
+func createBucket(w http.ResponseWriter, r *http.Request) {
     if r.Method != http.MethodPost {
         http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
         return
@@ -257,7 +266,7 @@ func createBucket(db *bbolt.DB, w http.ResponseWriter, r *http.Request) {
     writeJSON(w, map[string]any{"ok": true})
 }
 
-func clearBucket(db *bbolt.DB, w http.ResponseWriter, r *http.Request) {
+func clearBucket(w http.ResponseWriter, r *http.Request) {
     if r.Method != http.MethodPost {
         http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
         return
@@ -314,7 +323,7 @@ const importBatch = 1000
 // to a very slow client grows the file for as long as it runs. That is a trade
 // this tool can afford: it is a localhost admin page, and the alternative is
 // buffering the bucket, which is what this replaces.
-func exportBucket(db *bbolt.DB, w http.ResponseWriter, r *http.Request) {
+func exportBucket(w http.ResponseWriter, r *http.Request) {
     var bucket = r.URL.Query().Get("bucket")
     if bucket == "" {
         http.Error(w, "bucket is required", http.StatusBadRequest)
@@ -373,7 +382,7 @@ func filename(bucket string) string {
 // The write is therefore not one transaction. That is the same trade
 // tools/csvimport makes and safe for the same reason: every row is written by
 // key, so an import that fails partway is recovered by running it again.
-func importBucket(db *bbolt.DB, w http.ResponseWriter, r *http.Request) {
+func importBucket(w http.ResponseWriter, r *http.Request) {
     if r.Method != http.MethodPost {
         http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
         return
@@ -476,8 +485,13 @@ func writeJSON(w http.ResponseWriter, v any) {
 // "hex:" marker so they survive a round trip through the text UI. The marker
 // can't collide in practice — no bucket stores a text value beginning "hex:".
 func encodeField(b []byte) string {
-    if isText(b) { return string(b) }
-    return "hex:" + hex.EncodeToString(b)
+    if !utf8.Valid(b) { return "hex:" + hex.EncodeToString(b) }
+    for _, r := range string(b) {
+        if r < 0x20 && r != '\n' && r != '\r' && r != '\t' {
+            return "hex:" + hex.EncodeToString(b)
+        }
+    }
+    return string(b)
 }
 
 // decodeField is encodeField's inverse: a "hex:"-prefixed string is decoded from
@@ -487,14 +501,4 @@ func decodeField(s string) ([]byte, error) {
         return hex.DecodeString(s[len("hex:"):])
     }
     return []byte(s), nil
-}
-
-// isText reports whether b is safe to show directly: valid UTF-8 with no control
-// characters other than the whitespace that appears in formatted JSON.
-func isText(b []byte) bool {
-    if !utf8.Valid(b) { return false }
-    for _, r := range string(b) {
-        if r < 0x20 && r != '\n' && r != '\r' && r != '\t' { return false }
-    }
-    return true
 }
