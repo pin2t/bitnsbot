@@ -20,24 +20,19 @@ func (emptyChain) BlockAt(ctx context.Context, height int) (addrindex.Block, err
     return addrindex.Block{Hash: "empty", Raw: make([]byte, 81), Spent: []byte{0}}, nil
 }
 
-// seedAddrStat puts one address in the rich list, opens the database so the
-// collector picks it up, writes the record it would have gathered, and runs a
-// pass so the scan counts as complete.
+// seedAddrStat writes the record the collector would have gathered for one
+// address — the bucket's keys being the set — and runs a pass so the scan counts
+// as complete.
 func seedAddrStat(t *testing.T, addr string, s addrstat.Stat) {
     t.Helper()
     if err := openDB(filepath.Join(t.TempDir(), "bitnsbot.db")); err != nil { t.Fatalf("openDB: %v", err) }
     t.Cleanup(func() { closeDB() })
-    if err := db.Update(func(tx *bbolt.Tx) error {
-        var b, berr = tx.CreateBucketIfNotExists([]byte("rich"))
-        if berr != nil { return berr }
-        return b.Put([]byte(addr), []byte("1"))
-    }); err != nil { t.Fatal(err) }
-    if err := addrstat.Init(db); err != nil { t.Fatalf("addrstat init: %v", err) }
     var data, err = json.Marshal(s)
     if err != nil { t.Fatal(err) }
     if err := db.Update(func(tx *bbolt.Tx) error {
         return tx.Bucket([]byte("addrstat")).Put([]byte(addr), data)
     }); err != nil { t.Fatal(err) }
+    if err := addrstat.Init(db); err != nil { t.Fatalf("addrstat init: %v", err) }
     if err := addrstat.Collect(emptyChain{}); err != nil { t.Fatalf("collect: %v", err) }
 }
 
@@ -71,6 +66,20 @@ func TestAddressAnsweredFromStatistics(t *testing.T) {
     if got["First tx"] == "" || got["Last tx"] == "" || got["Activity period"] == "" {
         t.Errorf("dates missing: %v", got)
     }
+}
+
+// A record put into the bucket by hand carries no form, and the Type line names
+// it from the address instead — the form being a property of the address rather
+// than of what the chain did to it.
+func TestAddressTypeFromTheAddressWhenTheRecordHasNone(t *testing.T) {
+    var addr = "bc1p0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4k9hcz7vqzk5jj0"
+    seedAddrStat(t, addr, addrstat.Stat{Recv: 100, Txs: 1})
+    var saved = core
+    core = nil
+    t.Cleanup(func() { core = saved })
+    var pairs, _, err = addrPairs(context.Background(), "", addr)
+    if err != nil { t.Fatal(err) }
+    if pairs[0][1] != "taproot (P2TR)" { t.Errorf("Type = %q, want taproot (P2TR)", pairs[0][1]) }
 }
 
 // The Mini App reads the same records through the same builder, so its address

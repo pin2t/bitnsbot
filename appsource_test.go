@@ -308,7 +308,8 @@ func seedAddrList(t *testing.T, kind string, rows map[string]int64) {
 }
 
 // putAddrStats is seedAddrList without the build, for the one test that has to
-// watch a build happen on its own.
+// watch a build happen on its own. Init comes after the records: the bucket's
+// keys are the set the scan matches against.
 func putAddrStats(t *testing.T, kind string, rows map[string]int64) {
     t.Helper()
     var err = db.Update(func(tx *bbolt.Tx) error {
