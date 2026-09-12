@@ -389,7 +389,7 @@ func (appSource) Fees() app.Fees {
         Slow: tier(rec.minimum), TxCount: group(int64(count))}
 }
 
-var ver = "1.2"
+var ver = "1.3"
 var commit = ""
 
 func main() {
