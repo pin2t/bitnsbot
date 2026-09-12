@@ -11,6 +11,7 @@ import "go.etcd.io/bbolt"
 import "bitnsbot/app"
 import "bitnsbot/logging"
 import "bitnsbot/miners"
+import "bitnsbot/signals"
 import "bitnsbot/cursors"
 
 var blocksBucket = []byte("blocks")
@@ -167,15 +168,21 @@ func processBlock(hash string) {
 }
 
 // startBlockCache runs a goroutine that catches up from the last processed block
-// to the current tip every blockCacheInterval, storing each block's stats in the
-// blocks bucket. New blocks also arrive over ZMQ (see zmq.go), so the
-// interval is only a safety net — the typical case is a no-op.
+// to the current tip, storing each block's stats in the blocks bucket. It runs
+// on a block notification and every blockCacheInterval, whichever comes first:
+// the notification is the usual case, and the interval is the safety net for one
+// that was missed while the bot was down.
 func startBlockCache() {
     go func() {
+        var wake = signals.Subscribe(signals.Block)
         collectBlocks()
         var t = time.NewTicker(blockCacheInterval)
         defer t.Stop()
-        for range t.C {
+        for {
+            select {
+            case <-t.C:
+            case <-wake:
+            }
             collectBlocks()
         }
     }()

@@ -21,12 +21,13 @@ import "go.etcd.io/bbolt"
 import "bitnsbot/addrindex"
 import "bitnsbot/cursors"
 import "bitnsbot/logging"
+import "bitnsbot/signals"
 
 var db *bbolt.DB
 var bucket = []byte("addrstat")
 
-// interval is how often the collector looks for new blocks once it has caught
-// up. A package var so tests can shrink it.
+// interval is the longest the collector waits once it has caught up; a block
+// notification cuts it short. A package var so tests can shrink it.
 var interval = 10 * time.Minute
 
 // chunkSize bounds how many blocks are accumulated in memory before one
@@ -144,15 +145,20 @@ func Count() int {
     return len(watched)
 }
 
-// Start runs the collector: a catch-up to the tip, then again every interval.
+// Start runs the collector: a catch-up to the tip, then again on every block
+// notification and every interval, whichever comes first.
 // src is the same REST-backed chain source the address index is built from —
 // one block and its spent outputs is 1.95 MB against getblock verbosity 3's
 // 13.7 MB of JSON, which is what makes a full-chain pass affordable at all.
 func Start(src addrindex.Blockchain) {
     go func() {
+        var wake = signals.Subscribe(signals.Block)
         for {
             if err := Collect(src); err != nil { logging.Warn("addrstat: %v", err) }
-            time.Sleep(interval)
+            select {
+            case <-time.After(interval):
+            case <-wake:
+            }
         }
     }()
 }
@@ -184,6 +190,11 @@ func Collect(src addrindex.Blockchain) error {
     }
     if from > began {
         logging.Info("addrstat: collected in blocks %d..%d for %d addresses", began, from-1, Count())
+        // the three ranked address lists are built from these records, so they
+        // are told the moment the figures they rank have moved rather than
+        // waiting out their own interval. Only when a block was actually
+        // scanned: a pass that found nothing to do has nothing to announce.
+        signals.Fire(signals.AddrStat)
     }
     return nil
 }

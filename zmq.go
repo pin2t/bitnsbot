@@ -9,6 +9,7 @@ import "sync"
 
 import "github.com/go-zeromq/zmq4"
 import "bitnsbot/logging"
+import "bitnsbot/signals"
 
 // Bitcoin Core has no server-side address filter — nothing like btcd's
 // loadtxfilter — so ZMQ delivers *every* mempool transaction and the matching
@@ -234,6 +235,10 @@ func startZMQ(ctx context.Context, endpoints []string, b *bot) error {
                 go processBlock(hash)
                 go processConfirms(b, hash)
                 go onNewBlock()
+                // every chain scan waits on this alongside its own timer, so a
+                // new block is caught up now rather than at the end of an
+                // interval it may have just started
+                signals.Fire(signals.Block)
             case "rawtx":
                 if !anyWatched() { continue }
                 var tx, ok = parseTx(msg.Frames[1])
