@@ -26,8 +26,10 @@ import "bitnsbot/logging"
 var db *bbolt.DB
 var bucket = []byte("addrstat")
 
-// The buckets the set of addresses is taken from. tools/csvimport fills them
-// from the rankings tools/addrindex builds; nothing in the bot writes them.
+// The buckets an address set is imported through. tools/csvimport fills them
+// from the rankings tools/addrindex builds; Init takes their keys and drops
+// them, since what they hold about an address is what the records gather for
+// themselves — and the Addresses tab's rankings are built from the records.
 var sources = [][]byte{[]byte("active"), []byte("rich"), []byte("abandoned")}
 
 // interval is how often the collector looks for new blocks once it has caught
@@ -81,7 +83,7 @@ var ready atomic.Bool
 func Init(handle *bbolt.DB) error {
     db = handle
     if err := cursors.Init(handle); err != nil { return err }
-    var added int
+    var added, dropped int
     var err = db.Update(func(tx *bbolt.Tx) error {
         var b, berr = tx.CreateBucketIfNotExists(bucket)
         if berr != nil { return berr }
@@ -97,6 +99,11 @@ func Init(handle *bbolt.DB) error {
                 added++
                 return b.Put(k, data)
             }); err != nil { return err }
+            // the bucket is an import channel, not storage: what it held —
+            // an address and one figure about it — is in the records now, and
+            // the rankings are built from those, so it has done its job
+            if err := tx.DeleteBucket(name); err != nil { return err }
+            dropped++
         }
         return nil
     })
@@ -111,6 +118,7 @@ func Init(handle *bbolt.DB) error {
     // what is on disk, so asking inside the transaction that wrote the records
     // says nothing was written
     if added > 0 { logging.Status("addrstat: %d addresses added, %d watched", added, Count()) }
+    if dropped > 0 { logging.Status("addrstat: %d import buckets read and dropped", dropped) }
     return nil
 }
 
@@ -167,6 +175,28 @@ func Get(addr string) (Stat, bool) {
         return nil
     })
     return s, found
+}
+
+// Ready reports whether the scan has been over the whole chain, so a reader can
+// tell a gathered figure from one that is still being gathered. The ranked lists
+// are built on it: a ranking of half-scanned records would rank by how far the
+// scan had got.
+func Ready() bool { return ready.Load() }
+
+// ForEach walks every record, which is what the Addresses tab's three rankings
+// are built from.
+func ForEach(fn func(addr string, s Stat)) error {
+    if db == nil { return nil }
+    return db.View(func(tx *bbolt.Tx) error {
+        var b = tx.Bucket(bucket)
+        if b == nil { return nil }
+        return b.ForEach(func(k, v []byte) error {
+            var s Stat
+            if json.Unmarshal(v, &s) != nil { return nil }
+            fn(string(k), s)
+            return nil
+        })
+    })
 }
 
 // Count is how many addresses are watched.

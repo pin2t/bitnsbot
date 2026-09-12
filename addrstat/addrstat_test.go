@@ -211,8 +211,12 @@ func TestAddingAnAddressRescans(t *testing.T) {
         0: blockOf(1000, tx{outs: []addrindex.Payment{pay(scriptA, 500)}}),
     }}
     if err := Collect(src); err != nil { t.Fatalf("Collect: %v", err) }
+    // a second import re-creates the bucket Init dropped, which is the only way
+    // an address is added to the set
     if err := handle.Update(func(tx *bbolt.Tx) error {
-        return tx.Bucket([]byte("rich")).Put([]byte(addrB), []byte("1"))
+        var b, berr = tx.CreateBucketIfNotExists([]byte("rich"))
+        if berr != nil { return berr }
+        return b.Put([]byte(addrB), []byte("1"))
     }); err != nil { t.Fatal(err) }
     if err := Init(handle); err != nil { t.Fatalf("re-init: %v", err) }
     if _, ok := cursors.Get(cursors.AddrStat); ok { t.Error("the cursor survived a new address") }
@@ -223,6 +227,17 @@ func TestAddingAnAddressRescans(t *testing.T) {
     src.fetched = nil
     if err := Collect(src); err != nil { t.Fatalf("Collect: %v", err) }
     if a := statOf(t, addrA); a.Recv != 500 || a.Txs != 1 { t.Errorf("after the rescan: %+v", a) }
+}
+
+// The import buckets are a channel, not storage: their keys are the set, and the
+// records hold everything they held about an address.
+func TestImportBucketsAreDropped(t *testing.T) {
+    var handle = open(t, addrA, addrB)
+    handle.View(func(tx *bbolt.Tx) error {
+        if tx.Bucket([]byte("rich")) != nil { t.Error("the import bucket survived") }
+        return nil
+    })
+    if Count() != 2 { t.Errorf("watched %d addresses, want 2", Count()) }
 }
 
 // Init is run on every start, so one that adds nothing must leave the scan's

@@ -6,22 +6,22 @@ import "strconv"
 import "time"
 
 import "go.etcd.io/bbolt"
+import "bitnsbot/addrstat"
 import "bitnsbot/app"
 import "bitnsbot/logging"
 
 // The three ranked address lists the Mini App's Addresses tab shows: how busy an
-// address is, what it holds now, and how long its coins have sat still.
-// tools/csvimport fills the source buckets from the exports tools/addrindex
-// produces — nothing in the bot writes them.
+// address is, what it holds now, and how long its coins have sat still. All
+// three are three readings of one record — the statistics the addrstat package
+// gathers — so they are built from that bucket and nothing else writes them.
 //
-// Each is read through an index rather than the bucket itself. A bucket is keyed
-// by address and ordered by address, so ranking it meant scanning and sorting
-// every row on every request; the index holds the same rows keyed by the value,
-// which a cursor walks in rank order.
+// Each is read through an index rather than by ranking the records on every
+// request: addrstat is keyed by address, so a ranking meant scanning and sorting
+// every row, where the index holds the same rows keyed by the figure they rank
+// by, which a cursor walks in rank order.
 type addrList struct {
-    kind   string
-    bucket []byte
-    index  []byte
+    kind  string
+    index []byte
     // width is how many bytes of the index key hold the value. Counts and
     // balances take eight; a last-moved date is a unix time, which fits in four
     // until 2106.
@@ -29,13 +29,19 @@ type addrList struct {
     // desc reads the index from its high end: the busiest address and the
     // largest balance rank first, where the oldest date does.
     desc bool
+    // value is what this list ranks a record by, and whether the record belongs
+    // in it at all — an address that has never been paid is not the poorest
+    // address on the chain, and one holding nothing has no coins to have
+    // abandoned. A record the scan has not reached yet is all zeroes, which is
+    // why every list refuses one.
+    value func(addrstat.Stat) (int64, bool)
 }
 
 // A slice rather than a map, so a build runs — and logs — in a fixed order.
 var addrLists = []addrList{
-    {"active", []byte("active"), []byte("activeindex"), 8, true},
-    {"rich", []byte("rich"), []byte("richindex"), 8, true},
-    {"abandoned", []byte("abandoned"), []byte("abandonedindex"), 4, false},
+    {"active", []byte("activeindex"), 8, true, func(s addrstat.Stat) (int64, bool) { return s.Txs, s.Txs > 0 }},
+    {"rich", []byte("richindex"), 8, true, func(s addrstat.Stat) (int64, bool) { return s.Balance, s.Balance > 0 }},
+    {"abandoned", []byte("abandonedindex"), 4, false, func(s addrstat.Stat) (int64, bool) { return s.Last, s.Balance > 0 && s.Last > 0 }},
 }
 
 // addrsFirstPage is the batch the tab opens with, addrsPage what each scroll
@@ -89,10 +95,19 @@ func startAddrIndexes() func() {
     }
 }
 
-// buildAddrIndexes rebuilds each list's index from the bucket it ranks, from
-// scratch: the index is dropped and written again rather than diffed, because
-// the buckets are replaced wholesale by tools/csvimport and there is nothing
+// buildAddrIndexes rebuilds all three indexes from the addrstat records, from
+// scratch: an index is dropped and written again rather than diffed, because a
+// pass of the collector moves every record it touched and there is nothing
 // cheaper to compare against.
+//
+// It reads the records **once** for all three lists rather than once per list,
+// since each is a different figure out of the same record.
+//
+// **It does nothing until the scan has been over the whole chain.** Ranking
+// half-gathered records ranks them by how far the scan has got: every address it
+// has not reached holds zero, and a list of those is not a list of the poorest
+// addresses. The previous indexes stay where they are until there is a complete
+// set to replace them with.
 //
 // The key is the whole entry: the value big-endian — so the index sorts by it
 // naturally — followed by the address, and **nothing is stored as the value**.
@@ -108,47 +123,41 @@ func startAddrIndexes() func() {
 //
 // The drop and the refill are **one transaction**, so a reader is served either
 // the whole old index or the whole new one — never the empty middle of a
-// rebuild. A source bucket that is missing or holds nothing indexable ends with
-// no index rather than a stale one, which is what makes an emptied bucket show
-// as an empty list.
+// rebuild. A list with nothing to rank ends with no index rather than a stale
+// one, which is what makes a list whose records all dropped out show as empty.
 func buildAddrIndexes() {
-    if db == nil { return }
-    for _, l := range addrLists {
-        var started = time.Now()
-        var keys [][]byte
-        var err = db.View(func(tx *bbolt.Tx) error {
-            var b = tx.Bucket(l.bucket)
-            if b == nil { return nil }
-            return b.ForEach(func(k, v []byte) error {
-                // csvimport writes these values as decimal text. Anything else
-                // is a row from somewhere this cannot read, and a value too wide
-                // for the key would truncate and rank wrongly, so both are
-                // skipped rather than indexed as something they are not.
-                var n, cerr = strconv.ParseInt(string(v), 10, 64)
-                if cerr != nil || n < 0 { return nil }
-                if l.width == 4 && n > 0xffffffff { return nil }
-                var key = make([]byte, l.width + len(k))
-                if l.width == 8 {
-                    binary.BigEndian.PutUint64(key, uint64(n))
-                } else {
-                    binary.BigEndian.PutUint32(key, uint32(n))
-                }
-                copy(key[l.width:], k)
-                keys = append(keys, key)
-                return nil
-            })
-        })
-        if err != nil {
-            logging.Err("build %s: %v", l.index, err)
-            continue
+    if db == nil || !addrstat.Ready() { return }
+    var byList = make([][][]byte, len(addrLists))
+    var err = addrstat.ForEach(func(addr string, s addrstat.Stat) {
+        for i, l := range addrLists {
+            var n, ok = l.value(s)
+            if !ok || n < 0 { continue }
+            // a value too wide for the key would truncate and rank wrongly
+            if l.width == 4 && n > 0xffffffff { continue }
+            var key = make([]byte, l.width + len(addr))
+            if l.width == 8 {
+                binary.BigEndian.PutUint64(key, uint64(n))
+            } else {
+                binary.BigEndian.PutUint32(key, uint32(n))
+            }
+            copy(key[l.width:], addr)
+            byList[i] = append(byList[i], key)
         }
+    })
+    if err != nil {
+        logging.Err("read address statistics: %v", err)
+        return
+    }
+    for i, l := range addrLists {
+        var started = time.Now()
+        var keys = byList[i]
         // Sorted before they are written, which is the whole cost of this: rows
         // come out of the source in address order, which is random against the
         // index key, and bbolt rebalances on every such insert. Measured on the
         // real exports, sorting first took the three builds from 3.45 s to
         // 106 ms.
         sort.Slice(keys, func(i, j int) bool { return string(keys[i]) < string(keys[j]) })
-        err = db.Update(func(tx *bbolt.Tx) error {
+        var err = db.Update(func(tx *bbolt.Tx) error {
             if tx.Bucket(l.index) != nil {
                 if derr := tx.DeleteBucket(l.index); derr != nil { return derr }
             }
