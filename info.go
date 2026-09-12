@@ -388,9 +388,9 @@ func addressStats(txs []*coreTransaction, addr string) (received, sent, fees int
 // the live path builds — the two answers must not be told apart by their shape,
 // only by how long they took. The transaction count carries no trailing "+":
 // this history is whole, which is the point of gathering it.
-func statPairs(s addrstat.Stat, lang string) [][2]string {
+func statPairs(addr string, s addrstat.Stat, lang string) [][2]string {
     var pairs = [][2]string{
-        {i18nl(lang).String("Type"), addrTypeText(s.Type)},
+        {i18nl(lang).String("Type"), addrTypeText(s.Type, addr)},
         {i18nl(lang).String("Balance"), compactBTC(s.Balance, lang)},
         {i18nl(lang).String("Total received"), compactBTC(s.Recv, lang)},
         {i18nl(lang).String("Total sent"), compactBTC(s.Sent, lang)},
@@ -408,8 +408,11 @@ func statPairs(s addrstat.Stat, lang string) [][2]string {
 
 // addrTypeText names an address form the way the Type line has always read. The
 // stored records keep the form itself (what addrindex.Decode reports), so the
-// wording is decided here, at the one place that displays it.
-func addrTypeText(kind string) string {
+// wording is decided here, at the one place that displays it — and a record
+// written without one, which is how an address put into the bucket by hand
+// arrives, is named from the address instead, the form being a property of it.
+func addrTypeText(kind, addr string) string {
+    if kind == "" { _, kind, _ = addrindex.Decode(addr) }
     switch kind {
     case "p2sh":    return "script hash (P2SH)"
     case "segwit":  return "segwit (bech32)"
@@ -428,7 +431,7 @@ func addrTypeText(kind string) string {
 // they are the ones the live path below serves worst — the busiest holds
 // millions of transactions against its cap of ten thousand.
 func addrPairs(ctx context.Context, lang string, addr string) ([][2]string, bool, error) {
-    if s, ok := addrstat.Get(addr); ok { return statPairs(s, lang), true, nil }
+    if s, ok := addrstat.Get(addr); ok { return statPairs(addr, s, lang), true, nil }
     if core == nil { return nil, false, errors.New("no node configured") }
     var addrInfo, err = core.validateAddress(ctx, addr)
     if err != nil { return nil, false, err }
@@ -437,7 +440,7 @@ func addrPairs(ctx context.Context, lang string, addr string) ([][2]string, bool
     // the same whether it is answered from one or looked up live; a form it
     // cannot decode falls back to what the node says about it
     var _, kind, known = addrindex.Decode(addr)
-    var addrType = addrTypeText(kind)
+    var addrType = addrTypeText(kind, addr)
     if !known {
         if addrInfo.IsWitness {
             addrType = "segwit (bech32)"

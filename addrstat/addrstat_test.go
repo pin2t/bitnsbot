@@ -82,23 +82,32 @@ func (f *fakeChain) BlockAt(ctx context.Context, height int) (addrindex.Block, e
     return f.blocks[height], nil
 }
 
-// open seeds a rich bucket with the addresses under test and runs Init over it,
-// which is how the set is filled in the bot.
+// open puts a record under each address and runs Init over them, which is how
+// the set is filled: the bucket's keys are the set, and putting one in is what
+// adds an address to it.
 func open(t *testing.T, addrs ...string) *bbolt.DB {
     t.Helper()
     var handle, err = bbolt.Open(filepath.Join(t.TempDir(), "t.db"), 0600, nil)
     if err != nil { t.Fatalf("open: %v", err) }
-    t.Cleanup(func() { handle.Close(); db = nil; watched = map[string]string{}; ready.Store(false) })
-    if err := handle.Update(func(tx *bbolt.Tx) error {
-        var b, berr = tx.CreateBucketIfNotExists([]byte("rich"))
-        if berr != nil { return berr }
-        for _, a := range addrs {
-            if err := b.Put([]byte(a), []byte("1")); err != nil { return err }
-        }
-        return nil
-    }); err != nil { t.Fatalf("seed: %v", err) }
+    t.Cleanup(func() { handle.Close(); db = nil; watched = map[string]string{} })
+    add(t, handle, addrs...)
     if err := Init(handle); err != nil { t.Fatalf("init: %v", err) }
     return handle
+}
+
+func add(t *testing.T, handle *bbolt.DB, addrs ...string) {
+    t.Helper()
+    if err := handle.Update(func(tx *bbolt.Tx) error {
+        var b, berr = tx.CreateBucketIfNotExists(bucket)
+        if berr != nil { return berr }
+        for _, a := range addrs {
+            var _, kind, _ = addrindex.Decode(a)
+            var data, merr = json.Marshal(Stat{Type: kind})
+            if merr != nil { return merr }
+            if err := b.Put([]byte(a), data); err != nil { return err }
+        }
+        return nil
+    }); err != nil { t.Fatalf("add: %v", err) }
 }
 
 func statOf(t *testing.T, addr string) Stat {
@@ -187,12 +196,12 @@ func TestCollectResumes(t *testing.T) {
     if h, ok := cursors.Get(cursors.AddrStat); !ok || h != 1 { t.Errorf("cursor = %d ok=%v, want 1", h, ok) }
 }
 
-// Until the scan has been over the whole chain a record holds part of an
-// address's history, and half a balance presented as a balance is worse than the
-// slow answer it replaces.
-func TestGetWaitsForTheWholeChain(t *testing.T) {
+// A record with nothing gathered in it is not an answer: an address is in the
+// set because somebody expects it to have a history, so the live path answers it
+// until the scan has been past it.
+func TestGetWaitsForSomethingToReport(t *testing.T) {
     open(t, addrA)
-    if _, ok := Get(addrA); ok { t.Fatal("answered before the scan ran") }
+    if _, ok := Get(addrA); ok { t.Fatal("answered from an empty record") }
     var src = &fakeChain{tip: 0, blocks: map[int]addrindex.Block{
         0: blockOf(1000, tx{outs: []addrindex.Payment{pay(scriptA, 500)}}),
     }}
@@ -202,31 +211,24 @@ func TestGetWaitsForTheWholeChain(t *testing.T) {
     if _, ok := Get(addrC); ok { t.Error("answered for an address nobody follows") }
 }
 
-// An address added to a set the scan has already been through would sit at zero
-// for ever, so adding one starts the scan again — and the totals already
-// gathered have to go with it, or the second pass counts those blocks twice.
-func TestAddingAnAddressRescans(t *testing.T) {
+// An address put into the bucket is in the set from the next Init, which is what
+// makes the bucket itself the set — and the scan's place is left alone, since
+// restarting the bot cannot mean rescanning the chain. Gathering that address's
+// history means clearing the cursor by hand; nothing here does it.
+func TestAnAddedRecordJoinsTheSet(t *testing.T) {
     var handle = open(t, addrA)
     var src = &fakeChain{tip: 0, blocks: map[int]addrindex.Block{
         0: blockOf(1000, tx{outs: []addrindex.Payment{pay(scriptA, 500)}}),
     }}
     if err := Collect(src); err != nil { t.Fatalf("Collect: %v", err) }
-    if err := handle.Update(func(tx *bbolt.Tx) error {
-        return tx.Bucket([]byte("rich")).Put([]byte(addrB), []byte("1"))
-    }); err != nil { t.Fatal(err) }
+    add(t, handle, addrB)
     if err := Init(handle); err != nil { t.Fatalf("re-init: %v", err) }
-    if _, ok := cursors.Get(cursors.AddrStat); ok { t.Error("the cursor survived a new address") }
-    if a := statOf(t, addrA); a.Recv != 0 || a.Txs != 0 || a.Type != "segwit" {
-        t.Errorf("addrA was not cleared for the rescan: %+v", a)
-    }
-    // and the rescan gathers the same figures again, not twice over
-    src.fetched = nil
-    if err := Collect(src); err != nil { t.Fatalf("Collect: %v", err) }
-    if a := statOf(t, addrA); a.Recv != 500 || a.Txs != 1 { t.Errorf("after the rescan: %+v", a) }
+    if Count() != 2 { t.Errorf("watched %d addresses, want 2", Count()) }
+    if h, ok := cursors.Get(cursors.AddrStat); !ok || h != 0 { t.Errorf("cursor = %d ok=%v, want 0", h, ok) }
+    if a := statOf(t, addrA); a.Recv != 500 { t.Errorf("the gathered record was disturbed: %+v", a) }
 }
 
-// Init is run on every start, so one that adds nothing must leave the scan's
-// place alone — restarting the bot cannot mean rescanning the chain.
+// Init is run on every start, so one must leave the scan's place alone.
 func TestRepeatedInitKeepsTheCursor(t *testing.T) {
     var handle = open(t, addrA)
     var src = &fakeChain{tip: 0, blocks: map[int]addrindex.Block{

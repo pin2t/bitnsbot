@@ -15,7 +15,6 @@ package addrstat
 import "context"
 import "encoding/json"
 import "sync"
-import "sync/atomic"
 import "time"
 
 import "go.etcd.io/bbolt"
@@ -25,10 +24,6 @@ import "bitnsbot/logging"
 
 var db *bbolt.DB
 var bucket = []byte("addrstat")
-
-// The buckets the set of addresses is taken from. tools/csvimport fills them
-// from the rankings tools/addrindex builds; nothing in the bot writes them.
-var sources = [][]byte{[]byte("active"), []byte("rich"), []byte("abandoned")}
 
 // interval is how often the collector looks for new blocks once it has caught
 // up. A package var so tests can shrink it.
@@ -63,77 +58,48 @@ type Stat struct {
 var watchedMu sync.RWMutex
 var watched = map[string]string{}
 
-// ready reports whether the scan has reached the tip at least once. Until it
-// has, a record holds part of an address's history, and half a balance
-// presented as a balance is worse than the slow answer it replaces.
-var ready atomic.Bool
-
-// Init stores the shared bbolt handle, ensures the bucket exists, adds a record
-// for every address in the three source buckets, and builds the lookup the scan
-// matches scripts against.
+// Init stores the shared bbolt handle, ensures the bucket exists, and builds the
+// lookup the scan matches scripts against.
 //
-// An address added to the set after the scan has passed its history would
-// otherwise sit at zero for ever, so adding any is what makes the scan start
-// again from genesis — with every record's totals cleared first, since a second
-// pass over a block that was already counted would add it twice. That is hours
-// of rescanning, which is the right price for a set that changes only when
-// somebody imports a new ranking.
+// **The set is whatever the bucket holds.** A key is an address, and the record
+// under it is what the scan has gathered about it; a record with no key is not
+// created here, so putting an address in — through the database UI, or an
+// import — is what adds it to the set. An address added after the scan has
+// already passed its history gathers nothing until the scan runs again, which
+// means clearing this scan's place in the `cursors` bucket by hand. That is an
+// operator's job because the alternative is an automatic rescan of the whole
+// chain, which is hours, triggered by a signal nothing can tell apart from an
+// address the chain has simply never seen.
 func Init(handle *bbolt.DB) error {
     db = handle
     if err := cursors.Init(handle); err != nil { return err }
-    var added int
+    var repaired int
     var err = db.Update(func(tx *bbolt.Tx) error {
         var b, berr = tx.CreateBucketIfNotExists(bucket)
         if berr != nil { return berr }
-        for _, name := range sources {
-            var src = tx.Bucket(name)
-            if src == nil { continue }
-            if err := src.ForEach(func(k, _ []byte) error {
-                if b.Get(k) != nil { return nil }
-                var _, kind, ok = addrindex.Decode(string(k))
-                if !ok { return nil } // not an address this can match a script to
-                var data, merr = json.Marshal(Stat{Type: kind})
-                if merr != nil { return merr }
-                added++
-                return b.Put(k, data)
-            }); err != nil { return err }
+        // A record that does not decode is written afresh, which is what makes
+        // putting an address in by hand — or through tools/csvimport, whose
+        // values are the raw text of a CSV column — enough to add it to the set:
+        // the key is the address, and everything under it is gathered anyway.
+        var broken [][]byte
+        if err := b.ForEach(func(k, v []byte) error {
+            var s Stat
+            if json.Unmarshal(v, &s) != nil { broken = append(broken, append([]byte(nil), k...)) }
+            return nil
+        }); err != nil { return err }
+        for _, k := range broken {
+            var _, kind, _ = addrindex.Decode(string(k))
+            var data, merr = json.Marshal(Stat{Type: kind})
+            if merr != nil { return merr }
+            if err := b.Put(k, data); err != nil { return err }
+            repaired++
         }
         return nil
     })
     if err != nil { return err }
-    if added > 0 {
-        if _, scanned := cursors.Get(cursors.AddrStat); scanned {
-            if err := restart(); err != nil { return err }
-        }
-    }
     if err := load(); err != nil { return err }
-    // counted from the lookup rather than from the bucket: bbolt's Stats reports
-    // what is on disk, so asking inside the transaction that wrote the records
-    // says nothing was written
-    if added > 0 { logging.Status("addrstat: %d addresses added, %d watched", added, Count()) }
+    if repaired > 0 { logging.Status("addrstat: %d records written afresh, %d addresses watched", repaired, Count()) }
     return nil
-}
-
-// restart clears every record's totals and forgets the cursor, so the scan
-// starts again from genesis. Only the type survives, being a property of the
-// address rather than of the chain.
-func restart() error {
-    return db.Update(func(tx *bbolt.Tx) error {
-        var b = tx.Bucket(bucket)
-        var addrs [][]byte
-        if err := b.ForEach(func(k, _ []byte) error {
-            addrs = append(addrs, append([]byte(nil), k...))
-            return nil
-        }); err != nil { return err }
-        for _, k := range addrs {
-            var _, kind, _ = addrindex.Decode(string(k))
-            var data, err = json.Marshal(Stat{Type: kind})
-            if err != nil { return err }
-            if err := b.Put(k, data); err != nil { return err }
-        }
-        logging.Status("addrstat: scanning the chain again from genesis for %d addresses", len(addrs))
-        return cursors.Delete(tx, cursors.AddrStat)
-    })
 }
 
 // load builds the script lookup from the bucket.
@@ -153,20 +119,41 @@ func load() error {
     return nil
 }
 
-// Get returns an address's statistics, and false when it is not one of the
-// watched addresses or the scan has not yet been over the whole chain.
+// Get returns an address's statistics, and false when there are none to give:
+// the address is not in the set, or the scan has not reached it yet. A record
+// with no transactions in it is the second of those — an address is in the set
+// because somebody expects it to have a history, so answering with the empty
+// record would present "0 transactions" as a fact about an address the scan has
+// simply not got to. The live path answers it instead, as it does for every
+// address outside the set.
 func Get(addr string) (Stat, bool) {
-    if db == nil || !ready.Load() { return Stat{}, false }
+    if db == nil { return Stat{}, false }
     var s Stat
     var found bool
     db.View(func(tx *bbolt.Tx) error {
         var b = tx.Bucket(bucket)
         if b == nil { return nil }
         var v = b.Get([]byte(addr))
-        if v != nil && json.Unmarshal(v, &s) == nil { found = true }
+        if v != nil && json.Unmarshal(v, &s) == nil { found = s.Txs > 0 }
         return nil
     })
     return s, found
+}
+
+// ForEach walks every record, which is what the Addresses tab's three rankings
+// are built from.
+func ForEach(fn func(addr string, s Stat)) error {
+    if db == nil { return nil }
+    return db.View(func(tx *bbolt.Tx) error {
+        var b = tx.Bucket(bucket)
+        if b == nil { return nil }
+        return b.ForEach(func(k, v []byte) error {
+            var s Stat
+            if json.Unmarshal(v, &s) != nil { return nil }
+            fn(string(k), s)
+            return nil
+        })
+    })
 }
 
 // Count is how many addresses are watched.
@@ -217,7 +204,6 @@ func Collect(src addrindex.Blockchain) error {
     if from > began {
         logging.Info("addrstat: scanned blocks %d..%d for %d addresses", began, from-1, Count())
     }
-    ready.Store(true)
     return nil
 }
 
