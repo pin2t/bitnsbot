@@ -270,10 +270,10 @@ func aggregate(store *richStore, sh *shards, opt *options, tip int, hash string)
             // arithmetic is wrong somewhere — say so rather than write it.
             if balance < 0 {
                 negative++
-                logging.Warn("richbuild: %s holds %d sat, which cannot happen", scriptAddress([]byte(script)), balance)
+                logging.Warn("richbuild: %s holds %d sat, which cannot happen", addrindex.Address([]byte(script)), balance)
                 continue
             }
-            if err := st.add([]byte(script), scriptAddress([]byte(script)), balance); err != nil {
+            if err := st.add([]byte(script), addrindex.Address([]byte(script)), balance); err != nil {
                 st.rollback()
                 return err
             }

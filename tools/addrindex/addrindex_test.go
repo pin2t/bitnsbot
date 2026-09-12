@@ -519,13 +519,13 @@ func TestActbuildCountsFromBlocks(t *testing.T) {
         t.Errorf("actbuild did not report what it was doing: %q", out)
     }
     var active = activeAddresses(t)
-    if _, ok := active[scriptAddress(payScript)]; ok {
+    if _, ok := active[addrindex.Address(payScript)]; ok {
         t.Errorf("the address in 2 transactions was recorded as active: %v", active)
     }
     // five: a coinbase paying otherScript in each of the four blocks, plus
     // block 2's transaction paying it as well
-    if n, ok := active[scriptAddress(otherScript)]; !ok || n != 5 {
-        t.Errorf("active = %v; want %s in 5 transactions", active, scriptAddress(otherScript))
+    if n, ok := active[addrindex.Address(otherScript)]; !ok || n != 5 {
+        t.Errorf("active = %v; want %s in 5 transactions", active, addrindex.Address(otherScript))
     }
 }
 

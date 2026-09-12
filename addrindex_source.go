@@ -4,6 +4,7 @@ import "context"
 import "time"
 
 import "bitnsbot/addrindex"
+import "bitnsbot/addrstat"
 import "bitnsbot/logging"
 
 // startAddrIndex launches the address-index backfill against Core's REST
@@ -20,4 +21,8 @@ func startAddrIndex(restBaseURL string) {
         return
     }
     addrindex.StartBackfill(src)
+    // The statistics collector reads the same blocks from the same source, on a
+    // pass of its own: the index says which transactions an address is in, where
+    // this says what they did to it, and the two advance at different rates.
+    addrstat.Start(src)
 }

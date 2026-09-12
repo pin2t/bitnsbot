@@ -335,6 +335,13 @@ func OutputScripts(raw []byte) ([][]byte, bool) {
 // by one transaction was involved in one transaction, not two.
 func OutputsByTx(raw []byte) ([][]Payment, bool) { return parseBlockOutputs(raw) }
 
+// SpentByTx returns the prevouts each transaction in a block spends — script and
+// amount — indexed by the transaction's position, the spending-side counterpart
+// of OutputsByTx and aligned to it. A caller that needs a transaction's fee needs
+// both: the fee is what its inputs carried less what its outputs pay, and only
+// the undo data says what the inputs carried.
+func SpentByTx(spent []byte) ([][]Payment, bool) { return parseSpentOutputs(spent) }
+
 // Balances returns every change one block makes to a script's balance: each
 // output pays its own script, and each spent prevout takes back out of the
 // script it was paid to. Nothing else moves value on the chain, so adding these

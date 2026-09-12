@@ -115,7 +115,7 @@ func storeActive(active map[string]uint32) error {
     return db.Update(func(tx *bbolt.Tx) error {
         var b = tx.Bucket(activeBucket)
         for script, n := range active {
-            var addr = scriptAddress([]byte(script))
+            var addr = addrindex.Address([]byte(script))
             // a nonstandard script is not an address, so there is nothing to
             // record for it
             if addr == "" { continue }
