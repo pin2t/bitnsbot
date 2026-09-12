@@ -37,31 +37,6 @@ func openDB(path string) error {
     if err := miners.Init(db); err != nil { return err }
     if err := addrindex.Init(db); err != nil { return err }
     if err := addrstat.Init(db); err != nil { return err }
-    return dropUnused()
-}
-
-// The three buckets an address set used to be imported through. The rankings the
-// Addresses tab shows are built from the addrstat records now (see Address
-// statistics), and nothing reads these, so a database that has been through an
-// earlier version should not carry them around — on the real rankings they are
-// 196 538 keys of nothing. Only the *index* buckets they shared a name prefix
-// with are live, and those are not named here.
-var unusedBuckets = [][]byte{[]byte("active"), []byte("rich"), []byte("abandoned")}
-
-// dropUnused deletes those buckets if an older database still has them. It runs
-// on every start and does nothing on all but the first, the bucket being gone.
-func dropUnused() error {
-    var dropped []string
-    var err = db.Update(func(tx *bbolt.Tx) error {
-        for _, name := range unusedBuckets {
-            if tx.Bucket(name) == nil { continue }
-            if derr := tx.DeleteBucket(name); derr != nil { return derr }
-            dropped = append(dropped, string(name))
-        }
-        return nil
-    })
-    if err != nil { return err }
-    if len(dropped) > 0 { logging.Status("dropped %s: nothing reads these buckets now", strings.Join(dropped, ", ")) }
     return nil
 }
 
