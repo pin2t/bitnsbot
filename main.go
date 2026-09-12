@@ -207,7 +207,8 @@ func (appSource) TxInfo(lang, txid string) app.Info {
 // all says so, rather than reporting an empty history as fact.
 func (appSource) AddrInfo(lang, addr string) app.Info {
     var out = app.Info{Title: short(addr)}
-    if core == nil { return out }
+    // no core check here: an address the statistics collector follows is
+    // answered out of the database, which is the whole point of gathering it
     var ctx, cancel = context.WithTimeout(context.Background(), 60*time.Second)
     defer cancel()
     var pairs, valid, err = addrPairs(ctx, lang, addr)

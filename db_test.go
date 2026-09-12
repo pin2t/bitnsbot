@@ -22,6 +22,7 @@ func TestOpenDBBuckets(t *testing.T) {
         "watches",                                         // watches
         "miners",                                          // miners
         "addrindex",                                       // addrindex
+        "addrstat",                                        // per-address statistics
         "cursors",                                         // every scan's place
     }
     var got = map[string]bool{}

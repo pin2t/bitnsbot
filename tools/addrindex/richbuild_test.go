@@ -93,11 +93,11 @@ func TestRichBuild(t *testing.T) {
     if len(rich) != 2 {
         t.Fatalf("rich = %v, want exactly the two addresses that hold coins", rich)
     }
-    if got := rich[scriptAddress(payScript)]; got != wantPay {
-        t.Errorf("%s holds %d, want %d", scriptAddress(payScript), got, wantPay)
+    if got := rich[addrindex.Address(payScript)]; got != wantPay {
+        t.Errorf("%s holds %d, want %d", addrindex.Address(payScript), got, wantPay)
     }
-    if got := rich[scriptAddress(otherScript)]; got != wantOther {
-        t.Errorf("%s holds %d, want %d", scriptAddress(otherScript), got, wantOther)
+    if got := rich[addrindex.Address(otherScript)]; got != wantOther {
+        t.Errorf("%s holds %d, want %d", addrindex.Address(otherScript), got, wantOther)
     }
     // the OP_RETURN's coins have no address, so they are kept in the state a
     // later run carries forward and left out of rich
@@ -153,7 +153,7 @@ func TestRichBuildCarriesBalancesForward(t *testing.T) {
     if h := storedHeight(t, parts.dbsqlite, "height"); h != 1 {
         t.Fatalf("stopped at %d, want block 1", h)
     }
-    if got := richRows(t, parts.dbsqlite)[scriptAddress(payScript)]; got != 20000 {
+    if got := richRows(t, parts.dbsqlite)[addrindex.Address(payScript)]; got != 20000 {
         t.Errorf("after block 1 the address holds %d, want the 20000 it was paid", got)
     }
     parts.to = 0
@@ -186,10 +186,10 @@ func TestRichBuildMinimum(t *testing.T) {
         if err := richbuild(opt); err != nil { t.Fatalf("richbuild: %v", err) }
     })
     var rich = richRows(t, opt.dbsqlite)
-    if _, ok := rich[scriptAddress(payScript)]; ok {
+    if _, ok := rich[addrindex.Address(payScript)]; ok {
         t.Errorf("rich = %v; the address below -min should not be in it", rich)
     }
-    if got := rich[scriptAddress(otherScript)]; got != wantOther {
+    if got := rich[addrindex.Address(otherScript)]; got != wantOther {
         t.Errorf("rich = %v; the address above -min should be", rich)
     }
     // the state keeps every balance whatever -min says, or the next run would
@@ -313,7 +313,7 @@ func TestRichBuildVoidsTheGenesisCoinbase(t *testing.T) {
         if err := richbuild(opt); err != nil { t.Fatalf("richbuild: %v", err) }
     })
     // one coinbase less than the same chain sums to off mainnet
-    if got := richRows(t, opt.dbsqlite)[scriptAddress(otherScript)]; got != wantOther-coinbaseSat {
+    if got := richRows(t, opt.dbsqlite)[addrindex.Address(otherScript)]; got != wantOther-coinbaseSat {
         t.Errorf("the miner holds %d, want %d — genesis pays nobody", got, wantOther-coinbaseSat)
     }
 }

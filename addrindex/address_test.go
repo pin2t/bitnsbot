@@ -1,4 +1,4 @@
-package main
+package addrindex
 
 import "encoding/hex"
 import "strings"
@@ -46,7 +46,7 @@ func TestScriptAddress(t *testing.T) {
     } {
         var script, err = hex.DecodeString(c.script)
         if err != nil { t.Fatalf("%s: %v", c.name, err) }
-        if got := scriptAddress(script); got != c.want {
+        if got := Address(script); got != c.want {
             t.Errorf("%s = %q, want %q", c.name, got, c.want)
         }
     }
@@ -55,7 +55,7 @@ func TestScriptAddress(t *testing.T) {
 // P2SH has its own version byte, so it must not come out as a P2PKH address.
 func TestScriptAddressP2SH(t *testing.T) {
     var script, _ = hex.DecodeString("a91474f209f6ea907e2ea48f74fae05782ae8a66525787")
-    var got = scriptAddress(script)
+    var got = Address(script)
     if !strings.HasPrefix(got, "3") {
         t.Errorf("P2SH = %q, want an address starting with 3", got)
     }
@@ -76,7 +76,7 @@ func TestScriptAddressNonStandard(t *testing.T) {
         {"witness with a bad length", "0003010203"},
     } {
         var script, _ = hex.DecodeString(c.script)
-        if got := scriptAddress(script); got != "" {
+        if got := Address(script); got != "" {
             t.Errorf("%s = %q, want no address", c.name, got)
         }
     }
@@ -87,14 +87,14 @@ func TestScriptAddressNonStandard(t *testing.T) {
 func TestWitnessRules(t *testing.T) {
     // v0 with a 22-byte program is not a valid v0 output
     var bad, _ = hex.DecodeString("0016" + strings.Repeat("00", 22))
-    if got := scriptAddress(bad); got != "" {
+    if got := Address(bad); got != "" {
         t.Errorf("a 22-byte v0 program produced %q", got)
     }
     // v1 with 32 bytes is taproot and encodes with the bech32m constant, which
     // makes it differ from the same program read as v0
     var v1, _ = hex.DecodeString("5120" + strings.Repeat("11", 32))
     var v0, _ = hex.DecodeString("0020" + strings.Repeat("11", 32))
-    var a, b = scriptAddress(v1), scriptAddress(v0)
+    var a, b = Address(v1), Address(v0)
     if a == "" || b == "" { t.Fatal("both should encode") }
     if !strings.HasPrefix(a, "bc1p") { t.Errorf("v1 = %q, want a bc1p address", a) }
     if !strings.HasPrefix(b, "bc1q") { t.Errorf("v0 = %q, want a bc1q address", b) }

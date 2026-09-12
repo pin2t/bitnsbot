@@ -7,14 +7,16 @@ import "path/filepath"
 import "strings"
 import "testing"
 
+import "bitnsbot/addrindex"
+
 // The fixture chain pays otherScript a coinbase in every one of its four blocks
 // and spends from it in block 1, so its last operation is block 3's coinbase.
 // payScript is paid in block 1, spends and is paid again in block 2, and is
 // never touched afterwards — so it is the more abandoned of the two, even though
 // it is the only one of them that ever spent. Either side counts.
 var wantLast = map[string]int64{
-    scriptAddress(payScript):   blockTime(2),
-    scriptAddress(otherScript): blockTime(3),
+    addrindex.Address(payScript):   blockTime(2),
+    addrindex.Address(otherScript): blockTime(3),
 }
 
 func abaOptions(t *testing.T, url string) *options {
@@ -60,7 +62,7 @@ func TestAbaBuild(t *testing.T) {
     }
     // the ranking itself: the address whose coins last moved earliest comes
     // first, whichever side that movement was
-    if addrs[0] != scriptAddress(payScript) || addrs[1] != scriptAddress(otherScript) {
+    if addrs[0] != addrindex.Address(payScript) || addrs[1] != addrindex.Address(otherScript) {
         t.Errorf("abandoned ranks %v; the address whose coins moved least recently comes first", addrs)
     }
     for addr, want := range wantLast {
@@ -69,11 +71,11 @@ func TestAbaBuild(t *testing.T) {
                 addr, last[addr], want)
         }
     }
-    if got := balance[scriptAddress(payScript)]; got != wantPay {
-        t.Errorf("%s holds %d, want %d", scriptAddress(payScript), got, wantPay)
+    if got := balance[addrindex.Address(payScript)]; got != wantPay {
+        t.Errorf("%s holds %d, want %d", addrindex.Address(payScript), got, wantPay)
     }
-    if got := balance[scriptAddress(otherScript)]; got != wantOther {
-        t.Errorf("%s holds %d, want %d", scriptAddress(otherScript), got, wantOther)
+    if got := balance[addrindex.Address(otherScript)]; got != wantOther {
+        t.Errorf("%s holds %d, want %d", addrindex.Address(otherScript), got, wantOther)
     }
     // the OP_RETURN's coins have no address, so they are kept in the state a
     // later run carries forward and left out of the answer
@@ -136,20 +138,20 @@ func TestAbaLastMovedRule(t *testing.T) {
     })
     var addrs, balance, last = abandonedRows(t, opt.dbsqlite)
     if len(addrs) != 2 { t.Fatalf("abandoned = %v, want both scripts", addrs) }
-    if got := last[scriptAddress(otherScript)]; got != 800 {
+    if got := last[addrindex.Address(otherScript)]; got != 800 {
         t.Errorf("the script that spent at 300 and was paid at 800 reports %d, want 800 — "+
             "the payment is the later operation", got)
     }
-    if got := last[scriptAddress(payScript)]; got != 700 {
+    if got := last[addrindex.Address(payScript)]; got != 700 {
         t.Errorf("the script paid at 700 and 100 reports %d, want 700 — the later of its dates", got)
     }
-    if addrs[0] != scriptAddress(payScript) {
+    if addrs[0] != addrindex.Address(payScript) {
         t.Errorf("abandoned ranks %v, want the older date first", addrs)
     }
-    if got := balance[scriptAddress(payScript)]; got != 500 {
+    if got := balance[addrindex.Address(payScript)]; got != 500 {
         t.Errorf("the twice-paid script holds %d, want its two payments summed", got)
     }
-    if got := balance[scriptAddress(otherScript)]; got != 900 {
+    if got := balance[addrindex.Address(otherScript)]; got != 900 {
         t.Errorf("the script that spent 100 of 1000 holds %d, want 900", got)
     }
 }
@@ -165,10 +167,10 @@ func TestAbaCombinesScriptsOfOneAddress(t *testing.T) {
     pubkey[0] = 2
     for i := 1; i < 33; i++ { pubkey[i] = byte(i) }
     var p2pk = append(append([]byte{33}, pubkey...), 0xac)
-    var p2pkh = append(append([]byte{0x76, 0xa9, 20}, hash160(pubkey)...), 0x88, 0xac)
-    if scriptAddress(p2pk) != scriptAddress(p2pkh) {
+    var p2pkh = append(append([]byte{0x76, 0xa9, 20}, addrindex.Hash160(pubkey)...), 0x88, 0xac)
+    if addrindex.Address(p2pk) != addrindex.Address(p2pkh) {
         t.Fatalf("the fixture scripts pay %s and %s, want one address",
-            scriptAddress(p2pk), scriptAddress(p2pkh))
+            addrindex.Address(p2pk), addrindex.Address(p2pkh))
     }
     var dir = filepath.Join(t.TempDir(), "shards")
     var sh, err = newTimedShards(dir, 4, 4)
@@ -250,7 +252,7 @@ func TestAbaBuildTop(t *testing.T) {
         if err := ababuild(opt); err != nil { t.Fatalf("ababuild: %v", err) }
     })
     var addrs, _, _ = abandonedRows(t, opt.dbsqlite)
-    if len(addrs) != 1 || addrs[0] != scriptAddress(payScript) {
+    if len(addrs) != 1 || addrs[0] != addrindex.Address(payScript) {
         t.Errorf("abandoned = %v, want only the most abandoned address", addrs)
     }
     // the state keeps every script whatever -top says, or the next run would

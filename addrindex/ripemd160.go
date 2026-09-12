@@ -1,4 +1,4 @@
-package main
+package addrindex
 
 import "encoding/binary"
 import "math/bits"

@@ -240,10 +240,10 @@ func combine(store *abaStore, sh *shards, opt *options, tip int, hash string) er
                     if m.sat < 0 {
                         neg++
                         logging.Warn("ababuild: %s holds %d sat, which cannot happen",
-                            scriptAddress([]byte(script)), m.sat)
+                            addrindex.Address([]byte(script)), m.sat)
                         continue
                     }
-                    out = append(out, abaRow{script: []byte(script), addr: scriptAddress([]byte(script)), m: m})
+                    out = append(out, abaRow{script: []byte(script), addr: addrindex.Address([]byte(script)), m: m})
                 }
                 var scripts = len(sums)
                 sums = nil

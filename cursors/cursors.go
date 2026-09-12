@@ -9,6 +9,7 @@
 //	blocks         the block-info cache's backfill (blocks.go)
 //	miners         the per-pool statistics collector (miners/stats.go)
 //	addrindex      the address index's build (addrindex/)
+//	addrstat       the per-address statistics collector (addrstat/)
 //	actbuild-file  the busy-address pass over Core's block files (tools/addrindex)
 package cursors
 
@@ -23,6 +24,7 @@ import "go.etcd.io/bbolt"
 const Blocks = "blocks"
 const Miners = "miners"
 const AddrIndex = "addrindex"
+const AddrStat = "addrstat"
 const ActBuild = "actbuild-file"
 
 var bucket = []byte("cursors")
@@ -43,6 +45,13 @@ func Init(handle *bbolt.DB) error {
 // starts somewhere of its own choosing — genesis for the block cache, height 1
 // for the miner statistics — which is not where a scan that stopped at height 0
 // resumes.
+// Delete forgets a scan's place inside the caller's transaction, so the scan
+// starts from its own beginning again. addrstat is the one caller: adding an
+// address to a set that is already scanned means scanning the chain again.
+func Delete(tx *bbolt.Tx, name string) error {
+    return tx.Bucket(bucket).Delete([]byte(name))
+}
+
 func Get(name string) (int64, bool) {
     if db == nil { return 0, false }
     var v int64

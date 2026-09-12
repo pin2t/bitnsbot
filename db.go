@@ -10,6 +10,7 @@ import "time"
 
 import "go.etcd.io/bbolt"
 import "bitnsbot/addrindex"
+import "bitnsbot/addrstat"
 import "bitnsbot/logging"
 import "bitnsbot/miners"
 import "bitnsbot/rates"
@@ -35,6 +36,7 @@ func openDB(path string) error {
     if err := watches.Init(db); err != nil { return err }
     if err := miners.Init(db); err != nil { return err }
     if err := addrindex.Init(db); err != nil { return err }
+    if err := addrstat.Init(db); err != nil { return err }
     return nil
 }
 

@@ -3,12 +3,14 @@ package main
 import "context"
 import "html"
 import "encoding/hex"
+import "errors"
 import "sort"
 import "strconv"
 import "strings"
 import "sync"
 import "time"
 import "bitnsbot/addrindex"
+import "bitnsbot/addrstat"
 import "bitnsbot/logging"
 
 var pendingInfoMu sync.Mutex
@@ -382,18 +384,66 @@ func addressStats(txs []*coreTransaction, addr string) (received, sent, fees int
     return
 }
 
+// statPairs renders a stored record into the same lines, in the same order, that
+// the live path builds — the two answers must not be told apart by their shape,
+// only by how long they took. The transaction count carries no trailing "+":
+// this history is whole, which is the point of gathering it.
+func statPairs(s addrstat.Stat, lang string) [][2]string {
+    var pairs = [][2]string{
+        {i18nl(lang).String("Type"), addrTypeText(s.Type)},
+        {i18nl(lang).String("Balance"), compactBTC(s.Balance, lang)},
+        {i18nl(lang).String("Total received"), compactBTC(s.Recv, lang)},
+        {i18nl(lang).String("Total sent"), compactBTC(s.Sent, lang)},
+        {i18nl(lang).String("Total flow"), compactBTC(s.Flow, lang)},
+        {i18nl(lang).String("Total fees"), compactBTC(s.Fees, lang)},
+        {i18nl(lang).String("Transactions"), group(s.Txs)},
+    }
+    if s.First > 0 { pairs = append(pairs, [2]string{i18nl(lang).String("First tx"), day(s.First, lang)}) }
+    if s.Last > 0 { pairs = append(pairs, [2]string{i18nl(lang).String("Last tx"), day(s.Last, lang)}) }
+    if s.First > 0 && s.Last > s.First {
+        pairs = append(pairs, [2]string{i18nl(lang).String("Activity period"), periodText(time.Duration(s.Last-s.First) * time.Second, lang)})
+    }
+    return pairs
+}
+
+// addrTypeText names an address form the way the Type line has always read. The
+// stored records keep the form itself (what addrindex.Decode reports), so the
+// wording is decided here, at the one place that displays it.
+func addrTypeText(kind string) string {
+    switch kind {
+    case "p2sh":    return "script hash (P2SH)"
+    case "segwit":  return "segwit (bech32)"
+    case "taproot": return "taproot (P2TR)"
+    }
+    return "standard (P2PKH)"
+}
+
 // addrPairs builds the lines an address is described by. valid is false when the
 // node says it is not an address at all, which is a different answer from the
 // lookup itself failing. Shared with the Mini App's address page.
+//
+// An address the statistics collector follows is answered from its record and
+// nothing else happens: no validateaddress, no history to resolve, no node at
+// all. Those are the addresses the ranked lists make reachable by tapping, and
+// they are the ones the live path below serves worst — the busiest holds
+// millions of transactions against its cap of ten thousand.
 func addrPairs(ctx context.Context, lang string, addr string) ([][2]string, bool, error) {
+    if s, ok := addrstat.Get(addr); ok { return statPairs(s, lang), true, nil }
+    if core == nil { return nil, false, errors.New("no node configured") }
     var addrInfo, err = core.validateAddress(ctx, addr)
     if err != nil { return nil, false, err }
     if !addrInfo.IsValid { return nil, false, nil }
-    var addrType = "standard (P2PKH)"
-    if addrInfo.IsWitness {
-        addrType = "segwit (bech32)"
-    } else if addrInfo.IsScript {
-        addrType = "script hash (P2SH)"
+    // the same classifier the stored records are typed by, so an address reads
+    // the same whether it is answered from one or looked up live; a form it
+    // cannot decode falls back to what the node says about it
+    var _, kind, known = addrindex.Decode(addr)
+    var addrType = addrTypeText(kind)
+    if !known {
+        if addrInfo.IsWitness {
+            addrType = "segwit (bech32)"
+        } else if addrInfo.IsScript {
+            addrType = "script hash (P2SH)"
+        }
     }
     var pairs = [][2]string{{i18nl(lang).String("Type"), addrType}}
     var script, decodeErr = hex.DecodeString(addrInfo.ScriptPubKey)
