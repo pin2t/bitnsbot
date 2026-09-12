@@ -73,32 +73,13 @@ var watched = map[string]string{}
 func Init(handle *bbolt.DB) error {
     db = handle
     if err := cursors.Init(handle); err != nil { return err }
-    var repaired int
     var err = db.Update(func(tx *bbolt.Tx) error {
-        var b, berr = tx.CreateBucketIfNotExists(bucket)
+        var _, berr = tx.CreateBucketIfNotExists(bucket)
         if berr != nil { return berr }
-        // A record that does not decode is written afresh, which is what makes
-        // putting an address in by hand — or through tools/csvimport, whose
-        // values are the raw text of a CSV column — enough to add it to the set:
-        // the key is the address, and everything under it is gathered anyway.
-        var broken [][]byte
-        if err := b.ForEach(func(k, v []byte) error {
-            var s Stat
-            if json.Unmarshal(v, &s) != nil { broken = append(broken, append([]byte(nil), k...)) }
-            return nil
-        }); err != nil { return err }
-        for _, k := range broken {
-            var _, kind, _ = addrindex.Decode(string(k))
-            var data, merr = json.Marshal(Stat{Type: kind})
-            if merr != nil { return merr }
-            if err := b.Put(k, data); err != nil { return err }
-            repaired++
-        }
         return nil
     })
     if err != nil { return err }
     if err := load(); err != nil { return err }
-    if repaired > 0 { logging.Status("addrstat: %d records written afresh, %d addresses watched", repaired, Count()) }
     return nil
 }
 
@@ -202,7 +183,7 @@ func Collect(src addrindex.Blockchain) error {
         from = to + 1
     }
     if from > began {
-        logging.Info("addrstat: scanned blocks %d..%d for %d addresses", began, from-1, Count())
+        logging.Info("addrstat: collected in blocks %d..%d for %d addresses", began, from-1, Count())
     }
     return nil
 }
