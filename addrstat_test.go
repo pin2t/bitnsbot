@@ -10,7 +10,9 @@ import "go.etcd.io/bbolt"
 import "bitnsbot/addrstat"
 
 // seedAddrStat writes the record the collector would have gathered for one
-// address — the bucket's keys being the set.
+// address — the bucket's keys being the set. openDB has already given the
+// addrstat package the handle, and Get reads the bucket, so there is nothing to
+// Init here.
 func seedAddrStat(t *testing.T, addr string, s addrstat.Stat) {
     t.Helper()
     if err := openDB(filepath.Join(t.TempDir(), "bitnsbot.db")); err != nil { t.Fatalf("openDB: %v", err) }
@@ -20,7 +22,6 @@ func seedAddrStat(t *testing.T, addr string, s addrstat.Stat) {
     if err := db.Update(func(tx *bbolt.Tx) error {
         return tx.Bucket([]byte("addrstat")).Put([]byte(addr), data)
     }); err != nil { t.Fatal(err) }
-    if err := addrstat.Init(db); err != nil { t.Fatalf("addrstat init: %v", err) }
 }
 
 // An address the collector follows is answered from its record — with no node at
