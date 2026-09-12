@@ -234,8 +234,8 @@ func cached(c *lru.Cache[string, []byte], w http.ResponseWriter, r *http.Request
     w.Header().Set("Content-Language", lang)
     w.Write(b)
     var m = ""
-    if hit { m = "cached" }
-    logging.Info("mini app: %s %s [%s] [%.2f ms] [%s]", r.Method, r.RequestURI, lang, float64(time.Now().UnixNano() - started) / 1e6, m)
+    if hit { m = "[cached]" }
+    logging.Info("mini app: %s %s [%s] [%.2f ms] %s", r.Method, r.RequestURI, lang, float64(time.Now().UnixNano() - started) / 1e6, m)
 }
 
 func render(lang, name string, data any) []byte {
@@ -835,11 +835,6 @@ func Start(addr, token string, src Source) *http.Server {
         }
         var lang = language(r)
         var blocks, name = src.Blocks(lang, Range{After: after}), "newblocks"
-        // More new blocks than one batch holds — the tab sat open through a
-        // catch-up, or the stream was down for hours. Prepending would leave a
-        // gap between them and the rows already on screen, so replace the whole
-        // list instead: it costs the reader their place, which is the right
-        // trade against showing a list with a hole in it.
         if blocks.More {
             blocks, name = src.Blocks(lang, Range{}), "blocks"
             w.Header().Set("HX-Retarget", "#"+blocksSlot)
@@ -851,7 +846,7 @@ func Start(addr, token string, src Source) *http.Server {
         }
         w.Header().Set("Content-Type", "text/html; charset=utf-8")
         w.Write(b)
-        logging.Info("mini app: %s %s %.2f ms", r.Method, r.RequestURI, float64(time.Now().UnixNano() - started) / 1e6)
+        logging.Info("mini app: %s %s [%.2f ms]", r.Method, r.RequestURI, float64(time.Now().UnixNano() - started) / 1e6)
     }))
     // A details page replaces its tab's container in place, so the tab it
     // belongs to stays selected and Back can swap the original straight back in.
@@ -981,7 +976,7 @@ func Start(addr, token string, src Source) *http.Server {
         }
         w.Header().Set("Content-Type", "text/html; charset=utf-8")
         w.Write(b)
-        logging.Info("mini app: %s %s %.2f ms", r.Method, r.RequestURI, float64(time.Now().UnixNano() - started) / 1e6)
+        logging.Info("mini app: %s %s [%.2f ms]", r.Method, r.RequestURI, float64(time.Now().UnixNano() - started) / 1e6)
     }))
     // Naming a watch the reader already has: the dialog the bell opens after
     // filing one, and the same dialog the Watches tab's edit icon opens. Both
@@ -1017,7 +1012,7 @@ func Start(addr, token string, src Source) *http.Server {
         }
         w.Header().Set("HX-Trigger", trigger(map[string]any{"watchtab": ""}))
         w.WriteHeader(http.StatusNoContent)
-        logging.Info("mini app: %s %s %.2f ms", r.Method, r.RequestURI, float64(time.Now().UnixNano() - started) / 1e6)
+        logging.Info("mini app: %s %s [%.2f ms]", r.Method, r.RequestURI, float64(time.Now().UnixNano() - started) / 1e6)
     }))
     // search classifies the query and hands off, in the same order info() does:
     // the 64-hex shape first, because a string of 64 digits is also a valid
