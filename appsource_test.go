@@ -306,8 +306,10 @@ func seedAddrList(t *testing.T, kind string, rows map[string]int64) {
 }
 
 // putAddrStats is seedAddrList without the build, for the one test that has to
-// watch a build happen on its own. Init comes after the records: the bucket's
-// keys are the set the scan matches against.
+// watch a build happen on its own. It does not Init the addrstat package: openDB
+// has already handed it the handle, and the rebuild reads the bucket rather than
+// the lookup Init builds — where calling it again would write that handle under
+// the rebuild goroutine's feet.
 func putAddrStats(t *testing.T, kind string, rows map[string]int64) {
     t.Helper()
     var err = db.Update(func(tx *bbolt.Tx) error {
@@ -331,7 +333,6 @@ func putAddrStats(t *testing.T, kind string, rows map[string]int64) {
         return nil
     })
     if err != nil { t.Fatalf("seed %s: %v", kind, err) }
-    if err := addrstat.Init(db); err != nil { t.Fatalf("addrstat init: %v", err) }
 }
 
 // The three lists are ranked by their value, which the bucket is not ordered by
