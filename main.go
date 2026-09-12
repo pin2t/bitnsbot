@@ -23,6 +23,7 @@ import "bitnsbot/dbui"
 import "bitnsbot/logging"
 import "bitnsbot/miners"
 import "bitnsbot/rates"
+import "bitnsbot/signals"
 import "bitnsbot/txwatches"
 import "bitnsbot/watches"
 import "unicode/utf8"
@@ -1068,11 +1069,20 @@ func startMarketUpdates() {
 func startNetworkStats() {
     if core == nil { return }
     go func() {
+        var wake = signals.Subscribe(signals.Block)
         refreshNetwork(true)
         var t = time.NewTicker(10 * time.Minute)
         defer t.Stop()
-        for range t.C {
-            refreshNetwork(true)
+        for {
+            // which woke it decides whether the peer count is re-scanned: a
+            // block moves the height and nothing else here, and the scan is the
+            // one expensive call (see refreshNetwork).
+            select {
+            case <-t.C:
+                refreshNetwork(true)
+            case <-wake:
+                refreshNetwork(false)
+            }
         }
     }()
 }
@@ -1138,10 +1148,15 @@ func refreshNetwork(withNodes bool) {
 func startMempoolFees() {
     if core == nil { return }
     go func() {
+        var wake = signals.Subscribe(signals.Block)
         refreshFees()
         var t = time.NewTicker(10 * time.Minute)
         defer t.Stop()
-        for range t.C {
+        for {
+            select {
+            case <-t.C:
+            case <-wake:
+            }
             refreshFees()
         }
     }()
@@ -1166,16 +1181,6 @@ func refreshFees() {
     cachedFees, cachedFeesOK, cachedFeesCount = rec, true, len(entries)
     feesMu.Unlock()
     app.Notify("fees")
-}
-
-// onNewBlock refreshes what a block actually changes, so the Mini App updates
-// within seconds of one being mined rather than waiting out a ten-minute ticker.
-// A block moves the height and, by clearing the mempool, the fee projection —
-// which is at its most stale right after one. The peer count is left to the
-// ticker; it is the expensive call and it barely moves block to block.
-func onNewBlock() {
-    refreshNetwork(false)
-    refreshFees()
 }
 
 // mempoolSummaryLimit caps how many transactions /mempool will total up — above

@@ -3,13 +3,14 @@ package main
 import "context"
 import "fmt"
 import "path/filepath"
+import "strconv"
 import "strings"
 import "testing"
-import "time"
 
 import "go.etcd.io/bbolt"
 
 import "bitnsbot/app"
+import "bitnsbot/cursors"
 import "bitnsbot/miners"
 
 func TestSubsidy(t *testing.T) {
@@ -154,17 +155,24 @@ func TestFormatBlock(t *testing.T) {
     }
 }
 
+// A block arriving over ZMQ is cached by the collector, which zmq.go wakes with
+// a signal rather than computing the block itself: it walks from its cursor to
+// the tip, so it stores the new block and any the bot was down for, in height
+// order and with the cursor advancing behind it.
 func TestBlockNotification(t *testing.T) {
     if err := openDB(filepath.Join(t.TempDir(), "watches.db")); err != nil {
         t.Fatalf("openDB: %v", err)
     }
     defer closeDB()
     var srv = newFakeCoreServer(t, func(method string, params []interface{}) (interface{}, error) {
-        var p = params
-        _ = p
         switch method {
+        case "getblockcount":
+            return 100, nil
+        case "getblockhash":
+            return fmt.Sprintf("0000000000000000abc%v", params[0]), nil
         case "getblock":
-            return map[string]any{"hash": "0000000000000000abc", "height": 100, "time": 1700000000, "size": 300,
+            var height, _ = strconv.Atoi(strings.TrimPrefix(params[0].(string), "0000000000000000abc"))
+            return map[string]any{"hash": params[0], "height": height, "time": 1700000000, "size": 300,
                 "tx": []map[string]any{{"txid": "cb", "size": 100, "vin": []map[string]any{{"coinbase": "03"}}, "vout": []map[string]any{{"value": 50.0}}}}}, nil
         }
         return nil, fmt.Errorf("unexpected method %s", method)
@@ -172,16 +180,19 @@ func TestBlockNotification(t *testing.T) {
     defer srv.Close()
     core = newFakeCoreConn(t, srv)
     defer func() { core = nil }()
-    // Core pushes new tips over ZMQ rather than through an RPC subscription, so
-    // this is what zmq.go does on a hashblock frame.
-    go processBlock("0000000000000000abc")
-    var ok bool
-    for i := 0; i < 40 && !ok; i++ {
-        _, ok = loadBlock(100)
-        time.Sleep(50 * time.Millisecond)
+    // one chunk, so the whole 0..100 catch-up is a single pass
+    var saved = blocksChunkSize
+    blocksChunkSize = 1000
+    defer func() { blocksChunkSize = saved }()
+    collectBlocks()
+    if _, ok := loadBlock(100); !ok {
+        t.Fatal("the tip was not cached by the catch-up a block notification runs")
     }
-    if !ok {
-        t.Fatalf("block 100 was not cached from the blockconnected notification")
+    if _, ok := loadBlock(0); !ok {
+        t.Error("the catch-up skipped the blocks below the tip")
+    }
+    if h, ok := cursors.Get(cursors.Blocks); !ok || h != 100 {
+        t.Errorf("cursor = %d ok=%v, want 100", h, ok)
     }
 }
 

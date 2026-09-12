@@ -8,6 +8,7 @@ import "time"
 import "go.etcd.io/bbolt"
 import "bitnsbot/addrstat"
 import "bitnsbot/app"
+import "bitnsbot/signals"
 import "bitnsbot/logging"
 
 // The three ranked address lists the Mini App's Addresses tab shows: how busy an
@@ -67,23 +68,25 @@ const addrsRestoreRows = addrsFirstPage + 20 * addrsPage
 // rank. A var so tests can drive the loop without waiting an hour.
 var addrIndexInterval = time.Hour
 
-// startAddrIndexes keeps the three indexes in step with their buckets, rebuilding
-// every addrIndexInterval, and returns a stop that waits for a rebuild in flight
-// — shutdown runs it before closeDB, since that rebuild is holding a write
-// transaction.
+// startAddrIndexes keeps the three indexes in step with the records they rank,
+// and returns a stop that waits for a rebuild in flight — shutdown runs it
+// before closeDB, since that rebuild is holding a write transaction.
 //
-// It rebuilds once immediately and then on the interval, the same shape every
-// other collector here has (startBlockCache, StartStats, miners.Start). Waiting
-// out the first interval instead would leave a freshly imported database showing
-// three empty lists for an hour.
+// It rebuilds once immediately, then whenever the statistics collector reports
+// it has caught up — that being what moves the figures these rank — and every
+// addrIndexInterval, whichever comes first. The interval is what still notices
+// records changed by something that fires no signal: a hand edit through the
+// database UI, or an import.
 func startAddrIndexes() func() {
     var stop, done = make(chan struct{}), make(chan struct{})
     go func() {
         defer close(done)
+        var wake = signals.Subscribe(signals.AddrStat)
         for {
             buildAddrIndexes()
             select {
             case <-time.After(addrIndexInterval):
+            case <-wake:
             case <-stop:
                 return
             }

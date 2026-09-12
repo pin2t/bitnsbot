@@ -10,6 +10,7 @@ import "testing"
 import "go.etcd.io/bbolt"
 import "bitnsbot/addrindex"
 import "bitnsbot/cursors"
+import "bitnsbot/signals"
 
 // Two addresses the tests follow and one they do not, each built from a real
 // script so the address and the script meet on the key the scan matches by.
@@ -194,6 +195,31 @@ func TestCollectResumes(t *testing.T) {
     if a.Recv != 1200 || a.Txs != 2 { t.Errorf("%+v, want 1200 over 2 transactions", a) }
     if a.First != 1000 || a.Last != 2000 { t.Errorf("dates = %d..%d", a.First, a.Last) }
     if h, ok := cursors.Get(cursors.AddrStat); !ok || h != 1 { t.Errorf("cursor = %d ok=%v, want 1", h, ok) }
+}
+
+// The three ranked address lists are built from these records, so a pass that
+// moved them says so — and one that found nothing to do says nothing, or every
+// idle tick would rebuild three indexes for no reason.
+func TestCollectSignalsWhenItHasCaughtUp(t *testing.T) {
+    open(t, addrA)
+    signals.Reset()
+    var wake = signals.Subscribe(signals.AddrStat)
+    var src = &fakeChain{tip: 0, blocks: map[int]addrindex.Block{
+        0: blockOf(1000, tx{outs: []addrindex.Payment{pay(scriptA, 500)}}),
+    }}
+    if err := Collect(src); err != nil { t.Fatalf("Collect: %v", err) }
+    select {
+    case <-wake:
+    default:
+        t.Error("a pass that scanned a block did not signal")
+    }
+    // nothing new: the cursor is at the tip, so there is nothing to announce
+    if err := Collect(src); err != nil { t.Fatalf("Collect: %v", err) }
+    select {
+    case <-wake:
+        t.Error("an idle pass signalled a rebuild")
+    default:
+    }
 }
 
 // A record with nothing gathered in it is not an answer: an address is in the

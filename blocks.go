@@ -11,6 +11,7 @@ import "go.etcd.io/bbolt"
 import "bitnsbot/app"
 import "bitnsbot/logging"
 import "bitnsbot/miners"
+import "bitnsbot/signals"
 import "bitnsbot/cursors"
 
 var blocksBucket = []byte("blocks")
@@ -22,6 +23,10 @@ var blockCacheInterval = 10 * time.Minute
 // blocksChunkSize is how many blocks are collected in memory before a single
 // database flush, so the collector writes the cursor only once per chunk.
 var blocksChunkSize int64 = 1000
+
+// blocksChunkPause is how long the collector waits between chunks of a long
+// catch-up. A package var so tests do not sit through it.
+var blocksChunkPause = 1 * time.Minute
 
 type blockInfo struct {
     Height     int64    `json:"height"`
@@ -144,38 +149,22 @@ func computeBlockInfo(ctx context.Context, hash string) (*blockInfo, error) {
     }, nil
 }
 
-// processBlock computes and stores a block by hash — used by the blockconnected
-// notification, which carries the new tip's hash. Runs off core's read-loop
-// goroutine (spawned by the handler) since computeBlockInfo calls back into core.
-func processBlock(hash string) {
-    if core == nil { return }
-    var ctx, cancel = context.WithTimeout(context.Background(), 60*time.Second)
-    defer cancel()
-    var bi, err = computeBlockInfo(ctx, hash)
-    if err != nil {
-        logging.Warn("blocks: process %s: %v", short(hash), err)
-        return
-    }
-    if err := storeBlock(bi); err != nil {
-        logging.Err("blocks: store %d: %v", bi.Height, err)
-        return
-    }
-    logging.Info("blocks: processed %d mined by %s", bi.Height, bi.Miner)
-    // Notify only once the block is actually stored: the Blocks tab reads the
-    // cache, so announcing earlier would have the page re-fetch the old list.
-    app.Notify("blocks")
-}
-
 // startBlockCache runs a goroutine that catches up from the last processed block
-// to the current tip every blockCacheInterval, storing each block's stats in the
-// blocks bucket. New blocks also arrive over ZMQ (see zmq.go), so the
-// interval is only a safety net — the typical case is a no-op.
+// to the current tip, storing each block's stats in the blocks bucket. It runs
+// on a block notification and every blockCacheInterval, whichever comes first:
+// the notification is the usual case, and the interval is the safety net for one
+// that was missed while the bot was down.
 func startBlockCache() {
     go func() {
+        var wake = signals.Subscribe(signals.Block)
         collectBlocks()
         var t = time.NewTicker(blockCacheInterval)
         defer t.Stop()
-        for range t.C {
+        for {
+            select {
+            case <-t.C:
+            case <-wake:
+            }
             collectBlocks()
         }
     }()
@@ -224,7 +213,17 @@ func collectBlocks() {
             logging.Err("blocks: flush %v", err)
             return
         }
-        if from < tip { time.Sleep(1 * time.Minute) }
+        // Announced only once the records are stored: the Mini App's Blocks tab
+        // reads this bucket, so telling it earlier would have it re-fetch a list
+        // the new blocks are not in yet.
+        if len(infos) > 0 { app.Notify("blocks") }
+        // A pause between chunks, so catching up the whole chain does not hold
+        // the node at full tilt for hours — but only when there is another chunk
+        // to come. The condition used to be `from < tip`, which is true of the
+        // chunk that *reaches* the tip as well, so every catch-up slept a minute
+        // after its last flush: a minute between a block arriving and being
+        // cached, now that this is the only path that caches one.
+        if to < tip { time.Sleep(blocksChunkPause) }
         from = to + 1
     }
     if from-1 > began {

@@ -8,6 +8,7 @@ import "time"
 import "go.etcd.io/bbolt"
 import "bitnsbot/logging"
 import "bitnsbot/cursors"
+import "bitnsbot/signals"
 
 // statInterval is how often the collector processes new blocks. A package var so
 // tests can shrink it.
@@ -59,14 +60,20 @@ type record struct {
 }
 
 // StartStats runs the by-miner statistics collector: it catches up from the last
-// processed block to the current tip, then again every statInterval. src supplies
-// the chain data (it owns the btcd connection).
+// processed block to the current tip, then again on every block notification and
+// every statInterval, whichever comes first. src supplies the chain data (it owns
+// the connection to the node).
 func StartStats(src Source) {
     go func() {
+        var wake = signals.Subscribe(signals.Block)
         collect(src)
         var t = time.NewTicker(statInterval)
         defer t.Stop()
-        for range t.C {
+        for {
+            select {
+            case <-t.C:
+            case <-wake:
+            }
             collect(src)
         }
     }()

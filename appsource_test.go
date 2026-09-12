@@ -13,6 +13,7 @@ import "bitnsbot/addrstat"
 import "bitnsbot/app"
 import "bitnsbot/cursors"
 import "bitnsbot/rates"
+import "bitnsbot/signals"
 import "bitnsbot/txwatches"
 import "bitnsbot/watches"
 import "go.etcd.io/bbolt"
@@ -582,6 +583,31 @@ func TestAddrIndexRebuildsFromTheRecords(t *testing.T) {
     if exists {
         t.Error("a stale index outlived the rows it was built from")
     }
+}
+
+// The rankings are rebuilt when the records they rank move, rather than an hour
+// later: the statistics collector fires a signal when it has caught up, and this
+// is the loop that waits on it.
+func TestAddrIndexRebuildsOnTheSignal(t *testing.T) {
+    if err := openDB(filepath.Join(t.TempDir(), "watches.db")); err != nil {
+        t.Fatalf("open db: %v", err)
+    }
+    defer closeDB()
+    // an interval far too long to be what rebuilds it
+    var old = addrIndexInterval
+    addrIndexInterval = time.Hour
+    defer func() { addrIndexInterval = old }()
+    signals.Reset()
+    var stop = startAddrIndexes()
+    defer stop()
+    putAddrStats(t, "rich", map[string]int64{"aaa": 100000000})
+    signals.Fire(signals.AddrStat)
+    var listed bool
+    for i := 0; i < 200 && !listed; i++ {
+        listed = len(appSource{}.Addresses("", app.AddrRange{Kind: "rich"}).Rows) == 1
+        time.Sleep(5 * time.Millisecond)
+    }
+    if !listed { t.Error("the signal did not rebuild the index") }
 }
 
 // The rebuild runs on its own goroutine: once at once, so a freshly imported

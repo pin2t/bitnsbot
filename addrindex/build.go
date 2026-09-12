@@ -5,6 +5,7 @@ import "encoding/binary"
 import "time"
 
 import "bitnsbot/logging"
+import "bitnsbot/signals"
 
 // Block is the raw material Blockchain hands over for one height: the serialized
 // block (as Core's REST /rest/block/<hash>.bin returns it) and the serialized
@@ -35,8 +36,9 @@ type Blockchain interface {
 // package var so tests shrink it.
 var chunkSize int = 1000
 
-// backfillInterval is the pause between catch-up passes once the index is at the
-// tip, so new blocks are picked up without a dedicated subscription.
+// backfillInterval is the longest a pass waits once the index is at the tip. A
+// block notification cuts the wait short (see the signals package), so this is
+// the floor under which nothing is missed rather than the usual cadence.
 var backfillInterval = 2 * time.Minute
 
 // StartBackfill walks the chain from the index's cursor to the tip, in chunks,
@@ -45,11 +47,15 @@ var backfillInterval = 2 * time.Minute
 // time cost paid the same way the miners collector pays its own catch-up.
 func StartBackfill(src Blockchain) {
     go func() {
+        var wake = signals.Subscribe(signals.Block)
         for {
             if err := Build(src); err != nil {
                 logging.Warn("addrindex: %v", err)
             }
-            time.Sleep(backfillInterval)
+            select {
+            case <-time.After(backfillInterval):
+            case <-wake:
+            }
         }
     }()
 }
