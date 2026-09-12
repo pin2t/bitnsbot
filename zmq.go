@@ -232,12 +232,15 @@ func startZMQ(ctx context.Context, endpoints []string, b *bot) error {
             switch string(msg.Frames[0]) {
             case "hashblock":
                 var hash = hex.EncodeToString(msg.Frames[1])
-                go processBlock(hash)
                 go processConfirms(b, hash)
-                go onNewBlock()
-                // every chain scan waits on this alongside its own timer, so a
-                // new block is caught up now rather than at the end of an
-                // interval it may have just started
+                // Everything else a block moves is behind this one signal: the
+                // four chain scans, and the Mini App's fee and network cards,
+                // each of which waits on it alongside a timer of its own. So
+                // nothing here computes anything — this loop's job is to say a
+                // block arrived, and the work happens on the goroutines that
+                // were already going to do it. The confirmation messages are the
+                // exception: they are per-block by nature, matching this block's
+                // transactions against the watch list.
                 signals.Fire(signals.Block)
             case "rawtx":
                 if !anyWatched() { continue }
