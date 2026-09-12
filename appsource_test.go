@@ -298,9 +298,7 @@ func TestTxInfoOnABlockHashIsABlockPage(t *testing.T) {
 
 // seedAddrList gives each address the figure the named list ranks it by,
 // merging into the record the other two lists read, and then builds the indexes
-// — which is what startup does and what every read goes through. The scan is run
-// over an empty chain first, since a ranking of records the scan has not been
-// through is a ranking of how far it got, and the build refuses one.
+// — which is what startup does and what every read goes through.
 func seedAddrList(t *testing.T, kind string, rows map[string]int64) {
     t.Helper()
     putAddrStats(t, kind, rows)
@@ -334,7 +332,6 @@ func putAddrStats(t *testing.T, kind string, rows map[string]int64) {
     })
     if err != nil { t.Fatalf("seed %s: %v", kind, err) }
     if err := addrstat.Init(db); err != nil { t.Fatalf("addrstat init: %v", err) }
-    if err := addrstat.Collect(emptyChain{}); err != nil { t.Fatalf("collect: %v", err) }
 }
 
 // The three lists are ranked by their value, which the bucket is not ordered by

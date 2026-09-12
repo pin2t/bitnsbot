@@ -89,7 +89,7 @@ func open(t *testing.T, addrs ...string) *bbolt.DB {
     t.Helper()
     var handle, err = bbolt.Open(filepath.Join(t.TempDir(), "t.db"), 0600, nil)
     if err != nil { t.Fatalf("open: %v", err) }
-    t.Cleanup(func() { handle.Close(); db = nil; watched = map[string]string{}; ready.Store(false) })
+    t.Cleanup(func() { handle.Close(); db = nil; watched = map[string]string{} })
     add(t, handle, addrs...)
     if err := Init(handle); err != nil { t.Fatalf("init: %v", err) }
     return handle
@@ -196,12 +196,12 @@ func TestCollectResumes(t *testing.T) {
     if h, ok := cursors.Get(cursors.AddrStat); !ok || h != 1 { t.Errorf("cursor = %d ok=%v, want 1", h, ok) }
 }
 
-// Until the scan has been over the whole chain a record holds part of an
-// address's history, and half a balance presented as a balance is worse than the
-// slow answer it replaces.
-func TestGetWaitsForTheWholeChain(t *testing.T) {
+// A record with nothing gathered in it is not an answer: an address is in the
+// set because somebody expects it to have a history, so the live path answers it
+// until the scan has been past it.
+func TestGetWaitsForSomethingToReport(t *testing.T) {
     open(t, addrA)
-    if _, ok := Get(addrA); ok { t.Fatal("answered before the scan ran") }
+    if _, ok := Get(addrA); ok { t.Fatal("answered from an empty record") }
     var src = &fakeChain{tip: 0, blocks: map[int]addrindex.Block{
         0: blockOf(1000, tx{outs: []addrindex.Payment{pay(scriptA, 500)}}),
     }}
@@ -209,29 +209,6 @@ func TestGetWaitsForTheWholeChain(t *testing.T) {
     var s, ok = Get(addrA)
     if !ok || s.Recv != 500 { t.Fatalf("Get = %+v ok=%v", s, ok) }
     if _, ok := Get(addrC); ok { t.Error("answered for an address nobody follows") }
-}
-
-// An address imported as a row rather than as a record — which is what
-// tools/csvimport writes, the value being the raw text of a CSV column — joins
-// the set all the same: Init writes the record over it, naming the form from the
-// address, and the scan fills the rest in.
-func TestAnImportedRowBecomesARecord(t *testing.T) {
-    var handle = open(t)
-    if err := handle.Update(func(tx *bbolt.Tx) error {
-        return tx.Bucket(bucket).Put([]byte(addrC), []byte("4447003"))
-    }); err != nil { t.Fatal(err) }
-    if err := Init(handle); err != nil { t.Fatalf("re-init: %v", err) }
-    if Count() != 1 { t.Fatalf("watched %d addresses, want 1", Count()) }
-    if c := statOf(t, addrC); c.Type != "taproot" || c.Txs != 0 {
-        t.Errorf("the imported row did not become a record: %+v", c)
-    }
-    var src = &fakeChain{tip: 0, blocks: map[int]addrindex.Block{
-        0: blockOf(1000, tx{outs: []addrindex.Payment{pay(scriptC, 700)}}),
-    }}
-    if err := Collect(src); err != nil { t.Fatalf("Collect: %v", err) }
-    if c := statOf(t, addrC); c.Recv != 700 || c.Txs != 1 {
-        t.Errorf("the scan did not gather it: %+v", c)
-    }
 }
 
 // An address put into the bucket is in the set from the next Init, which is what

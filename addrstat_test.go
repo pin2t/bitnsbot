@@ -7,22 +7,10 @@ import "strings"
 import "testing"
 
 import "go.etcd.io/bbolt"
-import "bitnsbot/addrindex"
 import "bitnsbot/addrstat"
 
-// emptyChain is a chain with one block that moves nothing: enough for Collect to
-// reach the tip, which is what makes the records answerable.
-type emptyChain struct{}
-
-func (emptyChain) Tip(ctx context.Context) (int, error) { return 0, nil }
-
-func (emptyChain) BlockAt(ctx context.Context, height int) (addrindex.Block, error) {
-    return addrindex.Block{Hash: "empty", Raw: make([]byte, 81), Spent: []byte{0}}, nil
-}
-
 // seedAddrStat writes the record the collector would have gathered for one
-// address — the bucket's keys being the set — and runs a pass so the scan counts
-// as complete.
+// address — the bucket's keys being the set.
 func seedAddrStat(t *testing.T, addr string, s addrstat.Stat) {
     t.Helper()
     if err := openDB(filepath.Join(t.TempDir(), "bitnsbot.db")); err != nil { t.Fatalf("openDB: %v", err) }
@@ -33,7 +21,6 @@ func seedAddrStat(t *testing.T, addr string, s addrstat.Stat) {
         return tx.Bucket([]byte("addrstat")).Put([]byte(addr), data)
     }); err != nil { t.Fatal(err) }
     if err := addrstat.Init(db); err != nil { t.Fatalf("addrstat init: %v", err) }
-    if err := addrstat.Collect(emptyChain{}); err != nil { t.Fatalf("collect: %v", err) }
 }
 
 // An address the collector follows is answered from its record — with no node at

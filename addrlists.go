@@ -103,11 +103,10 @@ func startAddrIndexes() func() {
 // It reads the records **once** for all three lists rather than once per list,
 // since each is a different figure out of the same record.
 //
-// **It does nothing until the scan has been over the whole chain.** Ranking
-// half-gathered records ranks them by how far the scan has got: every address it
-// has not reached holds zero, and a list of those is not a list of the poorest
-// addresses. The previous indexes stay where they are until there is a complete
-// set to replace them with.
+// A record the scan has not reached yet holds zero, and each list refuses one —
+// an address that has never been paid is not the poorest address on the chain —
+// so a rebuild during a catch-up ranks what has been gathered and leaves out
+// what has not, filling in as the scan runs.
 //
 // The key is the whole entry: the value big-endian — so the index sorts by it
 // naturally — followed by the address, and **nothing is stored as the value**.
@@ -126,7 +125,7 @@ func startAddrIndexes() func() {
 // rebuild. A list with nothing to rank ends with no index rather than a stale
 // one, which is what makes a list whose records all dropped out show as empty.
 func buildAddrIndexes() {
-    if db == nil || !addrstat.Ready() { return }
+    if db == nil { return }
     var byList = make([][][]byte, len(addrLists))
     var err = addrstat.ForEach(func(addr string, s addrstat.Stat) {
         for i, l := range addrLists {

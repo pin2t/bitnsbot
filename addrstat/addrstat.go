@@ -15,7 +15,6 @@ package addrstat
 import "context"
 import "encoding/json"
 import "sync"
-import "sync/atomic"
 import "time"
 
 import "go.etcd.io/bbolt"
@@ -58,11 +57,6 @@ type Stat struct {
 // lookup on a short byte string rather than an address encoding.
 var watchedMu sync.RWMutex
 var watched = map[string]string{}
-
-// ready reports whether the scan has reached the tip at least once. Until it
-// has, a record holds part of an address's history, and half a balance
-// presented as a balance is worse than the slow answer it replaces.
-var ready atomic.Bool
 
 // Init stores the shared bbolt handle, ensures the bucket exists, and builds the
 // lookup the scan matches scripts against.
@@ -125,27 +119,26 @@ func load() error {
     return nil
 }
 
-// Get returns an address's statistics, and false when it is not one of the
-// watched addresses or the scan has not yet been over the whole chain.
+// Get returns an address's statistics, and false when there are none to give:
+// the address is not in the set, or the scan has not reached it yet. A record
+// with no transactions in it is the second of those — an address is in the set
+// because somebody expects it to have a history, so answering with the empty
+// record would present "0 transactions" as a fact about an address the scan has
+// simply not got to. The live path answers it instead, as it does for every
+// address outside the set.
 func Get(addr string) (Stat, bool) {
-    if db == nil || !ready.Load() { return Stat{}, false }
+    if db == nil { return Stat{}, false }
     var s Stat
     var found bool
     db.View(func(tx *bbolt.Tx) error {
         var b = tx.Bucket(bucket)
         if b == nil { return nil }
         var v = b.Get([]byte(addr))
-        if v != nil && json.Unmarshal(v, &s) == nil { found = true }
+        if v != nil && json.Unmarshal(v, &s) == nil { found = s.Txs > 0 }
         return nil
     })
     return s, found
 }
-
-// Ready reports whether the scan has been over the whole chain, so a reader can
-// tell a gathered figure from one that is still being gathered. The ranked lists
-// are built on it: a ranking of half-scanned records would rank by how far the
-// scan had got.
-func Ready() bool { return ready.Load() }
 
 // ForEach walks every record, which is what the Addresses tab's three rankings
 // are built from.
@@ -211,7 +204,6 @@ func Collect(src addrindex.Blockchain) error {
     if from > began {
         logging.Info("addrstat: scanned blocks %d..%d for %d addresses", began, from-1, Count())
     }
-    ready.Store(true)
     return nil
 }
 
