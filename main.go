@@ -49,7 +49,7 @@ var backupInterval  = flag.Duration("backup-interval", 24*time.Hour, "how old th
 var backupScript    = flag.String("backup-script", "", "command run after each backup, with the backup's path as $1 and in $BACKUP_FILE (empty runs nothing)")
 var logNoTs         = flag.Bool("log-no-ts", false, "omit the date and time prefix from each log line")
 var appListen       = flag.String("app-listen", "127.0.0.1:8080", "address the Telegram Mini App web server binds to (empty disables it; bind to localhost — the Cloudflare tunnel is what faces the network)")
-var dbuiListen      = flag.String("dbui-listen", "", "address for the database admin web UI — not available while the UI speaks bbolt and this database is SQLite; setting it logs and does nothing")
+var dbuiListen      = flag.String("dbui-listen", "", "ignored — the database UI speaks bbolt and is tools/bboltwui now; kept so a config file that sets it still starts")
 var historyFile     = flag.String("history-file", "", "path to a JSON file containing historical BTC/USD rates (same format as blockchain.info/charts/market-price); backfilled from this file on first run instead of fetching over the network")
 
 var core *coreConn
@@ -421,7 +421,7 @@ func main() {
     rates.SetHistoryFile(*historyFile)
     rates.Start()
     if *dbuiListen != "" {
-        logging.Warn("database UI not started: dbui speaks bbolt, and the bot's database is SQLite now — use tools/bboltwui on the address index, or wait for dbui to learn SQL")
+        logging.Warn("database UI not started: it speaks bbolt, and the bot's database is SQLite now — run tools/bboltwui against a bbolt file instead")
     }
     if *appListen != "" {
         appSrv = app.Start(*appListen, *botToken, appSource{bot: bot})
