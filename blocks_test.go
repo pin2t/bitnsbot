@@ -7,7 +7,6 @@ import "strconv"
 import "strings"
 import "testing"
 
-import "go.etcd.io/bbolt"
 
 import "bitnsbot/app"
 import "bitnsbot/cursors"
@@ -71,9 +70,8 @@ func TestComputeBlockInfo(t *testing.T) {
     defer closeDB()
     // a pool record the way the definitions are stored, then a second Init so the
     // package rebuilds the address→pool mapping it attributes from
-    if err := db.Update(func(tx *bbolt.Tx) error {
-        return tx.Bucket([]byte("miners")).Put([]byte("TestPool"), []byte(`{"addresses":["mineraddr"]}`))
-    }); err != nil {
+    if _, err := db.Exec(`insert into miners (name, address, tag, blocks, reward, fees, totalWork,
+        lastWork) values ('TestPool', 'mineraddr', '', 0, 0, 0, 0, 0)`); err != nil {
         t.Fatalf("seed miners: %v", err)
     }
     if err := miners.Init(db); err != nil { t.Fatalf("reload miners: %v", err) }

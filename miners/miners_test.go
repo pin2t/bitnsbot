@@ -6,13 +6,27 @@ import "net/http/httptest"
 import "path/filepath"
 import "testing"
 
-import "go.etcd.io/bbolt"
+import "database/sql"
 
-func openTestDB(t *testing.T) {
-    var d, err = bbolt.Open(filepath.Join(t.TempDir(), "miners.db"), 0600, nil)
+import _ "modernc.org/sqlite"
+import "bitnsbot/cursors"
+
+// The table as openDB creates it, from the schema tools/tosqlite defines: a pool's
+// addresses and tags zipped into rows, with the aggregate repeated across them.
+const ddl = `create table miners (name TEXT NOT NULL, address TEXT NOT NULL, tag TEXT NOT NULL,
+    blocks INTEGER NOT NULL, reward INTEGER NOT NULL, fees INTEGER NOT NULL,
+    totalWork REAL NOT NULL, lastWork REAL NOT NULL, PRIMARY KEY (name, address, tag));
+    create table cursors (name TEXT PRIMARY KEY, place INTEGER NOT NULL)`
+
+func openTestDB(t *testing.T) *sql.DB {
+    t.Helper()
+    var handle, err = sql.Open("sqlite", filepath.Join(t.TempDir(), "miners.db"))
     if err != nil { t.Fatalf("open: %v", err) }
-    if err := Init(d); err != nil { t.Fatalf("init: %v", err) }
-    t.Cleanup(func() { d.Close(); db = nil })
+    if _, err := handle.Exec(ddl); err != nil { t.Fatal(err) }
+    if err := cursors.Init(handle); err != nil { t.Fatalf("cursors: %v", err) }
+    if err := Init(handle); err != nil { t.Fatalf("init: %v", err) }
+    t.Cleanup(func() { handle.Close(); db = nil })
+    return handle
 }
 
 func serve(t *testing.T, payload *string) {

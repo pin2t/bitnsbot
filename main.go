@@ -16,10 +16,8 @@ import "sync"
 import "syscall"
 import "time"
 import "runtime/debug"
-import "go.etcd.io/bbolt"
 import "github.com/pin2t/flagex"
 import "bitnsbot/app"
-import "bitnsbot/dbui"
 import "bitnsbot/logging"
 import "bitnsbot/miners"
 import "bitnsbot/rates"
@@ -39,7 +37,8 @@ var webhookURL      = flag.String("webhook-url", "", "URL the Bot API server sho
 var apiBaseURL      = flag.String("api-base-url", "http://localhost:8081", "base URL of the local telegram-bot-api server")
 var secretToken     = flag.String("secret-token", "", "optional secret checked against the X-Telegram-Bot-Api-Secret-Token header")
 var registerHook    = flag.Bool("register-webhook", true, "call setWebhook on startup")
-var dbPath          = flag.String("db", "watches.db", "path to the bbolt watches database")
+var dbPath          = flag.String("db", "bitnsbot.sqlite", "path to the bot's SQLite database (the schema tools/tosqlite writes)")
+var indexPath       = flag.String("index-db", "addrindex.db", "path to the bbolt file the address index's touches live in, which tools/addrindex builds the same way")
 var coreURL         = flag.String("core-url", "", "Bitcoin Core JSON-RPC URL, e.g. http://127.0.0.1:8332 (leave empty to skip connecting to the node)")
 var coreUser        = flag.String("core-user", "", "Bitcoin Core RPC username (or use -core-cookie)")
 var corePass        = flag.String("core-pass", "", "Bitcoin Core RPC password (or use -core-cookie)")
@@ -51,16 +50,12 @@ var backupInterval  = flag.Duration("backup-interval", 24*time.Hour, "how old th
 var backupScript    = flag.String("backup-script", "", "command run after each backup, with the backup's path as $1 and in $BACKUP_FILE (empty runs nothing)")
 var logNoTs         = flag.Bool("log-no-ts", false, "omit the date and time prefix from each log line")
 var appListen       = flag.String("app-listen", "127.0.0.1:8080", "address the Telegram Mini App web server binds to (empty disables it; bind to localhost — the Cloudflare tunnel is what faces the network)")
-var dbuiListen      = flag.String("dbui-listen", "", "address for the database admin web UI, e.g. 127.0.0.1:8090 (empty disables it; bind to localhost only — it can write any bucket)")
+var dbuiListen      = flag.String("dbui-listen", "", "address for the database admin web UI — not available while the UI speaks bbolt and this database is SQLite; setting it logs and does nothing")
 var historyFile     = flag.String("history-file", "", "path to a JSON file containing historical BTC/USD rates (same format as blockchain.info/charts/market-price); backfilled from this file on first run instead of fetching over the network")
 
 var core *coreConn
-var dbuiSrv *http.Server
 var appSrv *http.Server
 
-// stopAddrIndexes ends the address-index rebuild goroutine. shutdown runs it
-// before closing the database, since a rebuild in flight is writing to it.
-var stopAddrIndexes func()
 
 // stopBackup ends the backup goroutine, set when -backup started one. shutdown
 // runs it before closing the database, since a copy in flight is reading it.
@@ -86,59 +81,62 @@ const blocksPerPage = 12
 // stops an edited down= from asking for every block ever cached.
 const blocksMaxRows = blocksPerPage * 20
 
-// Blocks reads one window of the recent-block list straight out of the
-// blocks bucket. The keys are big-endian heights, so walking the cursor
-// backwards yields newest-first order with no sorting and no node round trip,
-// and Seek starts a batch at a given height without stepping over the ones above
-// it — everything the row needs is already in the cached record.
+// Blocks reads one window of the recent-block list straight out of the blocks
+// table — `order by height desc`, which is the primary key read backwards, so
+// there is no sorting and no node round trip, and `where height < ?` starts a
+// batch at a given block without stepping over the ones above it.
+//
+// It asks for one row more than it returns: whether there is another batch below
+// this one is what the trailing sentinel is rendered on, and a count of the whole
+// table would be a scan of it.
 func (appSource) Blocks(lang string, rng app.Range) app.Blocks {
     var out = app.Blocks{Top: rng.After}
     if db == nil { return out }
     var limit = blocksPerPage
     if rng.Down > 0 { limit = blocksMaxRows }
-    db.View(func(tx *bbolt.Tx) error {
-        var b = tx.Bucket(blocksBucket)
-        if b == nil { return nil }
-        var c = b.Cursor()
-        var k, v = c.Last()
-        if rng.Before > 0 {
-            // Seek lands on the first key at or above Before, so one step back
-            // is the block below it; past the tip it returns nothing, which is
-            // the whole list.
-            if k, v = c.Seek(itob(uint64(rng.Before))); k == nil {
-                k, v = c.Last()
-            } else {
-                k, v = c.Prev()
-            }
+    var where, args = "", []any{}
+    if rng.Before > 0 {
+        where, args = " where height < ?", []any{rng.Before}
+    }
+    if rng.After > 0 {
+        where, args = " where height > ?", []any{rng.After}
+    }
+    // Down asks for every row back to the block a reader had scrolled to, which
+    // is why the limit is the deeper one above rather than a batch.
+    if rng.Down > 0 {
+        where, args = " where height >= ?", []any{rng.Down}
+    }
+    var rows, err = db.Query("select "+blockColumns+" from blocks"+where+
+        " order by height desc limit ?", append(args, limit+1)...)
+    if err != nil {
+        logging.Warn("mini app: blocks: %v", err)
+        return out
+    }
+    defer rows.Close()
+    for rows.Next() {
+        if len(out.Rows) == limit {
+            out.More = true
+            break
         }
-        for ; k != nil; k, v = c.Prev() {
-            var bi blockInfo
-            // A record written before a schema change fails to decode; skip it
-            // rather than letting one bad row end the batch early.
-            if json.Unmarshal(v, &bi) != nil { continue }
-            if rng.After > 0 && bi.Height <= rng.After { break }
-            if len(out.Rows) == limit {
-                out.More = true
-                break
-            }
-            var miner = bi.Miner
-            if miner == "" { miner = i18nl(lang).String("Unknown") }
-            out.Rows = append(out.Rows, app.Block{
-                Height:     group(bi.Height),
-                Num:        bi.Height,
-                Size:       humSize(int64(bi.Size), 2, lang),
-                Txs:        i18nl(lang).Sprintf("%s txs", group(int64(bi.NumTx))),
-                Miner:      miner,
-                MinerKnown: bi.Miner != "",
-            })
-            if rng.Down > 0 && bi.Height <= rng.Down {
-                var next, _ = c.Prev()
-                out.More = next != nil
-                break
-            }
-        }
-        return nil
-    })
+        var bi, ok = scanBlock(rows)
+        if !ok { continue }
+        var miner = bi.Miner
+        if miner == "" { miner = i18nl(lang).String("Unknown") }
+        out.Rows = append(out.Rows, app.Block{
+            Height:     group(bi.Height),
+            Num:        bi.Height,
+            Size:       humSize(int64(bi.Size), 2, lang),
+            Txs:        i18nl(lang).Sprintf("%s txs", group(int64(bi.NumTx))),
+            Miner:      miner,
+            MinerKnown: bi.Miner != "",
+        })
+    }
+    // A restore renders down to the row that was tapped; that there are more
+    // below it is what keeps the list's own sentinel alive.
+    if rng.Down > 0 && !out.More {
+        var below int64
+        out.More = db.QueryRow("select height from blocks where height < ? limit 1", rng.Down).Scan(&below) == nil
+    }
     if len(out.Rows) > 0 {
         out.Top, out.Next = out.Rows[0].Num, out.Rows[len(out.Rows)-1].Num
     }
@@ -421,11 +419,10 @@ func main() {
     if err = openDB(*dbPath); err != nil {
         logging.Fatal("open database: %v", err)
     }
-    stopAddrIndexes = startAddrIndexes()
     rates.SetHistoryFile(*historyFile)
     rates.Start()
     if *dbuiListen != "" {
-        dbuiSrv = dbui.Start(db, *dbuiListen)
+        logging.Warn("database UI not started: dbui speaks bbolt, and the bot's database is SQLite now — use tools/bboltwui on the address index, or wait for dbui to learn SQL")
     }
     if *appListen != "" {
         appSrv = app.Start(*appListen, *botToken, appSource{bot: bot})
@@ -502,11 +499,6 @@ func shutdown(bot *bot, srv *http.Server) {
     if err := srv.Shutdown(ctx); err != nil {
         logging.Err("webhook server shutdown: %v", err)
     }
-    if dbuiSrv != nil {
-        if err := dbuiSrv.Shutdown(ctx); err != nil {
-            logging.Err("database UI shutdown: %v", err)
-        }
-    }
     if appSrv != nil {
         if err := appSrv.Shutdown(ctx); err != nil {
             logging.Err("mini app shutdown: %v", err)
@@ -515,7 +507,6 @@ func shutdown(bot *bot, srv *http.Server) {
     stopNotify()
     // both before closeDB, so the database is not closed under a copy in flight
     // or a rebuild that is writing to it
-    if stopAddrIndexes != nil { stopAddrIndexes() }
     if stopBackup != nil { stopBackup() }
     if err := closeDB(); err != nil {
         logging.Err("close watches database: %v", err)

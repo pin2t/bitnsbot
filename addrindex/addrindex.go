@@ -47,10 +47,10 @@ package addrindex
 import "bytes"
 import "crypto/sha256"
 import "encoding/binary"
+import "strconv"
 import "errors"
 
 import "go.etcd.io/bbolt"
-import "bitnsbot/cursors"
 
 var db *bbolt.DB
 var bucket = []byte("addrindex")
@@ -75,6 +75,19 @@ const rangeBlocks = 1000
 // offset within the range, and the transaction's index in that block.
 const entryLen = remainderLen + 2 + 2
 
+// The index keeps its place in a bucket of its own file rather than in the bot's
+// cursors table: tools/addrindex builds the same index into the same buckets, and
+// a cursor belongs with the touches it describes. The names are what they have
+// always been, so an index built by either side resumes where the other left it.
+var cursorBucket = []byte("cursors")
+
+// AddrIndexCursor is the build's own place. ActBuildCursor is a second pass over
+// the chain — tools/addrindex's actbuild, which counts files rather than heights,
+// deliberately under a name of its own so a place written by one is never read as
+// the other's.
+const AddrIndexCursor = "addrindex"
+const ActBuildCursor = "actbuild-file"
+
 // Touch is one appearance of an address in the chain: an output paying it or an
 // input spending from it, located by block height and the transaction's index in
 // that block.
@@ -89,7 +102,7 @@ type Touch struct {
 // off rather than rebuilding the chain.
 func Init(handle *bbolt.DB) error {
     db = handle
-    if err := cursors.Init(handle); err != nil { return err }
+
     return db.Update(func(tx *bbolt.Tx) error {
         for _, name := range [][]byte{bucket} {
             if _, err := tx.CreateBucketIfNotExists(name); err != nil { return err }
@@ -185,19 +198,34 @@ func Lookup(script []byte, limit int) (touches []Touch, capped bool) {
     return touches, capped
 }
 
-func updateCursor(tx *bbolt.Tx, height int) error { return cursors.Set(tx, cursors.AddrIndex, int64(height)) }
+func updateCursor(tx *bbolt.Tx, height int) error { return SetCursorIn(tx, AddrIndexCursor, height) }
 
-func Cursor() (h int, ok bool) { return GetCursor(cursors.AddrIndex) }
+func Cursor() (h int, ok bool) { return GetCursor(AddrIndexCursor) }
 
 // GetCursor and SetCursorIn read and write a named cursor in the shared cursors
 // bucket. The index's own is cursors.AddrIndex; a second pass over the chain —
 // tools/addrindex's actbuild — keeps its place beside it under its own name, so
 // neither disturbs the other.
 func GetCursor(name string) (h int, ok bool) {
-    var v, found = cursors.Get(name)
+    if db == nil { return 0, false }
+    var v int64
+    var found bool
+    db.View(func(tx *bbolt.Tx) error {
+        var b = tx.Bucket(cursorBucket)
+        if b == nil { return nil }
+        if raw := b.Get([]byte(name)); raw != nil {
+            var n, perr = strconv.ParseInt(string(raw), 10, 64)
+            if perr == nil { v, found = n, true }
+        }
+        return nil
+    })
     return int(v), found
 }
 
 // SetCursorIn writes a named cursor inside the caller's transaction, so a pass
 // can advance its place atomically with the batch that reached it.
-func SetCursorIn(tx *bbolt.Tx, name string, height int) error { return cursors.Set(tx, name, int64(height)) }
+func SetCursorIn(tx *bbolt.Tx, name string, height int) error {
+    var b, err = tx.CreateBucketIfNotExists(cursorBucket)
+    if err != nil { return err }
+    return b.Put([]byte(name), []byte(strconv.FormatInt(int64(height), 10)))
+}

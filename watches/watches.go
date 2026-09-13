@@ -1,169 +1,93 @@
 package watches
 
-import "bytes"
-import "encoding/json"
-import "sort"
-import "strconv"
-import "strings"
+import "database/sql"
 import "time"
 
-import "go.etcd.io/bbolt"
 import "bitnsbot/logging"
 
-var db *bbolt.DB
-var bucket = []byte("watches")
+var db *sql.DB
 
-// Watch is the public view of a stored address watch — the internal record type
-// is not exposed.
+// Watch is the public view of a stored address watch.
 type Watch struct {
     Chat    int64
     Address string
     Alias   string
 }
 
-// watchRecord is the stored value. The chat and the address are not in it: they
-// are the key, so the value holds only what is left — when the watch was made
-// and what the user called it.
-type watchRecord struct {
-    Created int64  `json:"created"`
-    Alias   string `json:"alias"`
-}
-
-// key is "<chat>,<address>" as text. Making the pair the key is what stops one
-// chat holding the same address twice: the old auto-incrementing key allowed it,
-// and every read had to filter for it. Counting a chat's watches becomes a
-// prefix scan, and removing or renaming one becomes a single lookup.
+// The watches table is keyed by the pair — `PRIMARY KEY (chat, addr)` — which is
+// what stops one chat holding the same address twice, and what makes a chat's own
+// watches a range of the primary key rather than a walk of the table decoding
+// every row to find out whose it is. `created` is the one fact about a watch that
+// is otherwise unrecoverable; nothing reads it but List's ordering.
 //
-// The separator is safe because an address is base58 or bech32 and a chat id is
-// digits with an optional minus, so neither can contain a comma — and the key is
-// split on the *first* one regardless, so even one that did would round-trip.
-func key(chatID int64, address string) []byte {
-    return []byte(strconv.FormatInt(chatID, 10) + "," + address)
-}
-
-func parseKey(k []byte) (int64, string, bool) {
-    var chat, address, found = strings.Cut(string(k), ",")
-    if !found || address == "" { return 0, "", false }
-    var id, err = strconv.ParseInt(chat, 10, 64)
-    if err != nil { return 0, "", false }
-    return id, address, true
-}
-
-// Init stores the shared bbolt handle and ensures the watches bucket exists.
-func Init(handle *bbolt.DB) error {
+// Init stores the shared handle. The table itself is created by openDB, from the
+// schema tools/tosqlite defines.
+func Init(handle *sql.DB) error {
     db = handle
-    return db.Update(func(tx *bbolt.Tx) error {
-        var _, err = tx.CreateBucketIfNotExists(bucket)
-        return err
-    })
+    return nil
 }
 
 // Add stores an address watch for a chat. Watching an address the chat already
-// watches replaces the record rather than adding a second one, and keeps the
-// time the watch was first made: it is the same watch, and resetting its age
-// would be a lie.
+// watches replaces the row rather than adding a second one, and **keeps the
+// original `created`** — it is the same watch, and resetting its age would be a
+// lie. That is the `do update` clause: an upsert that leaves one column alone.
 func Add(chatID int64, address, alias string) error {
     logging.Db("add chat=%d address=%s alias=%s", chatID, address, alias)
-    return db.Update(func(tx *bbolt.Tx) error {
-        var b = tx.Bucket(bucket)
-        var k = key(chatID, address)
-        var rec = watchRecord{Created: time.Now().Unix(), Alias: alias}
-        if prev := b.Get(k); prev != nil {
-            var old watchRecord
-            if json.Unmarshal(prev, &old) == nil && old.Created > 0 { rec.Created = old.Created }
-        }
-        var data, err = json.Marshal(rec)
-        if err != nil { return err }
-        return b.Put(k, data)
-    })
+    if db == nil { return nil }
+    var _, err = db.Exec(`insert into watches (chat, addr, alias, created) values (?, ?, ?, ?)
+        on conflict(chat, addr) do update set alias = excluded.alias`,
+        chatID, address, alias, time.Now().Unix())
+    return err
 }
 
-// Count returns how many address watches chatID currently has. The key carries
-// the chat, so this is a scan of that chat's own keys rather than a walk of the
-// whole bucket decoding every record.
+// Count returns how many address watches chatID currently has.
 func Count(chatID int64) (int, error) {
     logging.Db("count chat=%d", chatID)
-    var count int
-    var prefix = []byte(strconv.FormatInt(chatID, 10) + ",")
-    var err = db.View(func(tx *bbolt.Tx) error {
-        var c = tx.Bucket(bucket).Cursor()
-        for k, _ := c.Seek(prefix); k != nil && bytes.HasPrefix(k, prefix); k, _ = c.Next() {
-            count++
-        }
-        return nil
-    })
+    if db == nil { return 0, nil }
+    var n int
+    var err = db.QueryRow("select count(*) from watches where chat = ?", chatID).Scan(&n)
     if err != nil { return 0, err }
-    return count, nil
+    return n, nil
 }
 
-// List returns every stored watch, oldest first. The keys sort by chat and then
-// by address, so the order comes from the stored time instead — stably, since
-// that is a whole second and several watches can share one.
+// List returns every stored watch, oldest first: `created` is the order, since
+// the key sorts by chat and then address. Ties break on the key, so a list of
+// watches made in the same second is at least stable between calls.
 func List() ([]Watch, error) {
     logging.Db("list")
-    // The time is carried alongside the watch rather than in a slice of its own,
-    // so that sorting moves the two together.
-    type entry struct {
-        watch   Watch
-        created int64
-    }
-    var entries []entry
-    var err = db.View(func(tx *bbolt.Tx) error {
-        return tx.Bucket(bucket).ForEach(func(k, v []byte) error {
-            var chat, address, ok = parseKey(k)
-            if !ok { return nil }
-            var r watchRecord
-            if json.Unmarshal(v, &r) != nil { return nil }
-            entries = append(entries, entry{Watch{Chat: chat, Address: address, Alias: r.Alias}, r.Created})
-            return nil
-        })
-    })
+    if db == nil { return nil, nil }
+    var rows, err = db.Query("select chat, addr, alias from watches order by created, chat, addr")
     if err != nil { return nil, err }
-    sort.SliceStable(entries, func(i, j int) bool { return entries[i].created < entries[j].created })
+    defer rows.Close()
     var watches []Watch
-    for _, e := range entries { watches = append(watches, e.watch) }
-    return watches, nil
+    for rows.Next() {
+        var w Watch
+        if err := rows.Scan(&w.Chat, &w.Address, &w.Alias); err != nil { return nil, err }
+        watches = append(watches, w)
+    }
+    return watches, rows.Err()
 }
 
 // SetAlias renames the watch on chatID's address — the chat is half the key, so
-// one chat cannot rename another's — and reports whether there was one to
-// rename.
+// one chat cannot rename another's — and reports whether there was one to rename.
 func SetAlias(chatID int64, address, alias string) (int, error) {
     logging.Db("set alias chat=%d address=%s alias=%s", chatID, address, alias)
-    var renamed int
-    var err = db.Update(func(tx *bbolt.Tx) error {
-        var b = tx.Bucket(bucket)
-        var k = key(chatID, address)
-        var v = b.Get(k)
-        if v == nil { return nil }
-        var r watchRecord
-        if err := json.Unmarshal(v, &r); err != nil { return err }
-        r.Alias = alias
-        var data, merr = json.Marshal(r)
-        if merr != nil { return merr }
-        if err := b.Put(k, data); err != nil { return err }
-        renamed = 1
-        return nil
-    })
+    if db == nil { return 0, nil }
+    var res, err = db.Exec("update watches set alias = ? where chat = ? and addr = ?", alias, chatID, address)
     if err != nil { return 0, err }
-    return renamed, nil
+    var n, aerr = res.RowsAffected()
+    return int(n), aerr
 }
 
 // Remove deletes chatID's watch on address (the chat being half the key is what
-// stops one chat from removing another chat's watch) and reports whether there
-// was one to delete — bbolt's Delete does not say, and the caller tells "removed"
-// from "you were not watching that" by the count.
+// stops one chat from removing another chat's watch) and reports whether there was
+// one to delete — the caller tells "removed" from "you were not watching that" by
+// the count.
 func Remove(chatID int64, address string) (int, error) {
     logging.Db("remove chat=%d address=%s", chatID, address)
-    var removed int
-    var err = db.Update(func(tx *bbolt.Tx) error {
-        var b = tx.Bucket(bucket)
-        var k = key(chatID, address)
-        if b.Get(k) == nil { return nil }
-        if err := b.Delete(k); err != nil { return err }
-        removed = 1
-        return nil
-    })
+    if db == nil { return 0, nil }
+    var res, err = db.Exec("delete from watches where chat = ? and addr = ?", chatID, address)
     if err != nil { return 0, err }
-    return removed, nil
+    var n, aerr = res.RowsAffected()
+    return int(n), aerr
 }

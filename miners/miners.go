@@ -17,12 +17,10 @@ import "sort"
 import "sync"
 import "time"
 
-import "go.etcd.io/bbolt"
-import "bitnsbot/cursors"
+import "database/sql"
 import "bitnsbot/logging"
 
-var db *bbolt.DB
-var bucket = []byte("miners")
+var db *sql.DB
 
 // sourceURL is mempool's mining-pool definitions (pool name + coinbase output
 // addresses). A package var so tests can point it at a local server.
@@ -32,6 +30,13 @@ var httpClient = &http.Client{Timeout: 15 * time.Second}
 // updateInterval is how often the bucket is refreshed from the source. A package
 // var so tests can shrink it.
 var updateInterval = 24 * time.Hour
+
+// poolDef is a pool as mempool's definitions file describes it.
+type poolDef struct {
+    Name      string   `json:"name"`
+    Addresses []string `json:"addresses"`
+    Tags      []string `json:"tags"`
+}
 
 // tagged is one coinbase tag and the pool that writes it. The tags are a slice
 // sorted by tag rather than a map, because attribution takes the first tag the
@@ -50,36 +55,35 @@ var indexMu sync.RWMutex
 var addrIndex = map[string]string{}
 var tagIndex []tagged
 
-// Init stores the shared bbolt handle, ensures the miners bucket exists, and
-// builds the in-memory mappings from what is in it. The collector's place lives
-// in the shared cursors bucket, which this ensures too.
-func Init(handle *bbolt.DB) error {
+// Init stores the shared handle and builds the in-memory mappings from the rows.
+func Init(handle *sql.DB) error {
     db = handle
-    if err := cursors.Init(handle); err != nil { return err }
-    var err = db.Update(func(tx *bbolt.Tx) error {
-        var _, berr = tx.CreateBucketIfNotExists(bucket)
-        return berr
-    })
-    if err != nil { return err }
     return loadIndex()
 }
 
-// loadIndex rebuilds the in-memory mappings from the bucket. Init and update are
+// loadIndex rebuilds the in-memory mappings from the rows. Init and update are
 // the only things that change what they are built from.
+//
+// A pool's addresses and tags are zipped into rows positionally and padded with
+// "" (see the miners table in tools/tosqlite), so an empty one is padding rather
+// than an address called nothing.
 func loadIndex() error {
     if db == nil { return nil }
     var addrs = map[string]string{}
     var tags []tagged
-    var err = db.View(func(tx *bbolt.Tx) error {
-        return tx.Bucket(bucket).ForEach(func(k, v []byte) error {
-            var r record
-            if json.Unmarshal(v, &r) != nil { return nil }
-            for _, a := range r.Addresses { addrs[a] = string(k) }
-            for _, t := range r.Tags { tags = append(tags, tagged{[]byte(t), string(k)}) }
-            return nil
-        })
-    })
+    var rows, err = db.Query("select name, address, tag from miners")
     if err != nil { return err }
+    for rows.Next() {
+        var name, address, tag string
+        if err := rows.Scan(&name, &address, &tag); err != nil {
+            rows.Close()
+            return err
+        }
+        if address != "" { addrs[address] = name }
+        if tag != "" { tags = append(tags, tagged{[]byte(tag), name}) }
+    }
+    rows.Close()
+    if err := rows.Err(); err != nil { return err }
     sort.Slice(tags, func(i, j int) bool { return bytes.Compare(tags[i].tag, tags[j].tag) < 0 })
     indexMu.Lock()
     addrIndex, tagIndex = addrs, tags
@@ -142,6 +146,74 @@ func merge(have, add []string) []string {
     return out
 }
 
+// store merges the fetched definitions into the table and reports how many
+// addresses and tags were new.
+//
+// A pool's addresses and tags are **zipped into rows positionally** — the shape
+// tools/tosqlite defines and this now writes — so adding one address changes which
+// rows a pool has, not one column of one row. Each pool is therefore read, merged
+// and rewritten: its rows are deleted and the zip written again, carrying the
+// aggregate every row of a pool repeats. That is 171 pools of a few rows each, in
+// one transaction.
+func store(pools []poolDef) (added, tags int, err error) {
+    if db == nil { return 0, 0, nil }
+    var tx, terr = db.Begin()
+    if terr != nil { return 0, 0, terr }
+    defer tx.Rollback()
+    for _, d := range pools {
+        if d.Name == "" { continue }
+        var have, aggregate, rerr = poolRows(tx, d.Name)
+        if rerr != nil { return 0, 0, rerr }
+        var addrs, tgs = merge(have.Addresses, d.Addresses), merge(have.Tags, d.Tags)
+        if len(addrs) == len(have.Addresses) && len(tgs) == len(have.Tags) { continue }
+        added += len(addrs) - len(have.Addresses)
+        tags += len(tgs) - len(have.Tags)
+        if _, err := tx.Exec("delete from miners where name = ?", d.Name); err != nil { return 0, 0, err }
+        if err := writeZip(tx, d.Name, addrs, tgs, aggregate); err != nil { return 0, 0, err }
+    }
+    if err := tx.Commit(); err != nil { return 0, 0, err }
+    return added, tags, loadIndex()
+}
+
+// poolRows reads what a pool's rows say: the addresses and tags they carry, and
+// the aggregate they all repeat.
+func poolRows(tx *sql.Tx, name string) (record, record, error) {
+    var lists, aggregate record
+    var rows, err = tx.Query("select address, tag, blocks, reward, fees, totalWork, lastWork from miners where name = ?", name)
+    if err != nil { return lists, aggregate, err }
+    defer rows.Close()
+    for rows.Next() {
+        var address, tag string
+        var r record
+        if err := rows.Scan(&address, &tag, &r.Blocks, &r.Reward, &r.Fees, &r.Work, &r.LastWork); err != nil {
+            return lists, aggregate, err
+        }
+        if address != "" { lists.Addresses = append(lists.Addresses, address) }
+        if tag != "" { lists.Tags = append(lists.Tags, tag) }
+        aggregate = r
+    }
+    return lists, aggregate, rows.Err()
+}
+
+// writeZip pairs a pool's addresses and tags by position, padding the shorter
+// with "", and writes one row each carrying the pool's aggregate. Nothing links an
+// individual address to an individual tag, so the pairing means nothing beyond
+// keeping the table narrow — the same reason tools/tosqlite zips them.
+func writeZip(tx *sql.Tx, name string, addrs, tags []string, r record) error {
+    var n = len(addrs)
+    if len(tags) > n { n = len(tags) }
+    if n == 0 { n = 1 }
+    for i := 0; i < n; i++ {
+        var address, tag string
+        if i < len(addrs) { address = addrs[i] }
+        if i < len(tags) { tag = tags[i] }
+        var _, err = tx.Exec(`insert into miners (name, address, tag, blocks, reward, fees, totalWork, lastWork)
+            values (?, ?, ?, ?, ?, ?, ?, ?)`, name, address, tag, r.Blocks, r.Reward, r.Fees, r.Work, r.LastWork)
+        if err != nil { return err }
+    }
+    return nil
+}
+
 // update fetches the pool definitions and merges each pool's addresses and tags
 // into its record, leaving the aggregated statistics in it alone.
 func update() {
@@ -161,34 +233,13 @@ func update() {
         logging.Warn("update miners: status %d", resp.StatusCode)
         return
     }
-    type poolDef struct {
-        Name      string   `json:"name"`
-        Addresses []string `json:"addresses"`
-        Tags      []string `json:"tags"`
-    }
     var pools []poolDef
     if err := json.Unmarshal(body, &pools); err != nil {
         logging.Warn("update miners: %v", err)
         return
     }
     var added, tags int
-    err = db.Update(func(tx *bbolt.Tx) error {
-        var b = tx.Bucket(bucket)
-        for _, d := range pools {
-            if d.Name == "" { continue }
-            var r record
-            if v := b.Get([]byte(d.Name)); v != nil { json.Unmarshal(v, &r) }
-            var addrs, tgs = merge(r.Addresses, d.Addresses), merge(r.Tags, d.Tags)
-            added += len(addrs) - len(r.Addresses)
-            tags += len(tgs) - len(r.Tags)
-            r.Addresses, r.Tags = addrs, tgs
-            var data, merr = json.Marshal(r)
-            if merr != nil { return merr }
-            if err := b.Put([]byte(d.Name), data); err != nil { return err }
-        }
-        return nil
-    })
-    if err != nil {
+    if added, tags, err = store(pools); err != nil {
         logging.Err("store miners: %v", err)
         return
     }
