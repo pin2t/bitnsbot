@@ -24,6 +24,7 @@ func TestOpenDBTables(t *testing.T) {
         "miners", "mineraddr", "minertag",                 // miners
         "addrstat",                                        // per-address statistics
         "cursors",                                         // every scan's place
+        "addrindex",                                       // the address index's touches
     }
     var got = map[string]bool{}
     var rows, err = db.Query("select name from sqlite_master where type = 'table'")

@@ -50,9 +50,18 @@ import "encoding/binary"
 import "strconv"
 import "errors"
 
-import "go.etcd.io/bbolt"
+import "database/sql"
 
+import "go.etcd.io/bbolt"
+import "bitnsbot/cursors"
+import "bitnsbot/logging"
+
+// Two stores, one index. db is bbolt, which tools/addrindex drives — the tool
+// cannot be handed the bot's SQLite handle, and the bot has no reason to keep a
+// bbolt file. sqldb is the bot's, the `addrindex` table tools/tosqlite writes. Each
+// read and write below takes whichever is set; exactly one ever is.
 var db *bbolt.DB
+var sqldb *sql.DB
 var bucket = []byte("addrindex")
 
 // prefixLen is the script-hash prefix width, the same 8 bytes bindex uses: wide
@@ -96,19 +105,33 @@ type Touch struct {
     TxIndex uint16
 }
 
-// Init stores the shared bbolt handle and ensures the index bucket exists, along
-// with the shared cursors bucket the build keeps its place in — which is why
-// tools/addrindex, whose only setup call this is, still resumes where it left
-// off rather than rebuilding the chain.
+// Init stores the bbolt handle and ensures the index bucket exists. This is
+// tools/addrindex's only setup call, which is why that tool still resumes where it
+// left off rather than rebuilding the chain.
 func Init(handle *bbolt.DB) error {
     db = handle
-
     return db.Update(func(tx *bbolt.Tx) error {
-        for _, name := range [][]byte{bucket} {
-            if _, err := tx.CreateBucketIfNotExists(name); err != nil { return err }
-        }
-        return nil
+        var _, err = tx.CreateBucketIfNotExists(bucket)
+        return err
     })
+}
+
+// InitSQL stores the SQLite handle instead, which is what the bot does: its index
+// is the `addrindex` table, beside everything else it keeps. The table is created
+// by openDB, from the schema tools/tosqlite defines, and the build's place is a row
+// of the shared cursors table rather than a bucket of its own.
+func InitSQL(handle *sql.DB) error {
+    sqldb = handle
+    return nil
+}
+
+// sqlKey packs a shard and a block range into the one integer the table is keyed
+// by: the 2-byte shard above the 4-byte range index, so a shard's ranges are
+// contiguous and in order — which is what makes a lookup the same single scan the
+// bbolt cursor does. tools/tosqlite packs a migrated key the same way, and
+// tools/addrindex's own SQLite reader unpacks it, so the three must agree.
+func sqlKey(prefix []byte, rangeIndex uint32) int64 {
+    return int64(binary.BigEndian.Uint16(prefix[:shardLen]))<<32 | int64(rangeIndex)
 }
 
 // Prefix is the index prefix for a scriptPubKey: the first prefixLen bytes of
@@ -147,7 +170,9 @@ func merge(touches map[string][]Touch, height int) error {
     // Not a silent no-op: a write path that reports success while discarding
     // everything is how a missing Init went unnoticed through a whole chain
     // backfill. Reads may degrade quietly; writes must not.
-    if db == nil { return errors.New("addrindex: not initialised (addrindex.Init was never called)") }
+    if db == nil && sqldb == nil {
+        return errors.New("addrindex: not initialised (neither Init nor InitSQL was called)")
+    }
     var grouped = make(map[string][]byte)
     for prefix, list := range touches {
         for _, t := range list {
@@ -155,6 +180,7 @@ func merge(touches map[string][]Touch, height int) error {
             grouped[k] = append(grouped[k], encodeEntry([]byte(prefix), t)...)
         }
     }
+    if sqldb != nil { return mergeSQL(grouped, height) }
     return db.Update(func(tx *bbolt.Tx) error {
         var b = tx.Bucket(bucket)
         for k, entries := range grouped {
@@ -168,15 +194,45 @@ func merge(touches map[string][]Touch, height int) error {
     })
 }
 
+// mergeSQL is the same append, in one statement per key: the run is concatenated
+// onto whatever the row holds. The `cast` is load-bearing — SQLite's `||` is
+// byte-exact over blobs, NULs included, but its result is TEXT, so without it the
+// column's type drifts from what the schema says it is.
+//
+// One transaction for the batch and the cursor together, the same crash-safety the
+// bbolt path has: a run that is written and a place that is not would be counted
+// twice on the next pass.
+func mergeSQL(grouped map[string][]byte, height int) error {
+    var tx, err = sqldb.Begin()
+    if err != nil { return err }
+    defer tx.Rollback()
+    var stmt, perr = tx.Prepare(`insert into addrindex (shard, data) values (?, ?)
+        on conflict(shard) do update set data = cast(addrindex.data || excluded.data as blob)`)
+    if perr != nil { return perr }
+    for k, entries := range grouped {
+        // the key is the bbolt one, packed again as the integer the table uses
+        var raw = []byte(k)
+        var shard = int64(binary.BigEndian.Uint16(raw[:shardLen]))<<32 | int64(binary.BigEndian.Uint32(raw[shardLen:]))
+        if _, err := stmt.Exec(shard, entries); err != nil {
+            stmt.Close()
+            return err
+        }
+    }
+    if err := stmt.Close(); err != nil { return err }
+    if err := cursors.Set(tx, cursors.AddrIndex, int64(height)); err != nil { return err }
+    return tx.Commit()
+}
+
 // Lookup returns an address's touches, oldest first, and whether the result hit
 // limit (so the caller can flag partial history). It seeks to the address's
 // shard and walks that shard's ranges in order, keeping only the entries whose
 // stored remainder matches, since a shard holds every address whose hash starts
 // with the same two bytes.
 func Lookup(script []byte, limit int) (touches []Touch, capped bool) {
-    if db == nil { return nil, false }
     var prefix = Prefix(script)
     var remainder = prefix[shardLen:prefixLen]
+    if sqldb != nil { return lookupSQL(prefix, remainder, limit) }
+    if db == nil { return nil, false }
     db.View(func(tx *bbolt.Tx) error {
         var c = tx.Bucket(bucket).Cursor()
         for k, v := c.Seek(prefix[:shardLen]); k != nil && bytes.HasPrefix(k, prefix[:shardLen]); k, v = c.Next() {
@@ -198,9 +254,45 @@ func Lookup(script []byte, limit int) (touches []Touch, capped bool) {
     return touches, capped
 }
 
+// lookupSQL is the same walk over the same order: a shard's ranges are the
+// integer keys from shard<<32 to the next shard's, so one indexed scan of the
+// primary key reads them oldest first.
+func lookupSQL(prefix, remainder []byte, limit int) (touches []Touch, capped bool) {
+    var shard = int64(binary.BigEndian.Uint16(prefix[:shardLen]))
+    var rows, err = sqldb.Query("select shard, data from addrindex where shard >= ? and shard < ? order by shard",
+        shard<<32, (shard+1)<<32)
+    if err != nil {
+        logging.Warn("addrindex: lookup: %v", err)
+        return nil, false
+    }
+    defer rows.Close()
+    for rows.Next() {
+        var k int64
+        var v []byte
+        if err := rows.Scan(&k, &v); err != nil { return touches, capped }
+        var base = uint32(k&0xffffffff) * rangeBlocks
+        for i := 0; i+entryLen <= len(v); i += entryLen {
+            if !bytes.Equal(v[i:i+remainderLen], remainder) { continue }
+            if len(touches) >= limit { return touches, true }
+            touches = append(touches, Touch{
+                Height:  base + uint32(binary.BigEndian.Uint16(v[i+remainderLen:])),
+                TxIndex: binary.BigEndian.Uint16(v[i+remainderLen+2:]),
+            })
+        }
+    }
+    return touches, capped
+}
+
 func updateCursor(tx *bbolt.Tx, height int) error { return SetCursorIn(tx, AddrIndexCursor, height) }
 
-func Cursor() (h int, ok bool) { return GetCursor(AddrIndexCursor) }
+// Cursor is where the build has got to, out of whichever store holds the index.
+func Cursor() (h int, ok bool) {
+    if sqldb != nil {
+        var v, found = cursors.Get(cursors.AddrIndex)
+        return int(v), found
+    }
+    return GetCursor(AddrIndexCursor)
+}
 
 // GetCursor and SetCursorIn read and write a named cursor in the shared cursors
 // bucket. The index's own is cursors.AddrIndex; a second pass over the chain —

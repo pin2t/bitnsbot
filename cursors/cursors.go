@@ -8,9 +8,7 @@
 //	blocks     the block-info cache's backfill (blocks.go)
 //	miners     the per-pool statistics collector (miners/stats.go)
 //	addrstat   the per-address statistics collector (addrstat/)
-//
-// The address index keeps its place in its own bbolt file, beside the touches it
-// describes, rather than here — see the addrindex package.
+//	addrindex  the address index's build (addrindex/)
 package cursors
 
 import "database/sql"
@@ -21,6 +19,11 @@ import "database/sql"
 const Blocks = "blocks"
 const Miners = "miners"
 const AddrStat = "addrstat"
+
+// AddrIndex is the index build's place when the index is in SQLite, which is how
+// the bot keeps it. tools/addrindex drives the same package against bbolt and
+// keeps its place in a bucket of that file instead — same name, different store.
+const AddrIndex = "addrindex"
 
 var db *sql.DB
 

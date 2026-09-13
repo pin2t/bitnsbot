@@ -38,7 +38,6 @@ var apiBaseURL      = flag.String("api-base-url", "http://localhost:8081", "base
 var secretToken     = flag.String("secret-token", "", "optional secret checked against the X-Telegram-Bot-Api-Secret-Token header")
 var registerHook    = flag.Bool("register-webhook", true, "call setWebhook on startup")
 var dbPath          = flag.String("db", "bitnsbot.sqlite", "path to the bot's SQLite database (the schema tools/tosqlite writes)")
-var indexPath       = flag.String("index-db", "addrindex.db", "path to the bbolt file the address index's touches live in, which tools/addrindex builds the same way")
 var coreURL         = flag.String("core-url", "", "Bitcoin Core JSON-RPC URL, e.g. http://127.0.0.1:8332 (leave empty to skip connecting to the node)")
 var coreUser        = flag.String("core-user", "", "Bitcoin Core RPC username (or use -core-cookie)")
 var corePass        = flag.String("core-pass", "", "Bitcoin Core RPC password (or use -core-cookie)")

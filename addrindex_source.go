@@ -13,13 +13,6 @@ import "bitnsbot/logging"
 // dependency anything else needs. The REST client itself lives in the addrindex
 // package, so this bot and tools/addrindex build the index the same way.
 func startAddrIndex(restBaseURL string) {
-    // The touches live in a bbolt file of their own: tools/addrindex builds the
-    // same index into the same buckets, and that tool cannot be handed the bot's
-    // SQLite handle. Everything else the bot stores is in the SQLite database.
-    if err := openIndexDB(*indexPath); err != nil {
-        logging.Warn("address index disabled: open %s: %v", *indexPath, err)
-        return
-    }
     var src = addrindex.NewREST(restBaseURL)
     var ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
     defer cancel()

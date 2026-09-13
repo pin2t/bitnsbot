@@ -8,7 +8,6 @@ import "strings"
 import "syscall"
 import "time"
 
-import "go.etcd.io/bbolt"
 import _ "modernc.org/sqlite"
 import "bitnsbot/addrindex"
 import "bitnsbot/addrstat"
@@ -23,12 +22,6 @@ import "bitnsbot/watches"
 // writes, which is what makes that tool the upgrade path from the bbolt database
 // this replaced.
 var db *sql.DB
-
-// indexDB is the one thing still in bbolt: the address index's touches. The
-// addrindex package is driven by tools/addrindex as well, against the same
-// buckets and the same cursor, so it keeps the storage those share — see
-// The address index below.
-var indexDB *bbolt.DB
 
 // schema is **a copy of the one in tools/tosqlite**, which is the source of truth
 // for it: that tool is how a bbolt database becomes one of these, so a column it
@@ -57,6 +50,7 @@ var schema = []string{
         recv INTEGER NOT NULL, sent INTEGER NOT NULL, flow INTEGER NOT NULL, fees INTEGER NOT NULL,
         txs INTEGER NOT NULL, first INTEGER NOT NULL, last INTEGER NOT NULL)`,
     `create table if not exists cursors (name TEXT PRIMARY KEY, place INTEGER NOT NULL)`,
+    `create table if not exists addrindex (shard INTEGER PRIMARY KEY, data BLOB NOT NULL)`,
     `create index if not exists addrstat_balance on addrstat (balance)`,
     `create index if not exists addrstat_txs on addrstat (txs)`,
     `create index if not exists addrstat_last on addrstat (last)`,
@@ -111,25 +105,10 @@ func openDB(path string) error {
     if err := watches.Init(db); err != nil { return err }
     if err := miners.Init(db); err != nil { return err }
     if err := addrstat.Init(db); err != nil { return err }
-    return nil
-}
-
-// openIndexDB opens the bbolt file the address index lives in, which is the one
-// store that did not move: tools/addrindex builds the same index into the same
-// buckets, and a tool cannot be handed the bot's SQLite handle.
-func openIndexDB(path string) error {
-    logging.Db("open %s", path)
-    var opened, err = bbolt.Open(path, 0600, &bbolt.Options{Timeout: 5 * time.Second})
-    if err != nil { return err }
-    indexDB = opened
-    return addrindex.Init(indexDB)
+    return addrindex.InitSQL(db)
 }
 
 func closeDB() error {
-    if indexDB != nil {
-        if err := indexDB.Close(); err != nil { return err }
-        indexDB = nil
-    }
     if db == nil { return nil }
     var err = db.Close()
     db = nil
