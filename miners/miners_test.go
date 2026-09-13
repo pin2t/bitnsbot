@@ -11,16 +11,19 @@ import "database/sql"
 import _ "modernc.org/sqlite"
 import "bitnsbot/cursors"
 
-// The table as openDB creates it, from the schema tools/tosqlite defines: a pool's
-// addresses and tags zipped into rows, with the aggregate repeated across them.
-const ddl = `create table miners (name TEXT NOT NULL, address TEXT NOT NULL, tag TEXT NOT NULL,
-    blocks INTEGER NOT NULL, reward INTEGER NOT NULL, fees INTEGER NOT NULL,
-    totalWork REAL NOT NULL, lastWork REAL NOT NULL, PRIMARY KEY (name, address, tag));
+// The tables as openDB creates them, from the schema tools/tosqlite defines: a row
+// per pool, and a row per address and per tag naming the pool it belongs to.
+const ddl = `create table miners (name TEXT PRIMARY KEY, blocks INTEGER NOT NULL,
+    reward INTEGER NOT NULL, fees INTEGER NOT NULL, totalWork REAL NOT NULL, lastWork REAL NOT NULL);
+    create table mineraddr (address TEXT PRIMARY KEY, name TEXT NOT NULL references miners(name));
+    create table minertag (tag TEXT PRIMARY KEY, name TEXT NOT NULL references miners(name));
     create table cursors (name TEXT PRIMARY KEY, place INTEGER NOT NULL)`
 
 func openTestDB(t *testing.T) *sql.DB {
     t.Helper()
-    var handle, err = sql.Open("sqlite", filepath.Join(t.TempDir(), "miners.db"))
+    // foreign keys on, as the bot runs them: mineraddr and minertag cannot name a
+    // pool the miners table does not have
+    var handle, err = sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "miners.db")+"?_pragma=foreign_keys(on)")
     if err != nil { t.Fatalf("open: %v", err) }
     if _, err := handle.Exec(ddl); err != nil { t.Fatal(err) }
     if err := cursors.Init(handle); err != nil { t.Fatalf("cursors: %v", err) }

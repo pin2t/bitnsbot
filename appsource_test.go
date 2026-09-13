@@ -116,8 +116,8 @@ func TestAppSectionsAreTranslated(t *testing.T) {
         t.Errorf("English transaction count = %q", got)
     }
     // the miner page
-    if _, err := db.Exec(`insert into miners (name, address, tag, blocks, reward, fees, totalWork,
-        lastWork) values ('AntPool', '', '', 6, 1950000000, 40000000, 3.6e24, 6.0e23)`); err != nil {
+    if _, err := db.Exec(`insert into miners (name, blocks, reward, fees, totalWork, lastWork)
+        values ('AntPool', 6, 1950000000, 40000000, 3.6e24, 6.0e23)`); err != nil {
         t.Fatalf("seed miner stats: %v", err)
     }
     var mtx, merr = db.Begin()

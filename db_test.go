@@ -21,7 +21,7 @@ func TestOpenDBTables(t *testing.T) {
         "blocks",                                          // the block-info cache
         "rates", "market",                                 // rates
         "watches",                                         // watches
-        "miners",                                          // miners
+        "miners", "mineraddr", "minertag",                 // miners
         "addrstat",                                        // per-address statistics
         "cursors",                                         // every scan's place
     }

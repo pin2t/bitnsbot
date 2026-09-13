@@ -703,8 +703,8 @@ func TestMinersFlow(t *testing.T) {
         {"F2Pool", 1, 325000000, 2000000, 5.6e23},
     }
     for _, p := range pools {
-        if _, err := db.Exec(`insert into miners (name, address, tag, blocks, reward, fees, totalWork,
-            lastWork) values (?, '', '', ?, ?, ?, ?, ?)`, p.name, p.blocks, p.reward, p.fees,
+        if _, err := db.Exec(`insert into miners (name, blocks, reward, fees, totalWork, lastWork)
+            values (?, ?, ?, ?, ?, ?)`, p.name, p.blocks, p.reward, p.fees,
             p.lastWork*float64(p.blocks), p.lastWork); err != nil {
             t.Fatalf("seed stats: %v", err)
         }

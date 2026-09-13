@@ -61,26 +61,38 @@ func Init(handle *sql.DB) error {
     return loadIndex()
 }
 
-// loadIndex rebuilds the in-memory mappings from the rows. Init and update are
-// the only things that change what they are built from.
+// loadIndex rebuilds the in-memory mappings from mineraddr and minertag. Init and
+// update are the only things that change what they are built from.
 //
-// A pool's addresses and tags are zipped into rows positionally and padded with
-// "" (see the miners table in tools/tosqlite), so an empty one is padding rather
-// than an address called nothing.
+// The two tables are read into memory rather than queried per block because that
+// is what attribution is: every block on the chain asks about a handful of
+// addresses and one coinbase script, and the tag side is a substring match that no
+// index can serve anyway.
 func loadIndex() error {
     if db == nil { return nil }
     var addrs = map[string]string{}
     var tags []tagged
-    var rows, err = db.Query("select name, address, tag from miners")
+    var rows, err = db.Query("select address, name from mineraddr")
     if err != nil { return err }
     for rows.Next() {
-        var name, address, tag string
-        if err := rows.Scan(&name, &address, &tag); err != nil {
+        var address, name string
+        if err := rows.Scan(&address, &name); err != nil {
             rows.Close()
             return err
         }
-        if address != "" { addrs[address] = name }
-        if tag != "" { tags = append(tags, tagged{[]byte(tag), name}) }
+        addrs[address] = name
+    }
+    rows.Close()
+    if err := rows.Err(); err != nil { return err }
+    rows, err = db.Query("select tag, name from minertag")
+    if err != nil { return err }
+    for rows.Next() {
+        var tag, name string
+        if err := rows.Scan(&tag, &name); err != nil {
+            rows.Close()
+            return err
+        }
+        tags = append(tags, tagged{[]byte(tag), name})
     }
     rows.Close()
     if err := rows.Err(); err != nil { return err }
@@ -146,15 +158,15 @@ func merge(have, add []string) []string {
     return out
 }
 
-// store merges the fetched definitions into the table and reports how many
+// store merges the fetched definitions into the three tables and reports how many
 // addresses and tags were new.
 //
-// A pool's addresses and tags are **zipped into rows positionally** — the shape
-// tools/tosqlite defines and this now writes — so adding one address changes which
-// rows a pool has, not one column of one row. Each pool is therefore read, merged
-// and rewritten: its rows are deleted and the zip written again, carrying the
-// aggregate every row of a pool repeats. That is 171 pools of a few rows each, in
-// one transaction.
+// The pool row comes first and its addresses and tags after it, which is what the
+// foreign keys require — and the order says what they say: an address belongs to a
+// pool, so the pool has to exist. Each is an `insert … on conflict do nothing`, so
+// what is already there is left alone and `RowsAffected` counts what was not: the
+// source only ever adds, and a pool that stops listing an address it once used
+// still attributes the blocks it mined with it.
 func store(pools []poolDef) (added, tags int, err error) {
     if db == nil { return 0, 0, nil }
     var tx, terr = db.Begin()
@@ -162,56 +174,36 @@ func store(pools []poolDef) (added, tags int, err error) {
     defer tx.Rollback()
     for _, d := range pools {
         if d.Name == "" { continue }
-        var have, aggregate, rerr = poolRows(tx, d.Name)
-        if rerr != nil { return 0, 0, rerr }
-        var addrs, tgs = merge(have.Addresses, d.Addresses), merge(have.Tags, d.Tags)
-        if len(addrs) == len(have.Addresses) && len(tgs) == len(have.Tags) { continue }
-        added += len(addrs) - len(have.Addresses)
-        tags += len(tgs) - len(have.Tags)
-        if _, err := tx.Exec("delete from miners where name = ?", d.Name); err != nil { return 0, 0, err }
-        if err := writeZip(tx, d.Name, addrs, tgs, aggregate); err != nil { return 0, 0, err }
+        var _, perr = tx.Exec(`insert into miners (name, blocks, reward, fees, totalWork, lastWork)
+            values (?, 0, 0, 0, 0, 0) on conflict(name) do nothing`, d.Name)
+        if perr != nil { return 0, 0, perr }
+        var n int
+        if n, err = insertAll(tx, "insert into mineraddr (address, name) values (?, ?) on conflict(address) do nothing", d.Name, d.Addresses); err != nil {
+            return 0, 0, err
+        }
+        added += n
+        if n, err = insertAll(tx, "insert into minertag (tag, name) values (?, ?) on conflict(tag) do nothing", d.Name, d.Tags); err != nil {
+            return 0, 0, err
+        }
+        tags += n
     }
     if err := tx.Commit(); err != nil { return 0, 0, err }
     return added, tags, loadIndex()
 }
 
-// poolRows reads what a pool's rows say: the addresses and tags they carry, and
-// the aggregate they all repeat.
-func poolRows(tx *sql.Tx, name string) (record, record, error) {
-    var lists, aggregate record
-    var rows, err = tx.Query("select address, tag, blocks, reward, fees, totalWork, lastWork from miners where name = ?", name)
-    if err != nil { return lists, aggregate, err }
-    defer rows.Close()
-    for rows.Next() {
-        var address, tag string
-        var r record
-        if err := rows.Scan(&address, &tag, &r.Blocks, &r.Reward, &r.Fees, &r.Work, &r.LastWork); err != nil {
-            return lists, aggregate, err
-        }
-        if address != "" { lists.Addresses = append(lists.Addresses, address) }
-        if tag != "" { lists.Tags = append(lists.Tags, tag) }
-        aggregate = r
+// insertAll runs one statement over a pool's addresses or tags and reports how
+// many of them were not already there.
+func insertAll(tx *sql.Tx, query, name string, values []string) (int, error) {
+    var added int
+    for _, v := range values {
+        if v == "" { continue }
+        var res, err = tx.Exec(query, v, name)
+        if err != nil { return added, err }
+        var n, aerr = res.RowsAffected()
+        if aerr != nil { return added, aerr }
+        added += int(n)
     }
-    return lists, aggregate, rows.Err()
-}
-
-// writeZip pairs a pool's addresses and tags by position, padding the shorter
-// with "", and writes one row each carrying the pool's aggregate. Nothing links an
-// individual address to an individual tag, so the pairing means nothing beyond
-// keeping the table narrow — the same reason tools/tosqlite zips them.
-func writeZip(tx *sql.Tx, name string, addrs, tags []string, r record) error {
-    var n = len(addrs)
-    if len(tags) > n { n = len(tags) }
-    if n == 0 { n = 1 }
-    for i := 0; i < n; i++ {
-        var address, tag string
-        if i < len(addrs) { address = addrs[i] }
-        if i < len(tags) { tag = tags[i] }
-        var _, err = tx.Exec(`insert into miners (name, address, tag, blocks, reward, fees, totalWork, lastWork)
-            values (?, ?, ?, ?, ?, ?, ?, ?)`, name, address, tag, r.Blocks, r.Reward, r.Fees, r.Work, r.LastWork)
-        if err != nil { return err }
-    }
-    return nil
+    return added, nil
 }
 
 // update fetches the pool definitions and merges each pool's addresses and tags

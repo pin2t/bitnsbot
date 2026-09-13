@@ -123,15 +123,9 @@ func TestCopyMarketToCents(t *testing.T) {
     if volume != 3191000000000 { t.Errorf("volume24h = %d, want 3191000000000 cents", volume) }
 }
 
-// poolRecord is what the miners bucket holds now: a pool's aggregate together
-// with the addresses and tags it is recognised by.
-type poolRecord struct {
-    minerStat
-    Addresses []string `json:"addresses"`
-    Tags      []string `json:"tags"`
-}
-
-func TestCopyMinersPairsAddressesAndTags(t *testing.T) {
+// A pool becomes one row, and its addresses and tags a row each naming it — which
+// is what the bot reads back into the two maps attribution works from.
+func TestCopyMinersIntoThreeTables(t *testing.T) {
     var source, target = setup(t, func(tx *bbolt.Tx) error {
         put(t, tx, "miners", []byte("F2Pool"), poolRecord{
             minerStat: minerStat{Blocks: 12, Reward: 3801, Fees: 39, Work: 8.5, LastWork: 6.0},
@@ -144,28 +138,47 @@ func TestCopyMinersPairsAddressesAndTags(t *testing.T) {
         put(t, tx, "miners", []byte("Braiins"), poolRecord{minerStat: minerStat{Blocks: 1, Reward: 312, Fees: 4, Work: 1.5, LastWork: 1.5}})
         return nil
     })
-    var rows, skipped, err = copyMiners(source, writerFor(target, "miners"))
-    if err != nil { t.Fatal(err) }
-    if skipped != 0 { t.Fatalf("skipped = %d", skipped) }
-    // F2Pool: 2 addresses zipped against 1 tag = 2 rows; AntPool 1; Foundry USA
-    // tag-only 1; Braiins, which has mined but carries no definitions, 1
-    if rows != 5 { t.Fatalf("rows = %d, want 5", rows) }
-    var tag string
-    var blocks int64
-    var q = "select tag, blocks from miners where name = 'F2Pool' and address = ?"
-    if err := target.QueryRow(q, "addr-f2-1").Scan(&tag, &blocks); err != nil { t.Fatal(err) }
-    if tag != "/f2pool/" || blocks != 12 { t.Errorf("first row: tag=%q blocks=%d", tag, blocks) }
-    if err := target.QueryRow(q, "addr-f2-2").Scan(&tag, &blocks); err != nil { t.Fatal(err) }
-    if tag != "" || blocks != 12 { t.Errorf("unpaired row: tag=%q blocks=%d", tag, blocks) }
-    var address string
-    if err := target.QueryRow("select address, tag from miners where name = 'Foundry USA'").Scan(&address, &tag); err != nil {
+    for _, c := range []struct {
+        name string
+        copy func(*bbolt.DB, sink) (int, int, error)
+        rows int
+    }{{"miners", copyMiners, 4}, {"mineraddr", copyMinerAddr, 3}, {"minertag", copyMinerTag, 3}} {
+        var rows, skipped, err = c.copy(source, writerFor(target, c.name))
+        if err != nil { t.Fatalf("%s: %v", c.name, err) }
+        if skipped != 0 { t.Errorf("%s: skipped = %d", c.name, skipped) }
+        if rows != c.rows { t.Errorf("%s: %d rows, want %d", c.name, rows, c.rows) }
+    }
+    var blocks, reward, fees int64
+    var totalWork, lastWork float64
+    if err := target.QueryRow(`select blocks, reward, fees, totalWork, lastWork from miners
+        where name = 'F2Pool'`).Scan(&blocks, &reward, &fees, &totalWork, &lastWork); err != nil {
         t.Fatal(err)
     }
-    if address != "" || tag != "/Foundry USA Pool/" { t.Errorf("tag-only pool: address=%q tag=%q", address, tag) }
-    if err := target.QueryRow("select address, tag, blocks from miners where name = 'Braiins'").Scan(&address, &tag, &blocks); err != nil {
+    if blocks != 12 || reward != 3801 || fees != 39 || totalWork != 8.5 || lastWork != 6.0 {
+        t.Errorf("F2Pool = %d %d %d %v %v", blocks, reward, fees, totalWork, lastWork)
+    }
+    // a pool with definitions and nothing mined is still a row, and so is one that
+    // mined and carries no definitions
+    if n := count(t, target, "select count(*) from miners where blocks = 0"); n != 2 {
+        t.Errorf("%d pools with nothing mined, want 2 (AntPool and Foundry USA)", n)
+    }
+    // every address and tag names its pool
+    var name string
+    if err := target.QueryRow("select name from mineraddr where address = 'addr-f2-2'").Scan(&name); err != nil {
         t.Fatal(err)
     }
-    if address != "" || tag != "" || blocks != 1 { t.Errorf("stats-only pool: address=%q tag=%q blocks=%d", address, tag, blocks) }
+    if name != "F2Pool" { t.Errorf("addr-f2-2 belongs to %q", name) }
+    if err := target.QueryRow("select name from minertag where tag = '/Foundry USA Pool/'").Scan(&name); err != nil {
+        t.Fatal(err)
+    }
+    if name != "Foundry USA" { t.Errorf("the Foundry tag belongs to %q", name) }
+    if n := count(t, target, "select count(*) from mineraddr where name = 'F2Pool'"); n != 2 {
+        t.Errorf("F2Pool has %d addresses, want 2", n)
+    }
+    // and the pool that carries neither has neither
+    if n := count(t, target, "select count(*) from mineraddr where name = 'Braiins'"); n != 0 {
+        t.Errorf("Braiins has %d addresses, want none", n)
+    }
 }
 
 // A database written before the three buckets became one is read in its own
@@ -182,39 +195,39 @@ func TestCopyMinersReadsTheOldBuckets(t *testing.T) {
         put(t, tx, "miners-stat", []byte("Braiins"), minerStat{Blocks: 1, Reward: 312, Fees: 4, Work: 1.5, LastWork: 1.5})
         return nil
     })
-    var rows, skipped, err = copyMiners(source, writerFor(target, "miners"))
-    if err != nil { t.Fatal(err) }
-    if skipped != 0 { t.Fatalf("skipped = %d", skipped) }
-    // F2Pool: 2 addresses zipped against 1 tag = 2 rows; AntPool 1; Foundry USA
-    // tag-only 1; Braiins known only from its aggregate 1
-    if rows != 5 { t.Fatalf("rows = %d, want 5", rows) }
-    if got := count(t, target, "select count(*) from miners"); got != 5 { t.Fatalf("stored %d rows", got) }
-    var tag string
+    // four pools between the three buckets: two from the addresses, Foundry USA
+    // from a tag alone, and Braiins from its aggregate alone
+    for _, c := range []struct {
+        name string
+        copy func(*bbolt.DB, sink) (int, int, error)
+        rows int
+    }{{"miners", copyMiners, 4}, {"mineraddr", copyMinerAddr, 3}, {"minertag", copyMinerTag, 3}} {
+        var rows, skipped, err = c.copy(source, writerFor(target, c.name))
+        if err != nil { t.Fatalf("%s: %v", c.name, err) }
+        if skipped != 0 { t.Errorf("%s: skipped = %d", c.name, skipped) }
+        if rows != c.rows { t.Errorf("%s: %d rows, want %d", c.name, rows, c.rows) }
+    }
     var blocks, reward, fees int64
     var totalWork, lastWork float64
-    var q = "select tag, blocks, reward, fees, totalWork, lastWork from miners where name = 'F2Pool' and address = ?"
-    if err := target.QueryRow(q, "addr-f2-1").Scan(&tag, &blocks, &reward, &fees, &totalWork, &lastWork); err != nil {
+    if err := target.QueryRow(`select blocks, reward, fees, totalWork, lastWork from miners
+        where name = 'F2Pool'`).Scan(&blocks, &reward, &fees, &totalWork, &lastWork); err != nil {
         t.Fatal(err)
     }
-    if tag != "/f2pool/" { t.Errorf("tag = %q, want the pool's one tag on its first row", tag) }
     if blocks != 12 || reward != 3801 || fees != 39 || totalWork != 8.5 || lastWork != 6.0 {
-        t.Errorf("stats = %d %d %d %v %v", blocks, reward, fees, totalWork, lastWork)
+        t.Errorf("F2Pool = %d %d %d %v %v", blocks, reward, fees, totalWork, lastWork)
     }
-    // the second address has no tag to pair with, and the aggregate repeats
-    if err := target.QueryRow(q, "addr-f2-2").Scan(&tag, &blocks, &reward, &fees, &totalWork, &lastWork); err != nil {
+    var name string
+    if err := target.QueryRow("select name from mineraddr where address = 'addr-ant'").Scan(&name); err != nil {
         t.Fatal(err)
     }
-    if tag != "" || blocks != 12 { t.Errorf("tag = %q blocks = %d, want an unpaired row carrying the same aggregate", tag, blocks) }
-    var address string
-    if err := target.QueryRow("select address, tag from miners where name = 'Foundry USA'").Scan(&address, &tag); err != nil {
-        t.Fatal(err)
+    if name != "AntPool" { t.Errorf("addr-ant belongs to %q", name) }
+    // a pool known only from its aggregate has no definitions, and one known only
+    // from a tag has no addresses
+    if n := count(t, target, "select count(*) from mineraddr where name = 'Braiins'"); n != 0 {
+        t.Errorf("Braiins has %d addresses, want none", n)
     }
-    if address != "" || tag != "/Foundry USA Pool/" { t.Errorf("tag-only pool stored as address=%q tag=%q", address, tag) }
-    if err := target.QueryRow("select address, tag, blocks from miners where name = 'Braiins'").Scan(&address, &tag, &blocks); err != nil {
-        t.Fatal(err)
-    }
-    if address != "" || tag != "" || blocks != 1 {
-        t.Errorf("stats-only pool stored as address=%q tag=%q blocks=%d", address, tag, blocks)
+    if n := count(t, target, "select count(*) from minertag where name = 'Foundry USA'"); n != 1 {
+        t.Errorf("Foundry USA has %d tags, want 1", n)
     }
 }
 

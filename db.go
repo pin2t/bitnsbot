@@ -46,9 +46,10 @@ var schema = []string{
         reward INTEGER NOT NULL, fees INTEGER NOT NULL, difficulty REAL NOT NULL)`,
     `create table if not exists market (ts INTEGER PRIMARY KEY, price INTEGER NOT NULL, cap INTEGER NOT NULL,
         volume24h INTEGER NOT NULL)`,
-    `create table if not exists miners (name TEXT NOT NULL, address TEXT NOT NULL, tag TEXT NOT NULL,
-        blocks INTEGER NOT NULL, reward INTEGER NOT NULL, fees INTEGER NOT NULL,
-        totalWork REAL NOT NULL, lastWork REAL NOT NULL, PRIMARY KEY (name, address, tag))`,
+    `create table if not exists miners (name TEXT PRIMARY KEY, blocks INTEGER NOT NULL,
+        reward INTEGER NOT NULL, fees INTEGER NOT NULL, totalWork REAL NOT NULL, lastWork REAL NOT NULL)`,
+    `create table if not exists mineraddr (address TEXT PRIMARY KEY, name TEXT NOT NULL references miners(name))`,
+    `create table if not exists minertag (tag TEXT PRIMARY KEY, name TEXT NOT NULL references miners(name))`,
     `create table if not exists rates (ts INTEGER PRIMARY KEY, cents INTEGER NOT NULL)`,
     `create table if not exists watches (chat INTEGER NOT NULL, addr TEXT NOT NULL, alias TEXT NOT NULL,
         created INTEGER NOT NULL, PRIMARY KEY (chat, addr))`,
@@ -77,7 +78,9 @@ func dsn(path string) string {
         "?_pragma=journal_mode(WAL)" +
         "&_pragma=synchronous(NORMAL)" +
         "&_pragma=busy_timeout(10000)" +
-        "&_pragma=foreign_keys(off)"
+        // on, so mineraddr and minertag cannot name a pool the miners table does
+        // not have: an address is only ever attributed to a pool that exists
+        "&_pragma=foreign_keys(on)"
 }
 
 // openDB opens the SQLite database, creates anything missing, and hands the

@@ -9,11 +9,12 @@
 // missing, what differs and what the table has that the bucket does not. It exits
 // non-zero on any difference, and writes nothing.
 //
-// Eight buckets become eight tables: addrindex, addrstat, blocks, cursors, market,
+// Eight buckets become ten tables: addrindex, addrstat, blocks, cursors, market,
 // rates and watches map one to one, and miners — a record per pool, carrying its
-// aggregate and the addresses and tags it is recognised by — is unzipped into
-// rows. The source is opened read-only and never written; a migration's
-// destination must not already exist.
+// aggregate and the addresses and tags it is recognised by — becomes three: the
+// pools, and a row per address and per tag naming the pool it belongs to. The
+// source is opened read-only and never written; a migration's destination must not
+// already exist.
 //
 // The SQLite driver is modernc.org/sqlite (gitlab.com/cznic/sqlite), a pure-Go
 // translation of SQLite with no cgo, so this still cross-compiles like the rest
@@ -67,9 +68,10 @@ var schema = []string{
         reward INTEGER NOT NULL, fees INTEGER NOT NULL, difficulty REAL NOT NULL)`,
     `create table market (ts INTEGER PRIMARY KEY, price INTEGER NOT NULL, cap INTEGER NOT NULL,
         volume24h INTEGER NOT NULL)`,
-    `create table miners (name TEXT NOT NULL, address TEXT NOT NULL, tag TEXT NOT NULL,
-        blocks INTEGER NOT NULL, reward INTEGER NOT NULL, fees INTEGER NOT NULL,
-        totalWork REAL NOT NULL, lastWork REAL NOT NULL, PRIMARY KEY (name, address, tag))`,
+    `create table miners (name TEXT PRIMARY KEY, blocks INTEGER NOT NULL, reward INTEGER NOT NULL,
+        fees INTEGER NOT NULL, totalWork REAL NOT NULL, lastWork REAL NOT NULL)`,
+    `create table mineraddr (address TEXT PRIMARY KEY, name TEXT NOT NULL references miners(name))`,
+    `create table minertag (tag TEXT PRIMARY KEY, name TEXT NOT NULL references miners(name))`,
     `create table rates (ts INTEGER PRIMARY KEY, cents INTEGER NOT NULL)`,
     `create table watches (chat INTEGER NOT NULL, addr TEXT NOT NULL, alias TEXT NOT NULL,
         created INTEGER NOT NULL, PRIMARY KEY (chat, addr))`,
@@ -118,7 +120,11 @@ var tables = []struct {
     {"blocks", []string{"height", "hash", "ts", "size", "txs", "miner", "feesOK", "minFee", "avgFee",
         "maxFee", "txSizeMin", "txSizeAvg", "txSizeMax", "reward", "fees", "difficulty"}, 1, false, true, copyBlocks},
     {"market", []string{"ts", "price", "cap", "volume24h"}, 1, false, true, copyMarket},
-    {"miners", []string{"name", "address", "tag", "blocks", "reward", "fees", "totalWork", "lastWork"}, 3, false, true, copyMiners},
+    {"miners", []string{"name", "blocks", "reward", "fees", "totalWork", "lastWork"}, 1, false, true, copyMiners},
+    // the two mappings come after the pools they reference, which is the order the
+    // foreign keys require whether or not the destination enforces them
+    {"mineraddr", []string{"address", "name"}, 1, false, true, copyMinerAddr},
+    {"minertag", []string{"tag", "name"}, 1, false, true, copyMinerTag},
     {"rates", []string{"ts", "cents"}, 1, false, true, copyRates},
     {"watches", []string{"chat", "addr", "alias", "created"}, 2, true, true, copyWatches},
     {"addrstat", []string{"addr", "type", "balance", "recv", "sent", "flow", "fees", "txs", "first", "last"}, 1, false, true, copyAddrstat},
