@@ -1,12 +1,19 @@
-// Command tosqlite migrates the bot's bbolt database to SQLite:
+// Command tosqlite migrates the bot's bbolt database to SQLite, and checks a
+// migration it has made:
 //
-//	tosqlite -src bitnsbot.db -dst bitnsbot.sqlite.db
+//	tosqlite          -src bitnsbot.db -dst bitnsbot.sqlite.db
+//	tosqlite validate -src bitnsbot.db -dst bitnsbot.sqlite.db
 //
-// Six buckets become six tables: addrindex, blocks, market, rates and
-// watches map one to one, and miners — a record per pool, carrying its aggregate
-// and the addresses and tags it is recognised by — is unzipped into rows. The
-// source is opened read-only and never written; the destination must not already
-// exist.
+// validate walks the source again through the same mappings and compares every
+// row the destination holds against the record it came from, reporting what is
+// missing, what differs and what the table has that the bucket does not. It exits
+// non-zero on any difference, and writes nothing.
+//
+// Eight buckets become eight tables: addrindex, addrstat, blocks, cursors, market,
+// rates and watches map one to one, and miners — a record per pool, carrying its
+// aggregate and the addresses and tags it is recognised by — is unzipped into
+// rows. The source is opened read-only and never written; a migration's
+// destination must not already exist.
 //
 // The SQLite driver is modernc.org/sqlite (gitlab.com/cznic/sqlite), a pure-Go
 // translation of SQLite with no cgo, so this still cross-compiles like the rest
@@ -18,6 +25,7 @@ import "errors"
 import "flag"
 import "fmt"
 import "os"
+import "strings"
 import "time"
 
 import "go.etcd.io/bbolt"
@@ -65,32 +73,91 @@ var schema = []string{
     `create table rates (ts INTEGER PRIMARY KEY, cents INTEGER NOT NULL)`,
     `create table watches (chat INTEGER NOT NULL, addr TEXT NOT NULL, alias TEXT NOT NULL,
         created INTEGER NOT NULL, PRIMARY KEY (chat, addr))`,
+    `create table addrstat (addr TEXT PRIMARY KEY, type TEXT NOT NULL, balance INTEGER NOT NULL,
+        recv INTEGER NOT NULL, sent INTEGER NOT NULL, flow INTEGER NOT NULL, fees INTEGER NOT NULL,
+        txs INTEGER NOT NULL, first INTEGER NOT NULL, last INTEGER NOT NULL)`,
+    `create table cursors (name TEXT PRIMARY KEY, place INTEGER NOT NULL)`,
+}
+
+// The indexes the three address rankings are read through, created **after the
+// rows are loaded**: an index maintained across a bulk insert is three B-trees
+// rebalanced per row, where building it once at the end sorts the column and
+// writes it in order. Each serves an ORDER BY in either direction, so one index
+// per column is enough for "largest balance first" and "oldest date first" alike.
+//
+// The cursors table gets none: it holds one row per scan, five of them.
+var indexes = []string{
+    `create index addrstat_balance on addrstat (balance)`,
+    `create index addrstat_txs on addrstat (txs)`,
+    `create index addrstat_last on addrstat (last)`,
 }
 
 // tables run smallest first so a mistake surfaces in the first second rather than
 // after the address index, which is tens of millions of rows and hours long.
+//
+// cols is the order the copy emits its values in, and the first keys of them are
+// the primary key — which is what lets validate find the row a bucket record
+// should have become. replace is for the one table whose source can name the same
+// key twice (see copyWatches).
+//
+// check is whether validate compares the table. cursors is the one that is
+// migrated but not compared: a cursor is a scan's *place*, and the bot moves it —
+// so a validate run against a database that has been used since the migration
+// would report a difference that is not an error. The three ranked-address index
+// buckets are not here at all, having no table: the bot rebuilds them from the
+// addrstat records, so there is nothing in them a migration could lose.
 var tables = []struct {
-    name string
-    copy func(*bbolt.DB, *sql.DB) (int, int, error)
+    name    string
+    cols    []string
+    keys    int
+    replace bool
+    check   bool
+    copy    func(*bbolt.DB, sink) (int, int, error)
 }{
-    {"blocks", copyBlocks},
-    {"market", copyMarket},
-    {"miners", copyMiners},
-    {"rates", copyRates},
-    {"watches", copyWatches},
-    {"addrindex", copyAddrindex},
+    {"cursors", []string{"name", "place"}, 1, false, false, copyCursors},
+    {"blocks", []string{"height", "hash", "ts", "size", "txs", "miner", "feesOK", "minFee", "avgFee",
+        "maxFee", "txSizeMin", "txSizeAvg", "txSizeMax", "reward", "fees", "difficulty"}, 1, false, true, copyBlocks},
+    {"market", []string{"ts", "price", "cap", "volume24h"}, 1, false, true, copyMarket},
+    {"miners", []string{"name", "address", "tag", "blocks", "reward", "fees", "totalWork", "lastWork"}, 3, false, true, copyMiners},
+    {"rates", []string{"ts", "cents"}, 1, false, true, copyRates},
+    {"watches", []string{"chat", "addr", "alias", "created"}, 2, true, true, copyWatches},
+    {"addrstat", []string{"addr", "type", "balance", "recv", "sent", "flow", "fees", "txs", "first", "last"}, 1, false, true, copyAddrstat},
+    {"addrindex", []string{"shard", "data"}, 1, false, true, copyAddrindex},
+}
+
+// insertInto is the statement a migration writes a table's rows with, built from
+// the column list rather than written out beside it — one place names the columns,
+// so their order cannot drift from the order the copy emits them in.
+func insertInto(name string, cols []string, replace bool) string {
+    var verb = "insert into "
+    if replace { verb = "insert or replace into " }
+    var marks = make([]string, len(cols))
+    for i := range marks { marks[i] = "?" }
+    return verb + name + " (" + strings.Join(cols, ", ") + ") values (" + strings.Join(marks, ", ") + ")"
 }
 
 func main() {
     flag.Usage = func() {
-        fmt.Fprintf(flag.CommandLine.Output(), "Usage of %s:\n", os.Args[0])
+        fmt.Fprintf(flag.CommandLine.Output(), "Usage:\n  %s [-src db -dst db.sqlite]\n  %s validate -src db -dst db.sqlite\n\n", os.Args[0], os.Args[0])
         flag.PrintDefaults()
     }
-    flag.Parse()
+    // The migration is what this tool does, so it is the bare form and stays the
+    // way it has always been invoked; validate is the one command that has to be
+    // named. Its flags come after it, as they do for tools/addrindex.
+    var args = os.Args[1:]
+    var checking bool
+    if len(args) > 0 && args[0] == "validate" {
+        checking, args = true, args[1:]
+    }
+    flag.CommandLine.Parse(args)
     logging.SetVerbose(*verbose)
     if *src == "" { logging.Fatal("-src is required") }
     if *dst == "" { logging.Fatal("-dst is required") }
-    if _, err := os.Stat(*dst); err == nil {
+    var _, dstErr = os.Stat(*dst)
+    if checking && dstErr != nil {
+        logging.Fatal("%s does not exist — there is nothing to validate", *dst)
+    }
+    if !checking && dstErr == nil {
         logging.Fatal("%s already exists — remove it first", *dst)
     }
     // read-only so a mistake here cannot damage the bot's database. bbolt holds an
@@ -107,6 +174,12 @@ func main() {
     defer source.Close()
     target, err := sql.Open("sqlite", *dst)
     if err != nil { logging.Fatal("open %s: %v", *dst, err) }
+    if checking {
+        defer target.Close()
+        // an exit code, so a script can gate on it
+        if !validate(source, target) { os.Exit(1) }
+        return
+    }
     // a pragma applies to the connection that ran it, so one connection is what
     // makes the whole set hold for every statement after it
     target.SetMaxOpenConns(1)
@@ -115,13 +188,18 @@ func main() {
         if _, err := target.Exec(s); err != nil { abort(target, "%v", err) }
     }
     for _, t := range tables {
-        var rows, skipped, err = t.copy(source, target)
+        var rows, skipped, err = t.copy(source, newWriter(target, t.name, insertInto(t.name, t.cols, t.replace)))
         if err != nil { abort(target, "%s: %v", t.name, err) }
         if skipped > 0 {
             logging.Warn("%s: %d rows, %d unreadable records skipped", t.name, rows, skipped)
         } else {
             logging.Status("%s: %d rows", t.name, rows)
         }
+    }
+    for _, s := range indexes {
+        var began = time.Now()
+        if _, err := target.Exec(s); err != nil { abort(target, "%v", err) }
+        logging.Info("%s in %s", s, time.Since(began).Round(time.Millisecond))
     }
     if err := target.Close(); err != nil { logging.Fatal("close %s: %v", *dst, err) }
     logging.Status("migrated %s to %s in %s", *src, *dst, time.Since(began).Round(time.Millisecond))

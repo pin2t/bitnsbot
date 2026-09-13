@@ -3,6 +3,7 @@ package main
 import "database/sql"
 import "encoding/json"
 import "path/filepath"
+import "strings"
 import "testing"
 
 import "go.etcd.io/bbolt"
@@ -38,6 +39,15 @@ func put(t *testing.T, tx *bbolt.Tx, bucket string, key []byte, value any) {
     if err := b.Put(key, data); err != nil { t.Fatal(err) }
 }
 
+// writerFor is the sink a migration uses, built from the table's own descriptor
+// so a test inserts through exactly the statement the tool does.
+func writerFor(target *sql.DB, name string) sink {
+    for _, t := range tables {
+        if t.name == name { return newWriter(target, t.name, insertInto(t.name, t.cols, t.replace)) }
+    }
+    panic("no such table " + name)
+}
+
 func count(t *testing.T, db *sql.DB, query string, args ...any) int {
     t.Helper()
     var n int
@@ -57,7 +67,7 @@ func TestCopyBlocks(t *testing.T) {
         put(t, tx, "blocks", itob(963270), []byte("{not json"))
         return nil
     })
-    var rows, skipped, err = copyBlocks(source, target)
+    var rows, skipped, err = copyBlocks(source, writerFor(target, "blocks"))
     if err != nil { t.Fatal(err) }
     if rows != 2 || skipped != 1 { t.Fatalf("rows=%d skipped=%d, want 2 and 1", rows, skipped) }
     var hash, miner string
@@ -86,7 +96,7 @@ func TestCopyBlocksReadsTheOldBucket(t *testing.T) {
         put(t, tx, "blocks-stat", itob(963268), blockInfo{Height: 963268, Hash: "0000abc", Miner: "AntPool"})
         return nil
     })
-    var rows, _, err = copyBlocks(source, target)
+    var rows, _, err = copyBlocks(source, writerFor(target, "blocks"))
     if err != nil { t.Fatal(err) }
     if rows != 1 { t.Fatalf("rows = %d, want 1", rows) }
     var miner string
@@ -101,7 +111,7 @@ func TestCopyMarketToCents(t *testing.T) {
         })
         return nil
     })
-    var rows, skipped, err = copyMarket(source, target)
+    var rows, skipped, err = copyMarket(source, writerFor(target, "market"))
     if err != nil { t.Fatal(err) }
     if rows != 1 || skipped != 0 { t.Fatalf("rows=%d skipped=%d", rows, skipped) }
     var price, cap_, volume int64
@@ -134,7 +144,7 @@ func TestCopyMinersPairsAddressesAndTags(t *testing.T) {
         put(t, tx, "miners", []byte("Braiins"), poolRecord{minerStat: minerStat{Blocks: 1, Reward: 312, Fees: 4, Work: 1.5, LastWork: 1.5}})
         return nil
     })
-    var rows, skipped, err = copyMiners(source, target)
+    var rows, skipped, err = copyMiners(source, writerFor(target, "miners"))
     if err != nil { t.Fatal(err) }
     if skipped != 0 { t.Fatalf("skipped = %d", skipped) }
     // F2Pool: 2 addresses zipped against 1 tag = 2 rows; AntPool 1; Foundry USA
@@ -172,7 +182,7 @@ func TestCopyMinersReadsTheOldBuckets(t *testing.T) {
         put(t, tx, "miners-stat", []byte("Braiins"), minerStat{Blocks: 1, Reward: 312, Fees: 4, Work: 1.5, LastWork: 1.5})
         return nil
     })
-    var rows, skipped, err = copyMiners(source, target)
+    var rows, skipped, err = copyMiners(source, writerFor(target, "miners"))
     if err != nil { t.Fatal(err) }
     if skipped != 0 { t.Fatalf("skipped = %d", skipped) }
     // F2Pool: 2 addresses zipped against 1 tag = 2 rows; AntPool 1; Foundry USA
@@ -219,7 +229,7 @@ func TestCopyRatesReadsTimestampFromKey(t *testing.T) {
         put(t, tx, "rates", []byte("hex:nothexatall"), rateRecord{Cents: 2})
         return nil
     })
-    var rows, skipped, err = copyRates(source, target)
+    var rows, skipped, err = copyRates(source, writerFor(target, "rates"))
     if err != nil { t.Fatal(err) }
     if rows != 3 || skipped != 2 { t.Fatalf("rows=%d skipped=%d, want 3 and 2", rows, skipped) }
     if got := count(t, target, "select cents from rates where ts = 1756771200"); got != 6622300 {
@@ -243,7 +253,7 @@ func TestCopyWatchesCollapsesDuplicates(t *testing.T) {
         put(t, tx, "watches", itob(4), watchRecord{Created: 400, Chat: 7, Watch: "bc1qaaa", Alias: "someone else"})
         return nil
     })
-    var rows, skipped, err = copyWatches(source, target)
+    var rows, skipped, err = copyWatches(source, writerFor(target, "watches"))
     if err != nil { t.Fatal(err) }
     if rows != 3 || skipped != 0 { t.Fatalf("rows=%d skipped=%d, want 3 and 0", rows, skipped) }
     if got := count(t, target, "select count(*) from watches"); got != 3 { t.Fatalf("stored %d rows", got) }
@@ -273,7 +283,7 @@ func TestCopyAddrindexPacksShardAndRange(t *testing.T) {
         put(t, tx, "addrindex", []byte("bad"), []byte{0x03})
         return nil
     })
-    var rows, skipped, err = copyAddrindex(source, target)
+    var rows, skipped, err = copyAddrindex(source, writerFor(target, "addrindex"))
     if err != nil { t.Fatal(err) }
     if rows != 3 || skipped != 1 { t.Fatalf("rows=%d skipped=%d, want 3 and 1", rows, skipped) }
     // 0x010200000003, the whole six-byte key read as one big-endian integer
@@ -306,7 +316,7 @@ func TestCopyAcrossBatches(t *testing.T) {
     var saved = *batch
     *batch = 4
     defer func() { *batch = saved }()
-    var rows, _, err = copyRates(source, target)
+    var rows, _, err = copyRates(source, writerFor(target, "rates"))
     if err != nil { t.Fatal(err) }
     // 25 rows over a batch of 4 leaves a partial final transaction to commit
     if rows != 25 { t.Fatalf("rows = %d", rows) }
@@ -316,7 +326,7 @@ func TestCopyAcrossBatches(t *testing.T) {
 func TestCopyEmptyDatabase(t *testing.T) {
     var source, target = setup(t, func(tx *bbolt.Tx) error { return nil })
     for _, c := range tables {
-        var rows, skipped, err = c.copy(source, target)
+        var rows, skipped, err = c.copy(source, writerFor(target, c.name))
         if err != nil { t.Fatalf("%s: %v", c.name, err) }
         if rows != 0 || skipped != 0 { t.Errorf("%s: rows=%d skipped=%d, want an absent bucket to be no rows", c.name, rows, skipped) }
     }
@@ -341,5 +351,88 @@ func TestRatesKeyIsTimestampAlone(t *testing.T) {
     if _, err := target.Exec("insert into rates (ts, cents) values (1, 100)"); err != nil { t.Fatal(err) }
     if _, err := target.Exec("insert into rates (ts, cents) values (1, 200)"); err == nil {
         t.Error("a second row at the same timestamp was accepted, so cents is still part of the key")
+    }
+}
+
+// Each field of the record is a column of its own, the address is the key, and
+// the amounts cross as the satoshi the bot stores.
+func TestCopyAddrstat(t *testing.T) {
+    var source, target = setup(t, func(tx *bbolt.Tx) error {
+        put(t, tx, "addrstat", []byte("34xp4vRoCGJym3xR7yCVPFHoCNxv4Twseo"), addrStat{
+            Type: "p2sh", Balance: 24859759000000, Recv: 30000000000000, Sent: 5140241000000,
+            Flow: 35140241000000, Fees: 1234567, Txs: 4447003, First: 1231006505, Last: 1788220322,
+        })
+        put(t, tx, "addrstat", []byte("bc1qnew"), addrStat{Type: "segwit"})
+        put(t, tx, "addrstat", []byte("1bad"), []byte("{not json"))
+        return nil
+    })
+    var rows, skipped, err = copyAddrstat(source, writerFor(target, "addrstat"))
+    if err != nil { t.Fatal(err) }
+    if rows != 2 || skipped != 1 { t.Fatalf("rows=%d skipped=%d, want 2 and 1", rows, skipped) }
+    var kind string
+    var balance, recv, sent, flow, fees, txs, first, last int64
+    var q = `select type, balance, recv, sent, flow, fees, txs, first, last from addrstat where addr = ?`
+    if err := target.QueryRow(q, "34xp4vRoCGJym3xR7yCVPFHoCNxv4Twseo").Scan(&kind, &balance, &recv,
+        &sent, &flow, &fees, &txs, &first, &last); err != nil {
+        t.Fatal(err)
+    }
+    if kind != "p2sh" || balance != 24859759000000 || recv != 30000000000000 || sent != 5140241000000 {
+        t.Errorf("got %s %d %d %d", kind, balance, recv, sent)
+    }
+    if flow != 35140241000000 || fees != 1234567 || txs != 4447003 { t.Errorf("got %d %d %d", flow, fees, txs) }
+    if first != 1231006505 || last != 1788220322 { t.Errorf("dates = %d..%d", first, last) }
+    // an address the scan has not reached is a row of zeroes, not a missing row:
+    // every column is NOT NULL and the record is what it is
+    if got := count(t, target, "select txs from addrstat where addr = 'bc1qnew'"); got != 0 {
+        t.Errorf("an ungathered record stored txs = %d", got)
+    }
+}
+
+// The indexes are created after the rows are loaded, so they are not in the
+// schema — a fresh migration is what puts them there.
+func TestAddrstatIndexes(t *testing.T) {
+    var _, target = setup(t, func(tx *bbolt.Tx) error { return nil })
+    for _, s := range indexes {
+        if _, err := target.Exec(s); err != nil { t.Fatalf("%s: %v", s, err) }
+    }
+    for _, col := range []string{"balance", "txs", "last"} {
+        var n = count(t, target, "select count(*) from sqlite_master where type = 'index' and tbl_name = 'addrstat' and sql like ?",
+            "%("+col+")%")
+        if n != 1 { t.Errorf("%s has %d indexes, want 1", col, n) }
+    }
+    // and the planner uses one rather than sorting the table
+    var plan string
+    if err := target.QueryRow("explain query plan select addr from addrstat order by balance desc limit 10").Scan(
+        new(int), new(int), new(int), &plan); err != nil {
+        t.Fatal(err)
+    }
+    if !strings.Contains(plan, "addrstat_balance") {
+        t.Errorf("the ranking query does not use the index: %s", plan)
+    }
+}
+
+// Every scan's place crosses as a row, and a value that is not a number is
+// skipped rather than stored as a zero, which would read as a scan that has been
+// to genesis and found nothing.
+func TestCopyCursors(t *testing.T) {
+    var source, target = setup(t, func(tx *bbolt.Tx) error {
+        put(t, tx, "cursors", []byte("blocks"), []byte("965002"))
+        put(t, tx, "cursors", []byte("addrstat"), []byte("0"))
+        put(t, tx, "cursors", []byte("actbuild-file"), []byte("5720"))
+        put(t, tx, "cursors", []byte("broken"), []byte("not a number"))
+        return nil
+    })
+    var rows, skipped, err = copyCursors(source, writerFor(target, "cursors"))
+    if err != nil { t.Fatal(err) }
+    if rows != 3 || skipped != 1 { t.Fatalf("rows=%d skipped=%d, want 3 and 1", rows, skipped) }
+    for name, want := range map[string]int64{"blocks": 965002, "addrstat": 0, "actbuild-file": 5720} {
+        var got int64
+        if err := target.QueryRow("select place from cursors where name = ?", name).Scan(&got); err != nil {
+            t.Fatalf("%s: %v", name, err)
+        }
+        if got != want { t.Errorf("%s = %d, want %d", name, got, want) }
+    }
+    if n := count(t, target, "select count(*) from cursors where name = 'broken'"); n != 0 {
+        t.Error("an unreadable place was stored")
     }
 }

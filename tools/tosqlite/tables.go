@@ -68,9 +68,33 @@ type watchRecord struct {
     Alias   string `json:"alias"`
 }
 
+// addrStat is the per-address record. Every field is a column of its own, which
+// is what the table is for: the bot reads one address at a time, where SQL is
+// asked to rank them.
+type addrStat struct {
+    Type    string `json:"type"`
+    Balance int64  `json:"balance"`
+    Recv    int64  `json:"recv"`
+    Sent    int64  `json:"sent"`
+    Flow    int64  `json:"flow"`
+    Fees    int64  `json:"fees"`
+    Txs     int64  `json:"txs"`
+    First   int64  `json:"first"`
+    Last    int64  `json:"last"`
+}
+
 // progressInterval bounds how often a running copy reports. The address index is
 // hours long, and a silent run is indistinguishable from a hung one.
 var progressInterval = 30 * time.Second
+
+// sink is where a table's rows go. Each mapping below is written once and driven
+// two ways: the migration inserts the rows it emits, and validate compares them
+// against what the destination already holds — which is what stops the two
+// commands from disagreeing about what a row should be.
+type sink interface {
+    add(args ...any) error
+    flush() error
+}
 
 // writer batches inserts into transactions of -batch rows. One transaction for a
 // whole table would hold every row until commit, and one per row would fsync
@@ -130,10 +154,7 @@ func (w *writer) flush() error {
     return nil
 }
 
-func copyBlocks(source *bbolt.DB, target *sql.DB) (rows, skipped int, err error) {
-    var w = newWriter(target, "blocks", `insert into blocks (height, hash, ts, size, txs, miner,
-        feesOK, minFee, avgFee, maxFee, txSizeMin, txSizeAvg, txSizeMax, reward, fees, difficulty)
-        values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+func copyBlocks(source *bbolt.DB, w sink) (rows, skipped int, err error) {
     err = source.View(func(tx *bbolt.Tx) error {
         // the cache moved out of blocks-stat and into blocks; this is pointed at
         // backups as often as at a live file, so it reads either
@@ -162,8 +183,7 @@ func copyBlocks(source *bbolt.DB, target *sql.DB) (rows, skipped int, err error)
     return rows, skipped, w.flush()
 }
 
-func copyMarket(source *bbolt.DB, target *sql.DB) (rows, skipped int, err error) {
-    var w = newWriter(target, "market", "insert into market (ts, price, cap, volume24h) values (?, ?, ?, ?)")
+func copyMarket(source *bbolt.DB, w sink) (rows, skipped int, err error) {
     err = source.View(func(tx *bbolt.Tx) error {
         var b = tx.Bucket([]byte("market"))
         if b == nil { return nil }
@@ -219,7 +239,7 @@ func readPools(tx *bbolt.Tx, addrs, tags map[string][]string, stats map[string]m
 // shape instead: miners mapping an address to its pool, miners-tag a tag to the
 // same pool, and miners-stat holding the aggregate. This is pointed at backups as
 // often as at a live file, and miners-stat existing is what tells them apart.
-func copyMiners(source *bbolt.DB, target *sql.DB) (rows, skipped int, err error) {
+func copyMiners(source *bbolt.DB, w sink) (rows, skipped int, err error) {
     var addrs = map[string][]string{}
     var tags = map[string][]string{}
     var stats = map[string]minerStat{}
@@ -262,8 +282,6 @@ func copyMiners(source *bbolt.DB, target *sql.DB) (rows, skipped int, err error)
         names = append(names, name)
     }
     sort.Strings(names)
-    var w = newWriter(target, "miners", `insert into miners (name, address, tag, blocks, reward,
-        fees, totalWork, lastWork) values (?, ?, ?, ?, ?, ?, ?, ?)`)
     for _, name := range names {
         var a, t, s = addrs[name], tags[name], stats[name]
         logging.Db("miners: %s (%d addresses, %d tags)", name, len(a), len(t))
@@ -286,8 +304,7 @@ func copyMiners(source *bbolt.DB, target *sql.DB) (rows, skipped int, err error)
 // been through dbui's CSV export and come back still wearing the `hex:` marker
 // that UI renders binary keys behind is decoded rather than dropped, which would
 // otherwise lose the whole table.
-func copyRates(source *bbolt.DB, target *sql.DB) (rows, skipped int, err error) {
-    var w = newWriter(target, "rates", "insert into rates (ts, cents) values (?, ?)")
+func copyRates(source *bbolt.DB, w sink) (rows, skipped int, err error) {
     var encoded int
     err = source.View(func(tx *bbolt.Tx) error {
         var b = tx.Bucket([]byte("rates"))
@@ -324,8 +341,7 @@ func copyRates(source *bbolt.DB, target *sql.DB) (rows, skipped int, err error) 
 // fields inside the value, and never deduplicated, so one chat could hold the
 // same address twice — the last record wins and how many were folded away is
 // reported.
-func copyWatches(source *bbolt.DB, target *sql.DB) (rows, skipped int, err error) {
-    var w = newWriter(target, "watches", "insert or replace into watches (chat, addr, alias, created) values (?, ?, ?, ?)")
+func copyWatches(source *bbolt.DB, w sink) (rows, skipped int, err error) {
     var seen = map[string]bool{}
     var duplicates int
     err = source.View(func(tx *bbolt.Tx) error {
@@ -374,8 +390,7 @@ func watchKey(k []byte) (int64, string, bool) {
 // copyAddrindex packs the bbolt key into the single shard column. That key is a
 // 2-byte shard and a 4-byte block-range index, both big-endian, and reading all
 // six bytes as one integer keeps them in the same order the index relies on.
-func copyAddrindex(source *bbolt.DB, target *sql.DB) (rows, skipped int, err error) {
-    var w = newWriter(target, "addrindex", "insert into addrindex (shard, data) values (?, ?)")
+func copyAddrindex(source *bbolt.DB, w sink) (rows, skipped int, err error) {
     err = source.View(func(tx *bbolt.Tx) error {
         var b = tx.Bucket([]byte("addrindex"))
         if b == nil { return nil }
@@ -400,4 +415,55 @@ func itob(v uint64) []byte {
     var buf = make([]byte, 8)
     binary.BigEndian.PutUint64(buf, v)
     return buf
+}
+
+// copyAddrstat maps the per-address statistics one record to one row, the address
+// being the key in both. The amounts are satoshi on both sides — the bot stores
+// them that way (see Amounts are satoshi) so nothing is converted here — and the
+// two dates are unix times.
+func copyAddrstat(source *bbolt.DB, w sink) (rows, skipped int, err error) {
+    err = source.View(func(tx *bbolt.Tx) error {
+        var b = tx.Bucket([]byte("addrstat"))
+        if b == nil { return nil }
+        return b.ForEach(func(k, v []byte) error {
+            var s addrStat
+            if json.Unmarshal(v, &s) != nil {
+                skipped++
+                return nil
+            }
+            logging.Db("addrstat: %s", k)
+            if err := w.add(string(k), s.Type, s.Balance, s.Recv, s.Sent, s.Flow, s.Fees,
+                s.Txs, s.First, s.Last); err != nil { return err }
+            rows++
+            return nil
+        })
+    })
+    if err != nil { return rows, skipped, err }
+    return rows, skipped, w.flush()
+}
+
+// copyCursors takes the place every scan over the chain keeps. The bucket holds
+// it as decimal text — a block height for most of them, a file number for the one
+// that reads Core's block files — so the column is named for neither.
+//
+// A value that is not a number is skipped rather than stored as a zero, which
+// would read as a scan that has been to genesis and found nothing.
+func copyCursors(source *bbolt.DB, w sink) (rows, skipped int, err error) {
+    err = source.View(func(tx *bbolt.Tx) error {
+        var b = tx.Bucket([]byte("cursors"))
+        if b == nil { return nil }
+        return b.ForEach(func(k, v []byte) error {
+            var place, perr = strconv.ParseInt(string(v), 10, 64)
+            if perr != nil {
+                skipped++
+                return nil
+            }
+            logging.Db("cursors: %s at %d", k, place)
+            if err := w.add(string(k), place); err != nil { return err }
+            rows++
+            return nil
+        })
+    })
+    if err != nil { return rows, skipped, err }
+    return rows, skipped, w.flush()
 }
