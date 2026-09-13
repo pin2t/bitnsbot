@@ -7,13 +7,23 @@ import "path/filepath"
 import "testing"
 import "time"
 
-import "go.etcd.io/bbolt"
+import "database/sql"
 
-func openTestDB(t *testing.T) {
-    var d, err = bbolt.Open(filepath.Join(t.TempDir(), "rates.db"), 0600, nil)
+import _ "modernc.org/sqlite"
+
+// The two tables as openDB creates them, from the schema tools/tosqlite defines.
+const ddl = `create table rates (ts INTEGER PRIMARY KEY, cents INTEGER NOT NULL);
+    create table market (ts INTEGER PRIMARY KEY, price INTEGER NOT NULL, cap INTEGER NOT NULL,
+        volume24h INTEGER NOT NULL)`
+
+func openTestDB(t *testing.T) *sql.DB {
+    t.Helper()
+    var handle, err = sql.Open("sqlite", filepath.Join(t.TempDir(), "rates.db"))
     if err != nil { t.Fatalf("open: %v", err) }
-    if err := Init(d); err != nil { t.Fatalf("init: %v", err) }
-    t.Cleanup(func() { d.Close(); db = nil })
+    if _, err := handle.Exec(ddl); err != nil { t.Fatal(err) }
+    if err := Init(handle); err != nil { t.Fatalf("init: %v", err) }
+    t.Cleanup(func() { handle.Close(); db = nil })
+    return handle
 }
 
 func TestRateParsers(t *testing.T) {
@@ -179,7 +189,7 @@ func TestSnapshotDegrades(t *testing.T) {
 }
 
 // The snapshot is stored on the updater's tick and read back by /market, so the
-// round trip through bbolt is what matters — not the fetch.
+// round trip through the database is what matters — not the fetch.
 func TestMarketStorage(t *testing.T) {
     openTestDB(t)
     if _, ok := LastMarket(); ok {

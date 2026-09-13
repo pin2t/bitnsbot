@@ -68,9 +68,33 @@ type watchRecord struct {
     Alias   string `json:"alias"`
 }
 
+// addrStat is the per-address record. Every field is a column of its own, which
+// is what the table is for: the bot reads one address at a time, where SQL is
+// asked to rank them.
+type addrStat struct {
+    Type    string `json:"type"`
+    Balance int64  `json:"balance"`
+    Recv    int64  `json:"recv"`
+    Sent    int64  `json:"sent"`
+    Flow    int64  `json:"flow"`
+    Fees    int64  `json:"fees"`
+    Txs     int64  `json:"txs"`
+    First   int64  `json:"first"`
+    Last    int64  `json:"last"`
+}
+
 // progressInterval bounds how often a running copy reports. The address index is
 // hours long, and a silent run is indistinguishable from a hung one.
 var progressInterval = 30 * time.Second
+
+// sink is where a table's rows go. Each mapping below is written once and driven
+// two ways: the migration inserts the rows it emits, and validate compares them
+// against what the destination already holds — which is what stops the two
+// commands from disagreeing about what a row should be.
+type sink interface {
+    add(args ...any) error
+    flush() error
+}
 
 // writer batches inserts into transactions of -batch rows. One transaction for a
 // whole table would hold every row until commit, and one per row would fsync
@@ -130,10 +154,7 @@ func (w *writer) flush() error {
     return nil
 }
 
-func copyBlocks(source *bbolt.DB, target *sql.DB) (rows, skipped int, err error) {
-    var w = newWriter(target, "blocks", `insert into blocks (height, hash, ts, size, txs, miner,
-        feesOK, minFee, avgFee, maxFee, txSizeMin, txSizeAvg, txSizeMax, reward, fees, difficulty)
-        values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+func copyBlocks(source *bbolt.DB, w sink) (rows, skipped int, err error) {
     err = source.View(func(tx *bbolt.Tx) error {
         // the cache moved out of blocks-stat and into blocks; this is pointed at
         // backups as often as at a live file, so it reads either
@@ -162,8 +183,7 @@ func copyBlocks(source *bbolt.DB, target *sql.DB) (rows, skipped int, err error)
     return rows, skipped, w.flush()
 }
 
-func copyMarket(source *bbolt.DB, target *sql.DB) (rows, skipped int, err error) {
-    var w = newWriter(target, "market", "insert into market (ts, price, cap, volume24h) values (?, ?, ?, ?)")
+func copyMarket(source *bbolt.DB, w sink) (rows, skipped int, err error) {
     err = source.View(func(tx *bbolt.Tx) error {
         var b = tx.Bucket([]byte("market"))
         if b == nil { return nil }
@@ -187,98 +207,124 @@ func copyMarket(source *bbolt.DB, target *sql.DB) (rows, skipped int, err error)
 
 func cents(usd float64) int64 { return int64(math.Round(usd * 100)) }
 
-// readPools reads the one bucket the three became: a pool's name is the key and
-// its record carries the aggregate and both lists.
-func readPools(tx *bbolt.Tx, addrs, tags map[string][]string, stats map[string]minerStat, skipped *int) error {
-    var b = tx.Bucket([]byte("miners"))
-    if b == nil { return nil }
-    return b.ForEach(func(k, v []byte) error {
-        var r struct {
-            minerStat
-            Addresses []string `json:"addresses"`
-            Tags      []string `json:"tags"`
-        }
-        if json.Unmarshal(v, &r) != nil {
-            *skipped++
-            return nil
-        }
-        var name = string(k)
-        addrs[name], tags[name], stats[name] = r.Addresses, r.Tags, r.minerStat
-        return nil
-    })
-}
-
-// copyMiners writes one table from the pool records: each holds what that pool
-// mined together with the coinbase addresses and tags it is recognised by, and
-// they are zipped positionally into rows and padded with "" — a record says which
-// addresses and which tags belong to the pool but nothing links an individual
-// address to an individual tag, so the pairing within a pool carries no meaning
-// beyond keeping the table narrow.
+// The miner buckets become three tables: one row per pool in `miners`, and a row
+// per address and per tag in `mineraddr` and `minertag`, each naming the pool it
+// belongs to. The bot reads them the same way — a pool's aggregate by name, and the
+// two mappings into memory for attribution.
+//
+// One bbolt bucket therefore fans out into three copies, one per table, each
+// reading it again. That is what keeps the migration and validate honest: a table
+// is checked against the records it was written from, by the code that wrote it.
 //
 // A database written before those three buckets became one is read in its own
-// shape instead: miners mapping an address to its pool, miners-tag a tag to the
-// same pool, and miners-stat holding the aggregate. This is pointed at backups as
-// often as at a live file, and miners-stat existing is what tells them apart.
-func copyMiners(source *bbolt.DB, target *sql.DB) (rows, skipped int, err error) {
-    var addrs = map[string][]string{}
-    var tags = map[string][]string{}
-    var stats = map[string]minerStat{}
-    err = source.View(func(tx *bbolt.Tx) error {
-        if tx.Bucket([]byte("miners-stat")) == nil { return readPools(tx, addrs, tags, stats, &skipped) }
-        for _, b := range []struct {
-            bucket string
-            into   map[string][]string
-        }{{"miners", addrs}, {"miners-tag", tags}} {
-            var bucket = tx.Bucket([]byte(b.bucket))
-            if bucket == nil { continue }
-            // both buckets are keyed by the address or tag and valued by the pool
-            // name, so they are inverted here to gather each pool's keys together
-            var err = bucket.ForEach(func(k, v []byte) error {
-                b.into[string(v)] = append(b.into[string(v)], string(k))
-                return nil
-            })
-            if err != nil { return err }
+// shape instead: `miners` mapping an address to its pool, `miners-tag` a tag to the
+// same pool, and `miners-stat` holding the aggregate. This is pointed at backups as
+// often as at a live file, and `miners-stat` existing is what tells them apart.
+func copyMiners(source *bbolt.DB, w sink) (rows, skipped int, err error) {
+    var pools, perr = readMiners(source, &skipped)
+    if perr != nil { return 0, skipped, perr }
+    for _, name := range sortedNames(pools) {
+        var p = pools[name]
+        logging.Db("miners: %s (%d addresses, %d tags)", name, len(p.Addresses), len(p.Tags))
+        if err := w.add(name, p.Blocks, p.Reward, p.Fees, p.Work, p.LastWork); err != nil {
+            return rows, skipped, err
         }
-        var bucket = tx.Bucket([]byte("miners-stat"))
-        return bucket.ForEach(func(k, v []byte) error {
-            var s minerStat
-            if json.Unmarshal(v, &s) != nil {
-                skipped++
-                return nil
-            }
-            stats[string(k)] = s
-            return nil
-        })
-    })
-    if err != nil { return 0, skipped, err }
-    var names []string
-    for name := range addrs { names = append(names, name) }
-    for name := range tags {
-        if _, ok := addrs[name]; !ok { names = append(names, name) }
+        rows++
     }
-    for name := range stats {
-        if _, ok := addrs[name]; ok { continue }
-        if _, ok := tags[name]; ok { continue }
-        names = append(names, name)
-    }
-    sort.Strings(names)
-    var w = newWriter(target, "miners", `insert into miners (name, address, tag, blocks, reward,
-        fees, totalWork, lastWork) values (?, ?, ?, ?, ?, ?, ?, ?)`)
-    for _, name := range names {
-        var a, t, s = addrs[name], tags[name], stats[name]
-        logging.Db("miners: %s (%d addresses, %d tags)", name, len(a), len(t))
-        // a pool known only from miners-stat still gets its one row of aggregates
-        for i := 0; i < max(len(a), len(t), 1); i++ {
-            var address, tag string
-            if i < len(a) { address = a[i] }
-            if i < len(t) { tag = t[i] }
-            if err := w.add(name, address, tag, s.Blocks, s.Reward, s.Fees, s.Work, s.LastWork); err != nil {
-                return rows, skipped, err
-            }
+    return rows, skipped, w.flush()
+}
+
+// copyMinerAddr and copyMinerTag are the two mappings, a row each. An address or a
+// tag belongs to one pool — the premise attribution rests on, and the primary key
+// that enforces it — so the first pool to claim one keeps it, and a second claim is
+// dropped rather than made a second row the bot could not read.
+func copyMinerAddr(source *bbolt.DB, w sink) (rows, skipped int, err error) {
+    return copyMinerMapping(source, w, func(p poolRecord) []string { return p.Addresses })
+}
+
+func copyMinerTag(source *bbolt.DB, w sink) (rows, skipped int, err error) {
+    return copyMinerMapping(source, w, func(p poolRecord) []string { return p.Tags })
+}
+
+func copyMinerMapping(source *bbolt.DB, w sink, list func(poolRecord) []string) (rows, skipped int, err error) {
+    var pools, perr = readMiners(source, &skipped)
+    if perr != nil { return 0, skipped, perr }
+    var seen = map[string]bool{}
+    for _, name := range sortedNames(pools) {
+        for _, v := range list(pools[name]) {
+            if v == "" || seen[v] { continue }
+            seen[v] = true
+            if err := w.add(v, name); err != nil { return rows, skipped, err }
             rows++
         }
     }
     return rows, skipped, w.flush()
+}
+
+// poolRecord is a pool as the bucket holds it: what it mined, and the addresses and
+// tags it is recognised by.
+type poolRecord struct {
+    minerStat
+    Addresses []string `json:"addresses"`
+    Tags      []string `json:"tags"`
+}
+
+// readMiners gathers every pool out of whichever shape the source is in.
+func readMiners(source *bbolt.DB, skipped *int) (map[string]poolRecord, error) {
+    var pools = map[string]poolRecord{}
+    var err = source.View(func(tx *bbolt.Tx) error {
+        if tx.Bucket([]byte("miners-stat")) == nil {
+            var b = tx.Bucket([]byte("miners"))
+            if b == nil { return nil }
+            return b.ForEach(func(k, v []byte) error {
+                var p poolRecord
+                if json.Unmarshal(v, &p) != nil {
+                    *skipped++
+                    return nil
+                }
+                pools[string(k)] = p
+                return nil
+            })
+        }
+        // the older shape: two buckets keyed by the address or tag and valued by
+        // the pool name, inverted here to gather each pool's own
+        for _, from := range []struct {
+            bucket string
+            into   func(*poolRecord, string)
+        }{
+            {"miners", func(p *poolRecord, v string) { p.Addresses = append(p.Addresses, v) }},
+            {"miners-tag", func(p *poolRecord, v string) { p.Tags = append(p.Tags, v) }},
+        } {
+            var b = tx.Bucket([]byte(from.bucket))
+            if b == nil { continue }
+            var err = b.ForEach(func(k, v []byte) error {
+                var p = pools[string(v)]
+                from.into(&p, string(k))
+                pools[string(v)] = p
+                return nil
+            })
+            if err != nil { return err }
+        }
+        return tx.Bucket([]byte("miners-stat")).ForEach(func(k, v []byte) error {
+            var s minerStat
+            if json.Unmarshal(v, &s) != nil {
+                *skipped++
+                return nil
+            }
+            var p = pools[string(k)]
+            p.minerStat = s
+            pools[string(k)] = p
+            return nil
+        })
+    })
+    return pools, err
+}
+
+func sortedNames(pools map[string]poolRecord) []string {
+    var names []string
+    for name := range pools { names = append(names, name) }
+    sort.Strings(names)
+    return names
 }
 
 // copyRates takes each timestamp from the bbolt key. It is stored nowhere else —
@@ -286,8 +332,7 @@ func copyMiners(source *bbolt.DB, target *sql.DB) (rows, skipped int, err error)
 // been through dbui's CSV export and come back still wearing the `hex:` marker
 // that UI renders binary keys behind is decoded rather than dropped, which would
 // otherwise lose the whole table.
-func copyRates(source *bbolt.DB, target *sql.DB) (rows, skipped int, err error) {
-    var w = newWriter(target, "rates", "insert into rates (ts, cents) values (?, ?)")
+func copyRates(source *bbolt.DB, w sink) (rows, skipped int, err error) {
     var encoded int
     err = source.View(func(tx *bbolt.Tx) error {
         var b = tx.Bucket([]byte("rates"))
@@ -324,8 +369,7 @@ func copyRates(source *bbolt.DB, target *sql.DB) (rows, skipped int, err error) 
 // fields inside the value, and never deduplicated, so one chat could hold the
 // same address twice — the last record wins and how many were folded away is
 // reported.
-func copyWatches(source *bbolt.DB, target *sql.DB) (rows, skipped int, err error) {
-    var w = newWriter(target, "watches", "insert or replace into watches (chat, addr, alias, created) values (?, ?, ?, ?)")
+func copyWatches(source *bbolt.DB, w sink) (rows, skipped int, err error) {
     var seen = map[string]bool{}
     var duplicates int
     err = source.View(func(tx *bbolt.Tx) error {
@@ -374,8 +418,7 @@ func watchKey(k []byte) (int64, string, bool) {
 // copyAddrindex packs the bbolt key into the single shard column. That key is a
 // 2-byte shard and a 4-byte block-range index, both big-endian, and reading all
 // six bytes as one integer keeps them in the same order the index relies on.
-func copyAddrindex(source *bbolt.DB, target *sql.DB) (rows, skipped int, err error) {
-    var w = newWriter(target, "addrindex", "insert into addrindex (shard, data) values (?, ?)")
+func copyAddrindex(source *bbolt.DB, w sink) (rows, skipped int, err error) {
     err = source.View(func(tx *bbolt.Tx) error {
         var b = tx.Bucket([]byte("addrindex"))
         if b == nil { return nil }
@@ -400,4 +443,55 @@ func itob(v uint64) []byte {
     var buf = make([]byte, 8)
     binary.BigEndian.PutUint64(buf, v)
     return buf
+}
+
+// copyAddrstat maps the per-address statistics one record to one row, the address
+// being the key in both. The amounts are satoshi on both sides — the bot stores
+// them that way (see Amounts are satoshi) so nothing is converted here — and the
+// two dates are unix times.
+func copyAddrstat(source *bbolt.DB, w sink) (rows, skipped int, err error) {
+    err = source.View(func(tx *bbolt.Tx) error {
+        var b = tx.Bucket([]byte("addrstat"))
+        if b == nil { return nil }
+        return b.ForEach(func(k, v []byte) error {
+            var s addrStat
+            if json.Unmarshal(v, &s) != nil {
+                skipped++
+                return nil
+            }
+            logging.Db("addrstat: %s", k)
+            if err := w.add(string(k), s.Type, s.Balance, s.Recv, s.Sent, s.Flow, s.Fees,
+                s.Txs, s.First, s.Last); err != nil { return err }
+            rows++
+            return nil
+        })
+    })
+    if err != nil { return rows, skipped, err }
+    return rows, skipped, w.flush()
+}
+
+// copyCursors takes the place every scan over the chain keeps. The bucket holds
+// it as decimal text — a block height for most of them, a file number for the one
+// that reads Core's block files — so the column is named for neither.
+//
+// A value that is not a number is skipped rather than stored as a zero, which
+// would read as a scan that has been to genesis and found nothing.
+func copyCursors(source *bbolt.DB, w sink) (rows, skipped int, err error) {
+    err = source.View(func(tx *bbolt.Tx) error {
+        var b = tx.Bucket([]byte("cursors"))
+        if b == nil { return nil }
+        return b.ForEach(func(k, v []byte) error {
+            var place, perr = strconv.ParseInt(string(v), 10, 64)
+            if perr != nil {
+                skipped++
+                return nil
+            }
+            logging.Db("cursors: %s at %d", k, place)
+            if err := w.add(string(k), place); err != nil { return err }
+            rows++
+            return nil
+        })
+    })
+    if err != nil { return rows, skipped, err }
+    return rows, skipped, w.flush()
 }

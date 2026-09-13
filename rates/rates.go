@@ -1,6 +1,5 @@
 package rates
 
-import "encoding/binary"
 import "encoding/json"
 import "fmt"
 import "io"
@@ -11,12 +10,10 @@ import "strconv"
 import "strings"
 import "time"
 
-import "go.etcd.io/bbolt"
+import "database/sql"
 import "bitnsbot/logging"
 
-var db *bbolt.DB
-var bucket = []byte("rates")
-var marketBucket = []byte("market")
+var db *sql.DB
 
 // a rate whose nearest stored sample is more than this far from the wanted time
 // is treated as unavailable. It spans more than a day so the daily-granularity
@@ -30,53 +27,56 @@ const tolerance = 36 * time.Hour
 // newly deployed bot, so it cleanly distinguishes "backfilled" from "just started".
 const historyHorizon = 3 * 365 * 24 * time.Hour
 
-// a stored sample: a USD/BTC price at a point in time.  Time is not stored in the
-// JSON value — the key already encodes the Unix timestamp.  Price is in cents to
-// avoid floating-point drift in the database.
+// a stored sample: a USD/BTC price at a point in time. The timestamp is the
+// table's primary key, and the price is cents — an integer, to keep a price off
+// floating point the way every amount in the bot is kept off it.
 type rate struct {
-    Time  time.Time `json:"-"`
-    Cents int64     `json:"cents"`
+    Time  time.Time
+    Cents int64
 }
 
-// Init stores the shared bbolt handle and ensures the rates bucket exists.
-func Init(handle *bbolt.DB) error {
+// Init stores the shared handle. The two tables are created by openDB, from the
+// schema tools/tosqlite defines.
+func Init(handle *sql.DB) error {
     db = handle
-    return db.Update(func(tx *bbolt.Tx) error {
-        for _, name := range [][]byte{bucket, marketBucket} {
-            if _, err := tx.CreateBucketIfNotExists(name); err != nil { return err }
-        }
-        return nil
-    })
-}
-
-func itob(v uint64) []byte {
-    var buf = make([]byte, 8)
-    binary.BigEndian.PutUint64(buf, v)
-    return buf
+    return nil
 }
 
 func store(r rate) error {
     logging.Db("store rate $%.2f", float64(r.Cents)/100)
-    var data, err = json.Marshal(r)
-    if err != nil { return err }
-    return db.Update(func(tx *bbolt.Tx) error {
-        return tx.Bucket(bucket).Put(itob(uint64(r.Time.Unix())), data)
-    })
+    if db == nil { return nil }
+    var _, err = db.Exec("insert into rates (ts, cents) values (?, ?) "+
+        "on conflict(ts) do update set cents = excluded.cents", r.Time.Unix(), r.Cents)
+    return err
 }
 
 // storeRates writes many records in one transaction — used for the historical
 // backfill, where per-record transactions would mean thousands of fsyncs.
+// storeRates writes the whole daily history in one transaction — thousands of
+// rows, where a statement apiece would be a commit apiece.
 func storeRates(rates []rate) error {
     logging.Db("store %d rates", len(rates))
-    return db.Update(func(tx *bbolt.Tx) error {
-        var b = tx.Bucket(bucket)
-        for _, r := range rates {
-            var data, err = json.Marshal(r)
-            if err != nil { return err }
-            if err := b.Put(itob(uint64(r.Time.Unix())), data); err != nil { return err }
+    if db == nil { return nil }
+    var tx, err = db.Begin()
+    if err != nil { return err }
+    var stmt, perr = tx.Prepare("insert into rates (ts, cents) values (?, ?) " +
+        "on conflict(ts) do update set cents = excluded.cents")
+    if perr != nil {
+        tx.Rollback()
+        return perr
+    }
+    for _, r := range rates {
+        if _, err := stmt.Exec(r.Time.Unix(), r.Cents); err != nil {
+            stmt.Close()
+            tx.Rollback()
+            return err
         }
-        return nil
-    })
+    }
+    if err := stmt.Close(); err != nil {
+        tx.Rollback()
+        return err
+    }
+    return tx.Commit()
 }
 
 // Add stores a current BTC/USD rate (assumed USD), timestamped now.
@@ -89,21 +89,12 @@ func Add(usd float64) error {
 func Last() (float64, bool) {
     if db == nil { return 0, false }
     logging.Db("last rate")
-    var usd float64
-    var found bool
-    db.View(func(tx *bbolt.Tx) error {
-        var k, v = tx.Bucket(bucket).Cursor().Last()
-        if k != nil {
-            var r rate
-            if err := json.Unmarshal(v, &r); err != nil {
-                logging.Err("error json unmarshal %v: %v", v, err)
-                return err
-            }
-            usd, found = float64(r.Cents)/100, true
-        }
-        return nil
-    })
-    return usd, found
+    var cents int64
+    // the newest sample is the largest primary key, which is the index's own end
+    if db.QueryRow("select cents from rates order by ts desc limit 1").Scan(&cents) != nil {
+        return 0, false
+    }
+    return float64(cents) / 100, true
 }
 
 // At returns the stored USD rate closest in time to t, or false if none is within
@@ -112,35 +103,24 @@ func At(t time.Time) (float64, bool) {
     if db == nil { return 0, false }
     logging.Db("rate at %d", t.Unix())
     var target = t.Unix()
-    var best rate
-    var found bool
+    // The nearest sample is one of two rows: the last at or before the wanted
+    // time, and the first after it. Both are one index seek, where scanning for
+    // the smallest difference would read the whole series.
+    var best int64
     var bestDiff int64 = 1 << 62
-    db.View(func(tx *bbolt.Tx) error {
-        var c = tx.Bucket(bucket).Cursor()
-        var consider = func(k, v []byte) {
-            if k == nil { return }
-            var r rate
-            if err := json.Unmarshal(v, &r); err != nil {
-                logging.Err("error json unmarshal %v: %v", v, err)
-                return
-            }
-            var diff = int64(binary.BigEndian.Uint64(k)) - target
-            if diff < 0 { diff = -diff }
-            if diff < bestDiff { bestDiff, best, found = diff, r, true }
-        }
-        var k, v = c.Seek(itob(uint64(target)))
-        if k == nil {
-            consider(c.Last())
-        } else {
-            consider(k, v)
-            consider(c.Prev())
-        }
-        return nil
-    })
-    if !found || bestDiff > int64(tolerance.Seconds()) {
-        return 0, false
+    var found bool
+    for _, q := range []string{
+        "select ts, cents from rates where ts <= ? order by ts desc limit 1",
+        "select ts, cents from rates where ts > ? order by ts limit 1",
+    } {
+        var ts, cents int64
+        if db.QueryRow(q, target).Scan(&ts, &cents) != nil { continue }
+        var diff = ts - target
+        if diff < 0 { diff = -diff }
+        if diff < bestDiff { bestDiff, best, found = diff, cents, true }
     }
-    return float64(best.Cents)/100, true
+    if !found || bestDiff > int64(tolerance.Seconds()) { return 0, false }
+    return float64(best) / 100, true
 }
 
 // hasHistory reports whether the store already holds deep (backfilled) history —
@@ -149,16 +129,9 @@ func At(t time.Time) (float64, bool) {
 func hasHistory() bool {
     if db == nil { return false }
     logging.Db("has history")
-    var deep bool
-    db.View(func(tx *bbolt.Tx) error {
-        var k, v = tx.Bucket(bucket).Cursor().First()
-        if k == nil { return nil }
-        var r rate
-        if json.Unmarshal(v, &r) == nil && time.Since(time.Unix(int64(binary.BigEndian.Uint64(k)), 0)) > historyHorizon {
-            deep = true
-        }
-        return nil
-    })
+    var oldest int64
+    if db.QueryRow("select ts from rates order by ts limit 1").Scan(&oldest) != nil { return false }
+    var deep = time.Since(time.Unix(oldest, 0)) > historyHorizon
     logging.Db("has history %v", deep)
     return deep
 }
@@ -437,25 +410,20 @@ func Snapshot() (Market, bool) {
 
 // market is one stored market snapshot, keyed by Unix timestamp like the
 // rate records so the newest is the last key in the bucket.
-type market struct {
-    Timestamp int64   `json:"timestamp"`
-    Price     float64 `json:"price"`
-    MarketCap float64 `json:"marketCap"`
-    Volume24h float64 `json:"volume24h"`
-}
+// cents is how money is stored, the unit the rates table already keeps a price
+// in: a market capitalisation in trillions has no business being a float64 that
+// drifts. tools/tosqlite converts the same way, which is what keeps a migrated
+// database and one the bot wrote indistinguishable.
+func cents(usd float64) int64 { return int64(math.Round(usd * 100)) }
 
 func storeMarket(m Market) error {
     if db == nil { return nil }
-    var rec = market{Timestamp: time.Now().Unix(), Price: m.Price, MarketCap: m.MarketCap, Volume24h: m.Volume24h}
     logging.Db("store market cap %.0f volume %.0f", m.MarketCap, m.Volume24h)
-    var data, err = json.Marshal(rec)
-    if err != nil {
-        logging.Err("store market json marshal: %v", err)
-        return err
-    }
-    return db.Update(func(tx *bbolt.Tx) error {
-        return tx.Bucket(marketBucket).Put(itob(uint64(rec.Timestamp)), data)
-    })
+    var _, err = db.Exec(`insert into market (ts, price, cap, volume24h) values (?, ?, ?, ?)
+        on conflict(ts) do update set price = excluded.price, cap = excluded.cap, volume24h = excluded.volume24h`,
+        time.Now().Unix(), cents(m.Price), cents(m.MarketCap), cents(m.Volume24h))
+    if err != nil { logging.Err("store market: %v", err) }
+    return err
 }
 
 // LastMarket returns the most recently stored snapshot. /market reads this
@@ -464,18 +432,10 @@ func storeMarket(m Market) error {
 func LastMarket() (Market, bool) {
     if db == nil { return Market{}, false }
     logging.Db("rates: market")
-    var m Market
-    var found bool
-    db.View(func(tx *bbolt.Tx) error {
-        var k, v = tx.Bucket(marketBucket).Cursor().Last()
-        if k == nil { return nil }
-        var rec market
-        if err := json.Unmarshal(v, &rec); err != nil {
-            logging.Err("last market json unmarshal %v: %v", v, err)
-            return nil
-        }
-        m, found = Market{Price: rec.Price, MarketCap: rec.MarketCap, Volume24h: rec.Volume24h}, true
-        return nil
-    })
-    return m, found
+    var price, cap_, volume int64
+    if db.QueryRow("select price, cap, volume24h from market order by ts desc limit 1").Scan(
+        &price, &cap_, &volume) != nil {
+        return Market{}, false
+    }
+    return Market{Price: float64(price) / 100, MarketCap: float64(cap_) / 100, Volume24h: float64(volume) / 100}, true
 }

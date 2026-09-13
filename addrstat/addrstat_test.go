@@ -3,11 +3,12 @@ package addrstat
 import "bytes"
 import "context"
 import "encoding/binary"
-import "encoding/json"
 import "path/filepath"
 import "testing"
 
-import "go.etcd.io/bbolt"
+import "database/sql"
+
+import _ "modernc.org/sqlite"
 import "bitnsbot/addrindex"
 import "bitnsbot/cursors"
 import "bitnsbot/signals"
@@ -83,43 +84,45 @@ func (f *fakeChain) BlockAt(ctx context.Context, height int) (addrindex.Block, e
     return f.blocks[height], nil
 }
 
-// open puts a record under each address and runs Init over them, which is how
-// the set is filled: the bucket's keys are the set, and putting one in is what
-// adds an address to it.
-func open(t *testing.T, addrs ...string) *bbolt.DB {
+// The two tables as openDB creates them, from the schema tools/tosqlite defines.
+const ddl = `create table addrstat (addr TEXT PRIMARY KEY, type TEXT NOT NULL, balance INTEGER NOT NULL,
+    recv INTEGER NOT NULL, sent INTEGER NOT NULL, flow INTEGER NOT NULL, fees INTEGER NOT NULL,
+    txs INTEGER NOT NULL, first INTEGER NOT NULL, last INTEGER NOT NULL);
+    create table cursors (name TEXT PRIMARY KEY, place INTEGER NOT NULL)`
+
+// open puts a row under each address and runs Init over them, which is how the
+// set is filled: the table's keys are the set, and inserting one is what adds an
+// address to it.
+func open(t *testing.T, addrs ...string) *sql.DB {
     t.Helper()
-    var handle, err = bbolt.Open(filepath.Join(t.TempDir(), "t.db"), 0600, nil)
+    var handle, err = sql.Open("sqlite", filepath.Join(t.TempDir(), "t.db"))
     if err != nil { t.Fatalf("open: %v", err) }
+    if _, err := handle.Exec(ddl); err != nil { t.Fatal(err) }
+    if err := cursors.Init(handle); err != nil { t.Fatalf("cursors: %v", err) }
     t.Cleanup(func() { handle.Close(); db = nil; watched = map[string]string{} })
     add(t, handle, addrs...)
     if err := Init(handle); err != nil { t.Fatalf("init: %v", err) }
     return handle
 }
 
-func add(t *testing.T, handle *bbolt.DB, addrs ...string) {
+func add(t *testing.T, handle *sql.DB, addrs ...string) {
     t.Helper()
-    if err := handle.Update(func(tx *bbolt.Tx) error {
-        var b, berr = tx.CreateBucketIfNotExists(bucket)
-        if berr != nil { return berr }
-        for _, a := range addrs {
-            var _, kind, _ = addrindex.Decode(a)
-            var data, merr = json.Marshal(Stat{Type: kind})
-            if merr != nil { return merr }
-            if err := b.Put([]byte(a), data); err != nil { return err }
-        }
-        return nil
-    }); err != nil { t.Fatalf("add: %v", err) }
+    for _, a := range addrs {
+        var _, kind, _ = addrindex.Decode(a)
+        var _, err = handle.Exec(`insert into addrstat (addr, type, balance, recv, sent, flow, fees,
+            txs, first, last) values (?, ?, 0, 0, 0, 0, 0, 0, 0, 0)
+            on conflict(addr) do nothing`, a, kind)
+        if err != nil { t.Fatalf("add %s: %v", a, err) }
+    }
 }
 
 func statOf(t *testing.T, addr string) Stat {
     t.Helper()
     var s Stat
-    db.View(func(tx *bbolt.Tx) error {
-        var v = tx.Bucket(bucket).Get([]byte(addr))
-        if v == nil { t.Fatalf("no record for %s", addr) }
-        if err := json.Unmarshal(v, &s); err != nil { t.Fatalf("unmarshal: %v", err) }
-        return nil
-    })
+    var err = db.QueryRow(`select type, balance, recv, sent, flow, fees, txs, first, last
+        from addrstat where addr = ?`, addr).Scan(&s.Type, &s.Balance, &s.Recv, &s.Sent, &s.Flow,
+        &s.Fees, &s.Txs, &s.First, &s.Last)
+    if err != nil { t.Fatalf("no row for %s: %v", addr, err) }
     return s
 }
 
@@ -154,10 +157,11 @@ func TestCollectGathersStatistics(t *testing.T) {
     if b.Type != "p2pkh" { t.Errorf("addrB type = %q, want p2pkh", b.Type) }
     // an address nobody asked about is not stored, which is the whole point of
     // gathering for a set rather than for the chain
-    db.View(func(tx *bbolt.Tx) error {
-        if tx.Bucket(bucket).Get([]byte(addrC)) != nil { t.Error("an unwatched address was stored") }
-        return nil
-    })
+    var n int
+    if err := db.QueryRow("select count(*) from addrstat where addr = ?", addrC).Scan(&n); err != nil {
+        t.Fatal(err)
+    }
+    if n != 0 { t.Error("an unwatched address was stored") }
 }
 
 // A transaction that both pays an address and spends from it is one transaction

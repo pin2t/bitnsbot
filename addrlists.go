@@ -1,48 +1,40 @@
 package main
 
-import "encoding/binary"
-import "sort"
 import "strconv"
-import "time"
 
-import "go.etcd.io/bbolt"
-import "bitnsbot/addrstat"
 import "bitnsbot/app"
-import "bitnsbot/signals"
 import "bitnsbot/logging"
 
 // The three ranked address lists the Mini App's Addresses tab shows: how busy an
-// address is, what it holds now, and how long its coins have sat still. All
-// three are three readings of one record — the statistics the addrstat package
-// gathers — so they are built from that bucket and nothing else writes them.
+// address is, what it holds now, and how long its coins have sat still. All three
+// are three readings of one row of the addrstat table — the statistics that
+// package gathers — and all three are an `order by` over it, served by the index
+// on the column each ranks.
 //
-// Each is read through an index rather than by ranking the records on every
-// request: addrstat is keyed by address, so a ranking meant scanning and sorting
-// every row, where the index holds the same rows keyed by the figure they rank
-// by, which a cursor walks in rank order.
+// That is the whole of the ranking now. Under bbolt this file kept three index
+// buckets of its own, rebuilt hourly, because a bucket keyed by address cannot be
+// walked in value order; SQLite has an index for that, and `addrstat_balance`,
+// `addrstat_txs` and `addrstat_last` are it. The rebuild goroutine, the key
+// packing and the signal that drove them are gone with it.
 type addrList struct {
-    kind  string
-    index []byte
-    // width is how many bytes of the index key hold the value. Counts and
-    // balances take eight; a last-moved date is a unix time, which fits in four
-    // until 2106.
-    width int
-    // desc reads the index from its high end: the busiest address and the
-    // largest balance rank first, where the oldest date does.
-    desc bool
-    // value is what this list ranks a record by, and whether the record belongs
-    // in it at all — an address that has never been paid is not the poorest
-    // address on the chain, and one holding nothing has no coins to have
-    // abandoned. A record the scan has not reached yet is all zeroes, which is
-    // why every list refuses one.
-    value func(addrstat.Stat) (int64, bool)
+    kind string
+    // column is what the list ranks by, and order the end it starts from: the
+    // busiest address and the largest balance rank first, where the oldest date
+    // does.
+    column string
+    order  string
+    // keep is which rows belong in the list at all. A record the scan has not
+    // reached is all zeroes — and an address that has never been paid is not the
+    // poorest address on the chain, nor has one holding nothing abandoned any
+    // coins.
+    keep string
 }
 
-// A slice rather than a map, so a build runs — and logs — in a fixed order.
+// A slice rather than a map, so the order they are tried in is fixed.
 var addrLists = []addrList{
-    {"active", []byte("activeindex"), 8, true, func(s addrstat.Stat) (int64, bool) { return s.Txs, s.Txs > 0 }},
-    {"rich", []byte("richindex"), 8, true, func(s addrstat.Stat) (int64, bool) { return s.Balance, s.Balance > 0 }},
-    {"abandoned", []byte("abandonedindex"), 4, false, func(s addrstat.Stat) (int64, bool) { return s.Last, s.Balance > 0 && s.Last > 0 }},
+    {"active", "txs", "desc", "txs > 0"},
+    {"rich", "balance", "desc", "balance > 0"},
+    {"abandoned", "last", "asc", "balance > 0 and last > 0"},
 }
 
 // addrsFirstPage is the batch the tab opens with, addrsPage what each scroll
@@ -64,124 +56,22 @@ const addrsMaxRows = 10000
 // loses some of it rather than being sent a megabyte of rows.
 const addrsRestoreRows = addrsFirstPage + 20 * addrsPage
 
-// addrIndexInterval is how often the indexes are rebuilt from the buckets they
-// rank. A var so tests can drive the loop without waiting an hour.
-var addrIndexInterval = time.Hour
-
-// startAddrIndexes keeps the three indexes in step with the records they rank,
-// and returns a stop that waits for a rebuild in flight — shutdown runs it
-// before closeDB, since that rebuild is holding a write transaction.
+// Addresses reads one window of one ranked list: an `order by` on the column that
+// list ranks, `limit`ed to the batch and `offset` by how far down the reader has
+// scrolled. The index on that column is what makes it a walk of the ranking rather
+// than a sort of the table.
 //
-// It rebuilds once immediately, then whenever the statistics collector reports
-// it has caught up — that being what moves the figures these rank — and every
-// addrIndexInterval, whichever comes first. The interval is what still notices
-// records changed by something that fires no signal: a hand edit through the
-// database UI, or an import.
-func startAddrIndexes() func() {
-    var stop, done = make(chan struct{}), make(chan struct{})
-    go func() {
-        defer close(done)
-        var wake = signals.Subscribe(signals.AddrStat)
-        for {
-            buildAddrIndexes()
-            select {
-            case <-time.After(addrIndexInterval):
-            case <-wake:
-            case <-stop:
-                return
-            }
-        }
-    }()
-    return func() {
-        close(stop)
-        <-done
-    }
-}
-
-// buildAddrIndexes rebuilds all three indexes from the addrstat records, from
-// scratch: an index is dropped and written again rather than diffed, because a
-// pass of the collector moves every record it touched and there is nothing
-// cheaper to compare against.
-//
-// It reads the records **once** for all three lists rather than once per list,
-// since each is a different figure out of the same record.
-//
-// A record the scan has not reached yet holds zero, and each list refuses one —
-// an address that has never been paid is not the poorest address on the chain —
-// so a rebuild during a catch-up ranks what has been gathered and leaves out
-// what has not, filling in as the scan runs.
-//
-// The key is the whole entry: the value big-endian — so the index sorts by it
-// naturally — followed by the address, and **nothing is stored as the value**.
-// The address in the key is what makes it unique, and it has to be there: values
-// collide heavily, and a bare value key would silently keep only the last
-// address written under each one. Measured on the real exports, 120 119 active
-// addresses hold just 14 269 distinct counts, so 88% of that list would have
-// been lost; rich loses 65% and abandoned 34%. The value still leads the key, so
-// cursor order is still rank order, and the address suffix breaks ties the same
-// way the sort it replaces did. This is the shape addrindex already uses for its
-// own touches, and electrs' bindex-rs before it: everything in the key, an empty
-// value.
-//
-// The drop and the refill are **one transaction**, so a reader is served either
-// the whole old index or the whole new one — never the empty middle of a
-// rebuild. A list with nothing to rank ends with no index rather than a stale
-// one, which is what makes a list whose records all dropped out show as empty.
-func buildAddrIndexes() {
-    if db == nil { return }
-    var byList = make([][][]byte, len(addrLists))
-    var err = addrstat.ForEach(func(addr string, s addrstat.Stat) {
-        for i, l := range addrLists {
-            var n, ok = l.value(s)
-            if !ok || n < 0 { continue }
-            // a value too wide for the key would truncate and rank wrongly
-            if l.width == 4 && n > 0xffffffff { continue }
-            var key = make([]byte, l.width + len(addr))
-            if l.width == 8 {
-                binary.BigEndian.PutUint64(key, uint64(n))
-            } else {
-                binary.BigEndian.PutUint32(key, uint32(n))
-            }
-            copy(key[l.width:], addr)
-            byList[i] = append(byList[i], key)
-        }
-    })
-    if err != nil {
-        logging.Err("read address statistics: %v", err)
-        return
-    }
-    for i, l := range addrLists {
-        var started = time.Now()
-        var keys = byList[i]
-        // Sorted before they are written, which is the whole cost of this: rows
-        // come out of the source in address order, which is random against the
-        // index key, and bbolt rebalances on every such insert. Measured on the
-        // real exports, sorting first took the three builds from 3.45 s to
-        // 106 ms.
-        sort.Slice(keys, func(i, j int) bool { return string(keys[i]) < string(keys[j]) })
-        var err = db.Update(func(tx *bbolt.Tx) error {
-            if tx.Bucket(l.index) != nil {
-                if derr := tx.DeleteBucket(l.index); derr != nil { return derr }
-            }
-            if len(keys) == 0 { return nil }
-            var b, berr = tx.CreateBucket(l.index)
-            if berr != nil { return berr }
-            for _, key := range keys {
-                if perr := b.Put(key, nil); perr != nil { return perr }
-            }
-            return nil
-        })
-        if err != nil {
-            logging.Err("build %s: %v", l.index, err)
-            continue
-        }
-        logging.Info("rebuilt %s: %d addresses in %s", l.index, len(keys), time.Since(started).Round(time.Millisecond))
-    }
-}
-
-// Addresses reads one window of one ranked list, by walking that list's index
-// from the end the ranking starts at. There is no scan and no sort: a batch
-// costs the steps it skips plus the rows it returns.
+// **Nothing breaks a tie, deliberately.** Values collide heavily — 120 119 active
+// addresses hold 14 269 distinct counts — and paging needs equal values to come
+// back in the same order every time, or a batch boundary inside a group would
+// repeat or skip a row. An `order by txs desc, addr` says that in SQL and costs a
+// temp B-tree: measured at row 9000 of the real data, **8.7 ms against 0.2 ms**,
+// because the index is on the one column and the second term has to be sorted.
+// The index entry is (value, rowid), so what it yields inside a group is rowid
+// order — stable for a row that stays put, which is every row here: the collector
+// updates rows and never re-inserts them. So the order is the index's rather than
+// the query's, and TestAppAddressListRanksCollidingValues pins that paging through
+// a group of equal values sees each of them once.
 func (appSource) Addresses(lang string, rng app.AddrRange) app.Addrs {
     var out = app.Addrs{Kind: rng.Kind}
     var list addrList
@@ -199,51 +89,43 @@ func (appSource) Addresses(lang string, rng app.AddrRange) app.Addrs {
         if want > addrsRestoreRows { want = addrsRestoreRows }
     }
     if rng.From + want > addrsMaxRows { want = addrsMaxRows - rng.From }
-    db.View(func(tx *bbolt.Tx) error {
-        var b = tx.Bucket(list.index)
-        if b == nil { return nil }
-        var c = b.Cursor()
-        var k, _ = c.First()
-        var step = func() []byte { var n, _ = c.Next(); return n }
-        if list.desc {
-            k, _ = c.Last()
-            step = func() []byte { var p, _ = c.Prev(); return p }
+    // One row more than is wanted, which is how "is there another batch below
+    // this one" is answered without counting the table.
+    var rows, err = db.Query("select addr, "+list.column+" from addrstat where "+list.keep+
+        " order by "+list.column+" "+list.order+" limit ? offset ?", want+1, rng.From)
+    if err != nil {
+        logging.Warn("mini app: %s addresses: %v", rng.Kind, err)
+        return out
+    }
+    defer rows.Close()
+    for rows.Next() {
+        if len(out.Rows) == want {
+            out.More = true
+            break
         }
-        for i := 0; i < rng.From && k != nil; i++ { k = step() }
-        for ; k != nil && len(out.Rows) < want; k = step() {
-            if len(k) <= list.width { continue }
-            var n int64
-            if list.width == 8 {
-                n = int64(binary.BigEndian.Uint64(k[:8]))
+        var addr string
+        var n int64
+        if err := rows.Scan(&addr, &n); err != nil { continue }
+        var value string
+        switch list.kind {
+        case "active":
+            value = i18nl(lang).Sprintf("%s txs", group(n))
+        case "rich":
+            // The same shape btcAmount gives, without its USD tail: a list row
+            // has one column for this, and the price belongs on the details
+            // page. Under a whole coin the satoshi are kept, or every small
+            // balance would render as "0 BTC".
+            if n >= 1e8 {
+                value = strconv.FormatFloat(toBTC(n), 'f', 2, 64) + " BTC"
             } else {
-                n = int64(binary.BigEndian.Uint32(k[:4]))
+                value = trimZeros(strconv.FormatFloat(toBTC(n), 'f', 8, 64)) + " BTC"
             }
-            var value string
-            switch list.kind {
-            case "active":
-                value = i18nl(lang).Sprintf("%s txs", group(n))
-            case "rich":
-                // The same shape btcAmount gives, without its USD tail: a list
-                // row has one column for this, and the price belongs on the
-                // details page. Under a whole coin the satoshi are kept, or
-                // every small balance would render as "0 BTC".
-                if n >= 1e8 {
-                    value = strconv.FormatFloat(toBTC(n), 'f', 2, 64) + " BTC"
-                } else {
-                    value = trimZeros(strconv.FormatFloat(toBTC(n), 'f', 8, 64)) + " BTC"
-                }
-            case "abandoned":
-                value = day(n, lang)
-            }
-            var addr = string(k[list.width:])
-            out.Rows = append(out.Rows, app.Addr{Short: short(addr), Id: addr,
-                Value: value, Idx: rng.From + len(out.Rows)})
+        case "abandoned":
+            value = day(n, lang)
         }
-        // the post statement has already stepped past the last row taken, so
-        // this is the entry the next batch would start at
-        out.More = k != nil
-        return nil
-    })
+        out.Rows = append(out.Rows, app.Addr{Short: short(addr), Id: addr,
+            Value: value, Idx: rng.From + len(out.Rows)})
+    }
     out.Next = rng.From + len(out.Rows)
     if out.Next >= addrsMaxRows { out.More = false }
     out.OK = len(out.Rows) > 0

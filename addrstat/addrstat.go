@@ -13,18 +13,16 @@
 package addrstat
 
 import "context"
-import "encoding/json"
 import "sync"
 import "time"
 
-import "go.etcd.io/bbolt"
+import "database/sql"
 import "bitnsbot/addrindex"
 import "bitnsbot/cursors"
 import "bitnsbot/logging"
 import "bitnsbot/signals"
 
-var db *bbolt.DB
-var bucket = []byte("addrstat")
+var db *sql.DB
 
 // interval is the longest the collector waits once it has caught up; a block
 // notification cuts it short. A package var so tests can shrink it.
@@ -59,42 +57,38 @@ type Stat struct {
 var watchedMu sync.RWMutex
 var watched = map[string]string{}
 
-// Init stores the shared bbolt handle, ensures the bucket exists, and builds the
-// lookup the scan matches scripts against.
+// Init stores the shared handle and builds the lookup the scan matches scripts
+// against.
 //
-// **The set is whatever the bucket holds.** A key is an address, and the record
-// under it is what the scan has gathered about it; a record with no key is not
-// created here, so putting an address in — through the database UI, or an
-// import — is what adds it to the set. An address added after the scan has
-// already passed its history gathers nothing until the scan runs again, which
-// means clearing this scan's place in the `cursors` bucket by hand. That is an
-// operator's job because the alternative is an automatic rescan of the whole
-// chain, which is hours, triggered by a signal nothing can tell apart from an
-// address the chain has simply never seen.
-func Init(handle *bbolt.DB) error {
+// **The set is whatever the addrstat table holds.** A row's key is an address and
+// the rest of it is what the scan has gathered, so inserting an address is what
+// adds it to the set — a `where txs = 0` is what asks which of them the scan has
+// still to reach. An address added after the scan has passed its history gathers
+// nothing until the scan runs again, which means clearing this scan's place in the
+// cursors table by hand. That is an operator's job because the alternative is an
+// automatic rescan of the whole chain, hours of it, triggered by a signal nothing
+// can tell apart from an address the chain has simply never seen.
+func Init(handle *sql.DB) error {
     db = handle
-    if err := cursors.Init(handle); err != nil { return err }
-    var err = db.Update(func(tx *bbolt.Tx) error {
-        var _, berr = tx.CreateBucketIfNotExists(bucket)
-        if berr != nil { return berr }
-        return nil
-    })
-    if err != nil { return err }
-    if err := load(); err != nil { return err }
-    return nil
+    return load()
 }
 
 // load builds the script lookup from the bucket.
 func load() error {
     if db == nil { return nil }
     var index = map[string]string{}
-    var err = db.View(func(tx *bbolt.Tx) error {
-        return tx.Bucket(bucket).ForEach(func(k, _ []byte) error {
-            if key, _, ok := addrindex.Decode(string(k)); ok { index[key] = string(k) }
-            return nil
-        })
-    })
+    var rows, err = db.Query("select addr from addrstat")
     if err != nil { return err }
+    for rows.Next() {
+        var addr string
+        if err := rows.Scan(&addr); err != nil {
+            rows.Close()
+            return err
+        }
+        if key, _, ok := addrindex.Decode(addr); ok { index[key] = addr }
+    }
+    rows.Close()
+    if err := rows.Err(); err != nil { return err }
     watchedMu.Lock()
     watched = index
     watchedMu.Unlock()
@@ -111,31 +105,28 @@ func load() error {
 func Get(addr string) (Stat, bool) {
     if db == nil { return Stat{}, false }
     var s Stat
-    var found bool
-    db.View(func(tx *bbolt.Tx) error {
-        var b = tx.Bucket(bucket)
-        if b == nil { return nil }
-        var v = b.Get([]byte(addr))
-        if v != nil && json.Unmarshal(v, &s) == nil { found = s.Txs > 0 }
-        return nil
-    })
-    return s, found
+    var err = db.QueryRow(`select type, balance, recv, sent, flow, fees, txs, first, last
+        from addrstat where addr = ?`, addr).Scan(&s.Type, &s.Balance, &s.Recv, &s.Sent, &s.Flow,
+        &s.Fees, &s.Txs, &s.First, &s.Last)
+    if err != nil { return Stat{}, false }
+    return s, s.Txs > 0
 }
 
 // ForEach walks every record, which is what the Addresses tab's three rankings
 // are built from.
 func ForEach(fn func(addr string, s Stat)) error {
     if db == nil { return nil }
-    return db.View(func(tx *bbolt.Tx) error {
-        var b = tx.Bucket(bucket)
-        if b == nil { return nil }
-        return b.ForEach(func(k, v []byte) error {
-            var s Stat
-            if json.Unmarshal(v, &s) != nil { return nil }
-            fn(string(k), s)
-            return nil
-        })
-    })
+    var rows, err = db.Query(`select addr, type, balance, recv, sent, flow, fees, txs, first, last from addrstat`)
+    if err != nil { return err }
+    defer rows.Close()
+    for rows.Next() {
+        var addr string
+        var s Stat
+        if err := rows.Scan(&addr, &s.Type, &s.Balance, &s.Recv, &s.Sent, &s.Flow, &s.Fees,
+            &s.Txs, &s.First, &s.Last); err != nil { return err }
+        fn(addr, s)
+    }
+    return rows.Err()
 }
 
 // Count is how many addresses are watched.
@@ -277,25 +268,47 @@ func touch(s *Stat, seen map[string]bool, addr string, when int64) {
 // flush merges a chunk into the records and advances the cursor in one
 // transaction, so an interrupted catch-up resumes from the last flushed chunk
 // rather than counting a block twice.
+// The delta is added to the row in SQL rather than read, added to in Go and
+// written back: one statement per address instead of a query and an update, and
+// the arithmetic is where the row is. Balance and Flow are derived in the same
+// statement from the sums they follow from, so they cannot drift out of step with
+// them. `first` takes the earlier of the two only when there is one — a fresh row
+// has 0 there, which is not earlier than anything.
+//
+// An address is only ever here because a row exists for it, so this updates and
+// never inserts: a delta for an address the table does not hold is one the scan
+// should not have gathered, and creating a row for it would quietly add it to the
+// set.
 func flush(deltas map[string]*Stat, last int64) error {
-    return db.Update(func(tx *bbolt.Tx) error {
-        var b = tx.Bucket(bucket)
-        for addr, d := range deltas {
-            var s Stat
-            if v := b.Get([]byte(addr)); v != nil {
-                if json.Unmarshal(v, &s) != nil { s = Stat{} }
-            }
-            s.Recv += d.Recv
-            s.Sent += d.Sent
-            s.Fees += d.Fees
-            s.Txs += d.Txs
-            if d.First > 0 && (s.First == 0 || d.First < s.First) { s.First = d.First }
-            if d.Last > s.Last { s.Last = d.Last }
-            s.Balance, s.Flow = s.Recv-s.Sent, s.Recv+s.Sent
-            var data, err = json.Marshal(s)
-            if err != nil { return err }
-            if err := b.Put([]byte(addr), data); err != nil { return err }
+    if db == nil { return nil }
+    var tx, err = db.Begin()
+    if err != nil { return err }
+    var stmt, perr = tx.Prepare(`update addrstat set
+        recv = recv + ?, sent = sent + ?, fees = fees + ?, txs = txs + ?,
+        first = case when ? > 0 and (first = 0 or ? < first) then ? else first end,
+        last = max(last, ?),
+        balance = recv + ? - (sent + ?), flow = recv + ? + sent + ?
+        where addr = ?`)
+    if perr != nil {
+        tx.Rollback()
+        return perr
+    }
+    for addr, d := range deltas {
+        if _, err := stmt.Exec(d.Recv, d.Sent, d.Fees, d.Txs,
+            d.First, d.First, d.First, d.Last,
+            d.Recv, d.Sent, d.Recv, d.Sent, addr); err != nil {
+            stmt.Close()
+            tx.Rollback()
+            return err
         }
-        return cursors.Set(tx, cursors.AddrStat, last)
-    })
+    }
+    if err := stmt.Close(); err != nil {
+        tx.Rollback()
+        return err
+    }
+    if err := cursors.Set(tx, cursors.AddrStat, last); err != nil {
+        tx.Rollback()
+        return err
+    }
+    return tx.Commit()
 }

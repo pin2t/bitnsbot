@@ -1,13 +1,12 @@
 package main
 
 import "context"
-import "encoding/json"
 import "fmt"
 import "strconv"
 import "strings"
 import "time"
 
-import "go.etcd.io/bbolt"
+import "database/sql"
 import "bitnsbot/app"
 import "bitnsbot/logging"
 import "bitnsbot/miners"
@@ -50,38 +49,60 @@ type blockInfo struct {
 // blockInit creates the blocks bucket inside the shared bbolt file, and ensures
 // the shared cursors bucket the backfill keeps its place in. Called once by
 // openDB before any goroutine reads or writes them.
-func blockInit(handle *bbolt.DB) error {
-    if err := cursors.Init(handle); err != nil { return err }
-    return handle.Update(func(tx *bbolt.Tx) error {
-        var _, err = tx.CreateBucketIfNotExists(blocksBucket)
-        return err
-    })
+func blockInit(handle *sql.DB) error {
+    db = handle
+    return nil
 }
 
+// The blocks table keeps the fees as `total - reward`, which is what they are —
+// the record carries the whole coinbase output as Total, and reward + fees
+// recovers it exactly. That is the column tools/tosqlite writes, so a migrated
+// database and one the bot wrote are the same database.
 func storeBlock(bi *blockInfo) error {
     if db == nil { return nil }
     logging.Db("blocks: store %d", bi.Height)
-    var data, err = json.Marshal(bi)
-    if err != nil { return err }
-    return db.Update(func(tx *bbolt.Tx) error {
-        return tx.Bucket(blocksBucket).Put(itob(uint64(bi.Height)), data)
-    })
+    var _, err = db.Exec(blockInsert, blockArgs(bi)...)
+    return err
+}
+
+const blockInsert = `insert into blocks (height, hash, ts, size, txs, miner, feesOK, minFee, avgFee,
+    maxFee, txSizeMin, txSizeAvg, txSizeMax, reward, fees, difficulty)
+    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    on conflict(height) do update set hash = excluded.hash, ts = excluded.ts, size = excluded.size,
+    txs = excluded.txs, miner = excluded.miner, feesOK = excluded.feesOK, minFee = excluded.minFee,
+    avgFee = excluded.avgFee, maxFee = excluded.maxFee, txSizeMin = excluded.txSizeMin,
+    txSizeAvg = excluded.txSizeAvg, txSizeMax = excluded.txSizeMax, reward = excluded.reward,
+    fees = excluded.fees, difficulty = excluded.difficulty`
+
+func blockArgs(bi *blockInfo) []any {
+    return []any{bi.Height, bi.Hash, bi.Time, bi.Size, bi.NumTx, bi.Miner, bi.FeesOK, bi.FeeMin,
+        bi.FeeAvg, bi.FeeMax, bi.TxSizeMin, bi.TxSizeAvg, bi.TxSizeMax, bi.Reward, bi.Total - bi.Reward,
+        bi.Difficulty}
+}
+
+// blockColumns is the order scanBlock reads them in, and the one every query that
+// builds a record has to select.
+const blockColumns = `height, hash, ts, size, txs, miner, feesOK, minFee, avgFee, maxFee,
+    txSizeMin, txSizeAvg, txSizeMax, reward, fees, difficulty`
+
+// scanBlock reads one row into a record, putting the coinbase output back together
+// from the reward and the fees the table keeps separately.
+func scanBlock(row interface{ Scan(...any) error }) (*blockInfo, bool) {
+    var bi blockInfo
+    var fees int64
+    if row.Scan(&bi.Height, &bi.Hash, &bi.Time, &bi.Size, &bi.NumTx, &bi.Miner, &bi.FeesOK,
+        &bi.FeeMin, &bi.FeeAvg, &bi.FeeMax, &bi.TxSizeMin, &bi.TxSizeAvg, &bi.TxSizeMax,
+        &bi.Reward, &fees, &bi.Difficulty) != nil {
+        return nil, false
+    }
+    bi.Total = bi.Reward + fees
+    return &bi, true
 }
 
 func loadBlock(height int64) (*blockInfo, bool) {
     if db == nil { return nil, false }
     logging.Db("blocks: load %d", height)
-    var bi blockInfo
-    var found bool
-    db.View(func(tx *bbolt.Tx) error {
-        var v = tx.Bucket(blocksBucket).Get(itob(uint64(height)))
-        if v != nil && json.Unmarshal(v, &bi) == nil {
-            found = true
-        }
-        return nil
-    })
-    if !found { return nil, false }
-    return &bi, true
+    return scanBlock(db.QueryRow("select "+blockColumns+" from blocks where height = ?", height))
 }
 
 // subsidy returns the block reward in BTC for a height from the halving schedule
@@ -235,15 +256,21 @@ func collectBlocks() {
 // transaction. On error the cursor does not move, so the next run retries the
 // whole chunk.
 func flushBlocks(bis []*blockInfo, cursor int64) error {
-    return db.Update(func(tx *bbolt.Tx) error {
-        var b = tx.Bucket(blocksBucket)
-        for _, bi := range bis {
-            var data, err = json.Marshal(bi)
-            if err != nil { return err }
-            if err := b.Put(itob(uint64(bi.Height)), data); err != nil { return err }
+    if db == nil { return nil }
+    var tx, err = db.Begin()
+    if err != nil { return err }
+    defer tx.Rollback()
+    var stmt, perr = tx.Prepare(blockInsert)
+    if perr != nil { return perr }
+    for _, bi := range bis {
+        if _, err := stmt.Exec(blockArgs(bi)...); err != nil {
+            stmt.Close()
+            return err
         }
-        return cursors.Set(tx, cursors.Blocks, cursor)
-    })
+    }
+    if err := stmt.Close(); err != nil { return err }
+    if err := cursors.Set(tx, cursors.Blocks, cursor); err != nil { return err }
+    return tx.Commit()
 }
 
 // formatBlock renders a cached block record as the /info block reply.

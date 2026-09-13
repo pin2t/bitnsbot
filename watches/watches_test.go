@@ -1,20 +1,26 @@
 package watches
 
-import "encoding/json"
+import "database/sql"
 import "path/filepath"
 import "testing"
 import "time"
 
-import "go.etcd.io/bbolt"
+import _ "modernc.org/sqlite"
+
+// The table as openDB creates it, from the schema tools/tosqlite defines.
+const ddl = `create table watches (chat INTEGER NOT NULL, addr TEXT NOT NULL, alias TEXT NOT NULL,
+    created INTEGER NOT NULL, PRIMARY KEY (chat, addr))`
 
 // open returns the handle as well, which the format tests need to look at the
-// bucket directly.
-func open(t *testing.T) *bbolt.DB {
-    var d, err = bbolt.Open(filepath.Join(t.TempDir(), "watches.db"), 0600, nil)
+// table directly.
+func open(t *testing.T) *sql.DB {
+    t.Helper()
+    var handle, err = sql.Open("sqlite", filepath.Join(t.TempDir(), "watches.db"))
     if err != nil { t.Fatalf("open: %v", err) }
-    if err := Init(d); err != nil { t.Fatalf("init: %v", err) }
-    t.Cleanup(func() { d.Close(); db = nil })
-    return d
+    if _, err := handle.Exec(ddl); err != nil { t.Fatal(err) }
+    if err := Init(handle); err != nil { t.Fatalf("init: %v", err) }
+    t.Cleanup(func() { handle.Close(); db = nil })
+    return handle
 }
 
 func openTestDB(t *testing.T) { open(t) }
@@ -84,26 +90,23 @@ func TestRemove(t *testing.T) {
     }
 }
 
-// The key is "<chat>,<address>" and the value holds only what is left, so a
-// record can be read without decoding anything to find out whose it is.
+// The pair is the primary key — `(chat, addr)` — so a row says whose it is
+// without anything being decoded, and a chat id is an integer rather than text.
 func TestKeyFormat(t *testing.T) {
-    var db = open(t)
+    var handle = open(t)
     if err := Add(260439275, "bc1q5rasj5fedy3f9vgh9x84jqlgtvj964k0xn5z6r", "Cold"); err != nil {
         t.Fatal(err)
     }
-    db.View(func(tx *bbolt.Tx) error {
-        var k, v = tx.Bucket([]byte("watches")).Cursor().First()
-        if string(k) != "260439275,bc1q5rasj5fedy3f9vgh9x84jqlgtvj964k0xn5z6r" {
-            t.Errorf("key = %q", k)
-        }
-        var fields map[string]any
-        if err := json.Unmarshal(v, &fields); err != nil { t.Fatal(err) }
-        if len(fields) != 2 || fields["alias"] != "Cold" {
-            t.Errorf("value = %s, want only created and alias", v)
-        }
-        if _, ok := fields["created"]; !ok { t.Errorf("value has no created: %s", v) }
-        return nil
-    })
+    var chat, created int64
+    var addr, alias string
+    if err := handle.QueryRow("select chat, addr, alias, created from watches").Scan(
+        &chat, &addr, &alias, &created); err != nil {
+        t.Fatal(err)
+    }
+    if chat != 260439275 || addr != "bc1q5rasj5fedy3f9vgh9x84jqlgtvj964k0xn5z6r" || alias != "Cold" {
+        t.Errorf("row = %d %q %q", chat, addr, alias)
+    }
+    if created == 0 { t.Error("created was not stored") }
     // a negative chat id — a Telegram group — round-trips too
     if err := Add(-1001234567890, "addrG", ""); err != nil { t.Fatal(err) }
     var list, err = List()
@@ -118,35 +121,26 @@ func TestKeyFormat(t *testing.T) {
 // The pair is the key, so watching the same address twice is one watch, not two
 // — and it keeps the time it was first made rather than looking newly created.
 func TestAddIsIdempotent(t *testing.T) {
-    var db = open(t)
+    var handle = open(t)
     if err := Add(7, "addrA", "First"); err != nil { t.Fatal(err) }
     var created int64
-    db.View(func(tx *bbolt.Tx) error {
-        var _, v = tx.Bucket([]byte("watches")).Cursor().First()
-        var r struct{ Created int64 `json:"created"` }
-        json.Unmarshal(v, &r)
-        created = r.Created
-        return nil
-    })
+    if err := handle.QueryRow("select created from watches").Scan(&created); err != nil { t.Fatal(err) }
     time.Sleep(1100 * time.Millisecond)
     if err := Add(7, "addrA", "Second"); err != nil { t.Fatal(err) }
     var list, _ = List()
     if len(list) != 1 || list[0].Alias != "Second" {
         t.Fatalf("re-watching gave %+v, want one watch with the newer alias", list)
     }
-    db.View(func(tx *bbolt.Tx) error {
-        var _, v = tx.Bucket([]byte("watches")).Cursor().First()
-        var r struct{ Created int64 `json:"created"` }
-        json.Unmarshal(v, &r)
-        if r.Created != created {
-            t.Errorf("created moved from %d to %d; it is the same watch", created, r.Created)
-        }
-        return nil
-    })
+    var again int64
+    if err := handle.QueryRow("select created from watches").Scan(&again); err != nil { t.Fatal(err) }
+    if again != created {
+        t.Errorf("created moved from %d to %d; it is the same watch", created, again)
+    }
 }
 
-// Count reads the chat's own keys, and the comma in the prefix is what keeps
-// chat 26 out of chat 260's count.
+// Count is a chat's own rows, and the chat being an integer column is what keeps
+// chat 26 out of chat 260's count — where a text key prefix had to carry a comma
+// to do it.
 func TestCountIsScopedByPrefix(t *testing.T) {
     open(t)
     for _, w := range []struct {

@@ -1,22 +1,15 @@
 package main
 
-import "bytes"
-import "encoding/binary"
-import "encoding/json"
 import "errors"
 import "fmt"
 import "path/filepath"
 import "strings"
 import "testing"
-import "time"
-import "bitnsbot/addrstat"
 import "bitnsbot/app"
 import "bitnsbot/cursors"
 import "bitnsbot/rates"
-import "bitnsbot/signals"
 import "bitnsbot/txwatches"
 import "bitnsbot/watches"
-import "go.etcd.io/bbolt"
 
 // The Mini App's Watches tab is the only per-user thing the app serves, and this
 // is the line that scopes it. The app package's tests run against a fake Source,
@@ -123,15 +116,14 @@ func TestAppSectionsAreTranslated(t *testing.T) {
         t.Errorf("English transaction count = %q", got)
     }
     // the miner page
-    if err := db.Update(func(tx *bbolt.Tx) error {
-        var data, err = json.Marshal(map[string]any{"Blocks": 6, "Reward": 1950000000,
-            "Fees": 40000000, "Work": 3.6e24, "LastWork": 6.0e23})
-        if err != nil { return err }
-        if err := tx.Bucket([]byte("miners")).Put([]byte("AntPool"), data); err != nil { return err }
-        return cursors.Set(tx, cursors.Miners, 9)
-    }); err != nil {
+    if _, err := db.Exec(`insert into miners (name, blocks, reward, fees, totalWork, lastWork)
+        values ('AntPool', 6, 1950000000, 40000000, 3.6e24, 6.0e23)`); err != nil {
         t.Fatalf("seed miner stats: %v", err)
     }
+    var mtx, merr = db.Begin()
+    if merr != nil { t.Fatal(merr) }
+    if err := cursors.Set(mtx, cursors.Miners, 9); err != nil { t.Fatal(err) }
+    if err := mtx.Commit(); err != nil { t.Fatal(err) }
     var miner = appSource{}.MinerInfo("ru", "AntPool")
     if !miner.OK || !strings.Contains(labels(miner), "Блоков добыто=6 блоков") {
         t.Errorf("miner page:\n%s", labels(miner))
@@ -297,43 +289,27 @@ func TestTxInfoOnABlockHashIsABlockPage(t *testing.T) {
     }
 }
 
-// seedAddrList gives each address the figure the named list ranks it by,
-// merging into the record the other two lists read, and then builds the indexes
-// — which is what startup does and what every read goes through.
+// seedAddrList gives each address the figure the named list ranks it by, merging
+// into the row the other two lists read. There is nothing to build afterwards:
+// the ranking is an `order by` served by the index on that column.
 func seedAddrList(t *testing.T, kind string, rows map[string]int64) {
     t.Helper()
-    putAddrStats(t, kind, rows)
-    buildAddrIndexes()
-}
-
-// putAddrStats is seedAddrList without the build, for the one test that has to
-// watch a build happen on its own. It does not Init the addrstat package: openDB
-// has already handed it the handle, and the rebuild reads the bucket rather than
-// the lookup Init builds — where calling it again would write that handle under
-// the rebuild goroutine's feet.
-func putAddrStats(t *testing.T, kind string, rows map[string]int64) {
-    t.Helper()
-    var err = db.Update(func(tx *bbolt.Tx) error {
-        var b, berr = tx.CreateBucketIfNotExists([]byte("addrstat"))
-        if berr != nil { return berr }
-        for addr, n := range rows {
-            var s addrstat.Stat
-            if v := b.Get([]byte(addr)); v != nil { json.Unmarshal(v, &s) }
-            switch kind {
-            case "active":    s.Txs = n
-            case "rich":      s.Balance = n
-            case "abandoned": s.Last = n
-            }
-            // the abandoned ranking is of coins that have not moved, so an
-            // address has to hold some to be in it at all
-            if kind == "abandoned" && s.Balance == 0 { s.Balance = 1 }
-            var data, merr = json.Marshal(s)
-            if merr != nil { return merr }
-            if err := b.Put([]byte(addr), data); err != nil { return err }
+    for addr, n := range rows {
+        var _, err = db.Exec(`insert into addrstat (addr, type, balance, recv, sent, flow, fees, txs,
+            first, last) values (?, '', 0, 0, 0, 0, 0, 0, 0, 0) on conflict(addr) do nothing`, addr)
+        if err != nil { t.Fatalf("seed %s: %v", kind, err) }
+        var col = map[string]string{"active": "txs", "rich": "balance", "abandoned": "last"}[kind]
+        if _, err := db.Exec("update addrstat set "+col+" = ? where addr = ?", n, addr); err != nil {
+            t.Fatalf("seed %s: %v", kind, err)
         }
-        return nil
-    })
-    if err != nil { t.Fatalf("seed %s: %v", kind, err) }
+        // the abandoned ranking is of coins that have not moved, so an address
+        // has to hold some to be in it at all
+        if kind == "abandoned" {
+            if _, err := db.Exec("update addrstat set balance = max(balance, 1) where addr = ?", addr); err != nil {
+                t.Fatalf("seed %s: %v", kind, err)
+            }
+        }
+    }
 }
 
 // The three lists are ranked by their value, which the bucket is not ordered by
@@ -437,26 +413,45 @@ func TestAppAddressListPages(t *testing.T) {
     }
 }
 
-// A record this cannot read is skipped the way a block record that fails to
-// decode is, rather than ending the scan and truncating the ranking — and one
-// the scan has not reached holds nothing to rank, so it is not the quietest
-// address on the chain.
-func TestAppAddressListSkipsUnreadableRows(t *testing.T) {
+// Values collide heavily on real data — 120 119 active addresses hold 14 269
+// distinct counts — so a ranking has to show every address that shares a value,
+// in an order that does not change between batches. The `, addr` on the end of
+// the ORDER BY is what makes the tie deterministic; without it, paging could
+// repeat or skip a row inside a group.
+func TestAppAddressListRanksCollidingValues(t *testing.T) {
     if err := openDB(filepath.Join(t.TempDir(), "watches.db")); err != nil {
         t.Fatalf("open db: %v", err)
     }
     defer closeDB()
-    seedAddrList(t, "active", map[string]int64{"aaa": 10, "bbb": 9000, "ccc": 300, "new": 0})
-    db.Update(func(tx *bbolt.Tx) error {
-        return tx.Bucket([]byte("addrstat")).Put([]byte("bad"), []byte("{not json"))
-    })
-    buildAddrIndexes()
-    var got = appSource{}.Addresses("", app.AddrRange{Kind: "active"})
-    if len(got.Rows) != 3 {
-        t.Fatalf("got %d rows, want the 3 readable ones: %+v", len(got.Rows), got.Rows)
+    var rows = map[string]int64{}
+    for i := 0; i < 8; i++ {
+        rows[fmt.Sprintf("addr%02d", i)] = int64(500 + i%2)
     }
-    if got.Rows[0].Id != "bbb" || got.Rows[2].Id != "aaa" {
-        t.Errorf("the readable rows are misordered: %+v", got.Rows)
+    seedAddrList(t, "active", rows)
+    var got = appSource{}.Addresses("", app.AddrRange{Kind: "active"})
+    if len(got.Rows) != 8 {
+        t.Fatalf("the list shows %d of 8 addresses: %+v", len(got.Rows), got.Rows)
+    }
+    var seen = map[string]int{}
+    for i, r := range got.Rows {
+        seen[r.Id]++
+        if i < 4 && r.Value != "501 txs" { t.Errorf("row %d is %q, want the higher value first", i, r.Value) }
+        if i >= 4 && r.Value != "500 txs" { t.Errorf("row %d is %q, want the lower value last", i, r.Value) }
+    }
+    for addr, c := range seen {
+        if c != 1 { t.Errorf("%s appears %d times", addr, c) }
+    }
+    // and paging through the same ranking a row at a time visits each once
+    var page []string
+    for from := 0; from < 8; from++ {
+        var batch = appSource{}.Addresses("", app.AddrRange{Kind: "active", From: from})
+        if len(batch.Rows) == 0 { break }
+        page = append(page, batch.Rows[0].Id)
+    }
+    for i, id := range page {
+        if id != got.Rows[i].Id {
+            t.Errorf("row %d is %s paged and %s in one batch — the tie-break is not stable", i, id, got.Rows[i].Id)
+        }
     }
 }
 
@@ -500,237 +495,5 @@ func TestAppAddressListBoundsARestore(t *testing.T) {
     // and it still continues from where it stopped rather than claiming the end
     if !got.More || got.Next != addrsRestoreRows {
         t.Errorf("capped restore says Next=%d More=%v; the scroll must carry on", got.Next, got.More)
-    }
-}
-
-// The index key is the value with the address appended, and the address half is
-// load-bearing: values collide heavily on real data — 120 119 active addresses
-// hold 14 269 distinct counts — so a bare value key would keep one address per
-// value and silently drop the rest.
-func TestAddrIndexKeepsCollidingValues(t *testing.T) {
-    if err := openDB(filepath.Join(t.TempDir(), "watches.db")); err != nil {
-        t.Fatalf("open db: %v", err)
-    }
-    defer closeDB()
-    // eight addresses, two distinct values between them
-    var rows = map[string]int64{}
-    for i := 0; i < 8; i++ {
-        rows[fmt.Sprintf("addr%02d", i)] = int64(500 + i%2)
-    }
-    seedAddrList(t, "active", rows)
-    var n int
-    db.View(func(tx *bbolt.Tx) error {
-        n = tx.Bucket([]byte("activeindex")).Stats().KeyN
-        return nil
-    })
-    if n != 8 {
-        t.Fatalf("the index holds %d entries for 8 addresses; colliding values were overwritten", n)
-    }
-    var got = appSource{}.Addresses("", app.AddrRange{Kind: "active"})
-    if len(got.Rows) != 8 {
-        t.Fatalf("the list shows %d of 8 addresses: %+v", len(got.Rows), got.Rows)
-    }
-    // the four highest come first, and every address appears exactly once
-    var seen = map[string]int{}
-    for i, r := range got.Rows {
-        seen[r.Id]++
-        if i < 4 && r.Value != "501 txs" { t.Errorf("row %d is %q, want the higher value first", i, r.Value) }
-        if i >= 4 && r.Value != "500 txs" { t.Errorf("row %d is %q, want the lower value last", i, r.Value) }
-    }
-    for addr, c := range seen {
-        if c != 1 { t.Errorf("%s appears %d times", addr, c) }
-    }
-}
-
-// The index is rebuilt from the records, from scratch, so whatever a pass of the
-// collector did to them is picked up whole — rows added, rows gone, and a list
-// that has emptied altogether.
-func TestAddrIndexRebuildsFromTheRecords(t *testing.T) {
-    if err := openDB(filepath.Join(t.TempDir(), "watches.db")); err != nil {
-        t.Fatalf("open db: %v", err)
-    }
-    defer closeDB()
-    seedAddrList(t, "rich", map[string]int64{"aaa": 100000000})
-    // a record the collector moved behind the index's back is picked up next time
-    seedAddrList(t, "rich", map[string]int64{"bbb": 900000000})
-    var grown = appSource{}.Addresses("", app.AddrRange{Kind: "rich"})
-    if len(grown.Rows) != 2 || grown.Rows[0].Id != "bbb" {
-        t.Errorf("a rebuild should take the new row, got %+v", grown.Rows)
-    }
-    // an address that spent everything drops out of the ranking
-    seedAddrList(t, "rich", map[string]int64{"bbb": 0})
-    var shrunk = appSource{}.Addresses("", app.AddrRange{Kind: "rich"})
-    if len(shrunk.Rows) != 1 || shrunk.Rows[0].Id != "aaa" {
-        t.Errorf("a rebuild should drop the emptied row, got %+v", shrunk.Rows)
-    }
-    // and a list with nothing left in it leaves no index at all, not the last
-    // one built from it
-    db.Update(func(tx *bbolt.Tx) error {
-        tx.DeleteBucket([]byte("addrstat"))
-        var _, err = tx.CreateBucket([]byte("addrstat"))
-        return err
-    })
-    buildAddrIndexes()
-    var gone = appSource{}.Addresses("", app.AddrRange{Kind: "rich"})
-    if gone.OK || len(gone.Rows) != 0 {
-        t.Errorf("an emptied list still serves %+v", gone.Rows)
-    }
-    var exists bool
-    db.View(func(tx *bbolt.Tx) error {
-        exists = tx.Bucket([]byte("richindex")) != nil
-        return nil
-    })
-    if exists {
-        t.Error("a stale index outlived the rows it was built from")
-    }
-}
-
-// The rankings are rebuilt when the records they rank move, rather than an hour
-// later: the statistics collector fires a signal when it has caught up, and this
-// is the loop that waits on it.
-func TestAddrIndexRebuildsOnTheSignal(t *testing.T) {
-    if err := openDB(filepath.Join(t.TempDir(), "watches.db")); err != nil {
-        t.Fatalf("open db: %v", err)
-    }
-    defer closeDB()
-    // an interval far too long to be what rebuilds it
-    var old = addrIndexInterval
-    addrIndexInterval = time.Hour
-    defer func() { addrIndexInterval = old }()
-    signals.Reset()
-    var stop = startAddrIndexes()
-    defer stop()
-    putAddrStats(t, "rich", map[string]int64{"aaa": 100000000})
-    signals.Fire(signals.AddrStat)
-    var listed bool
-    for i := 0; i < 200 && !listed; i++ {
-        listed = len(appSource{}.Addresses("", app.AddrRange{Kind: "rich"}).Rows) == 1
-        time.Sleep(5 * time.Millisecond)
-    }
-    if !listed { t.Error("the signal did not rebuild the index") }
-}
-
-// The rebuild runs on its own goroutine: once at once, so a freshly imported
-// database is not three empty lists until the first hour is up, then on the
-// interval. The stop waits for a rebuild in flight, since shutdown closes the
-// database right after it.
-func TestAddrIndexRebuildsOnATicker(t *testing.T) {
-    if err := openDB(filepath.Join(t.TempDir(), "watches.db")); err != nil {
-        t.Fatalf("open db: %v", err)
-    }
-    defer closeDB()
-    var old = addrIndexInterval
-    addrIndexInterval = 20 * time.Millisecond
-    defer func() { addrIndexInterval = old }()
-    putAddrStats(t, "active", map[string]int64{"aaa": 10})
-    var stop = startAddrIndexes()
-    // the first build is immediate, not an interval away
-    var listed bool
-    for i := 0; i < 200 && !listed; i++ {
-        listed = len(appSource{}.Addresses("", app.AddrRange{Kind: "active"}).Rows) == 1
-        time.Sleep(5 * time.Millisecond)
-    }
-    if !listed {
-        t.Fatal("the first rebuild never ran")
-    }
-    // a later change is taken on a tick, with nothing else prompting it
-    putAddrStats(t, "active", map[string]int64{"bbb": 99})
-    var picked bool
-    for i := 0; i < 200 && !picked; i++ {
-        picked = len(appSource{}.Addresses("", app.AddrRange{Kind: "active"}).Rows) == 2
-        time.Sleep(5 * time.Millisecond)
-    }
-    if !picked {
-        t.Error("the ticker never rebuilt the index")
-    }
-    stop()
-    // stop is what lets shutdown close the database safely, so it must return
-    // rather than leaving the goroutine writing
-    putAddrStats(t, "active", map[string]int64{"ccc": 1})
-    time.Sleep(60 * time.Millisecond)
-    if n := len(appSource{}.Addresses("", app.AddrRange{Kind: "active"}).Rows); n != 2 {
-        t.Errorf("the goroutine kept running after stop: %d rows", n)
-    }
-}
-
-// A list with nothing in it to rank is left without an index rather than with an
-// empty one — an empty index would be "already there" and a later record would
-// never be picked up.
-func TestAddrIndexNotBuiltForNothing(t *testing.T) {
-    if err := openDB(filepath.Join(t.TempDir(), "watches.db")); err != nil {
-        t.Fatalf("open db: %v", err)
-    }
-    defer closeDB()
-    seedAddrList(t, "abandoned", map[string]int64{"aaa": 0})
-    buildAddrIndexes()
-    var exists bool
-    db.View(func(tx *bbolt.Tx) error {
-        exists = tx.Bucket([]byte("abandonedindex")) != nil
-        return nil
-    })
-    if exists {
-        t.Error("an index was created for a bucket with nothing indexable in it")
-    }
-    // and once there is something to index, the next build takes it
-    seedAddrList(t, "abandoned", map[string]int64{"bbb": 1233636834})
-    var got = appSource{}.Addresses("", app.AddrRange{Kind: "abandoned"})
-    if len(got.Rows) != 1 || got.Rows[0].Id != "bbb" {
-        t.Errorf("a later import should be indexed, got %+v", got.Rows)
-    }
-}
-
-// The abandoned index packs its date into four bytes. A value too wide would
-// truncate and rank as something else entirely, so it is left out instead.
-func TestAddrIndexSkipsOversizedValues(t *testing.T) {
-    if err := openDB(filepath.Join(t.TempDir(), "watches.db")); err != nil {
-        t.Fatalf("open db: %v", err)
-    }
-    defer closeDB()
-    seedAddrList(t, "abandoned", map[string]int64{
-        "good": 1233636834, "huge": 4294967296, "later": 1500000000,
-    })
-    var got = appSource{}.Addresses("", app.AddrRange{Kind: "abandoned"})
-    if len(got.Rows) != 2 {
-        t.Fatalf("got %d rows, want the 2 that fit: %+v", len(got.Rows), got.Rows)
-    }
-    if got.Rows[0].Id != "good" || got.Rows[1].Id != "later" {
-        t.Errorf("oldest first was not preserved: %+v", got.Rows)
-    }
-}
-
-// The whole entry is the key — the value big-endian, then the address — and
-// nothing is stored as the bbolt value. A read slices the address back out, so a
-// key written any other way would come back as the wrong address rather than as
-// an error.
-func TestAddrIndexKeyFormat(t *testing.T) {
-    if err := openDB(filepath.Join(t.TempDir(), "watches.db")); err != nil {
-        t.Fatalf("open db: %v", err)
-    }
-    defer closeDB()
-    seedAddrList(t, "rich", map[string]int64{"bc1qexample": 2500000000000})
-    seedAddrList(t, "abandoned", map[string]int64{"1AbandonedOne": 1233636834})
-    var cases = []struct {
-        index string
-        want  []byte
-    }{
-        {"richindex", append(binary.BigEndian.AppendUint64(nil, 2500000000000), "bc1qexample"...)},
-        {"abandonedindex", append(binary.BigEndian.AppendUint32(nil, 1233636834), "1AbandonedOne"...)},
-    }
-    for _, c := range cases {
-        db.View(func(tx *bbolt.Tx) error {
-            var k, v = tx.Bucket([]byte(c.index)).Cursor().Seek(c.want)
-            if !bytes.Equal(k, c.want) {
-                t.Errorf("%s has no key %x; the nearest is %x", c.index, c.want, k)
-            }
-            if len(v) != 0 {
-                t.Errorf("%s stores %q as its value; the key carries everything", c.index, v)
-            }
-            return nil
-        })
-    }
-    // and the address the list shows is the one sliced back out of that key
-    var got = appSource{}.Addresses("", app.AddrRange{Kind: "rich"})
-    if len(got.Rows) == 0 || got.Rows[0].Id != "bc1qexample" {
-        t.Errorf("the address did not survive the round trip: %+v", got.Rows)
     }
 }

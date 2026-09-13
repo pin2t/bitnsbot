@@ -1,12 +1,15 @@
 package main
 
+import "fmt"
 import "os"
 import "path/filepath"
 import "strings"
 import "testing"
 import "time"
 
-import "go.etcd.io/bbolt"
+import "database/sql"
+
+import _ "modernc.org/sqlite"
 import "bitnsbot/watches"
 
 // openBackupDB opens a database holding one watch, so a backup has something
@@ -21,22 +24,27 @@ func openBackupDB(t *testing.T) {
     }
 }
 
-// readBackup opens a backup file and returns the raw records in its watches
-// bucket, proving the copy is a valid, complete bbolt database that can be opened
-// and read on its own — not just a file of the right size.
+// readBackup opens a backup file and returns its watches, proving the copy is a
+// valid, complete SQLite database that can be opened and read on its own — not
+// just a file of the right size.
 func readBackup(t *testing.T, path string) []string {
-    var copied, err = bbolt.Open(path, 0600, &bbolt.Options{ReadOnly: true, Timeout: 2 * time.Second})
+    var copied, err = sql.Open("sqlite", "file:"+path+"?mode=ro")
     if err != nil {
         t.Fatalf("open backup: %v", err)
     }
     defer copied.Close()
+    var rows, qerr = copied.Query("select chat, addr, alias from watches order by chat, addr")
+    if qerr != nil {
+        t.Fatalf("read backup: %v", qerr)
+    }
+    defer rows.Close()
     var got []string
-    copied.View(func(tx *bbolt.Tx) error {
-        return tx.Bucket([]byte("watches")).ForEach(func(k, v []byte) error {
-            got = append(got, string(k)+" "+string(v))
-            return nil
-        })
-    })
+    for rows.Next() {
+        var chat int64
+        var addr, alias string
+        if err := rows.Scan(&chat, &addr, &alias); err != nil { t.Fatal(err) }
+        got = append(got, fmt.Sprintf("%d,%s %s", chat, addr, alias))
+    }
     return got
 }
 
@@ -61,7 +69,8 @@ func TestBackup(t *testing.T) {
 
 // A failed copy must not destroy the previous good backup — the reason the copy
 // lands on a temporary file first. Here the temporary path is occupied by a
-// directory, so bbolt cannot create its file there.
+// directory, so VACUUM INTO cannot write its file there (and backup leaves a
+// non-file alone rather than clearing it out of the way).
 func TestBackupKeepsPreviousOnFailure(t *testing.T) {
     openBackupDB(t)
     var path = filepath.Join(t.TempDir(), "backup.db")

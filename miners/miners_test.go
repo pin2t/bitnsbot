@@ -6,13 +6,30 @@ import "net/http/httptest"
 import "path/filepath"
 import "testing"
 
-import "go.etcd.io/bbolt"
+import "database/sql"
 
-func openTestDB(t *testing.T) {
-    var d, err = bbolt.Open(filepath.Join(t.TempDir(), "miners.db"), 0600, nil)
+import _ "modernc.org/sqlite"
+import "bitnsbot/cursors"
+
+// The tables as openDB creates them, from the schema tools/tosqlite defines: a row
+// per pool, and a row per address and per tag naming the pool it belongs to.
+const ddl = `create table miners (name TEXT PRIMARY KEY, blocks INTEGER NOT NULL,
+    reward INTEGER NOT NULL, fees INTEGER NOT NULL, totalWork REAL NOT NULL, lastWork REAL NOT NULL);
+    create table mineraddr (address TEXT PRIMARY KEY, name TEXT NOT NULL references miners(name));
+    create table minertag (tag TEXT PRIMARY KEY, name TEXT NOT NULL references miners(name));
+    create table cursors (name TEXT PRIMARY KEY, place INTEGER NOT NULL)`
+
+func openTestDB(t *testing.T) *sql.DB {
+    t.Helper()
+    // foreign keys on, as the bot runs them: mineraddr and minertag cannot name a
+    // pool the miners table does not have
+    var handle, err = sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "miners.db")+"?_pragma=foreign_keys(on)")
     if err != nil { t.Fatalf("open: %v", err) }
-    if err := Init(d); err != nil { t.Fatalf("init: %v", err) }
-    t.Cleanup(func() { d.Close(); db = nil })
+    if _, err := handle.Exec(ddl); err != nil { t.Fatal(err) }
+    if err := cursors.Init(handle); err != nil { t.Fatalf("cursors: %v", err) }
+    if err := Init(handle); err != nil { t.Fatalf("init: %v", err) }
+    t.Cleanup(func() { handle.Close(); db = nil })
+    return handle
 }
 
 func serve(t *testing.T, payload *string) {

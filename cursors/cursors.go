@@ -1,82 +1,62 @@
-// Package cursors is the one bucket every scan over the chain keeps its place
-// in. A scan resumes where it stopped, so its place is the only thing standing
+// Package cursors is the one table every scan over the chain keeps its place in.
+// A scan resumes where it stopped, so its place is the only thing standing
 // between a restart and starting over.
 //
-// Every one of them is the same thing in the same form — a block height, or a
-// file number, as decimal text — so they share one bucket, keyed by the scan's
-// own name:
+// Every one of them is the same thing — a block height — so they share one table,
+// keyed by the scan's own name:
 //
-//	blocks         the block-info cache's backfill (blocks.go)
-//	miners         the per-pool statistics collector (miners/stats.go)
-//	addrindex      the address index's build (addrindex/)
-//	addrstat       the per-address statistics collector (addrstat/)
-//	actbuild-file  the busy-address pass over Core's block files (tools/addrindex)
+//	blocks     the block-info cache's backfill (blocks.go)
+//	miners     the per-pool statistics collector (miners/stats.go)
+//	addrstat   the per-address statistics collector (addrstat/)
+//	addrindex  the address index's build (addrindex/)
 package cursors
 
-import "strconv"
-
-import "go.etcd.io/bbolt"
+import "database/sql"
 
 // The scans that keep a place here. Constants rather than strings at the call
 // sites: a name that does not match is not an error, it is a scan that silently
-// starts from the beginning, which for the address index is a rebuild measured
-// in hours.
+// starts from the beginning, which for a chain scan is hours of work.
 const Blocks = "blocks"
 const Miners = "miners"
-const AddrIndex = "addrindex"
 const AddrStat = "addrstat"
-const ActBuild = "actbuild-file"
 
-var bucket = []byte("cursors")
+// AddrIndex is the index build's place when the index is in SQLite, which is how
+// the bot keeps it. tools/addrindex drives the same package against bbolt and
+// keeps its place in a bucket of that file instead — same name, different store.
+const AddrIndex = "addrindex"
 
-var db *bbolt.DB
+var db *sql.DB
 
-// Init is called from every package that keeps a cursor, and by tools/addrindex,
-// so it runs several times a start and must be safe to repeat.
-func Init(handle *bbolt.DB) error {
+// Init is called from openDB, before the packages that keep a place here.
+func Init(handle *sql.DB) error {
     db = handle
-    return db.Update(func(tx *bbolt.Tx) error {
-        var _, err = tx.CreateBucketIfNotExists(bucket)
-        return err
-    })
+    return nil
 }
 
 // Get reads one scan's place. Not found is not zero: a scan that has never run
 // starts somewhere of its own choosing — genesis for the block cache, height 1
 // for the miner statistics — which is not where a scan that stopped at height 0
 // resumes.
-// Delete forgets a scan's place inside the caller's transaction, so the scan
-// starts from its own beginning again. addrstat is the one caller: adding an
-// address to a set that is already scanned means scanning the chain again.
-func Delete(tx *bbolt.Tx, name string) error {
-    return tx.Bucket(bucket).Delete([]byte(name))
-}
-
 func Get(name string) (int64, bool) {
     if db == nil { return 0, false }
     var v int64
-    var ok bool
-    db.View(func(tx *bbolt.Tx) error {
-        var b = tx.Bucket(bucket)
-        if b == nil { return nil }
-        if raw := b.Get([]byte(name)); raw != nil {
-            var n, err = strconv.ParseInt(string(raw), 10, 64)
-            if err == nil { v, ok = n, true }
-        }
-        return nil
-    })
-    return v, ok
+    var err = db.QueryRow("select place from cursors where name = ?", name).Scan(&v)
+    if err != nil { return 0, false }
+    return v, true
 }
 
 // Set writes one inside the caller's transaction, which is the whole point of
 // taking a tx: a scan advances its place in the same commit as the batch that
 // reached it, so a crash between the two cannot skip work or repeat it.
-func Set(tx *bbolt.Tx, name string, v int64) error {
-    var b = tx.Bucket(bucket)
-    if b == nil {
-        var created, err = tx.CreateBucket(bucket)
-        if err != nil { return err }
-        b = created
-    }
-    return b.Put([]byte(name), []byte(strconv.FormatInt(v, 10)))
+func Set(tx *sql.Tx, name string, v int64) error {
+    var _, err = tx.Exec("insert into cursors (name, place) values (?, ?) "+
+        "on conflict(name) do update set place = excluded.place", name, v)
+    return err
+}
+
+// Delete forgets a scan's place inside the caller's transaction, so the scan
+// starts from its own beginning again.
+func Delete(tx *sql.Tx, name string) error {
+    var _, err = tx.Exec("delete from cursors where name = ?", name)
+    return err
 }

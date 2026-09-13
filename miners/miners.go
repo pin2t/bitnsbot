@@ -17,12 +17,10 @@ import "sort"
 import "sync"
 import "time"
 
-import "go.etcd.io/bbolt"
-import "bitnsbot/cursors"
+import "database/sql"
 import "bitnsbot/logging"
 
-var db *bbolt.DB
-var bucket = []byte("miners")
+var db *sql.DB
 
 // sourceURL is mempool's mining-pool definitions (pool name + coinbase output
 // addresses). A package var so tests can point it at a local server.
@@ -32,6 +30,13 @@ var httpClient = &http.Client{Timeout: 15 * time.Second}
 // updateInterval is how often the bucket is refreshed from the source. A package
 // var so tests can shrink it.
 var updateInterval = 24 * time.Hour
+
+// poolDef is a pool as mempool's definitions file describes it.
+type poolDef struct {
+    Name      string   `json:"name"`
+    Addresses []string `json:"addresses"`
+    Tags      []string `json:"tags"`
+}
 
 // tagged is one coinbase tag and the pool that writes it. The tags are a slice
 // sorted by tag rather than a map, because attribution takes the first tag the
@@ -50,36 +55,47 @@ var indexMu sync.RWMutex
 var addrIndex = map[string]string{}
 var tagIndex []tagged
 
-// Init stores the shared bbolt handle, ensures the miners bucket exists, and
-// builds the in-memory mappings from what is in it. The collector's place lives
-// in the shared cursors bucket, which this ensures too.
-func Init(handle *bbolt.DB) error {
+// Init stores the shared handle and builds the in-memory mappings from the rows.
+func Init(handle *sql.DB) error {
     db = handle
-    if err := cursors.Init(handle); err != nil { return err }
-    var err = db.Update(func(tx *bbolt.Tx) error {
-        var _, berr = tx.CreateBucketIfNotExists(bucket)
-        return berr
-    })
-    if err != nil { return err }
     return loadIndex()
 }
 
-// loadIndex rebuilds the in-memory mappings from the bucket. Init and update are
-// the only things that change what they are built from.
+// loadIndex rebuilds the in-memory mappings from mineraddr and minertag. Init and
+// update are the only things that change what they are built from.
+//
+// The two tables are read into memory rather than queried per block because that
+// is what attribution is: every block on the chain asks about a handful of
+// addresses and one coinbase script, and the tag side is a substring match that no
+// index can serve anyway.
 func loadIndex() error {
     if db == nil { return nil }
     var addrs = map[string]string{}
     var tags []tagged
-    var err = db.View(func(tx *bbolt.Tx) error {
-        return tx.Bucket(bucket).ForEach(func(k, v []byte) error {
-            var r record
-            if json.Unmarshal(v, &r) != nil { return nil }
-            for _, a := range r.Addresses { addrs[a] = string(k) }
-            for _, t := range r.Tags { tags = append(tags, tagged{[]byte(t), string(k)}) }
-            return nil
-        })
-    })
+    var rows, err = db.Query("select address, name from mineraddr")
     if err != nil { return err }
+    for rows.Next() {
+        var address, name string
+        if err := rows.Scan(&address, &name); err != nil {
+            rows.Close()
+            return err
+        }
+        addrs[address] = name
+    }
+    rows.Close()
+    if err := rows.Err(); err != nil { return err }
+    rows, err = db.Query("select tag, name from minertag")
+    if err != nil { return err }
+    for rows.Next() {
+        var tag, name string
+        if err := rows.Scan(&tag, &name); err != nil {
+            rows.Close()
+            return err
+        }
+        tags = append(tags, tagged{[]byte(tag), name})
+    }
+    rows.Close()
+    if err := rows.Err(); err != nil { return err }
     sort.Slice(tags, func(i, j int) bool { return bytes.Compare(tags[i].tag, tags[j].tag) < 0 })
     indexMu.Lock()
     addrIndex, tagIndex = addrs, tags
@@ -142,6 +158,54 @@ func merge(have, add []string) []string {
     return out
 }
 
+// store merges the fetched definitions into the three tables and reports how many
+// addresses and tags were new.
+//
+// The pool row comes first and its addresses and tags after it, which is what the
+// foreign keys require — and the order says what they say: an address belongs to a
+// pool, so the pool has to exist. Each is an `insert … on conflict do nothing`, so
+// what is already there is left alone and `RowsAffected` counts what was not: the
+// source only ever adds, and a pool that stops listing an address it once used
+// still attributes the blocks it mined with it.
+func store(pools []poolDef) (added, tags int, err error) {
+    if db == nil { return 0, 0, nil }
+    var tx, terr = db.Begin()
+    if terr != nil { return 0, 0, terr }
+    defer tx.Rollback()
+    for _, d := range pools {
+        if d.Name == "" { continue }
+        var _, perr = tx.Exec(`insert into miners (name, blocks, reward, fees, totalWork, lastWork)
+            values (?, 0, 0, 0, 0, 0) on conflict(name) do nothing`, d.Name)
+        if perr != nil { return 0, 0, perr }
+        var n int
+        if n, err = insertAll(tx, "insert into mineraddr (address, name) values (?, ?) on conflict(address) do nothing", d.Name, d.Addresses); err != nil {
+            return 0, 0, err
+        }
+        added += n
+        if n, err = insertAll(tx, "insert into minertag (tag, name) values (?, ?) on conflict(tag) do nothing", d.Name, d.Tags); err != nil {
+            return 0, 0, err
+        }
+        tags += n
+    }
+    if err := tx.Commit(); err != nil { return 0, 0, err }
+    return added, tags, loadIndex()
+}
+
+// insertAll runs one statement over a pool's addresses or tags and reports how
+// many of them were not already there.
+func insertAll(tx *sql.Tx, query, name string, values []string) (int, error) {
+    var added int
+    for _, v := range values {
+        if v == "" { continue }
+        var res, err = tx.Exec(query, v, name)
+        if err != nil { return added, err }
+        var n, aerr = res.RowsAffected()
+        if aerr != nil { return added, aerr }
+        added += int(n)
+    }
+    return added, nil
+}
+
 // update fetches the pool definitions and merges each pool's addresses and tags
 // into its record, leaving the aggregated statistics in it alone.
 func update() {
@@ -161,34 +225,13 @@ func update() {
         logging.Warn("update miners: status %d", resp.StatusCode)
         return
     }
-    type poolDef struct {
-        Name      string   `json:"name"`
-        Addresses []string `json:"addresses"`
-        Tags      []string `json:"tags"`
-    }
     var pools []poolDef
     if err := json.Unmarshal(body, &pools); err != nil {
         logging.Warn("update miners: %v", err)
         return
     }
     var added, tags int
-    err = db.Update(func(tx *bbolt.Tx) error {
-        var b = tx.Bucket(bucket)
-        for _, d := range pools {
-            if d.Name == "" { continue }
-            var r record
-            if v := b.Get([]byte(d.Name)); v != nil { json.Unmarshal(v, &r) }
-            var addrs, tgs = merge(r.Addresses, d.Addresses), merge(r.Tags, d.Tags)
-            added += len(addrs) - len(r.Addresses)
-            tags += len(tgs) - len(r.Tags)
-            r.Addresses, r.Tags = addrs, tgs
-            var data, merr = json.Marshal(r)
-            if merr != nil { return merr }
-            if err := b.Put([]byte(d.Name), data); err != nil { return err }
-        }
-        return nil
-    })
-    if err != nil {
+    if added, tags, err = store(pools); err != nil {
         logging.Err("store miners: %v", err)
         return
     }

@@ -1,12 +1,10 @@
 package main
 
 import "context"
-import "encoding/json"
 import "path/filepath"
 import "strings"
 import "testing"
 
-import "go.etcd.io/bbolt"
 import "bitnsbot/addrstat"
 
 // seedAddrStat writes the record the collector would have gathered for one
@@ -17,11 +15,10 @@ func seedAddrStat(t *testing.T, addr string, s addrstat.Stat) {
     t.Helper()
     if err := openDB(filepath.Join(t.TempDir(), "bitnsbot.db")); err != nil { t.Fatalf("openDB: %v", err) }
     t.Cleanup(func() { closeDB() })
-    var data, err = json.Marshal(s)
+    var _, err = db.Exec(`insert into addrstat (addr, type, balance, recv, sent, flow, fees, txs,
+        first, last) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, addr, s.Type, s.Balance, s.Recv,
+        s.Sent, s.Flow, s.Fees, s.Txs, s.First, s.Last)
     if err != nil { t.Fatal(err) }
-    if err := db.Update(func(tx *bbolt.Tx) error {
-        return tx.Bucket([]byte("addrstat")).Put([]byte(addr), data)
-    }); err != nil { t.Fatal(err) }
 }
 
 // An address the collector follows is answered from its record — with no node at

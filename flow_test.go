@@ -10,7 +10,6 @@ import "strings"
 import "testing"
 import "time"
 import "bitnsbot/cursors"
-import "go.etcd.io/bbolt"
 import "bitnsbot/lru"
 
 // infoBlockHash is a real mainnet block hash: 64 hex characters, exactly the
@@ -703,20 +702,17 @@ func TestMinersFlow(t *testing.T) {
         {"AntPool", 6, 1950000000, 40000000, 6.0e23},
         {"F2Pool", 1, 325000000, 2000000, 5.6e23},
     }
-    if err := db.Update(func(tx *bbolt.Tx) error {
-        var b = tx.Bucket([]byte("miners"))
-        for _, p := range pools {
-            var data, err = json.Marshal(map[string]any{
-                "Blocks": p.blocks, "Reward": p.reward, "Fees": p.fees,
-                "Work": p.lastWork * float64(p.blocks), "LastWork": p.lastWork,
-            })
-            if err != nil { return err }
-            if err := b.Put([]byte(p.name), data); err != nil { return err }
+    for _, p := range pools {
+        if _, err := db.Exec(`insert into miners (name, blocks, reward, fees, totalWork, lastWork)
+            values (?, ?, ?, ?, ?, ?)`, p.name, p.blocks, p.reward, p.fees,
+            p.lastWork*float64(p.blocks), p.lastWork); err != nil {
+            t.Fatalf("seed stats: %v", err)
         }
-        return cursors.Set(tx, cursors.Miners, 9)
-    }); err != nil {
-        t.Fatalf("seed stats: %v", err)
     }
+    var tx, terr = db.Begin()
+    if terr != nil { t.Fatal(terr) }
+    if err := cursors.Set(tx, cursors.Miners, 9); err != nil { t.Fatal(err) }
+    if err := tx.Commit(); err != nil { t.Fatal(err) }
     update(bot, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/miners"}})
     if len(sent) != 2 {
         t.Fatalf("expected a miners reply, got %#v", sent)

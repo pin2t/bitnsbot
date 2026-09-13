@@ -1,11 +1,9 @@
 package miners
 
 import "context"
-import "encoding/json"
 import "sort"
 import "time"
 
-import "go.etcd.io/bbolt"
 import "bitnsbot/logging"
 import "bitnsbot/cursors"
 import "bitnsbot/signals"
@@ -134,28 +132,34 @@ func collect(src Source) {
     }
 }
 
-// flush merges a chunk's in-memory deltas into the pool records and advances the
+// flush merges a chunk's in-memory deltas into the pool rows and advances the
 // cursor, in one transaction. Blocks/Reward/Fees/Work accumulate; LastWork is
 // overwritten with the most recent (chunks run oldest-first, so the last write
-// wins). The record is read and written whole, so the addresses and tags in it
-// come through untouched.
+// wins). A pool's addresses and tags are rows of their own tables, so nothing
+// here can disturb them.
 func flush(deltas map[string]*record, last int64) error {
-    return db.Update(func(tx *bbolt.Tx) error {
-        var sb = tx.Bucket(bucket)
-        for name, d := range deltas {
-            var s record
-            if v := sb.Get([]byte(name)); v != nil { json.Unmarshal(v, &s) }
-            s.Blocks += d.Blocks
-            s.Reward += d.Reward
-            s.Fees += d.Fees
-            s.Work += d.Work
-            s.LastWork = d.LastWork
-            var data, err = json.Marshal(s)
-            if err != nil { return err }
-            if err := sb.Put([]byte(name), data); err != nil { return err }
+    if db == nil { return nil }
+    var tx, err = db.Begin()
+    if err != nil { return err }
+    defer tx.Rollback()
+    // An upsert rather than an update: the pool row is there already — a block is
+    // only attributed to a pool mineraddr or minertag names, and those reference
+    // this table — but a delta is not a thing to drop on the floor if it is not.
+    var stmt, perr = tx.Prepare(`insert into miners (name, blocks, reward, fees, totalWork, lastWork)
+        values (?, ?, ?, ?, ?, ?)
+        on conflict(name) do update set blocks = miners.blocks + excluded.blocks,
+        reward = miners.reward + excluded.reward, fees = miners.fees + excluded.fees,
+        totalWork = miners.totalWork + excluded.totalWork, lastWork = excluded.lastWork`)
+    if perr != nil { return perr }
+    for name, d := range deltas {
+        if _, err := stmt.Exec(name, d.Blocks, d.Reward, d.Fees, d.Work, d.LastWork); err != nil {
+            stmt.Close()
+            return err
         }
-        return cursors.Set(tx, cursors.Miners, last)
-    })
+    }
+    if err := stmt.Close(); err != nil { return err }
+    if err := cursors.Set(tx, cursors.Miners, last); err != nil { return err }
+    return tx.Commit()
 }
 
 func cursor() (last int64, ok bool) { return cursors.Get(cursors.Miners) }
@@ -197,20 +201,25 @@ func all() []Stat {
     if db == nil { return nil }
     var out []Stat
     var totalBlocks int64
-    db.View(func(tx *bbolt.Tx) error {
-        return tx.Bucket(bucket).ForEach(func(k, v []byte) error {
-            var s record
-            if json.Unmarshal(v, &s) != nil { return nil }
-            // A record with no blocks is a pool the definitions name and the
-            // collector has never attributed a block to. It is not a statistic:
-            // reporting it would fill /miners with zeroes on a fresh install,
-            // and hand the app's miner page zeroes to present as fact.
-            if s.Blocks == 0 { return nil }
-            totalBlocks += s.Blocks
-            out = append(out, Stat{Name: string(k), Blocks: s.Blocks, Reward: s.Reward, Fees: s.Fees, lastWork: s.LastWork})
+    // A pool with no blocks is one the definitions name and the collector has
+    // never attributed a block to. It is not a statistic: reporting it would fill
+    // /miners with zeroes on a fresh install, and hand the app's miner page
+    // zeroes to present as fact.
+    var rows, err = db.Query("select name, blocks, reward, fees, lastWork from miners where blocks > 0")
+    if err != nil {
+        logging.Err("miners: %v", err)
+        return nil
+    }
+    defer rows.Close()
+    for rows.Next() {
+        var s Stat
+        if err := rows.Scan(&s.Name, &s.Blocks, &s.Reward, &s.Fees, &s.lastWork); err != nil {
+            logging.Err("miners: %v", err)
             return nil
-        })
-    })
+        }
+        totalBlocks += s.Blocks
+        out = append(out, s)
+    }
     var windowBlocks = float64(totalBlocks)
     for i := range out {
         if windowBlocks > 0 {

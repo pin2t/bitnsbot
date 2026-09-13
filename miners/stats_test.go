@@ -1,12 +1,10 @@
 package miners
 
 import "context"
-import "encoding/json"
 import "errors"
 import "math"
 import "reflect"
 import "testing"
-import "go.etcd.io/bbolt"
 import "time"
 
 // fakeSource stands in for the btcd-backed chain source: a fixed tip and a map of
@@ -28,33 +26,32 @@ func (f *fakeSource) Block(ctx context.Context, height int64) (Block, error) {
     return f.blocks[height], nil
 }
 
-// seedAddresses writes the addresses into their pools' records the way update
-// would, and rebuilds the in-memory mappings attribution reads.
+// seedAddresses puts the addresses into their pools' rows the way the definitions
+// refresh would, and rebuilds the in-memory mappings attribution reads.
 func seedAddresses(t *testing.T, addrs map[string]string) {
-    var err = db.Update(func(tx *bbolt.Tx) error {
-        var b = tx.Bucket(bucket)
-        for a, n := range addrs {
-            var r record
-            if v := b.Get([]byte(n)); v != nil { json.Unmarshal(v, &r) }
-            r.Addresses = merge(r.Addresses, []string{a})
-            var data, merr = json.Marshal(r)
-            if merr != nil { return merr }
-            if err := b.Put([]byte(n), data); err != nil { return err }
-        }
-        return nil
-    })
-    if err != nil { t.Fatalf("seed addresses: %v", err) }
-    if err := loadIndex(); err != nil { t.Fatalf("load index: %v", err) }
+    t.Helper()
+    var byPool = map[string][]string{}
+    for a, n := range addrs { byPool[n] = append(byPool[n], a) }
+    var pools []poolDef
+    for name, list := range byPool { pools = append(pools, poolDef{Name: name, Addresses: list}) }
+    if _, _, err := store(pools); err != nil { t.Fatalf("seed addresses: %v", err) }
 }
 
+// statOf reads one pool's aggregate, which every row of that pool repeats.
 func statOf(t *testing.T, name string) record {
+    t.Helper()
     var s record
-    db.View(func(tx *bbolt.Tx) error {
-        if v := tx.Bucket(bucket).Get([]byte(name)); v != nil {
-            if err := json.Unmarshal(v, &s); err != nil { t.Fatalf("unmarshal %s: %v", name, err) }
+    var err = db.QueryRow(`select max(blocks), max(reward), max(fees), max(totalWork), max(lastWork)
+        from miners where name = ?`, name).Scan(&s.Blocks, &s.Reward, &s.Fees, &s.Work, &s.LastWork)
+    if err != nil && err.Error() != "sql: no rows in result set" {
+        // an aggregate over no rows comes back as NULL, which is a pool with
+        // nothing gathered rather than an error
+        var n int
+        if db.QueryRow("select count(*) from miners where name = ?", name).Scan(&n) == nil && n == 0 {
+            return record{}
         }
-        return nil
-    })
+        t.Fatalf("stat of %s: %v", name, err)
+    }
     return s
 }
 
