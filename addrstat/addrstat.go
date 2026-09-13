@@ -185,7 +185,7 @@ func Collect(src addrindex.Blockchain) error {
         // are told the moment the figures they rank have moved rather than
         // waiting out their own interval. Only when a block was actually
         // scanned: a pass that found nothing to do has nothing to announce.
-        signals.Fire(signals.AddrStat)
+        signals.Send(signals.AddrStat)
     }
     return nil
 }

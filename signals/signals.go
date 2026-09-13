@@ -40,10 +40,10 @@ func Subscribe(name string) <-chan struct{} {
     return ch
 }
 
-// Fire wakes everyone waiting on name. It never blocks, so it is safe to call
+// Send wakes everyone waiting on name. It never blocks, so it is safe to call
 // from a notification handler: a subscriber that is already awake, or already
 // has a signal pending, simply keeps the one it has.
-func Fire(name string) {
+func Send(name string) {
     mu.Lock()
     var chans = subs[name]
     mu.Unlock()
