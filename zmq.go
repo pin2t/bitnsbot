@@ -241,7 +241,7 @@ func startZMQ(ctx context.Context, endpoints []string, b *bot) error {
                 // were already going to do it. The confirmation messages are the
                 // exception: they are per-block by nature, matching this block's
                 // transactions against the watch list.
-                signals.Fire(signals.Block)
+                signals.Send(signals.Block)
             case "rawtx":
                 if !anyWatched() { continue }
                 var tx, ok = parseTx(msg.Frames[1])

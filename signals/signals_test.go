@@ -7,7 +7,7 @@ func TestFireWakesEverySubscriber(t *testing.T) {
     Reset()
     var a, b = Subscribe(Block), Subscribe(Block)
     var other = Subscribe(AddrStat)
-    Fire(Block)
+    Send(Block)
     for i, ch := range []<-chan struct{}{a, b} {
         select {
         case <-ch:
@@ -29,7 +29,7 @@ func TestFireWakesEverySubscriber(t *testing.T) {
 func TestFireCoalescesAndNeverBlocks(t *testing.T) {
     Reset()
     var ch = Subscribe(Block)
-    for i := 0; i < 100; i++ { Fire(Block) }
+    for i := 0; i < 100; i++ { Send(Block) }
     select {
     case <-ch:
     default:
@@ -44,8 +44,8 @@ func TestFireCoalescesAndNeverBlocks(t *testing.T) {
 
 func TestFireWithNobodyListening(t *testing.T) {
     Reset()
-    Fire(Block)
-    Fire("nobody has this one")
+    Send(Block)
+    Send("nobody has this one")
 }
 
 // Fired from the ZMQ read loop while subscribers are starting up, so both sides
@@ -56,7 +56,7 @@ func TestConcurrentFireAndSubscribe(t *testing.T) {
     for i := 0; i < 50; i++ {
         wg.Add(2)
         go func() { defer wg.Done(); Subscribe(Block) }()
-        go func() { defer wg.Done(); Fire(Block) }()
+        go func() { defer wg.Done(); Send(Block) }()
     }
     wg.Wait()
 }
