@@ -1,4 +1,4 @@
-package dbui
+package main
 
 import "bytes"
 import "encoding/json"
