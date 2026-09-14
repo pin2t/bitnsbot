@@ -8,13 +8,15 @@ import "fmt"
 import "net/http"
 import "os"
 import "strings"
+import "time"
 
 import "bitnsbot/logging"
 
-// rpc is a minimal Bitcoin Core JSON-RPC client — only what resolving an
-// address's history needs. The bot's own client (core.go) is package main's and
-// cannot be imported here; this covers four methods where that one covers
-// twenty, so it is a smaller thing rather than a copy.
+// rpc is a minimal Bitcoin Core JSON-RPC client — what the builds read the chain
+// through and what resolving an address's history needs. The bot's own client
+// (core.go) is package main's and cannot be imported here; this covers a handful
+// of methods where that one covers twenty, so it is a smaller thing rather than
+// a copy.
 type rpc struct {
     url    string
     client *http.Client
@@ -29,7 +31,13 @@ func newRPC(url, user, pass, cookieFile string) (*rpc, error) {
         if len(parts) != 2 { return nil, fmt.Errorf("%s is not a Core cookie file", cookieFile) }
         user, pass = parts[0], parts[1]
     }
-    var c = &rpc{url: url, client: &http.Client{}}
+    // -fetch blocks are read at once, two calls each, over hours: without idle
+    // connections to reuse, all but two of them would be dialled afresh per call
+    var c = &rpc{url: url, client: &http.Client{Transport: &http.Transport{
+        MaxIdleConns:        20,
+        MaxIdleConnsPerHost: 10,
+        IdleConnTimeout:     60 * time.Second,
+    }}}
     var req = &http.Request{Header: http.Header{}}
     req.SetBasicAuth(user, pass)
     c.auth = req.Header.Get("Authorization")
@@ -37,8 +45,8 @@ func newRPC(url, user, pass, cookieFile string) (*rpc, error) {
 }
 
 // call speaks JSON-RPC 1.0 with positional params. Core reports method errors in
-// the body with HTTP 500, so the status is not checked — the body is decoded
-// either way.
+// the body with HTTP 500, so a failing status is not on its own an error — the
+// body is decoded either way.
 func (c *rpc) call(ctx context.Context, method string, params []interface{}, result interface{}) error {
     if params == nil { params = []interface{}{} }
     var body, err = json.Marshal(map[string]interface{}{
@@ -52,6 +60,11 @@ func (c *rpc) call(ctx context.Context, method string, params []interface{}, res
     var resp, doErr = c.client.Do(req)
     if doErr != nil { return doErr }
     defer resp.Body.Close()
+    // Core answers bad credentials with an empty 401, which would otherwise
+    // surface as a JSON decoder's EOF
+    if resp.StatusCode == http.StatusUnauthorized {
+        return fmt.Errorf("%s: unauthorized — pass -cookie, or -user and -pass", method)
+    }
     var decoded struct {
         Result json.RawMessage `json:"result"`
         Error  *struct {

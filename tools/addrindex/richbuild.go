@@ -1,9 +1,7 @@
 package main
 
 import "context"
-import "encoding/json"
 import "fmt"
-import "net/http"
 import "strconv"
 import "time"
 
@@ -16,10 +14,9 @@ import "bitnsbot/logging"
 // nothing else moves value. Summed from genesis to the tip that is the UTXO set
 // aggregated by address, which is what the rich table holds.
 //
-// The scan reads Core's REST interface, the same two endpoints the address index
-// is built from — /rest/block and /rest/spenttxouts, which is the only place a
-// spend's script and amount are written down. RPC would answer the same
-// questions in JSON at roughly thirty times the size.
+// The scan reads each block the way the address index is built from it — one
+// getblock at verbosity 3, whose prevouts are the only place a spend's script
+// and amount are written down.
 //
 // Nothing chain-sized is held in memory. Movements go to sharded files as they
 // are read, each shard is summed on its own afterwards, and only the surviving
@@ -35,15 +32,17 @@ func richbuild(opt *options) error {
     defer store.close()
     var ctx, cancel = context.WithCancel(context.Background())
     defer cancel()
-    var src = addrindex.NewREST(opt.url)
+    var client, cerr = newRPC(opt.url, opt.user, opt.pass, opt.cookie)
+    if cerr != nil { return fmt.Errorf("RPC client: %w", cerr) }
+    var src = addrindex.NewRPC(client.call)
     var tipCtx, tipCancel = context.WithTimeout(ctx, 30*time.Second)
     var tip, terr = src.Tip(tipCtx)
     tipCancel()
     if terr != nil {
-        return fmt.Errorf("Core REST is unreachable at %s (%v) — enable -rest=1", opt.url, terr)
+        return fmt.Errorf("Core RPC is unreachable at %s (%v)", opt.url, terr)
     }
     if opt.to > 0 && opt.to < tip { tip = opt.to }
-    var chain, size = chainFacts(ctx, opt.url)
+    var chain, total = chainFacts(ctx, client)
     var at, built, herr = store.height("height")
     if herr != nil { return herr }
     var from = 0
@@ -51,7 +50,7 @@ func richbuild(opt *options) error {
         from = at + 1
         var stored, _, merr = store.meta("hash")
         if merr != nil { return merr }
-        if err := sameChain(ctx, opt.url, stored, at); err != nil { return err }
+        if err := sameChain(ctx, client, stored, at); err != nil { return err }
     }
     if from > tip {
         return atTip(store, opt, at, tip)
@@ -77,7 +76,7 @@ func richbuild(opt *options) error {
         }
         fmt.Printf("Carried %s balances forward from block %d\n", group(int64(seeded)), at)
     }
-    var last, scanErr = scan(ctx, src, sh, opt, chain, from, tip, size, started)
+    var last, scanErr = scan(ctx, src, sh, opt, chain, from, tip, total, started)
     if scanErr != nil { return scanErr }
     if err := sh.flush(); err != nil { return err }
     fmt.Printf("Read blocks %d..%d in %s: %s movements, %.1f GB of shards\n",
@@ -94,45 +93,43 @@ const shardBufferKB = 512
 
 // scan walks the blocks, turning each into the balance movements it makes and
 // buffering them until there are enough to be worth writing out.
-func scan(ctx context.Context, src *addrindex.REST, sh *shards, opt *options,
-    chain string, from, tip int, size int64, started time.Time) (string, error) {
+func scan(ctx context.Context, src *addrindex.RPC, sh *shards, opt *options,
+    chain string, from, tip int, total int64, started time.Time) (string, error) {
     var buf = make(map[string]int64, opt.batch)
     var reported = time.Now()
     var read int64
     var last string
     for f := range stream(ctx, src, from, tip, opt.fetch) {
         if f.err != nil { return "", fmt.Errorf("block %d: %w", f.height, f.err) }
-        var moves, ok = addrindex.Balances(f.blk)
-        if !ok { return "", fmt.Errorf("could not parse block %d (%s)", f.height, f.blk.Hash) }
         last = f.blk.Hash
-        for _, m := range moves { buf[string(m.Script)] += m.Sat }
-        for _, o := range voided(chain, f.height, f.blk.Raw) { buf[string(o.Script)] -= o.Sat }
-        read += int64(len(f.blk.Raw) + len(f.blk.Spent))
+        for _, m := range addrindex.Balances(f.blk) { buf[string(m.Script)] += m.Sat }
+        for _, o := range voided(chain, f.height, f.blk) { buf[string(o.Script)] -= o.Sat }
+        read += int64(len(f.blk.Txs))
         if len(buf) >= opt.batch {
             if err := flush(sh, buf); err != nil { return "", err }
         }
         if time.Since(reported) >= time.Minute {
             reported = time.Now()
             logging.Info("richbuild: block %d of %d, %s movements written, %.1f GB of shards, %s",
-                f.height, tip, group(sh.records), float64(sh.bytes)/1e9, reading(started, read, size))
+                f.height, tip, group(sh.records), float64(sh.bytes)/1e9, reading(started, read, total))
         }
     }
     return last, flush(sh, buf)
 }
 
 // reading reports how fast the chain is coming in and how much of it is left. It
-// counts bytes rather than blocks, and against what the node says it holds: a
-// block from 2011 is a few hundred bytes where one from this year is well over a
-// megabyte, so a share of the block count would promise the tip in minutes for
-// most of a run that takes hours. Core's size_on_disk covers the block files and
-// the undo data, which is exactly the pair of endpoints this reads.
-func reading(started time.Time, read, size int64) string {
+// counts transactions rather than blocks, against the node's count for the whole
+// chain: a block from 2011 holds a transaction or two where one from this year
+// holds thousands, so a share of the block count would promise the tip in
+// minutes for most of a run that takes hours. A transaction is also roughly what
+// each block costs to read, the node writing its every input and output as JSON.
+func reading(started time.Time, read, total int64) string {
     var elapsed = time.Since(started)
     if elapsed <= 0 || read <= 0 { return "" }
-    var out = fmt.Sprintf("%.0f MB/sec", float64(read)/1e6/elapsed.Seconds())
-    if size > read {
-        out += fmt.Sprintf(", %.1f%% of %.0f GB, ETA %s", 100*float64(read)/float64(size),
-            float64(size)/1e9, took(time.Duration(float64(elapsed)*float64(size-read)/float64(read))))
+    var out = fmt.Sprintf("%.0f tx/sec", float64(read)/elapsed.Seconds())
+    if total > read {
+        out += fmt.Sprintf(", %.1f%% of %s transactions, ETA %s", 100*float64(read)/float64(total),
+            group(total), took(time.Duration(float64(elapsed)*float64(total-read)/float64(read))))
     }
     return out
 }
@@ -162,15 +159,14 @@ func flush(sh *shards, buf map[string]int64) error {
 //
 // Only mainnet has them, which is why the chain the node reports is checked
 // first: on regtest or testnet these heights are ordinary blocks.
-func voided(chain string, height int, raw []byte) []addrindex.Payment {
+func voided(chain string, height int, blk addrindex.Block) []addrindex.Payment {
     if chain != "main" { return nil }
     if height != 0 && height != 91722 && height != 91812 { return nil }
-    var txs, ok = addrindex.OutputsByTx(raw)
-    if !ok || len(txs) == 0 { return nil }
-    return txs[0]
+    if len(blk.Txs) == 0 { return nil }
+    return blk.Txs[0].Outputs
 }
 
-// fetched is one block's raw material, or the error that stopped it.
+// fetched is one block, or the error that stopped it.
 type fetched struct {
     height int
     blk    addrindex.Block
@@ -178,13 +174,13 @@ type fetched struct {
 }
 
 // stream hands the blocks over in height order while fetching several of them at
-// once. Each block is three REST requests against a node on the same machine, so
-// a sequential scan spends most of its time waiting: measured against this
-// repo's own node, four fetches at a time took recent blocks from 71 to 116 a
-// second and 120 to 197 MB/s. Order still matters — a balance is a running total
-// — so each height gets its own one-slot channel and the results are read in the
-// order the heights were queued.
-func stream(ctx context.Context, src *addrindex.REST, from, to, workers int) <-chan fetched {
+// once. Each block is two RPC calls against a node on the same machine, so a
+// sequential scan spends most of its time waiting: measured against this repo's
+// own node when the blocks came over REST, four fetches at a time took recent
+// blocks from 71 to 116 a second and 120 to 197 MB/s. Order still matters — a
+// balance is a running total — so each height gets its own one-slot channel and
+// the results are read in the order the heights were queued.
+func stream(ctx context.Context, src *addrindex.RPC, from, to, workers int) <-chan fetched {
     if workers < 1 { workers = 1 }
     var queue = make(chan chan fetched, workers)
     go func() {
@@ -223,7 +219,7 @@ func stream(ctx context.Context, src *addrindex.REST, from, to, workers int) <-c
 // again from the last stored height. Only the last error is reported, since a
 // height that fails three times is failing for one reason. Its warning names no
 // command, since ababuild reads the chain through this too.
-func fetchBlock(ctx context.Context, src *addrindex.REST, height int) (addrindex.Block, error) {
+func fetchBlock(ctx context.Context, src *addrindex.RPC, height int) (addrindex.Block, error) {
     var blk addrindex.Block
     var err error
     for attempt := 0; attempt < fetchAttempts; attempt++ {
@@ -297,30 +293,15 @@ func aggregate(store *richStore, sh *shards, opt *options, tip int, hash string)
 // away minutes later — after which resuming from the stored height would keep
 // counting coins from a block the node no longer has, quietly and for good.
 // State written before this check kept no hash, and is simply not checked.
-func sameChain(ctx context.Context, baseURL, stored string, at int) error {
+func sameChain(ctx context.Context, client *rpc, stored string, at int) error {
     if stored == "" { return nil }
-    var now, herr = blockHash(ctx, baseURL, at)
-    if herr != nil { return fmt.Errorf("read block %d: %w", at, herr) }
+    var now string
+    if err := client.call(ctx, "getblockhash", []interface{}{at}, &now); err != nil {
+        return fmt.Errorf("read block %d: %w", at, err)
+    }
     if now == stored { return nil }
     return fmt.Errorf("block %d is %s on the node but the stored balances were summed to %s — "+
         "that block was reorged away, so delete %s and build it again", at, now, stored, "the database")
-}
-
-// blockHash asks REST for the block at a height, which is the cheapest question
-// the node answers about one.
-func blockHash(ctx context.Context, baseURL string, height int) (string, error) {
-    var req, err = http.NewRequestWithContext(ctx, http.MethodGet,
-        fmt.Sprintf("%s/rest/blockhashbyheight/%d.json", baseURL, height), nil)
-    if err != nil { return "", err }
-    var resp, derr = http.DefaultClient.Do(req)
-    if derr != nil { return "", derr }
-    defer resp.Body.Close()
-    if resp.StatusCode != http.StatusOK { return "", fmt.Errorf("blockhashbyheight %d: %s", height, resp.Status) }
-    var body struct {
-        Hash string `json:"blockhash"`
-    }
-    if err := json.NewDecoder(resp.Body).Decode(&body); err != nil { return "", err }
-    return body.Hash, nil
 }
 
 // atTip is the run that has nothing to scan. It still rebuilds rich when that
@@ -354,23 +335,22 @@ func report(store *richStore, opt *options, height int, started time.Time) error
 }
 
 // chainFacts asks the node what it is before the scan starts: which chain, since
-// the fixups above are mainnet's, and how much block data it holds, which is
-// what the progress line measures against. A node that will not say is treated
-// as mainnet — that is what a build against 127.0.0.1:8332 nearly always is, and
-// the alternative, quietly skipping the fixups, would be wrong in the direction
-// nobody would notice.
-func chainFacts(ctx context.Context, baseURL string) (string, int64) {
-    var req, err = http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/rest/chaininfo.json", nil)
-    if err != nil { return "main", 0 }
-    var resp, derr = http.DefaultClient.Do(req)
-    if derr != nil { return "main", 0 }
-    defer resp.Body.Close()
+// the fixups above are mainnet's, and how many transactions it holds, which is
+// what the progress line measures against. A node that will not say its chain is
+// treated as mainnet — that is what a build against 127.0.0.1:8332 nearly always
+// is, and the alternative, quietly skipping the fixups, would be wrong in the
+// direction nobody would notice. One that will not count its transactions just
+// leaves the estimate off.
+func chainFacts(ctx context.Context, client *rpc) (string, int64) {
     var info struct {
         Chain string `json:"chain"`
-        Size  int64  `json:"size_on_disk"`
     }
-    if err := json.NewDecoder(resp.Body).Decode(&info); err != nil || info.Chain == "" {
-        return "main", info.Size
+    var stats struct {
+        Txs int64 `json:"txcount"`
     }
-    return info.Chain, info.Size
+    client.call(ctx, "getchaintxstats", nil, &stats)
+    if err := client.call(ctx, "getblockchaininfo", nil, &info); err != nil || info.Chain == "" {
+        return "main", stats.Txs
+    }
+    return info.Chain, stats.Txs
 }

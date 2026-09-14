@@ -17,6 +17,8 @@ import "syscall"
 import "time"
 import "runtime/debug"
 import "github.com/pin2t/flagex"
+import "bitnsbot/addrindex"
+import "bitnsbot/addrstat"
 import "bitnsbot/app"
 import "bitnsbot/logging"
 import "bitnsbot/miners"
@@ -43,7 +45,8 @@ var coreUser        = flag.String("core-user", "", "Bitcoin Core RPC username (o
 var corePass        = flag.String("core-pass", "", "Bitcoin Core RPC password (or use -core-cookie)")
 var coreCookie      = flag.String("core-cookie", "", "path to Bitcoin Core's .cookie file, an alternative to -core-user/-core-pass")
 var coreZMQ         = flag.String("core-zmq", "", "comma-separated ZMQ endpoints publishing hashblock and rawtx, e.g. tcp://127.0.0.1:28332,tcp://127.0.0.1:28333")
-var coreREST        = flag.String("core-rest", "", "base URL of Bitcoin Core's REST interface for building the address index (empty disables indexing)")
+var addressIndex    = flag.Bool("address-index", false, "build the address index and the per-address statistics from Bitcoin Core's RPC — a pass over the whole chain, then every new block")
+var coreREST        = flag.String("core-rest", "", "ignored beyond switching -address-index on — the index is built over RPC now; kept so a config file that sets it still starts and still indexes")
 var backupPath      = flag.String("backup", "", "path to copy the database to periodically (empty disables backups)")
 var backupInterval  = flag.Duration("backup-interval", 24*time.Hour, "how old the backup may get before a fresh one is taken")
 var backupScript    = flag.String("backup-script", "", "command run after each backup, with the backup's path as $1 and in $BACKUP_FILE (empty runs nothing)")
@@ -460,8 +463,17 @@ func main() {
             logging.Fatal("subscribe to Bitcoin Core ZMQ: %v", err)
         }
     }
-    if core != nil && *coreREST != "" {
-        startAddrIndex(*coreREST)
+    if *coreREST != "" {
+        logging.Warn("core-rest is deprecated: the address index is built over RPC now, so all it does is switch address-index on — replace it with address-index=true")
+        *addressIndex = true
+    }
+    if core != nil && *addressIndex {
+        var src = addrindex.NewRPC(core.call)
+        addrindex.StartBackfill(src)
+        // The statistics collector reads the same blocks on a pass of its own:
+        // the index says which transactions an address is in, where this says
+        // what they did to it, and the two advance at different rates.
+        addrstat.Start(src)
     }
     if *registerHook {
         if *webhookURL == "" {

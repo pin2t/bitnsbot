@@ -46,7 +46,7 @@ func abandonedRows(t *testing.T, path string) (addrs []string, balance, last map
 }
 
 // The whole command end to end: read the fake node's blocks and spent outputs
-// over REST, and end up with who holds coins and when they last moved any.
+// over RPC, and end up with who holds coins and when they last moved any.
 func TestAbaBuild(t *testing.T) {
     var srv = fakeCore(t, 3)
     var opt = abaOptions(t, srv.URL)

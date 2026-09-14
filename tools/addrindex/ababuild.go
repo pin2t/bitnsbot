@@ -11,9 +11,9 @@ import "bitnsbot/logging"
 // ababuild finds the coins nobody has touched for longest: the addresses that
 // hold a balance and whose last operation — coins received, or coins spent from
 // them — is further back than anyone else's. It reads the chain exactly as
-// richbuild does, every block and the prevouts its inputs spend over Core's REST
-// interface, and keeps one more thing per script as it goes: the block time it
-// last moved coins at.
+// richbuild does, every block and the prevouts its inputs spend over Core's RPC,
+// and keeps one more thing per script as it goes: the block time it last moved
+// coins at.
 //
 // Either side counts, because either side is the coins moving. An address paid
 // last year has not been silent for a decade, whoever sent the payment, so a
@@ -42,15 +42,17 @@ func ababuild(opt *options) error {
     defer store.close()
     var ctx, cancel = context.WithCancel(context.Background())
     defer cancel()
-    var src = addrindex.NewREST(opt.url)
+    var client, cerr = newRPC(opt.url, opt.user, opt.pass, opt.cookie)
+    if cerr != nil { return fmt.Errorf("RPC client: %w", cerr) }
+    var src = addrindex.NewRPC(client.call)
     var tipCtx, tipCancel = context.WithTimeout(ctx, 30*time.Second)
     var tip, terr = src.Tip(tipCtx)
     tipCancel()
     if terr != nil {
-        return fmt.Errorf("Core REST is unreachable at %s (%v) — enable -rest=1", opt.url, terr)
+        return fmt.Errorf("Core RPC is unreachable at %s (%v)", opt.url, terr)
     }
     if opt.to > 0 && opt.to < tip { tip = opt.to }
-    var chain, size = chainFacts(ctx, opt.url)
+    var chain, total = chainFacts(ctx, client)
     var at, built, herr = store.height("height")
     if herr != nil { return herr }
     var from = 0
@@ -58,7 +60,7 @@ func ababuild(opt *options) error {
         from = at + 1
         var stored, _, merr = store.meta("hash")
         if merr != nil { return merr }
-        if err := sameChain(ctx, opt.url, stored, at); err != nil { return err }
+        if err := sameChain(ctx, client, stored, at); err != nil { return err }
     }
     if from > tip {
         return alreadyBuilt(store, opt, at, tip)
@@ -89,7 +91,7 @@ func ababuild(opt *options) error {
         }
         fmt.Printf("Carried %s balances forward from block %d\n", group(int64(seeded)), at)
     }
-    var last, scanErr = track(ctx, src, sh, opt, chain, from, tip, size, started)
+    var last, scanErr = track(ctx, src, sh, opt, chain, from, tip, total, started)
     if scanErr != nil { return scanErr }
     if err := sh.flush(); err != nil { return err }
     fmt.Printf("Read blocks %d..%d in %s: %s movements, %.1f GB of shards\n",
@@ -118,22 +120,18 @@ func (m *move) at(sat, when int64) {
 
 // track walks the blocks, turning each into the movements it makes and the dates
 // they happened on, and buffering them until there are enough to write out.
-func track(ctx context.Context, src *addrindex.REST, sh *shards, opt *options,
-    chain string, from, tip int, size int64, started time.Time) (string, error) {
+func track(ctx context.Context, src *addrindex.RPC, sh *shards, opt *options,
+    chain string, from, tip int, total int64, started time.Time) (string, error) {
     var buf = make(map[string]move, opt.batch)
     var reported = time.Now()
     var read int64
     var last string
     for f := range stream(ctx, src, from, tip, opt.fetch) {
         if f.err != nil { return "", fmt.Errorf("block %d: %w", f.height, f.err) }
-        var moves, ok = addrindex.Balances(f.blk)
-        if !ok { return "", fmt.Errorf("could not parse block %d (%s)", f.height, f.blk.Hash) }
-        var when, timed = addrindex.BlockTime(f.blk.Raw)
-        if !timed { return "", fmt.Errorf("block %d (%s) is shorter than its own header", f.height, f.blk.Hash) }
         last = f.blk.Hash
-        for _, m := range moves {
+        for _, m := range addrindex.Balances(f.blk) {
             var e = buf[string(m.Script)]
-            e.at(m.Sat, when)
+            e.at(m.Sat, f.blk.Time)
             buf[string(m.Script)] = e
         }
         // The outputs Core's UTXO set never held are taken back out of the
@@ -141,19 +139,19 @@ func track(ctx context.Context, src *addrindex.REST, sh *shards, opt *options,
         // of these ends up holding nothing and never reaches the answer table,
         // and every other script involved was paid again by the copy that did
         // survive, which is later and therefore wins the max anyway.
-        for _, o := range voided(chain, f.height, f.blk.Raw) {
+        for _, o := range voided(chain, f.height, f.blk) {
             var e = buf[string(o.Script)]
             e.sat -= o.Sat
             buf[string(o.Script)] = e
         }
-        read += int64(len(f.blk.Raw) + len(f.blk.Spent))
+        read += int64(len(f.blk.Txs))
         if len(buf) >= opt.batch {
             if err := spill(sh, buf); err != nil { return "", err }
         }
         if time.Since(reported) >= time.Minute {
             reported = time.Now()
             logging.Info("ababuild: block %d of %d, %s movements written, %.1f GB of shards, %s",
-                f.height, tip, group(sh.records), float64(sh.bytes)/1e9, reading(started, read, size))
+                f.height, tip, group(sh.records), float64(sh.bytes)/1e9, reading(started, read, total))
         }
     }
     return last, spill(sh, buf)

@@ -138,9 +138,9 @@ func Count() int {
 
 // Start runs the collector: a catch-up to the tip, then again on every block
 // notification and every interval, whichever comes first.
-// src is the same REST-backed chain source the address index is built from —
-// one block and its spent outputs is 1.95 MB against getblock verbosity 3's
-// 13.7 MB of JSON, which is what makes a full-chain pass affordable at all.
+// src is the same chain source the address index is built from — one getblock
+// at verbosity 3 a block, whose prevouts are where a spend's script and amount,
+// and so a transaction's fee, are written down.
 func Start(src addrindex.Blockchain) {
     go func() {
         var wake = signals.Subscribe(signals.Block)
@@ -199,30 +199,23 @@ func Collect(src addrindex.Blockchain) error {
 // it: the chain records who funded a transaction, not which of them paid for it,
 // and this is what the live path already does.
 func apply(deltas map[string]*Stat, blk addrindex.Block) {
-    var outputs, ok1 = addrindex.OutputsByTx(blk.Raw)
-    var spent, ok2 = addrindex.SpentByTx(blk.Spent)
-    var when, ok3 = addrindex.BlockTime(blk.Raw)
-    if !ok1 || !ok2 || !ok3 || len(outputs) != len(spent) {
-        logging.Warn("addrstat: could not parse block %s", blk.Hash)
-        return
-    }
     watchedMu.RLock()
     defer watchedMu.RUnlock()
-    for i := range outputs {
+    for _, tx := range blk.Txs {
         var fee int64
-        if len(spent[i]) > 0 { // a coinbase spends nothing and pays no fee
-            for _, p := range spent[i] { fee += p.Sat }
-            for _, p := range outputs[i] { fee -= p.Sat }
+        if len(tx.Spent) > 0 { // a coinbase spends nothing and pays no fee
+            for _, p := range tx.Spent { fee += p.Sat }
+            for _, p := range tx.Outputs { fee -= p.Sat }
         }
         var seen = map[string]bool{}
         var paid = map[string]bool{}
-        for _, p := range outputs[i] {
+        for _, p := range tx.Outputs {
             var s, addr = at(deltas, p.Script)
             if s == nil { continue }
             s.Recv += p.Sat
-            touch(s, seen, addr, when)
+            touch(s, seen, addr, blk.Time)
         }
-        for _, p := range spent[i] {
+        for _, p := range tx.Spent {
             var s, addr = at(deltas, p.Script)
             if s == nil { continue }
             s.Sent += p.Sat
@@ -230,7 +223,7 @@ func apply(deltas map[string]*Stat, blk addrindex.Block) {
                 paid[addr] = true
                 s.Fees += fee
             }
-            touch(s, seen, addr, when)
+            touch(s, seen, addr, blk.Time)
         }
     }
 }

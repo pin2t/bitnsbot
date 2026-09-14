@@ -2,7 +2,6 @@ package addrstat
 
 import "bytes"
 import "context"
-import "encoding/binary"
 import "path/filepath"
 import "testing"
 
@@ -31,44 +30,13 @@ type tx struct {
 
 func pay(script []byte, sat int64) addrindex.Payment { return addrindex.Payment{Script: script, Sat: sat} }
 
-// blockOf serializes a block and its spent-outputs blob the way Core's REST
-// interface returns them, with the timestamp in the header where BlockTime
-// reads it.
+// blockOf is a block mined at when, holding txs in order.
 func blockOf(when int64, txs ...tx) addrindex.Block {
-    var raw = new(bytes.Buffer)
-    var header = make([]byte, 80)
-    binary.LittleEndian.PutUint32(header[68:72], uint32(when))
-    raw.Write(header)
-    raw.WriteByte(byte(len(txs)))
-    var spent = new(bytes.Buffer)
-    spent.WriteByte(byte(len(txs)))
+    var blk = addrindex.Block{Hash: "fixture", Time: when}
     for _, t := range txs {
-        raw.Write(make([]byte, 4)) // version
-        // one input, coinbase-shaped: a zero input count is the segwit marker on
-        // the real wire, so even a fixture must carry one
-        raw.WriteByte(1)
-        raw.Write(make([]byte, 36))
-        raw.WriteByte(0)
-        raw.Write(make([]byte, 4))
-        raw.WriteByte(byte(len(t.outs)))
-        for _, o := range t.outs {
-            var v = make([]byte, 8)
-            binary.LittleEndian.PutUint64(v, uint64(o.Sat))
-            raw.Write(v)
-            raw.WriteByte(byte(len(o.Script)))
-            raw.Write(o.Script)
-        }
-        raw.Write(make([]byte, 4)) // locktime
-        spent.WriteByte(byte(len(t.spent)))
-        for _, o := range t.spent {
-            var v = make([]byte, 8)
-            binary.LittleEndian.PutUint64(v, uint64(o.Sat))
-            spent.Write(v)
-            spent.WriteByte(byte(len(o.Script)))
-            spent.Write(o.Script)
-        }
+        blk.Txs = append(blk.Txs, addrindex.Tx{Outputs: t.outs, Spent: t.spent})
     }
-    return addrindex.Block{Hash: "fixture", Raw: raw.Bytes(), Spent: spent.Bytes()}
+    return blk
 }
 
 type fakeChain struct {

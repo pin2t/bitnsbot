@@ -26,18 +26,18 @@ scripts build there, as the checkout's owner, and only copy the binary into
   ordered `After=bitcoind.service`). If yours has a different name, edit that
   `After=` line in `/etc/systemd/system/bitnsbot.service` — an unknown unit name
   there is simply ignored, so a wrong name costs ordering, not startup.
-- Bitcoin Core itself needs three things set in `bitcoin.conf` for the bot to
-  use everything it can:
+- Bitcoin Core itself needs two things set in `bitcoin.conf` for the bot to
+  use everything it can — the transaction index and ZMQ, which with JSON-RPC is
+  everything the bot asks of it:
 
   ```
   txindex=1                                # /info on any transaction
-  rest=1                                   # the address index is built over REST
   zmqpubhashblock=tcp://127.0.0.1:28332    # new-block notifications
   zmqpubrawtx=tcp://127.0.0.1:28333        # mempool notifications for watches
   ```
 
-  None are strictly required to start: without ZMQ the bot answers commands but
-  never notifies, and without `rest=1` address history stays unavailable.
+  Neither is strictly required to start: without ZMQ the bot answers commands
+  but never notifies.
 
 ## Usage
 
