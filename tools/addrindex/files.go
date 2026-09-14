@@ -8,6 +8,8 @@ import "os"
 import "path/filepath"
 import "sort"
 
+import "bitnsbot/addrindex"
+
 // magic is what precedes every block in a blk file — mainnet's network magic,
 // which is also how the reader tells a real record from the zero padding Core
 // leaves at the end of a preallocated file.
@@ -99,4 +101,126 @@ func (b *blockReader) next() ([]byte, error) {
         return nil, err
     }
     return b.buf, nil
+}
+
+// parseBlockOutputs reads a serialized block (80-byte header, then the
+// transaction count, then each transaction) and returns each transaction's
+// outputs — script and amount — indexed by the transaction's position in the
+// block. It skips everything else — inputs, witness data, locktime — since a
+// serialized block carries no prevouts to read a spend from. The transaction
+// boundaries are kept because actbuild counts transactions, not outputs: an
+// address paid twice by one transaction was involved in one transaction.
+//
+// It lives here rather than in the addrindex package because these files are the
+// one place a block is binary. Everything else reads blocks over RPC, already
+// decoded into an addrindex.Block.
+func parseBlockOutputs(raw []byte) ([][]addrindex.Payment, bool) {
+    var r = &reader{buf: raw}
+    r.skip(80) // block header
+    var txCount, ok = r.varInt()
+    if !ok { return nil, false }
+    var result = make([][]addrindex.Payment, txCount)
+    for i := uint64(0); i < txCount; i++ {
+        var scripts, txOK = skipTxKeepOutputs(r)
+        if !txOK { return nil, false }
+        result[i] = scripts
+    }
+    if r.bad { return nil, false }
+    return result, true
+}
+
+func skipTxKeepOutputs(r *reader) ([]addrindex.Payment, bool) {
+    r.skip(4) // version
+    var inCount, ok = r.varInt()
+    if !ok { return nil, false }
+    var segwit bool
+    if inCount == 0 { // segwit marker; the real input count follows the flag byte
+        segwit = true
+        r.skip(1)
+        inCount, ok = r.varInt()
+        if !ok { return nil, false }
+    }
+    for i := uint64(0); i < inCount; i++ {
+        r.skip(36) // prevout hash + index
+        var scriptLen, lenOK = r.varInt()
+        if !lenOK { return nil, false }
+        r.skip(int(scriptLen))
+        r.skip(4) // sequence
+    }
+    var outCount, outOK = r.varInt()
+    if !outOK { return nil, false }
+    var scripts = make([]addrindex.Payment, 0, outCount)
+    for i := uint64(0); i < outCount; i++ {
+        var sat, satOK = r.value()
+        if !satOK { return nil, false }
+        var scriptLen, lenOK = r.varInt()
+        if !lenOK { return nil, false }
+        var script, scriptOK = r.bytes(int(scriptLen))
+        if !scriptOK { return nil, false }
+        scripts = append(scripts, addrindex.Payment{Script: script, Sat: sat})
+    }
+    if segwit {
+        for i := uint64(0); i < inCount; i++ {
+            var itemCount, itemOK = r.varInt()
+            if !itemOK { return nil, false }
+            for j := uint64(0); j < itemCount; j++ {
+                var itemLen, ilOK = r.varInt()
+                if !ilOK { return nil, false }
+                r.skip(int(itemLen))
+            }
+        }
+    }
+    r.skip(4) // locktime
+    return scripts, true
+}
+
+// reader and its varInt are a block-scale copy of the primitives the bot's
+// zmq.go uses for a single mempool transaction. The two are separate programs
+// reading different things — inputs and outputs for live matching there, outputs
+// only here — so they are not shared.
+type reader struct {
+    buf []byte
+    pos int
+    bad bool
+}
+
+func (r *reader) skip(n int) {
+    if n < 0 || r.pos+n > len(r.buf) { r.bad = true; return }
+    r.pos += n
+}
+
+func (r *reader) bytes(n int) ([]byte, bool) {
+    if n < 0 || r.pos+n > len(r.buf) { r.bad = true; return nil, false }
+    var out = r.buf[r.pos : r.pos+n]
+    r.pos += n
+    return out, true
+}
+
+// value reads an output's amount, the 8-byte little-endian satoshi field every
+// TxOut carries in front of its script.
+func (r *reader) value() (int64, bool) {
+    var b, ok = r.bytes(8)
+    if !ok { return 0, false }
+    return int64(binary.LittleEndian.Uint64(b)), true
+}
+
+func (r *reader) varInt() (uint64, bool) {
+    var first, ok = r.bytes(1)
+    if !ok { return 0, false }
+    switch first[0] {
+    case 0xfd:
+        var b, ok = r.bytes(2)
+        if !ok { return 0, false }
+        return uint64(binary.LittleEndian.Uint16(b)), true
+    case 0xfe:
+        var b, ok = r.bytes(4)
+        if !ok { return 0, false }
+        return uint64(binary.LittleEndian.Uint32(b)), true
+    case 0xff:
+        var b, ok = r.bytes(8)
+        if !ok { return 0, false }
+        return binary.LittleEndian.Uint64(b), true
+    default:
+        return uint64(first[0]), true
+    }
 }

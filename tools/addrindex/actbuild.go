@@ -89,7 +89,7 @@ func countFile(name string, key []byte, counts *counter) (blocks, scripts int, e
         if rerr != nil { return blocks, scripts, fmt.Errorf("%s: %w", name, rerr) }
         if raw == nil { break }
         blocks++
-        var txs, ok = addrindex.OutputsByTx(raw)
+        var txs, ok = parseBlockOutputs(raw)
         if !ok {
             logging.Warn("actbuild: could not parse a block in %s", name)
             continue
