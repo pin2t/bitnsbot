@@ -12,13 +12,10 @@
 // statistics do.
 package addrstat
 
-import (
-    "context"
-    "fmt"
-)
+import "context"
+import "fmt"
 import "sync"
 import "time"
-
 import "database/sql"
 import "bitnsbot/addrindex"
 import "bitnsbot/cursors"

@@ -9,6 +9,7 @@ import "net/http"
 import "net/http/httptest"
 import "os"
 import "path/filepath"
+import "reflect"
 import "strings"
 import "sync/atomic"
 import "testing"
@@ -504,6 +505,70 @@ func TestBlockReaderWithoutAKey(t *testing.T) {
     if err != nil { t.Fatalf("key: %v", err) }
     for _, b := range key {
         if b != 0 { t.Fatalf("key = %x, want all zeros when xor.dat is absent", key) }
+    }
+}
+
+// Real blocks from a Bitcoin Core v31.1.0 regtest node, as its REST interface
+// served them serialized (/rest/block/<hash>.bin), with the per-transaction
+// output scripts Core itself reported via getblock verbosity 3 for the same
+// blocks. block102 has one coinbase and one spend; block103 has a coinbase and
+// two further spends chained off it. Parsing has to agree with the node exactly,
+// since a mismatch means silently missing or fabricating address history.
+func TestParseBlock(t *testing.T) {
+    for _, c := range []struct {
+        name  string
+        block string
+        want  [][]string
+    }{
+        {"block102", "000000202b687778eddbeeb89f1551e63aa7505b461f396f09e3b92f23ba83aa221c243a416b1476753995b3ce8b34a9de6729c37f50b1c4576e53e1fb9eb7f5c25bceb6e7205e6affff7f200000000002020000000001010000000000000000000000000000000000000000000000000000000000000000ffffffff03016600feffffff0204fd052a01000000160014d2b2f31918bdd57ca878317b5c639ec0a739e2690000000000000000266a24aa21a9ed27790064491a6e6e5ebc94766e0e173b5c62be6ab9c3cd133c32b2c7284f4137012000000000000000000000000000000000000000000000000000000000000000006500000002000000000101c08f084fd33d0a5207255c89e0340417dc4fe0cb8acbf26b345a202667abdc630000000000fdffffff027c15152101000000160014ca66b88f1306d41e7e74a2eda7c1ad95e8060eec80d1f00800000000160014a6d49256e4f923822286832a77d7e2a909a4c7620247304402204a75bca110a1800c02566bf94f2ef7705902ea1df66280361d9a61543e4a2ec1022007351332e5630462fe83972dafb74a4614a43bc613834a707daed17221ff6612012102cccf1e47f3a6326ed4101c7185542a2844fd25076390555dfc04705ecf48468f65000000",
+            [][]string{{"0014d2b2f31918bdd57ca878317b5c639ec0a739e269", "6a24aa21a9ed27790064491a6e6e5ebc94766e0e173b5c62be6ab9c3cd133c32b2c7284f4137"}, {"0014ca66b88f1306d41e7e74a2eda7c1ad95e8060eec", "0014a6d49256e4f923822286832a77d7e2a909a4c762"}}},
+        {"block103", "000000209adb0270161c90be20851202870014d8d27d98e1832ed960dea0392a1ae7292d13e5e72d08a2dbd9e678ece47c21644f037796143766b3161c15b3ee79ae9aca51215e6affff7f200000000003020000000001010000000000000000000000000000000000000000000000000000000000000000ffffffff03016700feffffff020808062a01000000160014d2b2f31918bdd57ca878317b5c639ec0a739e2690000000000000000266a24aa21a9ed00b1a6de804a7485ba221e46946f767afacc26540da46079027797aad8f31c8f012000000000000000000000000000000000000000000000000000000000000000006600000002000000000101e538de5326756d73685cfac914d6675b149ede18b5f4dfb06f37f90773cde8f40000000000fdffffff0240787d010000000016001467efcb63b3a1135979ecc3a00956ef07dea371cc3892971f01000000160014168a5d01b286b82426aa34edd402322c1d7b3cd602473044022015a670c5430ba3b2c770f0471bd6d3d30185d65fe32bfa239f895aff3f0882f20220354a61aeeadb75f694269647ca75efb63b8826ad3e50e831b90bd4e25ccdec72012103c0c512d5d970876c6ec681c298930265d899985cef0b58f230ef0d74acbfd3d26600000002000000000101e538de5326756d73685cfac914d6675b149ede18b5f4dfb06f37f90773cde8f40100000000fdffffff0280f0fa0200000000160014705e4a46bed92fff46ad9a1eab968a637e8055b8fcd5f505000000001600142cdf30a44b7eb15da3346626e3ae5c9c3aa09607024730440220723dd8e9aec6f5a2f8acc7476a1864de5b99b86a27a2f245c26368538e1798630220271c7b873e5c56ada876832b620c36186629d53f67312ca4e41e0eac4deb89c501210360a37afc68b928733d6891eb33f3865799b7cd2699583175e6d9fc9c3e9f670f66000000",
+            [][]string{{"0014d2b2f31918bdd57ca878317b5c639ec0a739e269", "6a24aa21a9ed00b1a6de804a7485ba221e46946f767afacc26540da46079027797aad8f31c8f"}, {"001467efcb63b3a1135979ecc3a00956ef07dea371cc", "0014168a5d01b286b82426aa34edd402322c1d7b3cd6"}, {"0014705e4a46bed92fff46ad9a1eab968a637e8055b8", "00142cdf30a44b7eb15da3346626e3ae5c9c3aa09607"}}},
+    } {
+        var outputs, ok = parseBlockOutputs(mustHex(c.block))
+        if !ok { t.Fatalf("%s: parseBlockOutputs failed", c.name) }
+        if got := hexLists(outputs); !reflect.DeepEqual(got, c.want) {
+            t.Errorf("%s: outputs = %v, want %v", c.name, got, c.want)
+        }
+    }
+}
+
+func hexLists(scripts [][]addrindex.Payment) [][]string {
+    var out = make([][]string, len(scripts))
+    for i, list := range scripts {
+        out[i] = make([]string, len(list))
+        for j, o := range list {
+            out[i][j] = hex.EncodeToString(o.Script)
+        }
+    }
+    return out
+}
+
+// The amounts too, over two more regtest blocks as REST served them
+// (testdata/block<h>.hex), against what getblock verbosity 3 reported for the
+// same blocks: genesis, whose coinbase pays a bare public key, and block 113,
+// whose second transaction spends P2PKH, P2SH, P2WPKH and taproot outputs at
+// once and pays an OP_RETURN. The addrindex package holds its RPC decoding to
+// these same outputs.
+func TestParseBlockReadsAmounts(t *testing.T) {
+    for height, want := range map[int][][]addrindex.Payment{
+        0: {{{Script: mustHex("4104678afdb0fe5548271967f1a67130b7105cd6a828e03909a67962e0ea1f61deb649f6bc3f4cef38c4f35504e51ec112de5c384df7ba0b8d578a4c702b6bf11d5fac"), Sat: 5000000000}}},
+        113: {{
+            {Script: mustHex("a914009a5f4eca9506b9fe82ae824a2d2187d9fc96a187"), Sat: 5000009300},
+            {Script: mustHex("6a24aa21a9ed1e1342cf2e2a885b117c9ec3bde85adb93c7a1276553ab5fb2bd59ee52880b3e"), Sat: 0},
+        }, {
+            {Script: mustHex("76a914203b872d7db07e5dd6eac63603bad4432c57907688ac"), Sat: 50000000},
+            {Script: mustHex("51200738980554d28706a692599b8a6acb74a98bbb71c497dd0c0836194a82d923e0"), Sat: 1314990700},
+            {Script: mustHex("6a03626974"), Sat: 0},
+        }},
+    } {
+        var raw, err = os.ReadFile(filepath.Join("testdata", fmt.Sprintf("block%d.hex", height)))
+        if err != nil { t.Fatalf("fixture: %v", err) }
+        var outputs, ok = parseBlockOutputs(mustHex(string(raw)))
+        if !ok { t.Fatalf("block %d: parseBlockOutputs failed", height) }
+        if !reflect.DeepEqual(outputs, want) {
+            t.Errorf("block %d: outputs = %v, want %v", height, outputs, want)
+        }
     }
 }
 
