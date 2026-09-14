@@ -12,9 +12,9 @@ import "time"
 // keeps its own credentials, cookie handling and logging.
 type Caller func(ctx context.Context, method string, params []interface{}, result interface{}) error
 
-// RPC builds Block values from Bitcoin Core's JSON-RPC, the same interface
+// RPCBlockchain builds Block values from Bitcoin Core's JSON-RPC, the same interface
 // everything else in the bot talks to, so a node needs nothing enabled beyond
-// its RPC server and ZMQ.
+// its RPCBlockchain server and ZMQ.
 //
 // One getblock at verbosity 3 carries all of it: every output's script and
 // amount, and every input's prevout with the same two — which Core reads from
@@ -30,11 +30,11 @@ type Caller func(ctx context.Context, method string, params []interface{}, resul
 // It lives here rather than in the caller because this is how the index is
 // built: the bot and tools/addrindex both drive the backfill, and a second copy
 // would be free to drift.
-type RPC struct {
+type RPCBlockchain struct {
     call Caller
 }
 
-func NewRPC(call Caller) *RPC { return &RPC{call: call} }
+func NewRPCBlockchain(call Caller) *RPCBlockchain { return &RPCBlockchain{call: call} }
 
 // blockTimeout bounds one block's two calls. Nothing else does — the bot's
 // client sets no timeout of its own and a build runs under a context hours long
@@ -51,13 +51,13 @@ type output struct {
     } `json:"scriptPubKey"`
 }
 
-func (s *RPC) Tip(ctx context.Context) (int, error) {
+func (s *RPCBlockchain) Tip(ctx context.Context) (int, error) {
     var count int
     var err = s.call(ctx, "getblockcount", nil, &count)
     return count, err
 }
 
-func (s *RPC) BlockAt(ctx context.Context, height int) (Block, error) {
+func (s *RPCBlockchain) BlockAt(ctx context.Context, height int) (Block, error) {
     var bctx, cancel = context.WithTimeout(ctx, blockTimeout)
     defer cancel()
     var hash string

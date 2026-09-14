@@ -199,16 +199,16 @@ func TestDistinctScriptsDistinctKeys(t *testing.T) {
     }
 }
 
-type fakeSource struct {
+type fakeBlockchain struct {
     tip     int
     blocks  map[int]Block
     fetched []int
     err     map[int]bool
 }
 
-func (f *fakeSource) Tip(ctx context.Context) (int, error) { return f.tip, nil }
+func (f *fakeBlockchain) Tip(ctx context.Context) (int, error) { return f.tip, nil }
 
-func (f *fakeSource) BlockAt(ctx context.Context, height int) (Block, error) {
+func (f *fakeBlockchain) BlockAt(ctx context.Context, height int) (Block, error) {
     f.fetched = append(f.fetched, height)
     if f.err[height] { return Block{}, errors.New("fetch failed") }
     return f.blocks[height], nil
@@ -238,7 +238,7 @@ func TestCatchUp(t *testing.T) { both(t, func(t *testing.T) {
     t.Cleanup(func() { chunkSize = saved })
     chunkSize = 1000
     var scriptA, scriptB = "0014aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "0014bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-    var src = &fakeSource{tip: 2, blocks: map[int]Block{
+    var src = &fakeBlockchain{tip: 2, blocks: map[int]Block{
         0: syntheticBlock(t, []string{scriptA}, nil),
         1: syntheticBlock(t, []string{scriptB}, []string{scriptA}),
         2: syntheticBlock(t, nil, nil),
@@ -280,7 +280,7 @@ func TestCatchUpChunksAndRetries(t *testing.T) {
     for h := 0; h < 5; h++ {
         blocks[h] = syntheticBlock(t, []string{script}, nil)
     }
-    var src = &fakeSource{tip: 4, blocks: blocks, err: map[int]bool{3: true}}
+    var src = &fakeBlockchain{tip: 4, blocks: blocks, err: map[int]bool{3: true}}
     if err := Build(src); err == nil {
         t.Fatal("expected an error from the failing block")
     }

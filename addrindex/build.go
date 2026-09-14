@@ -1,9 +1,9 @@
 package addrindex
 
 import "context"
+import "fmt"
 import "encoding/binary"
 import "time"
-
 import "bitnsbot/logging"
 import "bitnsbot/signals"
 
@@ -29,7 +29,7 @@ type Tx struct {
 
 // Blockchain supplies chain data to the backfill, mirroring how the miners
 // package takes its chain data through an interface because it can't reach Core
-// directly either. RPC is the one implementation outside the tests.
+// directly either. RPCBlockchain is the one implementation outside the tests.
 type Blockchain interface {
     Tip(ctx context.Context) (int, error)
     BlockAt(ctx context.Context, height int) (Block, error)
@@ -88,7 +88,9 @@ func Build(src Blockchain) error {
             indexBlock(touches, uint32(h), blk)
         }
         if err := merge(touches, to); err != nil { return err }
-        logging.Info("addrindex: built blocks %d..%d (tip %d)", from, to, tip)
+        var bm = fmt.Sprintf("blocks %d..%d", from, to)
+        if from == to { bm = fmt.Sprintf("block %d", from) }
+        logging.Info("addrindex: built %s (tip %d)", bm, tip)
         from = to + 1
     }
     return nil
@@ -128,7 +130,7 @@ func indexBlock(touches map[string][]Touch, height uint32, blk Block) {
 // outputs — script and amount — indexed by the transaction's position in the
 // block. It skips everything else — inputs, witness data, locktime — since a
 // serialized block carries no prevouts to read a spend from. Nothing read over
-// RPC comes through here; tools/addrindex's actbuild reads Core's block files,
+// RPCBlockchain comes through here; tools/addrindex's actbuild reads Core's block files,
 // which are the one place a block is binary.
 func parseBlockOutputs(raw []byte) ([][]Payment, bool) {
     var r = &reader{buf: raw}
@@ -240,29 +242,6 @@ func (r *reader) varInt() (uint64, bool) {
     default:
         return uint64(first[0]), true
     }
-}
-
-// OutputScripts returns the distinct scriptPubKeys a serialized block's outputs
-// pay to.
-//
-// Outputs only, where Scripts also takes the spending side. That is enough to
-// enumerate every address the chain has ever seen: an input can only spend an
-// output that was paid earlier, so every script that is ever spent was already
-// seen when its funding block was scanned. It is what lets a pass over the raw
-// block files skip Core's undo data entirely.
-func OutputScripts(raw []byte) ([][]byte, bool) {
-    var outputs, ok = parseBlockOutputs(raw)
-    if !ok { return nil, false }
-    var seen = map[string]bool{}
-    var out [][]byte
-    for _, perTx := range outputs {
-        for _, o := range perTx {
-            if len(o.Script) == 0 || seen[string(o.Script)] { continue }
-            seen[string(o.Script)] = true
-            out = append(out, o.Script)
-        }
-    }
-    return out, true
 }
 
 // OutputsByTx returns each transaction's output scripts, indexed by the

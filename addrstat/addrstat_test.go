@@ -39,15 +39,15 @@ func blockOf(when int64, txs ...tx) addrindex.Block {
     return blk
 }
 
-type fakeChain struct {
+type fakeBlockchain struct {
     tip     int
     blocks  map[int]addrindex.Block
     fetched []int
 }
 
-func (f *fakeChain) Tip(ctx context.Context) (int, error) { return f.tip, nil }
+func (f *fakeBlockchain) Tip(ctx context.Context) (int, error) { return f.tip, nil }
 
-func (f *fakeChain) BlockAt(ctx context.Context, height int) (addrindex.Block, error) {
+func (f *fakeBlockchain) BlockAt(ctx context.Context, height int) (addrindex.Block, error) {
     f.fetched = append(f.fetched, height)
     return f.blocks[height], nil
 }
@@ -99,7 +99,7 @@ func statOf(t *testing.T, addr string) Stat {
 // what those blocks actually moved.
 func TestCollectGathersStatistics(t *testing.T) {
     open(t, addrA, addrB)
-    var src = &fakeChain{tip: 2, blocks: map[int]addrindex.Block{
+    var src = &fakeBlockchain{tip: 2, blocks: map[int]addrindex.Block{
         0: blockOf(1000, tx{outs: []addrindex.Payment{pay(scriptA, 5000)}}),
         1: blockOf(2000, tx{outs: []addrindex.Payment{pay(scriptA, 3000), pay(scriptC, 100)}}),
         // spends both of addrA's outputs, pays 7000 to addrB, so the fee is 1000
@@ -136,7 +136,7 @@ func TestCollectGathersStatistics(t *testing.T) {
 // for it, not two.
 func TestTransactionCountedOncePerAddress(t *testing.T) {
     open(t, addrA)
-    var src = &fakeChain{tip: 0, blocks: map[int]addrindex.Block{
+    var src = &fakeBlockchain{tip: 0, blocks: map[int]addrindex.Block{
         0: blockOf(1000, tx{
             outs:  []addrindex.Payment{pay(scriptA, 400), pay(scriptA, 100)},
             spent: []addrindex.Payment{pay(scriptA, 900)},
@@ -153,7 +153,7 @@ func TestTransactionCountedOncePerAddress(t *testing.T) {
 // adds to what is stored rather than counting a block twice.
 func TestCollectResumes(t *testing.T) {
     open(t, addrA)
-    var src = &fakeChain{tip: 0, blocks: map[int]addrindex.Block{
+    var src = &fakeBlockchain{tip: 0, blocks: map[int]addrindex.Block{
         0: blockOf(1000, tx{outs: []addrindex.Payment{pay(scriptA, 500)}}),
         1: blockOf(2000, tx{outs: []addrindex.Payment{pay(scriptA, 700)}}),
     }}
@@ -176,7 +176,7 @@ func TestCollectSignalsWhenItHasCaughtUp(t *testing.T) {
     open(t, addrA)
     signals.Reset()
     var wake = signals.Subscribe(signals.AddrStat)
-    var src = &fakeChain{tip: 0, blocks: map[int]addrindex.Block{
+    var src = &fakeBlockchain{tip: 0, blocks: map[int]addrindex.Block{
         0: blockOf(1000, tx{outs: []addrindex.Payment{pay(scriptA, 500)}}),
     }}
     if err := Collect(src); err != nil { t.Fatalf("Collect: %v", err) }
@@ -200,7 +200,7 @@ func TestCollectSignalsWhenItHasCaughtUp(t *testing.T) {
 func TestGetWaitsForSomethingToReport(t *testing.T) {
     open(t, addrA)
     if _, ok := Get(addrA); ok { t.Fatal("answered from an empty record") }
-    var src = &fakeChain{tip: 0, blocks: map[int]addrindex.Block{
+    var src = &fakeBlockchain{tip: 0, blocks: map[int]addrindex.Block{
         0: blockOf(1000, tx{outs: []addrindex.Payment{pay(scriptA, 500)}}),
     }}
     if err := Collect(src); err != nil { t.Fatalf("Collect: %v", err) }
@@ -215,7 +215,7 @@ func TestGetWaitsForSomethingToReport(t *testing.T) {
 // history means clearing the cursor by hand; nothing here does it.
 func TestAnAddedRecordJoinsTheSet(t *testing.T) {
     var handle = open(t, addrA)
-    var src = &fakeChain{tip: 0, blocks: map[int]addrindex.Block{
+    var src = &fakeBlockchain{tip: 0, blocks: map[int]addrindex.Block{
         0: blockOf(1000, tx{outs: []addrindex.Payment{pay(scriptA, 500)}}),
     }}
     if err := Collect(src); err != nil { t.Fatalf("Collect: %v", err) }
@@ -229,7 +229,7 @@ func TestAnAddedRecordJoinsTheSet(t *testing.T) {
 // Init is run on every start, so one must leave the scan's place alone.
 func TestRepeatedInitKeepsTheCursor(t *testing.T) {
     var handle = open(t, addrA)
-    var src = &fakeChain{tip: 0, blocks: map[int]addrindex.Block{
+    var src = &fakeBlockchain{tip: 0, blocks: map[int]addrindex.Block{
         0: blockOf(1000, tx{outs: []addrindex.Payment{pay(scriptA, 500)}}),
     }}
     if err := Collect(src); err != nil { t.Fatalf("Collect: %v", err) }
