@@ -210,7 +210,6 @@ func mergeSQL(grouped map[string][]byte, height int) error {
         on conflict(shard) do update set data = cast(addrindex.data || excluded.data as blob)`)
     if perr != nil { return perr }
     for k, entries := range grouped {
-        // the key is the bbolt one, packed again as the integer the table uses
         var raw = []byte(k)
         var shard = int64(binary.BigEndian.Uint16(raw[:shardLen]))<<32 | int64(binary.BigEndian.Uint32(raw[shardLen:]))
         if _, err := stmt.Exec(shard, entries); err != nil {

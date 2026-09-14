@@ -232,10 +232,8 @@ func Decode(addr string) (key string, kind string, ok bool) {
     var version, payload, bok = base58CheckDecode(addr)
     if !bok || len(payload) != 20 { return "", "", false }
     switch version {
-    case p2pkhVersion:
-        return string(append([]byte{keyP2PKH}, payload...)), "p2pkh", true
-    case p2shVersion:
-        return string(append([]byte{keyP2SH}, payload...)), "p2sh", true
+    case p2pkhVersion: return string(append([]byte{keyP2PKH}, payload...)), "p2pkh", true
+    case p2shVersion:  return string(append([]byte{keyP2SH}, payload...)), "p2sh", true
     }
     return "", "", false
 }
@@ -267,7 +265,6 @@ func base58Decode(s string) ([]byte, bool) {
         }
     }
     var out []byte
-    // a leading '1' is a zero byte, not a digit — the encoder's own convention
     for i := 0; i < len(s) && s[i] == base58Alphabet[0]; i++ { out = append(out, 0) }
     for i := len(num) - 1; i >= 0; i-- { out = append(out, num[i]) }
     return out, true

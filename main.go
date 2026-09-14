@@ -462,7 +462,7 @@ func main() {
         }
     }
     if core != nil {
-        var src = addrindex.NewRPC(core.call)
+        var src = addrindex.NewRPCBlockchain(core.call)
         addrindex.StartBackfill(src)
         // The statistics collector reads the same blocks on a pass of its own:
         // the index says which transactions an address is in, where this says

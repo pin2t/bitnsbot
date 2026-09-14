@@ -29,7 +29,7 @@ func TestRPCReadsTheBlock(t *testing.T) {
         {Script: mustHex(t, "5120e6e2debb61c212ca7f3efdd85be34fae01c922172718f6a573687d295cb3bcc0"), Sat: 310000000},
     }}
     for height, wantSpent := range map[int][][]Payment{0: {{}}, 113: spent113} {
-        var blk, err = NewRPC(reply(string(fixture(t, fmt.Sprintf("block%d.json", height))))).BlockAt(context.Background(), height)
+        var blk, err = NewRPCBlockchain(reply(string(fixture(t, fmt.Sprintf("block%d.json", height))))).BlockAt(context.Background(), height)
         if err != nil { t.Fatalf("block %d: %v", height, err) }
         var raw, _ = hex.DecodeString(string(fixture(t, fmt.Sprintf("block%d.hex", height))))
         var wantOutputs, ok = parseBlockOutputs(raw)
@@ -56,7 +56,7 @@ func TestRPCReadsTheBlock(t *testing.T) {
 // satoshi are rounded, never truncated — one short, and a balance summed from
 // genesis ends a satoshi out for every such amount.
 func TestRPCAmountsAreExactSatoshi(t *testing.T) {
-    var blk, err = NewRPC(reply(`{"tx":[{"vin":[`+
+    var blk, err = NewRPCBlockchain(reply(`{"tx":[{"vin":[`+
         `{"prevout":{"value":0.29,"scriptPubKey":{"hex":"51"}}},`+
         `{"prevout":{"value":20999999.97690000,"scriptPubKey":{"hex":"52"}}}],`+
         `"vout":[{"value":0.29,"scriptPubKey":{"hex":"53"}}]}]}`)).BlockAt(context.Background(), 1)
@@ -73,7 +73,7 @@ func TestRPCAmountsAreExactSatoshi(t *testing.T) {
 // A script that is not hex is an error, not an empty script: an empty one is
 // skipped by every scan, so the payment would vanish without a word.
 func TestRPCRefusesAMalformedScript(t *testing.T) {
-    var _, err = NewRPC(reply(`{"tx":[{"vout":[{"value":1,"scriptPubKey":{"hex":"not hex"}}]}]}`)).BlockAt(context.Background(), 1)
+    var _, err = NewRPCBlockchain(reply(`{"tx":[{"vout":[{"value":1,"scriptPubKey":{"hex":"not hex"}}]}]}`)).BlockAt(context.Background(), 1)
     if err == nil { t.Error("a script that is not hex was accepted") }
 }
 

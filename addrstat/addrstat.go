@@ -12,7 +12,10 @@
 // statistics do.
 package addrstat
 
-import "context"
+import (
+    "context"
+    "fmt"
+)
 import "sync"
 import "time"
 
@@ -112,23 +115,6 @@ func Get(addr string) (Stat, bool) {
     return s, s.Txs > 0
 }
 
-// ForEach walks every record, which is what the Addresses tab's three rankings
-// are built from.
-func ForEach(fn func(addr string, s Stat)) error {
-    if db == nil { return nil }
-    var rows, err = db.Query(`select addr, type, balance, recv, sent, flow, fees, txs, first, last from addrstat`)
-    if err != nil { return err }
-    defer rows.Close()
-    for rows.Next() {
-        var addr string
-        var s Stat
-        if err := rows.Scan(&addr, &s.Type, &s.Balance, &s.Recv, &s.Sent, &s.Flow, &s.Fees,
-            &s.Txs, &s.First, &s.Last); err != nil { return err }
-        fn(addr, s)
-    }
-    return rows.Err()
-}
-
 // Count is how many addresses are watched.
 func Count() int {
     watchedMu.RLock()
@@ -164,27 +150,25 @@ func Collect(src addrindex.Blockchain) error {
     var tip, err = src.Tip(ctx)
     if err != nil { return err }
     var last, ok = cursors.Get(cursors.AddrStat)
-    var from int64
-    if ok { from = last + 1 }
-    var began = from
-    for from <= int64(tip) {
-        var to = from + chunkSize - 1
+    var curr int64
+    if ok { curr = last + 1 }
+    var began = curr
+    for curr <= int64(tip) {
+        var to = curr + chunkSize - 1
         if to > int64(tip) { to = int64(tip) }
         var deltas = map[string]*Stat{}
-        for h := from; h <= to; h++ {
+        for h := curr; h <= to; h++ {
             var blk, berr = src.BlockAt(ctx, int(h))
             if berr != nil { return berr }
             apply(deltas, blk)
         }
         if err := flush(deltas, to); err != nil { return err }
-        from = to + 1
+        curr = to + 1
     }
-    if from > began {
-        logging.Info("addrstat: collected in blocks %d..%d for %d addresses", began, from-1, Count())
-        // the three ranked address lists are built from these records, so they
-        // are told the moment the figures they rank have moved rather than
-        // waiting out their own interval. Only when a block was actually
-        // scanned: a pass that found nothing to do has nothing to announce.
+    if curr > began {
+        var bm = fmt.Sprintf("blocks %d..%d", began, curr - 1)
+        if curr - 1 == began { bm = fmt.Sprintf("block %d", began) }
+        logging.Info("addrstat: collected in %s for %d addresses", bm, Count())
         signals.Send(signals.AddrStat)
     }
     return nil

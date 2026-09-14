@@ -157,7 +157,7 @@ var db *bbolt.DB
 func build(opt *options) {
     var client, cerr = newRPC(opt.url, opt.user, opt.pass, opt.cookie)
     if cerr != nil { logging.Fatal("RPC client: %v", cerr) }
-    var src = addrindex.NewRPC(client.call)
+    var src = addrindex.NewRPCBlockchain(client.call)
     var ctx, cancel = context.WithTimeout(context.Background(), 30*time.Second)
     var tip, err = src.Tip(ctx)
     cancel()
