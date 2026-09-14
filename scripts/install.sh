@@ -111,11 +111,6 @@ core-cookie=/home/pi/.bitcoin/.cookie
 # Without this the bot still answers commands but never sends notifications.
 core-zmq=tcp://127.0.0.1:28332,tcp://127.0.0.1:28333
 
-# Build the address index and per-address statistics from Core's RPC — a
-# pass over the whole chain, then every new block. Off, /info <address>
-# reports its history as unavailable.
-address-index=true
-
 #verbose=1
 CFG
     chown "$BUILD_USER" "$CONFIG"
