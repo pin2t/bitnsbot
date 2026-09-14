@@ -54,6 +54,7 @@ var schema = []string{
     `create index if not exists addrstat_balance on addrstat (balance)`,
     `create index if not exists addrstat_txs on addrstat (txs)`,
     `create index if not exists addrstat_last on addrstat (last)`,
+    `create index if not exists blocks_ts on blocks (ts)`,
 }
 
 // dsn carries the pragmas rather than running them, because a PRAGMA applies to

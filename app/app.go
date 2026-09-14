@@ -463,6 +463,41 @@ type Info struct {
     // this page was opened with, carried on so a whole chain of pages returns to
     // where the reader started rather than to whichever one they came through.
     From string
+    // Chart is drawn under the rows when set, which only a miner page does. It
+    // is filled in by the handler rather than by main's MinerInfo, since which
+    // chart a page opens on is the app's choice.
+    Chart *Chart
+}
+
+// Chart is the bar chart under a miner's details: one bar per day, week or month
+// of the chosen period, every figure already formatted and every height already
+// scaled by main. Name, Data and Period are carried back out because each button
+// has to link to the same pool with one of the two selections changed.
+type Chart struct {
+    OK     bool
+    Name   string
+    // Data is "blocks" or "consumption", Period "month", "quarter" or "year".
+    Data   string
+    Period string
+    // Value and Label are the headline above the bars — the whole period's figure
+    // and what it covers ("412 blocks", "last 30 days"). A tapped bar shows its
+    // own in their place, and they are what comes back when it is let go.
+    Value string
+    Label string
+    // Top and Mid label the two gridlines, the scale's top and its half.
+    Top string
+    Mid string
+    Bars []Bar
+}
+
+// Bar is one bucket of a Chart. Height is a percentage of the scale's top; Value
+// and Label are what the headline shows when the bar is tapped; Tick is the axis
+// label under it, empty for all but a few.
+type Bar struct {
+    Height float64
+    Value  string
+    Label  string
+    Tick   string
 }
 // Blocks is one batch of the recent-block list, newest first. Top and Next are
 // the heights the two sentinels ask about, so the template does no arithmetic.
@@ -587,6 +622,7 @@ type Source interface {
     TxInfo(lang, txid string) Info
     AddrInfo(lang, address string) Info
     MinerInfo(lang, name string) Info
+    MinerChart(lang, name, data, period string) Chart
     Watches(chat int64) Watches
     Watching(chat int64, kind, id string) bool
     SetWatch(chat int64, kind, id string, on bool) (bool, error)
@@ -664,6 +700,22 @@ func addrKindOf(r *http.Request) string {
         return k
     }
     return "active"
+}
+
+// chartDataOf and chartPeriodOf are the two selections a miner chart is drawn
+// with. Both arrive in a URL a user can edit and go straight back out into the
+// buttons' links, so anything unrecognised becomes what the page opens on.
+func chartDataOf(r *http.Request) string {
+    if r.URL.Query().Get("data") == "consumption" { return "consumption" }
+    return "blocks"
+}
+
+func chartPeriodOf(r *http.Request) string {
+    switch p := r.URL.Query().Get("period"); p {
+    case "quarter", "year":
+        return p
+    }
+    return "month"
 }
 
 // addrDownOf is the row a details page was opened from, and whether the URL
@@ -878,7 +930,29 @@ func Start(addr, token string, src Source) *http.Server {
             return
         }
         var back, swap = backToList(r)
-        details(w, r, blocksSlot, back, swap, "", "", func(lang string) Info { return src.MinerInfo(lang, name) })
+        details(w, r, blocksSlot, back, swap, "", "", func(lang string) Info {
+            var info = src.MinerInfo(lang, name)
+            // Drawn into the page rather than loaded after it, so the chart is
+            // there in the first response — it is the same for every reader, so
+            // the cached page can carry it.
+            if info.OK {
+                var chart = src.MinerChart(lang, name, "blocks", "month")
+                info.Chart = &chart
+            }
+            return info
+        })
+    }))
+    // The chart alone, which is what either row of buttons swaps in. It reads the
+    // blocks table, so a new block is what makes it stale: Notify("blocks") clears
+    // this cache, and the TTL covers the rest.
+    mux.HandleFunc("/minerchart", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
+        var name = strings.TrimSpace(r.URL.Query().Get("name"))
+        if name == "" {
+            http.Error(w, "no miner", http.StatusBadRequest)
+            return
+        }
+        var data, period = chartDataOf(r), chartPeriodOf(r)
+        cached(blocksCache, w, r, func(lang string) []byte { return render(lang, "chart", src.MinerChart(lang, name, data, period)) })
     }))
     mux.HandleFunc("/address", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
         var a = strings.TrimSpace(r.URL.Query().Get("a"))

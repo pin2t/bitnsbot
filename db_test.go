@@ -1,6 +1,7 @@
 package main
 
 import "path/filepath"
+import "strings"
 import "testing"
 
 // Every package that owns tables is Init'd by openDB, and every table it stores
@@ -51,6 +52,16 @@ func TestOpenDBTables(t *testing.T) {
             t.Fatal(err)
         }
         if n != 1 { t.Errorf("addrstat has %d indexes on %s, want 1", n, col) }
+    }
+    // and the one the miner chart reads a period of blocks through, which the
+    // planner has to actually use — without it the query is a scan of the chain
+    var plan string
+    if err := db.QueryRow("explain query plan select ts, miner, difficulty from blocks where ts >= ?", 0).Scan(
+        new(int), new(int), new(int), &plan); err != nil {
+        t.Fatal(err)
+    }
+    if !strings.Contains(plan, "blocks_ts") {
+        t.Errorf("the miner chart's query does not use blocks_ts: %s", plan)
     }
 }
 

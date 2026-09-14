@@ -197,6 +197,15 @@ func Get(name string) (Stat, bool) {
     return Stat{}, false
 }
 
+// Consumption is the power, in gigawatts, drawn by a pool finding share of the
+// blocks at difficulty: that share of the hashrate the difficulty implies
+// (difficulty × 2^32 hashes over the 600-second target), at joulesPerHash. Top's
+// figures and the Mini App's miner chart both go through it, so the two cannot
+// disagree about what a share of the network costs.
+func Consumption(share, difficulty float64) float64 {
+    return share * difficulty * workPerDifficulty / secondsPerBlock * joulesPerHash / 1e9
+}
+
 func all() []Stat {
     if db == nil { return nil }
     var out []Stat
@@ -223,7 +232,7 @@ func all() []Stat {
     var windowBlocks = float64(totalBlocks)
     for i := range out {
         if windowBlocks > 0 {
-            out[i].ConsumptionGW = (float64(out[i].Blocks) / windowBlocks) * (out[i].lastWork / secondsPerBlock) * joulesPerHash / 1e9
+            out[i].ConsumptionGW = Consumption(float64(out[i].Blocks)/windowBlocks, out[i].lastWork/workPerDifficulty)
         }
     }
     sort.Slice(out, func(i, j int) bool {
