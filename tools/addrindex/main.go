@@ -20,7 +20,7 @@
 // actbuild reads Core's raw block files and records the addresses whose history
 // is longer than -active transactions. It talks to no node at all — it reads the
 // files and encodes the addresses itself — so it needs neither -url nor -cookie;
-// richbuild reads the whole chain over REST and writes what every address holds
+// richbuild reads the whole chain over RPC and writes what every address holds
 // now to a SQLite table named rich, keeping no bbolt index at all; ababuild
 // reads it the same way and writes the addresses that still hold coins but whose
 // coins have gone longest without moving, to a SQLite table named abandoned.
@@ -36,9 +36,9 @@ import "go.etcd.io/bbolt"
 import "bitnsbot/addrindex"
 import "bitnsbot/logging"
 
-// options are the flags every command shares. Core's REST interface (which the
-// build reads) is served on the same host:port as JSON-RPC (which the lookups
-// use), so one -url covers both; only the RPC half needs credentials.
+// options are the flags every command shares. Every command that talks to a
+// node does it over JSON-RPC, so one -url and one set of credentials cover the
+// builds and the lookups alike.
 type options struct {
     db       string
     dbsqlite string
@@ -65,13 +65,13 @@ func flags(fs *flag.FlagSet) *options {
     var o = &options{}
     fs.StringVar(&o.db, "db", "addrindex.db", "path to the bbolt database holding the index")
     fs.StringVar(&o.dbsqlite, "dbsqlite", "", "the SQLite database: list reads a migrated index from it, richbuild and ababuild write their tables to it")
-    fs.StringVar(&o.url, "url", "http://127.0.0.1:8332", "Bitcoin Core base URL, serving both JSON-RPC and REST")
+    fs.StringVar(&o.url, "url", "http://127.0.0.1:8332", "Bitcoin Core JSON-RPC URL")
     fs.StringVar(&o.cookie, "cookie", "", "path to Core's .cookie file, for RPC auth")
     fs.StringVar(&o.user, "user", "", "Core RPC username, instead of a cookie")
     fs.StringVar(&o.pass, "pass", "", "Core RPC password, instead of a cookie")
     fs.IntVar(&o.limit, "limit", 5000000, "list: most touches to read for one address")
     fs.IntVar(&o.active, "active", 1000, "actbuild: transactions an address needs to count as active")
-    fs.StringVar(&o.blocks, "blocks", "", "actbuild: Core's blocks directory, read instead of its REST interface")
+    fs.StringVar(&o.blocks, "blocks", "", "actbuild: Core's blocks directory, read instead of its RPC")
     fs.IntVar(&o.addrs, "addrs", 0, "actbuild: distinct addresses to reserve room for, so the set never reallocates")
     fs.IntVar(&o.batch, "batch", 4000000, "richbuild, ababuild: movements held in memory before they are written to the shards")
     fs.IntVar(&o.shards, "shards", 128, "richbuild, ababuild: files the movements are split into")
@@ -155,12 +155,14 @@ var db *bbolt.DB
 // keeps polling. Both call addrindex.Build, so both chunk and advance the cursor
 // identically and either can resume what the other started.
 func build(opt *options) {
-    var src = addrindex.NewREST(opt.url)
+    var client, cerr = newRPC(opt.url, opt.user, opt.pass, opt.cookie)
+    if cerr != nil { logging.Fatal("RPC client: %v", cerr) }
+    var src = addrindex.NewRPC(client.call)
     var ctx, cancel = context.WithTimeout(context.Background(), 30*time.Second)
     var tip, err = src.Tip(ctx)
     cancel()
     if err != nil {
-        logging.Fatal("Core REST is unreachable at %s (%v) — enable -rest=1", opt.url, err)
+        logging.Fatal("Core RPC is unreachable at %s (%v)", opt.url, err)
     }
     var from = 0
     if h, ok := addrindex.Cursor(); ok { from = h + 1 }

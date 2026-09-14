@@ -14,7 +14,7 @@ Bitcoin blockchain explorer and events notification bot. It can send notificatio
 
 #### Prerequisites
 
-- Bitcoin Core 31+ node running with RPC, REST, ZMQ notification and transactions index enabled. Fully synced and **not** pruned
+- Bitcoin Core 31+ node running with RPC, ZMQ notification and transactions index enabled. Fully synced and **not** pruned
 - [telegram-bot-api](https://github.com/tdlib/telegram-bot-api) running locally on the same machine
 
 #### Command-line flags
@@ -34,7 +34,6 @@ Bitcoin blockchain explorer and events notification bot. It can send notificatio
 | `-core-pass` | | Bitcoin Core RPC password (or use `-core-cookie`) |
 | `-core-cookie` | | Path to Bitcoin Core's `.cookie` file, an alternative to `-core-user`/`-core-pass` |
 | `-core-zmq` | | Comma-separated ZMQ endpoints publishing `hashblock` and `rawtx`, e.g. `tcp://127.0.0.1:28332,tcp://127.0.0.1:28333` |
-| `-core-rest` | | Base URL of Bitcoin Core's REST interface for building the address index (empty disables indexing) |
 | `-backup` | | Path to copy the database to periodically (empty disables backups) |
 | `-backup-interval` | `24h` | How often to back up the database |
 | `-backup-script` | | Command run after each backup, with the backup path as `$1` and in `$BACKUP_FILE` |
@@ -69,9 +68,6 @@ core-cookie=/path/to/.cookie
 # Bitcoin Core ZMQ for real-time block/tx notifications
 core-zmq=tcp://127.0.0.1:28332,tcp://127.0.0.1:28333
 
-# Bitcoin Core REST for address index
-core-rest=http://127.0.0.1:8332
-
 # Backups
 backup=/var/backups/bitnsbot.db
 backup-interval=24h
@@ -103,7 +99,7 @@ Any flags passed on the command line override values from the config file:
 **With command-line flags only:**
 
 ```bash
-./bitnsbot -bot-token=... -webhook-url=http://127.0.0.1:8082/bot -listen=127.0.0.1:8082 -db=bitnsbot.db -core-url=http://127.0.0.1:8332 -core-cookie=cookie -core-rest=http://127.0.0.1:8332 -core-zmq=tcp://127.0.0.1:28332 -verbose=1
+./bitnsbot -bot-token=... -webhook-url=http://127.0.0.1:8082/bot -listen=127.0.0.1:8082 -db=bitnsbot.db -core-url=http://127.0.0.1:8332 -core-cookie=cookie -core-zmq=tcp://127.0.0.1:28332 -verbose=1
 ```
 
 Another option: there are [scripts](scripts) to deploy a bot as a systemd service.

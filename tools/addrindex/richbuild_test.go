@@ -6,6 +6,7 @@ import "os"
 import "path/filepath"
 import "strings"
 import "testing"
+import "time"
 
 import "bitnsbot/addrindex"
 
@@ -79,7 +80,7 @@ func storedHeight(t *testing.T, path, key string) int {
 }
 
 // The whole command end to end: read the fake node's blocks and spent outputs
-// over REST, and end up with what each address holds.
+// over RPC, and end up with what each address holds.
 func TestRichBuild(t *testing.T) {
     var srv = fakeCore(t, 3)
     var opt = richOptions(t, srv.URL)
@@ -215,14 +216,14 @@ func TestRichBuildNeedsADatabase(t *testing.T) {
 func TestVoidedIsMainnetOnly(t *testing.T) {
     var blocks = chainBlocks()
     for _, height := range []int{0, 91722, 91812} {
-        if got := voided("main", height, blocks[0][0]); len(got) != 1 {
+        if got := voided("main", height, blocks[0]); len(got) != 1 {
             t.Errorf("mainnet block %d: voided %d outputs, want the coinbase's one", height, len(got))
         }
-        if got := voided("regtest", height, blocks[0][0]); got != nil {
+        if got := voided("regtest", height, blocks[0]); got != nil {
             t.Errorf("regtest block %d: voided %v, want nothing", height, got)
         }
     }
-    if got := voided("main", 91721, blocks[0][0]); got != nil {
+    if got := voided("main", 91721, blocks[0]); got != nil {
         t.Errorf("an ordinary block voided %v, want nothing", got)
     }
 }
@@ -278,14 +279,28 @@ func TestShardsRoundTrip(t *testing.T) {
     }
 }
 
-// Balances is the shared parser's view of a block, and the amounts and signs it
-// reports are what every figure downstream is made of: block 1 pays a coinbase,
-// pays the watched address, and spends block 0's coinbase.
+// richbuild's progress counts transactions against the node's own count, so it
+// can say how far through the chain a run is and how long the rest will take.
+func TestReadingReportsRateAndETA(t *testing.T) {
+    var started = time.Now().Add(-10 * time.Second)
+    // 1000 transactions of 4000 in 10s: 100 tx/sec, 3000 left is 30 seconds
+    var got = reading(started, 1000, 4000)
+    for _, want := range []string{"100 tx/sec", "25.0% of 4 000 transactions", "ETA 30 sec"} {
+        if !strings.Contains(got, want) {
+            t.Errorf("reading = %q, want %q in it", got, want)
+        }
+    }
+    // a node that would not count its transactions leaves the estimate off
+    if got := reading(started, 1000, 0); strings.Contains(got, "ETA") {
+        t.Errorf("reading = %q; there is no estimate without a total", got)
+    }
+}
+
+// Balances is the shared view of a block's movements, and the amounts and signs
+// it reports are what every figure downstream is made of: block 1 pays a
+// coinbase, pays the watched address, and spends block 0's coinbase.
 func TestBalancesReportsBothSides(t *testing.T) {
-    var blocks = chainBlocks()
-    var blk = addrindex.Block{Raw: blocks[1][0], Spent: blocks[1][1]}
-    var moves, ok = addrindex.Balances(blk)
-    if !ok { t.Fatal("Balances failed on the fixture block") }
+    var moves = addrindex.Balances(chainBlocks()[1])
     var sums = map[string]int64{}
     for _, m := range moves { sums[string(m.Script)] += m.Sat }
     if len(moves) != 3 {

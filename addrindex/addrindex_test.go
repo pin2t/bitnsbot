@@ -215,42 +215,21 @@ func (f *fakeSource) BlockAt(ctx context.Context, height int) (Block, error) {
 }
 
 // A tiny synthetic chain: height 0 pays scriptA, height 1 spends it (pays
-// scriptB), height 2 is unrelated. Built directly from parsed shapes via a
-// Block whose Raw/Spent are pre-serialized isn't needed here since index calls
-// indexBlock, which calls the real parsers — so these use minimal-but-valid wire
-// bytes: one coinbase-shaped input (0x00 right after version is unambiguously
-// the segwit marker on the real wire, precisely because a legacy transaction can
-// never have zero inputs — a fake "0 inputs" tx would be misparsed as segwit).
+// scriptB), height 2 is unrelated. Each block is one transaction, built from the
+// scripts as hex.
 func syntheticBlock(t *testing.T, outScripts []string, spentScripts []string) Block {
-    var out = new(bytes.Buffer)
-    out.Write(make([]byte, 80)) // header, unread by the parser
-    out.WriteByte(1)            // tx count = 1
-    out.Write(make([]byte, 4))  // version
-    out.WriteByte(1)            // input count = 1 (a coinbase-shaped input)
-    out.Write(make([]byte, 36)) // null prevout hash + index
-    out.WriteByte(0)            // empty scriptSig
-    out.Write(make([]byte, 4))  // sequence
-    out.WriteByte(byte(len(outScripts)))
-    for _, s := range outScripts {
-        var raw, err = hex.DecodeString(s)
-        if err != nil { t.Fatalf("bad script hex: %v", err) }
-        out.Write(make([]byte, 8)) // value
-        out.WriteByte(byte(len(raw)))
-        out.Write(raw)
+    var tx Tx
+    for _, side := range []struct {
+        scripts []string
+        into    *[]Payment
+    }{{outScripts, &tx.Outputs}, {spentScripts, &tx.Spent}} {
+        for _, s := range side.scripts {
+            var raw, err = hex.DecodeString(s)
+            if err != nil { t.Fatalf("bad script hex: %v", err) }
+            *side.into = append(*side.into, Payment{Script: raw})
+        }
     }
-    out.Write(make([]byte, 4)) // locktime
-
-    var spent = new(bytes.Buffer)
-    spent.WriteByte(1) // tx count = 1
-    spent.WriteByte(byte(len(spentScripts)))
-    for _, s := range spentScripts {
-        var raw, err = hex.DecodeString(s)
-        if err != nil { t.Fatalf("bad script hex: %v", err) }
-        spent.Write(make([]byte, 8))
-        spent.WriteByte(byte(len(raw)))
-        spent.Write(raw)
-    }
-    return Block{Hash: "synthetic", Raw: out.Bytes(), Spent: spent.Bytes()}
+    return Block{Hash: "synthetic", Txs: []Tx{tx}}
 }
 
 func TestCatchUp(t *testing.T) { both(t, func(t *testing.T) {

@@ -111,11 +111,6 @@ core-cookie=/home/pi/.bitcoin/.cookie
 # Without this the bot still answers commands but never sends notifications.
 core-zmq=tcp://127.0.0.1:28332,tcp://127.0.0.1:28333
 
-# Core's REST interface, which the address index is built from. Needs
-# rest=1 in bitcoin.conf. Leaving this empty disables indexing, and
-# /info <address> then reports its history as unavailable.
-core-rest=http://127.0.0.1:8332
-
 #verbose=1
 CFG
     chown "$BUILD_USER" "$CONFIG"

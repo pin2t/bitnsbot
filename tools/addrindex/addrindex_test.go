@@ -9,8 +9,8 @@ import "net/http"
 import "net/http/httptest"
 import "os"
 import "path/filepath"
-import "strconv"
 import "strings"
+import "sync/atomic"
 import "testing"
 import "time"
 
@@ -49,8 +49,8 @@ const coinbaseSat = 5000000000
 var opReturnScript = mustHex("6a0b68656c6c6f20776f726c64")
 
 // serialTx builds a non-segwit transaction with inputs inputs and one output
-// per payment in pays. The input scripts are not written here: the spending side
-// of a touch comes from the separate spent-outputs blob, not from the block.
+// per payment in pays. The input scripts are not written here: a block file is
+// only ever read for its outputs.
 //
 // inputs is never 0 — a zero input count is the segwit marker, so even a
 // coinbase carries one input, as it does on the real chain.
@@ -80,11 +80,9 @@ func serialTx(inputs int, pays []addrindex.Payment) []byte {
 // which is what ababuild ranks addresses by.
 func blockTime(height int) int64 { return 1231006505 + int64(height)*600 }
 
-// serialBlock and serialSpent are the two REST payloads for one block. They must
-// describe the same transactions in the same order — that alignment is what lets
-// a touch be keyed by position instead of by txid. The header is otherwise
-// zeroed, but it carries a real time at offset 68, since that is the only place
-// a block says when it happened.
+// serialBlock is a block as Core's block files hold it. The header is otherwise
+// zeroed, but it carries a real time at offset 68, since that is where a block
+// file says when it happened.
 func serialBlock(height int, txs [][]byte) []byte {
     var out = make([]byte, 80) // header
     binary.LittleEndian.PutUint32(out[68:72], uint32(blockTime(height)))
@@ -93,40 +91,56 @@ func serialBlock(height int, txs [][]byte) []byte {
     return out
 }
 
-func serialSpent(perTx [][]addrindex.Payment) []byte {
-    var out = varint(len(perTx))
-    for _, spent := range perTx {
-        out = append(out, varint(len(spent))...)
-        for _, p := range spent {
-            var value = make([]byte, 8)
-            binary.LittleEndian.PutUint64(value, uint64(p.Sat))
-            out = append(out, value...)
-            out = append(out, varint(len(p.Script))...)
-            out = append(out, p.Script...)
-        }
-    }
-    return out
-}
-
 // chainBlocks is the fixture, indexed by height from genesis. Block 1 pays the
 // address, block 2 spends from it and pays change back; 0 and 3 are unrelated.
 // The amounts are the ones the fake node reports for the same transactions, so
 // the balance richbuild sums out of the blocks and the history list resolves out
 // of the node agree with each other: 20000 in, 20000 spent, 10000 back.
-func chainBlocks() [][2][]byte {
-    var coinbase = serialTx(1, []addrindex.Payment{{Script: otherScript, Sat: coinbaseSat}})
-    var plain = func(height int) [2][]byte {
-        return [2][]byte{serialBlock(height, [][]byte{coinbase}), serialSpent([][]addrindex.Payment{{}})}
+func chainBlocks() []addrindex.Block {
+    var coinbase = addrindex.Tx{Outputs: []addrindex.Payment{{Script: otherScript, Sat: coinbaseSat}}}
+    var block = func(height int, txs ...addrindex.Tx) addrindex.Block {
+        return addrindex.Block{Hash: hashOfHeight(height), Time: blockTime(height), Txs: txs}
     }
-    return [][2][]byte{
-        plain(0),
-        {serialBlock(1, [][]byte{coinbase, serialTx(1, []addrindex.Payment{{Script: payScript, Sat: 20000}})}),
-            serialSpent([][]addrindex.Payment{{}, {{Script: otherScript, Sat: coinbaseSat}}})},
-        {serialBlock(2, [][]byte{coinbase, serialTx(1, []addrindex.Payment{
-            {Script: otherScript, Sat: 10000}, {Script: payScript, Sat: 10000}, {Script: opReturnScript, Sat: 500}})}),
-            serialSpent([][]addrindex.Payment{{}, {{Script: payScript, Sat: 20000}}})},
-        plain(3),
+    return []addrindex.Block{
+        block(0, coinbase),
+        block(1, coinbase, addrindex.Tx{
+            Outputs: []addrindex.Payment{{Script: payScript, Sat: 20000}},
+            Spent:   []addrindex.Payment{{Script: otherScript, Sat: coinbaseSat}}}),
+        block(2, coinbase, addrindex.Tx{
+            Outputs: []addrindex.Payment{{Script: otherScript, Sat: 10000}, {Script: payScript, Sat: 10000}, {Script: opReturnScript, Sat: 500}},
+            Spent:   []addrindex.Payment{{Script: payScript, Sat: 20000}}}),
+        block(3, coinbase),
     }
+}
+
+// serialChain is the same fixture as block files hold it, for actbuild.
+func serialChain() [][]byte {
+    var out [][]byte
+    for h, b := range chainBlocks() {
+        var txs [][]byte
+        for _, tx := range b.Txs { txs = append(txs, serialTx(1, tx.Outputs)) }
+        out = append(out, serialBlock(h, txs))
+    }
+    return out
+}
+
+// verboseBlock is what getblock at verbosity 3 reports for a fixture block,
+// reduced to what the build reads: the time, and each transaction's outputs and
+// inputs — a coinbase's input with no prevout, every other with one.
+func verboseBlock(height int) map[string]interface{} {
+    var b = chainBlocks()[height]
+    var amount = func(p addrindex.Payment) map[string]interface{} {
+        return map[string]interface{}{"value": float64(p.Sat) / 1e8, "scriptPubKey": map[string]string{"hex": hex.EncodeToString(p.Script)}}
+    }
+    var txs []interface{}
+    for i, tx := range b.Txs {
+        var vin, vout []interface{}
+        if i == 0 { vin = append(vin, map[string]interface{}{"coinbase": "00"}) }
+        for _, p := range tx.Spent { vin = append(vin, map[string]interface{}{"prevout": amount(p)}) }
+        for _, p := range tx.Outputs { vout = append(vout, amount(p)) }
+        txs = append(txs, map[string]interface{}{"vin": vin, "vout": vout})
+    }
+    return map[string]interface{}{"hash": b.Hash, "time": b.Time, "tx": txs}
 }
 
 // txidAt is the id the fake node reports for a given (height, position).
@@ -140,47 +154,23 @@ func txidAt(height uint32, index int) string {
 // ordinary blocks here.
 var fakeChain = "regtest"
 
-// fakeCore serves both halves of what the tool needs: Core's REST interface for
-// the build, and its JSON-RPC for the lookups.
+// fakeCore is the node the tool talks to, over JSON-RPC alone: the builds read
+// the chain through it and the lookups resolve transactions through it.
 func fakeCore(t *testing.T, tip int) *httptest.Server {
-    var blocks = chainBlocks()
     var srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-        var p = r.URL.Path
-        switch {
-        case p == "/rest/chaininfo.json":
-            json.NewEncoder(w).Encode(map[string]interface{}{"blocks": tip, "chain": fakeChain})
-        case strings.HasPrefix(p, "/rest/blockhashbyheight/"):
-            var name = strings.TrimPrefix(p, "/rest/blockhashbyheight/")
-            var h, _ = strconv.Atoi(strings.TrimSuffix(strings.TrimSuffix(name, ".bin"), ".json"))
-            // Core serves the same answer in both formats, and the tool asks for
-            // each: the build reads the raw bytes, the reorg check the JSON
-            if strings.HasSuffix(name, ".json") {
-                json.NewEncoder(w).Encode(map[string]string{"blockhash": hashOfHeight(h)})
-                return
-            }
-            // the client reverses these bytes to render the hash, so the height
-            // goes last here to come out first in the hex
-            var raw = make([]byte, 32)
-            raw[31] = byte(h)
-            w.Write(raw)
-        case strings.HasPrefix(p, "/rest/block/"):
-            w.Write(blocks[heightOfHash(strings.TrimSuffix(strings.TrimPrefix(p, "/rest/block/"), ".bin"))][0])
-        case strings.HasPrefix(p, "/rest/spenttxouts/"):
-            w.Write(blocks[heightOfHash(strings.TrimSuffix(strings.TrimPrefix(p, "/rest/spenttxouts/"), ".bin"))][1])
-        case p == "/":
-            rpcReply(t, w, r)
-        default:
-            t.Errorf("unexpected request %s", p)
+        if r.URL.Path != "/" {
+            t.Errorf("unexpected request %s", r.URL.Path)
             w.WriteHeader(404)
+            return
         }
+        rpcReply(t, w, r, tip)
     }))
     t.Cleanup(srv.Close)
     return srv
 }
 
 // hashOfHeight and heightOfHash are the fixture's stand-in for real hashes: the
-// height lives in the leading byte, which is where the REST client's reversal
-// puts it.
+// height lives in the leading byte.
 func hashOfHeight(height int) string {
     var raw = make([]byte, 32)
     raw[0] = byte(height)
@@ -209,11 +199,12 @@ func batchID(v interface{}) int {
 }
 
 // requests counts every request the fake has served, so a test can assert that
-// a pass which should read only files touched the node not at all.
-var requests int
+// a pass which should read only files touched the node not at all. The builds
+// fetch blocks concurrently through it, so it is atomic.
+var requests atomic.Int64
 
-func rpcReply(t *testing.T, w http.ResponseWriter, r *http.Request) {
-    requests++
+func rpcReply(t *testing.T, w http.ResponseWriter, r *http.Request, tip int) {
+    requests.Add(1)
     var body, rerr = io.ReadAll(r.Body)
     if rerr != nil {
         t.Errorf("read rpc: %v", rerr)
@@ -228,7 +219,7 @@ func rpcReply(t *testing.T, w http.ResponseWriter, r *http.Request) {
         }
         var out []map[string]interface{}
         for _, req := range reqs {
-            out = append(out, map[string]interface{}{"id": batchID(req.ID), "result": answer(t, req)})
+            out = append(out, map[string]interface{}{"id": batchID(req.ID), "result": answer(t, req, tip)})
         }
         json.NewEncoder(w).Encode(out)
         return
@@ -238,19 +229,31 @@ func rpcReply(t *testing.T, w http.ResponseWriter, r *http.Request) {
         t.Errorf("decode rpc: %v", err)
         return
     }
-    json.NewEncoder(w).Encode(map[string]interface{}{"result": answer(t, req)})
+    json.NewEncoder(w).Encode(map[string]interface{}{"result": answer(t, req, tip)})
 }
 
-func answer(t *testing.T, req rpcCall) interface{} {
+func answer(t *testing.T, req rpcCall, tip int) interface{} {
     var out interface{}
     var reply = func(v interface{}) { out = v }
     switch req.Method {
+    case "getblockcount":
+        reply(tip)
+    case "getblockchaininfo":
+        reply(map[string]interface{}{"blocks": tip, "chain": fakeChain})
+    case "getchaintxstats":
+        var txs int
+        for _, b := range chainBlocks()[:tip+1] { txs += len(b.Txs) }
+        reply(map[string]interface{}{"txcount": txs})
     case "validateaddress":
         reply(map[string]interface{}{"isvalid": true, "scriptPubKey": hex.EncodeToString(payScript)})
     case "getblockhash":
         reply(hashOfHeight(int(req.Params[0].(float64))))
     case "getblock":
         var height = uint32(heightOfHash(req.Params[0].(string)))
+        if req.Params[1].(float64) == 3 {
+            reply(verboseBlock(int(height)))
+            break
+        }
         var ids = []string{txidAt(height, 0), txidAt(height, 1)}
         reply(map[string]interface{}{"tx": ids})
     case "getrawtransaction":
@@ -314,7 +317,7 @@ func capture(t *testing.T, f func()) string {
     return string(out)
 }
 
-// The whole tool end to end: build the index from a fake node's REST interface,
+// The whole tool end to end: build the index from a fake node's blocks,
 // then list an address out of it over the fake's JSON-RPC.
 func TestBuildThenList(t *testing.T) {
     openIndex(t)
@@ -454,18 +457,18 @@ func writeBlockFiles(t *testing.T, groups [][][]byte) string {
 // chainFiles is the fixture as Core would store it: the same blocks the index is
 // built from, two per file.
 func chainFiles(t *testing.T) string {
-    var blocks = chainBlocks()
+    var blocks = serialChain()
     return writeBlockFiles(t, [][][]byte{
-        {blocks[0][0], blocks[1][0]},
-        {blocks[2][0], blocks[3][0]},
+        {blocks[0], blocks[1]},
+        {blocks[2], blocks[3]},
     })
 }
 
 // The reader has to undo Core's obfuscation, follow the magic-and-length
 // framing, and stop at the padding rather than read it as a record.
 func TestBlockReaderWalksAFile(t *testing.T) {
-    var blocks = chainBlocks()
-    var dir = writeBlockFiles(t, [][][]byte{{blocks[0][0], blocks[1][0], blocks[2][0]}})
+    var blocks = serialChain()
+    var dir = writeBlockFiles(t, [][][]byte{{blocks[0], blocks[1], blocks[2]}})
     var key, err = xorKey(dir)
     if err != nil { t.Fatalf("key: %v", err) }
     var names, ferr = blockFiles(dir)
@@ -479,10 +482,10 @@ func TestBlockReaderWalksAFile(t *testing.T) {
         var raw, rerr = r.next()
         if rerr != nil { t.Fatalf("next: %v", rerr) }
         if raw == nil { break }
-        if len(raw) != len(blocks[got][0]) {
-            t.Errorf("block %d is %d bytes, want %d", got, len(raw), len(blocks[got][0]))
+        if len(raw) != len(blocks[got]) {
+            t.Errorf("block %d is %d bytes, want %d", got, len(raw), len(blocks[got]))
         }
-        if string(raw) != string(blocks[got][0]) {
+        if string(raw) != string(blocks[got]) {
             t.Errorf("block %d came back wrong — the obfuscation was not undone", got)
         }
         got++
@@ -536,10 +539,10 @@ func TestActbuildMakesNoNodeRequests(t *testing.T) {
     var oldMin = activeMin
     activeMin = 1
     defer func() { activeMin = oldMin }()
-    requests = 0
+    requests.Store(0)
     capture(t, func() { actbuild(opt) })
-    if requests != 0 {
-        t.Errorf("actbuild made %d requests to the node; it should read only files", requests)
+    if n := requests.Load(); n != 0 {
+        t.Errorf("actbuild made %d requests to the node; it should read only files", n)
     }
     if len(activeAddresses(t)) != 2 {
         t.Errorf("recorded %v, want both fixture addresses", activeAddresses(t))
