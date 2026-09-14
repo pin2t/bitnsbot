@@ -206,6 +206,11 @@ func (s langSpy) MinerInfo(lang, name string) Info {
     return s.fakeSource.MinerInfo(lang, name)
 }
 
+func (s langSpy) MinerChart(lang, name, data, period string) Chart {
+    *s.seen = append(*s.seen, "minerchart:"+lang)
+    return s.fakeSource.MinerChart(lang, name, data, period)
+}
+
 func TestSourceIsAskedInTheReadersLanguage(t *testing.T) {
     var seen []string
     var h = handler(t, "TESTTOKEN", langSpy{fakeSource{f: liveFees(), n: liveNetwork(),
@@ -213,12 +218,12 @@ func TestSourceIsAskedInTheReadersLanguage(t *testing.T) {
         al: liveAddrs()}, &seen})
     var ru = initDataLang("TESTTOKEN", "ru")
     for _, path := range []string{"/", "/market", "/blocks", "/addresses", "/block?height=963268",
-        "/tx?id=" + liveTxid, "/address?a=" + liveAddress, "/miner?name=AntPool"} {
+        "/tx?id=" + liveTxid, "/address?a=" + liveAddress, "/miner?name=AntPool", "/minerchart?name=AntPool"} {
         var data = ru
         if path == "/" { data = "" }
         getLang(h, path, data, "ru")
     }
-    for _, want := range []string{"market:ru", "blocks:ru", "addresses:ru", "block:ru", "tx:ru", "address:ru", "miner:ru"} {
+    for _, want := range []string{"market:ru", "blocks:ru", "addresses:ru", "block:ru", "tx:ru", "address:ru", "miner:ru", "minerchart:ru"} {
         var found = false
         for _, got := range seen {
             if got == want { found = true }

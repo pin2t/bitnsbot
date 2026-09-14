@@ -57,6 +57,11 @@ func (s *countingSource) MinerInfo(lang, name string) Info {
     return Info{OK: true, Title: name, Rows: []Field{{Label: "Blocks mined", Value: "22 blocks"}}}
 }
 
+func (s *countingSource) MinerChart(lang, name, data, period string) Chart {
+    s.hit("minerchart:" + data + ":" + period)
+    return liveChart(name, data, period)
+}
+
 func (s *countingSource) Watching(chat int64, kind, id string) bool { return false }
 
 func (s *countingSource) SetWatch(chat int64, kind, id string, on bool) (bool, error) { return on, nil }
@@ -307,5 +312,27 @@ func TestCacheConcurrentRequests(t *testing.T) {
     wg.Wait()
     if body := get(h, "/fees", data).Body.String(); !strings.Contains(body, "36 552") {
         t.Errorf("fees came back mangled after concurrent access: %q", body)
+    }
+}
+
+// A chart is cached per selection, and a new block stales every one of them: it
+// is read out of the blocks table, which is what the block moved.
+func TestMinerChartCachedUntilABlock(t *testing.T) {
+    var src = newCounting()
+    var h = handler(t, "TESTTOKEN", src)
+    var data = freshInitData("TESTTOKEN")
+    get(h, "/minerchart?name=AntPool&data=blocks&period=month", data)
+    get(h, "/minerchart?name=AntPool&data=consumption&period=year", data)
+    get(h, "/minerchart?name=AntPool&data=blocks&period=month", data)
+    if n := src.count("minerchart:blocks:month"); n != 1 {
+        t.Errorf("the same chart rendered %d times, want 1", n)
+    }
+    if n := src.count("minerchart:consumption:year"); n != 1 {
+        t.Errorf("another selection rendered %d times, want 1 — it is its own entry", n)
+    }
+    Notify("blocks")
+    get(h, "/minerchart?name=AntPool&data=blocks&period=month", data)
+    if n := src.count("minerchart:blocks:month"); n != 2 {
+        t.Errorf("the chart rendered %d times across a block, want 2", n)
     }
 }

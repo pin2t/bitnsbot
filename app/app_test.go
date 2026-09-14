@@ -85,6 +85,14 @@ func (s fakeSource) MinerInfo(lang, name string) Info {
     }}
 }
 
+// MinerChart has a chart for AntPool alone, the one pool MinerInfo knows; any
+// other name gets one with nothing in it, which is a table that has not reached
+// the period yet.
+func (s fakeSource) MinerChart(lang, name, data, period string) Chart {
+    if name != "AntPool" { return Chart{Name: name, Data: data, Period: period} }
+    return liveChart(name, data, period)
+}
+
 // watched is the fake's per-chat watch set, so the tests can prove the button
 // reflects the caller and not whoever asked first.
 var watched = map[int64]map[string]bool{}

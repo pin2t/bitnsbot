@@ -81,17 +81,22 @@ var schema = []string{
     `create table cursors (name TEXT PRIMARY KEY, place INTEGER NOT NULL)`,
 }
 
-// The indexes the three address rankings are read through, created **after the
-// rows are loaded**: an index maintained across a bulk insert is three B-trees
-// rebalanced per row, where building it once at the end sorts the column and
-// writes it in order. Each serves an ORDER BY in either direction, so one index
-// per column is enough for "largest balance first" and "oldest date first" alike.
+// The indexes, created **after the rows are loaded**: an index maintained across
+// a bulk insert is a B-tree rebalanced per row, where building it once at the end
+// sorts the column and writes it in order.
+//
+// The three on addrstat are what the address rankings are read through. Each
+// serves an ORDER BY in either direction, so one index per column is enough for
+// "largest balance first" and "oldest date first" alike. blocks_ts is the Mini
+// App's miner chart, which reads a period of blocks by time: the height is the
+// key, and a range of timestamps is otherwise a scan of the whole chain.
 //
 // The cursors table gets none: it holds one row per scan, five of them.
 var indexes = []string{
     `create index addrstat_balance on addrstat (balance)`,
     `create index addrstat_txs on addrstat (txs)`,
     `create index addrstat_last on addrstat (last)`,
+    `create index blocks_ts on blocks (ts)`,
 }
 
 // tables run smallest first so a mistake surfaces in the first second rather than
