@@ -156,19 +156,22 @@ func TestFormatBlock(t *testing.T) {
 }
 
 // A block arriving over ZMQ is cached by the collector, which zmq.go wakes with
-// a signal rather than computing the block itself: it walks from its cursor to
-// the tip, so it stores the new block and any the bot was down for, in height
-// order and with the cursor advancing behind it.
+// a signal rather than computing the block itself: it walks from the highest
+// block stored to the tip, so it stores the new block and any the bot was down
+// for, in height order.
 func TestBlockNotification(t *testing.T) {
     if err := openDB(filepath.Join(t.TempDir(), "watches.db")); err != nil {
         t.Fatalf("openDB: %v", err)
     }
     defer closeDB()
+    var tip = 100
+    var fetched []int64
     var srv = newFakeCoreServer(t, func(method string, params []interface{}) (interface{}, error) {
         switch method {
         case "getblockcount":
-            return 100, nil
+            return tip, nil
         case "getblockhash":
+            fetched = append(fetched, int64(params[0].(float64)))
             return fmt.Sprintf("0000000000000000abc%v", params[0]), nil
         case "getblock":
             var height, _ = strconv.Atoi(strings.TrimPrefix(params[0].(string), "0000000000000000abc"))
@@ -191,8 +194,32 @@ func TestBlockNotification(t *testing.T) {
     if _, ok := loadBlock(0); !ok {
         t.Error("the catch-up skipped the blocks below the tip")
     }
-    if h, ok := cursors.Get(cursors.Blocks); !ok || h != 100 {
-        t.Errorf("cursor = %d ok=%v, want 100", h, ok)
+    if _, ok := cursors.Get("blocks"); ok {
+        t.Error("the collector kept a place in cursors; its place is the blocks table")
+    }
+    // the next pass resumes past the highest block stored, fetching only what is new
+    tip, fetched = 102, nil
+    collectBlocks()
+    if len(fetched) != 2 || fetched[0] != 101 || fetched[1] != 102 {
+        t.Errorf("second pass fetched %v, want [101 102]", fetched)
+    }
+}
+
+// The collector used to keep its place in cursors. A row left there by that
+// version is dropped on open, rather than sitting beside the table that is now
+// the place and disagreeing with it.
+func TestOpenDBDropsTheOldBlocksCursor(t *testing.T) {
+    var path = filepath.Join(t.TempDir(), "watches.db")
+    if err := openDB(path); err != nil { t.Fatalf("openDB: %v", err) }
+    if _, err := db.Exec("insert into cursors (name, place) values ('blocks', 965002), ('miners', 7)"); err != nil { t.Fatal(err) }
+    closeDB()
+    if err := openDB(path); err != nil { t.Fatalf("reopen: %v", err) }
+    defer closeDB()
+    if v, ok := cursors.Get("blocks"); ok {
+        t.Errorf("the old blocks cursor survived at %d", v)
+    }
+    if v, ok := cursors.Get(cursors.Miners); !ok || v != 7 {
+        t.Errorf("miners cursor = %d (found %v), want 7 — only the blocks row goes", v, ok)
     }
 }
 

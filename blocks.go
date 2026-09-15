@@ -11,7 +11,6 @@ import "bitnsbot/app"
 import "bitnsbot/logging"
 import "bitnsbot/miners"
 import "bitnsbot/signals"
-import "bitnsbot/cursors"
 
 var blocksBucket = []byte("blocks")
 
@@ -20,7 +19,7 @@ var blocksBucket = []byte("blocks")
 var blockCacheInterval = 10 * time.Minute
 
 // blocksChunkSize is how many blocks are collected in memory before a single
-// database flush, so the collector writes the cursor only once per chunk.
+// database flush.
 var blocksChunkSize int64 = 1000
 
 // blocksChunkPause is how long the collector waits between chunks of a long
@@ -46,12 +45,13 @@ type blockInfo struct {
     Difficulty float64  `json:"difficulty"`
 }
 
-// blockInit creates the blocks bucket inside the shared bbolt file, and ensures
-// the shared cursors bucket the backfill keeps its place in. Called once by
-// openDB before any goroutine reads or writes them.
+// blockInit is called once by openDB before any goroutine reads or writes the
+// blocks table. The collector's place is the highest height in that table, so a
+// row it kept in cursors before that is dropped rather than left to mislead.
 func blockInit(handle *sql.DB) error {
     db = handle
-    return nil
+    var _, err = db.Exec("delete from cursors where name = 'blocks'")
+    return err
 }
 
 // The blocks table keeps the fees as `total - reward`, which is what they are —
@@ -192,7 +192,7 @@ func startBlockCache() {
 }
 
 func collectBlocks() {
-    if core == nil { return }
+    if core == nil || db == nil { return }
     var ctx, cancel = context.WithTimeout(context.Background(), 10*time.Minute)
     defer cancel()
     var tip, err = core.getBlockCount(ctx)
@@ -200,14 +200,16 @@ func collectBlocks() {
         logging.Warn("blocks: %v", err)
         return
     }
-    var cursor, haveCursor = cursors.Get(cursors.Blocks)
-    var from int64
-    if !haveCursor {
-        // No cursor yet: rescan from genesis.
-        from = 0
-    } else {
-        from = cursor + 1
+    // The place is the highest block stored: flushBlocks commits a chunk in one
+    // transaction, so it advances with the batch that reached it. An empty table
+    // is NULL, which starts from genesis.
+    var last sql.NullInt64
+    if err := db.QueryRow("select max(height) from blocks").Scan(&last); err != nil {
+        logging.Err("blocks: last height: %v", err)
+        return
     }
+    var from int64
+    if last.Valid { from = last.Int64 + 1 }
     var began = from - 1
     for from <= tip {
         var to = from + blocksChunkSize - 1
@@ -230,7 +232,7 @@ func collectBlocks() {
             }
             infos = append(infos, bi)
         }
-        if err := flushBlocks(infos, to); err != nil {
+        if err := flushBlocks(infos); err != nil {
             logging.Err("blocks: flush %v", err)
             return
         }
@@ -252,10 +254,10 @@ func collectBlocks() {
     }
 }
 
-// flushBlocks stores a chunk of block info and advances the cursor in one
-// transaction. On error the cursor does not move, so the next run retries the
+// flushBlocks stores a chunk of block info in one transaction. On error nothing
+// is stored, so the highest height does not move and the next run retries the
 // whole chunk.
-func flushBlocks(bis []*blockInfo, cursor int64) error {
+func flushBlocks(bis []*blockInfo) error {
     if db == nil { return nil }
     var tx, err = db.Begin()
     if err != nil { return err }
@@ -269,7 +271,6 @@ func flushBlocks(bis []*blockInfo, cursor int64) error {
         }
     }
     if err := stmt.Close(); err != nil { return err }
-    if err := cursors.Set(tx, cursors.Blocks, cursor); err != nil { return err }
     return tx.Commit()
 }
 
