@@ -36,13 +36,14 @@ func TestRateParsers(t *testing.T) {
     }
 }
 
+// the y=0 early sample is skipped
 func TestParseRateHistory(t *testing.T) {
     var body = []byte(`{"status":"ok","values":[{"x":1230940800,"y":0.0},{"x":1420070400,"y":320.19},{"x":1783987200,"y":62242.32}]}`)
     var records, err = parseHistory(body)
     if err != nil {
         t.Fatalf("parse: %v", err)
     }
-    if len(records) != 2 { // the y=0 early sample is skipped
+    if len(records) != 2 {
         t.Fatalf("expected 2 non-zero records, got %d", len(records))
     }
     if records[0].Time.Unix() != 1420070400 || records[0].Cents != 32019 {
@@ -50,6 +51,9 @@ func TestParseRateHistory(t *testing.T) {
     }
 }
 
+// the backfilled old sample is retrievable for a tx around that time
+//
+// a second call is a no-op: deep history now exists, so no re-download
 func TestBackfillRates(t *testing.T) {
     openTestDB(t)
     var old = time.Now().Add(-5 * 365 * 24 * time.Hour).Unix()
@@ -63,43 +67,52 @@ func TestBackfillRates(t *testing.T) {
     defer func() { historyURL = saved }()
     historyURL = srv.URL
     backfill()
-    // the backfilled old sample is retrievable for a tx around that time
     if r, ok := At(time.Unix(old, 0)); !ok || r != 250.5 {
         t.Fatalf("expected backfilled rate, got %v %v", r, ok)
     }
-    // a second call is a no-op: deep history now exists, so no re-download
     backfill()
     if hits != 1 {
         t.Fatalf("expected exactly 1 history fetch, got %d", hits)
     }
 }
 
+// Last returns the newest
+//
+// exact and nearest-time lookups
+//
+// 1m from 200 vs 4m from 100
+//
+// after all, within tolerance
+//
+// far outside the recorded window → unavailable
 func TestRateStorage(t *testing.T) {
     openTestDB(t)
     var base = time.Now().Truncate(time.Second)
     store(rate{Time: base.Add(-10 * time.Minute), Cents: 10000})
     store(rate{Time: base.Add(-5 * time.Minute), Cents: 20000})
     store(rate{Time: base, Cents: 30000})
-    // Last returns the newest
     if r, ok := Last(); !ok || r != 300 {
         t.Fatalf("Last = %v %v", r, ok)
     }
-    // exact and nearest-time lookups
     if r, ok := At(base.Add(-5 * time.Minute)); !ok || r != 200 {
         t.Fatalf("At(-5m) = %v %v", r, ok)
     }
-    if r, ok := At(base.Add(-6 * time.Minute)); !ok || r != 200 { // 1m from 200 vs 4m from 100
+    if r, ok := At(base.Add(-6 * time.Minute)); !ok || r != 200 {
         t.Fatalf("At(-6m) = %v %v", r, ok)
     }
-    if r, ok := At(base.Add(30 * time.Minute)); !ok || r != 300 { // after all, within tolerance
+    if r, ok := At(base.Add(30 * time.Minute)); !ok || r != 300 {
         t.Fatalf("At(+30m) = %v %v", r, ok)
     }
-    // far outside the recorded window → unavailable
     if _, ok := At(base.Add(-72 * time.Hour)); ok {
         t.Fatalf("expected no rate days before earliest sample")
     }
 }
 
+// a failing source is excluded from the average
+//
+// 60000
+//
+// fails (500)
 func TestUpdateRatesAverages(t *testing.T) {
     openTestDB(t)
     var body = func(s string) *httptest.Server {
@@ -128,10 +141,9 @@ func TestUpdateRatesAverages(t *testing.T) {
     if r, ok := Last(); !ok || r != (60000.0+62000.0+58000.0)/3 {
         t.Fatalf("expected averaged rate, got %v %v", r, ok)
     }
-    // a failing source is excluded from the average
     sources = []source{
-        {"coingecko", s1.URL, parseCoinGecko},             // 60000
-        {"blockchain.info", bad.URL, parseBlockchainInfo}, // fails (500)
+        {"coingecko", s1.URL, parseCoinGecko},
+        {"blockchain.info", bad.URL, parseBlockchainInfo},
     }
     update()
     if r, _ := Last(); r != 60000 {
@@ -141,6 +153,8 @@ func TestUpdateRatesAverages(t *testing.T) {
 
 // The market snapshot is the one figure set with no local source: capitalisation
 // and volume can only be fetched. Parsed from CoinGecko's real response shape.
+//
+// a response without a price is not a usable snapshot
 func TestParseMarket(t *testing.T) {
     var body = []byte(`{"bitcoin":{"usd":66202,"usd_market_cap":1327983664334.4749,"usd_24h_vol":31914279096.507484}}`)
     var m, err = parseMarket(body)
@@ -156,7 +170,6 @@ func TestParseMarket(t *testing.T) {
     if m.Volume24h != 31914279096.507484 {
         t.Errorf("volume = %v", m.Volume24h)
     }
-    // a response without a price is not a usable snapshot
     if _, err := parseMarket([]byte(`{"bitcoin":{}}`)); err == nil {
         t.Error("expected an error for a response carrying no price")
     }
@@ -188,6 +201,10 @@ func TestSnapshotDegrades(t *testing.T) {
 
 // The snapshot is stored on the updater's tick and read back by /market, so the
 // round trip through the database is what matters — not the fetch.
+//
+// a later snapshot supersedes the earlier one
+//
+// records are keyed by unix second
 func TestMarketStorage(t *testing.T) {
     openTestDB(t)
     if _, ok := LastMarket(); ok {
@@ -203,8 +220,7 @@ func TestMarketStorage(t *testing.T) {
     if m.Price != 66202 || m.MarketCap != 1.3e12 || m.Volume24h != 3.1e10 {
         t.Fatalf("round trip = %+v", m)
     }
-    // a later snapshot supersedes the earlier one
-    time.Sleep(1100 * time.Millisecond) // records are keyed by unix second
+    time.Sleep(1100 * time.Millisecond)
     if err := storeMarket(Market{Price: 70000, MarketCap: 1.4e12, Volume24h: 4e10}); err != nil {
         t.Fatalf("storeMarket: %v", err)
     }

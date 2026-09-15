@@ -15,6 +15,12 @@ import "bitnsbot/watches"
 // goroutine (which holds its alias by value, so it is restarted) and any
 // confirmation already pending. This drives the whole path — watch, rename,
 // then a transaction — and reads the alias off the message that comes out.
+//
+// the app's two steps: the bell files the watch, then the dialog names it
+//
+// the notifier holds its alias by value, so this is what the restart buys
+//
+// and the confirmation the mempool sighting queued carries it too
 func TestSetAliasRenamesALiveWatch(t *testing.T) {
     var sentMu sync.Mutex
     var sent []string
@@ -64,8 +70,6 @@ func TestSetAliasRenamesALiveWatch(t *testing.T) {
     stopNotify()
     resetWatched()
     defer stopNotify()
-
-    // the app's two steps: the bell files the watch, then the dialog names it
     if err := addWatch(b, 42, watchedAddr, ""); err != nil { t.Fatalf("add watch: %v", err) }
     var renamed, err = setAlias(b, 42, watchedAddr, "John")
     if err != nil || !renamed { t.Fatalf("setAlias = %v, %v; want it to rename the watch", renamed, err) }
@@ -74,7 +78,6 @@ func TestSetAliasRenamesALiveWatch(t *testing.T) {
     if len(list) != 1 || list[0].Alias != "John" {
         t.Fatalf("stored watches = %#v, want one named John", list)
     }
-
     broadcast("deadbeefrawtxhex")
     var deadline = time.Now().Add(3 * time.Second)
     var found string
@@ -89,11 +92,9 @@ func TestSetAliasRenamesALiveWatch(t *testing.T) {
     if found == "" {
         t.Fatalf("no notification arrived after the rename: %#v", sent)
     }
-    // the notifier holds its alias by value, so this is what the restart buys
     if !strings.Contains(found, short(watchedAddr)+" (John)") {
         t.Errorf("the notification does not carry the new alias: %q", found)
     }
-    // and the confirmation the mempool sighting queued carries it too
     var confirmed = txwatches.Confirms([]string{txid})
     if len(confirmed) != 1 || confirmed[0].Alias != "John" {
         t.Errorf("pending confirmation = %#v, want it renamed to John", confirmed)

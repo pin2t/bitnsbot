@@ -177,6 +177,11 @@ func btc(v float64) string {
 	return strings.TrimRight(strings.TrimRight(fmt.Sprintf("%.8f", v), "0"), ".")
 }
 
+// track amounts for this address
+//
+// build the output line
+//
+// print totals
 func main() {
 	flag.Parse()
 	if flag.NArg() == 0 {
@@ -184,7 +189,6 @@ func main() {
 		os.Exit(1)
 	}
 	var address = flag.Arg(0)
-
 	var d, err = bbolt.Open(*dbPath, 0600, nil)
 	if err != nil {
 		logging.Fatal("open database: %v", err)
@@ -193,7 +197,6 @@ func main() {
 	if err := addrindex.Init(d); err != nil {
 		logging.Fatal("init addrindex: %v", err)
 	}
-
 	var rpc *rpcClient
 	if *coreURL != "" {
 		rpc, err = newRPCClient(*coreURL, *coreUser, *corePass, *coreCookie)
@@ -201,7 +204,6 @@ func main() {
 			logging.Fatal("RPC client: %v", err)
 		}
 	}
-
 	var ctx = context.Background()
 	var scriptHex string
 	if rpc != nil {
@@ -214,7 +216,6 @@ func main() {
 	}
 	var script, _ = hex.DecodeString(scriptHex)
 	var touches, capped = addrindex.Lookup(script, 1000000000)
-
 	if len(touches) == 0 {
 		fmt.Println("No transactions found for", address)
 		return
@@ -222,11 +223,9 @@ func main() {
 	if capped {
 		fmt.Fprintf(os.Stderr, "warning: too many touches, showing the oldest %d\n", len(touches))
 	}
-
 	if _, ok := addrindex.Cursor(); !ok {
 		fmt.Println("Address index is still building — results may be partial.")
 	}
-
 	var totalReceived, totalSent float64
 	var txCount int
 	for _, t := range touches {
@@ -251,7 +250,6 @@ func main() {
 			continue
 		}
 		txCount++
-		// track amounts for this address
 		for _, v := range tx.Vin {
 			if v.Address == address {
 				totalSent += v.Amount
@@ -265,7 +263,6 @@ func main() {
 		if *totalsOnly {
 			continue
 		}
-		// build the output line
 		var tm = time.Unix(tx.Time, 0).UTC().Format("2 Jan 2006 15:04")
 		var inParts, outParts []string
 		for _, v := range tx.Vin {
@@ -286,7 +283,6 @@ func main() {
 		}
 		fmt.Println()
 	}
-	// print totals
 	fmt.Printf("\n%d transactions\n", txCount)
 	fmt.Printf("received: %s BTC\n", btc(totalReceived))
 	fmt.Printf("sent:     %s BTC\n", btc(totalSent))

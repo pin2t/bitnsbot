@@ -46,6 +46,12 @@ func abandonedRows(t *testing.T, path string) (addrs []string, balance, last map
 
 // The whole command end to end: read the fake node's blocks and spent outputs
 // over RPC, and end up with who holds coins and when they last moved any.
+//
+// the ranking itself: the address whose coins last moved earliest comes
+// first, whichever side that movement was
+//
+// the OP_RETURN's coins have no address, so they are kept in the state a
+// later run carries forward and left out of the answer
 func TestAbaBuild(t *testing.T) {
     var srv = fakeCore(t, 3)
     var opt = abaOptions(t, srv.URL)
@@ -59,8 +65,6 @@ func TestAbaBuild(t *testing.T) {
     if len(addrs) != 2 {
         t.Fatalf("abandoned = %v, want exactly the two addresses that hold coins", addrs)
     }
-    // the ranking itself: the address whose coins last moved earliest comes
-    // first, whichever side that movement was
     if addrs[0] != addrindex.Address(payScript) || addrs[1] != addrindex.Address(otherScript) {
         t.Errorf("abandoned ranks %v; the address whose coins moved least recently comes first", addrs)
     }
@@ -76,8 +80,6 @@ func TestAbaBuild(t *testing.T) {
     if got := balance[addrindex.Address(otherScript)]; got != wantOther {
         t.Errorf("%s holds %d, want %d", addrindex.Address(otherScript), got, wantOther)
     }
-    // the OP_RETURN's coins have no address, so they are kept in the state a
-    // later run carries forward and left out of the answer
     if got := abaBalances(t, opt.dbsqlite)[hex.EncodeToString(opReturnScript)]; got.sat != 500 {
         t.Errorf("the addressless script holds %d in the state, want 500", got.sat)
     }
@@ -114,16 +116,18 @@ func abaBalances(t *testing.T, path string) map[string]move {
 // last time its coins moved at all, and a spend is not privileged over the
 // payment that came after it. Dates fall as well as rise here, since a reader
 // taking the last record rather than the latest date would otherwise pass.
+//
+// paid at 700 and then again at 100, so the earlier record is the later date
+//
+// spent at 300 and paid at 800 since, so the payment is its date and it is
+// the less abandoned of the two despite being the only one that ever spent
 func TestAbaLastMovedRule(t *testing.T) {
     var dir = filepath.Join(t.TempDir(), "shards")
     var sh, err = newTimedShards(dir, 4, 4)
     if err != nil { t.Fatalf("newTimedShards: %v", err) }
     defer sh.remove()
-    // paid at 700 and then again at 100, so the earlier record is the later date
     if err := sh.putAt(string(payScript), 400, 700); err != nil { t.Fatalf("put: %v", err) }
     if err := sh.putAt(string(payScript), 100, 100); err != nil { t.Fatalf("put: %v", err) }
-    // spent at 300 and paid at 800 since, so the payment is its date and it is
-    // the less abandoned of the two despite being the only one that ever spent
     if err := sh.putAt(string(otherScript), -100, 300); err != nil { t.Fatalf("put: %v", err) }
     if err := sh.putAt(string(otherScript), 1000, 800); err != nil { t.Fatalf("put: %v", err) }
     if err := sh.flush(); err != nil { t.Fatalf("flush: %v", err) }
@@ -243,6 +247,9 @@ func TestAbaBuildCarriesStateForward(t *testing.T) {
 
 // -top is what makes it a list of ten thousand rather than of every address on
 // the chain, so it has to cut from the recent end.
+//
+// the state keeps every script whatever -top says, or the next run would
+// carry a wrong total forward
 func TestAbaBuildTop(t *testing.T) {
     var srv = fakeCore(t, 3)
     var opt = abaOptions(t, srv.URL)
@@ -254,8 +261,6 @@ func TestAbaBuildTop(t *testing.T) {
     if len(addrs) != 1 || addrs[0] != addrindex.Address(payScript) {
         t.Errorf("abandoned = %v, want only the most abandoned address", addrs)
     }
-    // the state keeps every script whatever -top says, or the next run would
-    // carry a wrong total forward
     if len(abaBalances(t, opt.dbsqlite)) != 3 {
         t.Errorf("the state = %v, want all three funded scripts", abaBalances(t, opt.dbsqlite))
     }
@@ -302,6 +307,9 @@ func TestAbaBuildNeedsADatabase(t *testing.T) {
 // A timed shard has to hand back the date as well as the amount, since a date
 // lost is an address ranked on the wrong day. The untimed round trip is
 // TestShardsRoundTrip; this is the same guarantee for the wider record.
+//
+// dates that rise and fall, so a reader taking the last one rather
+// than the latest would be caught
 func TestTimedShardsRoundTrip(t *testing.T) {
     var dir = filepath.Join(t.TempDir(), "shards")
     var sh, err = newTimedShards(dir, 8, 4)
@@ -313,8 +321,6 @@ func TestTimedShardsRoundTrip(t *testing.T) {
         for n := 0; n < 10; n++ {
             var sat = int64((i+1)*1000 - n*7)
             if n%3 == 0 { sat = -sat }
-            // dates that rise and fall, so a reader taking the last one rather
-            // than the latest would be caught
             var when = int64(1231006505 + (7-n%5)*600)
             var e = want[script]
             e.at(sat, when)

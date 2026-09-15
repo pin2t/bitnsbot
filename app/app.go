@@ -96,6 +96,9 @@ func langOf(initData string) string {
 // accepted reads an Accept-Language header into the languages it asks for, best
 // first. Quality drives the order rather than position: "en;q=0.8,ru" wants
 // Russian, and reading it in written order would answer in English.
+//
+// A malformed or absent q is 1.0 — the default the header's grammar
+// gives it — so a broken parameter cannot silently demote a language.
 func accepted(header string) []string {
     type want struct {
         lang string
@@ -106,8 +109,6 @@ func accepted(header string) []string {
         var tag, params, _ = strings.Cut(strings.TrimSpace(part), ";")
         if tag = base(tag); tag == "" { continue }
         var q = 1.0
-        // A malformed or absent q is 1.0 — the default the header's grammar
-        // gives it — so a broken parameter cannot silently demote a language.
         if _, after, ok := strings.Cut(params, "q="); ok {
             if f, err := strconv.ParseFloat(strings.TrimSpace(after), 64); err == nil { q = f }
         }
@@ -184,6 +185,10 @@ var addrsCache = lru.New[string, []byte](addrsCached)
 // invalidate drops one card's rendered HTML. Notify calls it *before* announcing
 // the event, so a page reacting immediately cannot be handed the very copy it
 // was told to replace.
+//
+// The page embeds every card, so whichever one moved, the page it would
+// serve to the next visitor is stale — in every language, since the card
+// that moved is in all of them.
 func invalidate(event string) {
     cacheMu.Lock()
     defer cacheMu.Unlock()
@@ -195,9 +200,6 @@ func invalidate(event string) {
         cardsCache.Clear()
     default: return
     }
-    // The page embeds every card, so whichever one moved, the page it would
-    // serve to the next visitor is stale — in every language, since the card
-    // that moved is in all of them.
     for _, lang := range langs { cardsCache.Delete(key(lang, "/")) }
 }
 
@@ -770,6 +772,11 @@ func watchable(kind string) bool { return kind == "address" || kind == "tx" }
 // know which container the answer belongs in — only the server, having
 // classified the query, does — so it names a target and the response corrects
 // it. Without this an address page lands in the Blocks tab, replacing the list.
+//
+// The URL says what was asked for, the loader says what came back, and
+// they differ for a block hash — it has a txid's shape, so it reaches
+// /tx, and main resolves it to the block. The watch button follows what
+// the page turned out to be, so a block never carries one.
 func details(w http.ResponseWriter, r *http.Request, slot, back, swap, kind, id string, load func(lang string) Info) {
     w.Header().Set("HX-Retarget", "#"+slot)
     w.Header().Set("HX-Trigger", showtab(tabOf(slot)))
@@ -777,10 +784,6 @@ func details(w http.ResponseWriter, r *http.Request, slot, back, swap, kind, id 
     cached(blocksCache, w, r, func(lang string) []byte {
         var info = load(lang)
         info.Slot, info.Back, info.Swap, info.From = slot, back, swap, from
-        // The URL says what was asked for, the loader says what came back, and
-        // they differ for a block hash — it has a txid's shape, so it reaches
-        // /tx, and main resolves it to the block. The watch button follows what
-        // the page turned out to be, so a block never carries one.
         if info.Kind == "" { info.Kind, info.Id = kind, id }
         if !info.OK || !watchable(info.Kind) { info.Kind, info.Id = "", "" }
         return render(lang, "details", info)
@@ -817,6 +820,94 @@ func isTxid(s string) bool {
 // only to verify initData. Bind addr to localhost: the page reaches the outside
 // world through the Cloudflare tunnel, which is what faces the network — nothing
 // here should be exposed directly.
+//
+// Closed when the server begins shutting down, which is what lets the open
+// event streams return. Per-server rather than package-level: a second Start
+// (the tests make several) would otherwise close the same channel twice.
+//
+// The list itself: the newest blocks, or — when Back asked — everything down
+// to the block the reader had opened from it.
+//
+// Only when Back explicitly asked: an empty list also refreshes through
+// here, and that must never move a reader off their tab.
+//
+// The batch the sentinel below the rows appends as the reader reaches it.
+//
+// What the sentinel above the rows prepends when a block is mined. Inserting
+// above the reader leaves the rows they are looking at where they are, where
+// re-rendering the list would throw them back to the top of it.
+//
+// Not cached: the answer decides a response header, which a cache hit would
+// not set — and it is keyed by a height that moves with every block, so an
+// entry would be read about once anyway.
+//
+// A details page replaces its tab's container in place, so the tab it
+// belongs to stays selected and Back can swap the original straight back in.
+// HX-Trigger moves the reader to that tab, which is what a search from Home
+// needs; opened from within the tab it lands on an already-active one and
+// does nothing.
+//
+// Drawn into the page rather than loaded after it, so the chart is
+// there in the first response — it is the same for every reader, so
+// the cached page can carry it.
+//
+// The chart alone, which is what either row of buttons swaps in. It reads the
+// blocks table, so a new block is what makes it stale: Notify("blocks") clears
+// this cache, and the TTL covers the rest.
+//
+// The Addresses tab: one of three ranked lists, and what Back on an address
+// page returns to. The whole panel re-renders on a switch — the buttons at
+// its foot are part of it — so which list is showing is server-rendered
+// rather than state the page has to keep.
+//
+// No SSE trigger rides on any of this, unlike the block list: the buckets
+// are loaded offline by tools/csvimport, so there is nothing to announce.
+//
+// The batch the sentinel below the rows appends as the reader reaches it.
+// from=0 is refused rather than read as the top: it would append the first
+// batch underneath itself, which is what an edited URL would otherwise do.
+//
+// Never cached: every cache here is keyed by URL, which is identical for
+// every user, so a cached watch list would be handed to the wrong person.
+// This is also why the shell page ships an empty container rather than the
+// rendered list — / is one copy shared by every visitor.
+//
+// The watch button. GET renders it for the calling user, POST sets the watch
+// and renders the result. Never cached: whether a given reader watches
+// something is per-user, and every cache here is keyed by URL alone.
+//
+// The bell names what it acts on in its URL; the alias dialog's Delete
+// button posts from inside a form, so there they arrive as form values.
+//
+// The desired state rides in the request rather than being toggled
+// server-side, so a stale button cannot flip a watch the reader did
+// not mean to touch: setting it twice is a no-op, not an undo.
+//
+// A watch that was just filed has no name yet, so the page is asked
+// to open the alias dialog — the second half of the two-step add.
+// Either way the watch list has changed and re-fetches itself.
+//
+// Naming a watch the reader already has: the dialog the bell opens after
+// filing one, and the same dialog the Watches tab's edit icon opens. Both
+// post from inside a form, so everything arrives as form values. The answer
+// is no content and a watchtab event — the list re-fetches itself, and the
+// dialog is closed by the page.
+//
+// An empty alias leaves the watch alone rather than clearing its name:
+// Save on an empty field is what a reader taps to dismiss the dialog.
+// A long one is cut rather than refused — it is a label, and the field
+// is capped in the page too, but this endpoint is reachable directly.
+//
+// search classifies the query and hands off, in the same order info() does:
+// the 64-hex shape first, because a string of 64 digits is also a valid
+// height, then a height, then an address as the catch-all.
+//
+// The search field is on Home and says nothing, so home is the default;
+// an id tapped inside a details page passes that page's own origin, so
+// Back still returns where the reader started.
+//
+// Shutdown calls this before it starts waiting, so the streams end and the
+// connections go idle instead of holding it open until the deadline.
 func Start(addr, token string, src Source) *http.Server {
     var mux = http.NewServeMux()
     mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -838,9 +929,6 @@ func Start(addr, token string, src Source) *http.Server {
         w.Header().Set("Cache-Control", "public, max-age=86400")
         w.Write(sseJS)
     })
-    // Closed when the server begins shutting down, which is what lets the open
-    // event streams return. Per-server rather than package-level: a second Start
-    // (the tests make several) would otherwise close the same channel twice.
     var closing = make(chan struct{})
     mux.HandleFunc("/events", func(w http.ResponseWriter, r *http.Request) {
         events(w, r, closing)
@@ -854,15 +942,10 @@ func Start(addr, token string, src Source) *http.Server {
     mux.HandleFunc("/market", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
         cached(cardsCache, w, r, func(lang string) []byte { return render(lang, "market", src.Market(lang)) })
     }))
-    // The list itself: the newest blocks, or — when Back asked — everything down
-    // to the block the reader had opened from it.
     mux.HandleFunc("/blocks", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
-        // Only when Back explicitly asked: an empty list also refreshes through
-        // here, and that must never move a reader off their tab.
         if to := r.URL.Query().Get("to"); isPanel(to) { w.Header().Set("HX-Trigger", showtab(to)) }
         cached(blocksCache, w, r, func(lang string) []byte { return render(lang, "blocks", src.Blocks(lang, Range{Down: heightOf(r, "down")})) })
     }))
-    // The batch the sentinel below the rows appends as the reader reaches it.
     mux.HandleFunc("/moreblocks", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
         var before = heightOf(r, "before")
         if before <= 0 {
@@ -871,13 +954,6 @@ func Start(addr, token string, src Source) *http.Server {
         }
         cached(blocksCache, w, r, func(lang string) []byte { return render(lang, "blockrows", src.Blocks(lang, Range{Before: before})) })
     }))
-    // What the sentinel above the rows prepends when a block is mined. Inserting
-    // above the reader leaves the rows they are looking at where they are, where
-    // re-rendering the list would throw them back to the top of it.
-    //
-    // Not cached: the answer decides a response header, which a cache hit would
-    // not set — and it is keyed by a height that moves with every block, so an
-    // entry would be read about once anyway.
     mux.HandleFunc("/newblocks", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
         var started = time.Now().UnixNano()
         var after = heightOf(r, "after")
@@ -900,11 +976,6 @@ func Start(addr, token string, src Source) *http.Server {
         w.Write(b)
         logging.Info("mini app: %s %s [%.2f ms]", r.Method, r.RequestURI, float64(time.Now().UnixNano() - started) / 1e6)
     }))
-    // A details page replaces its tab's container in place, so the tab it
-    // belongs to stays selected and Back can swap the original straight back in.
-    // HX-Trigger moves the reader to that tab, which is what a search from Home
-    // needs; opened from within the tab it lands on an already-active one and
-    // does nothing.
     mux.HandleFunc("/block", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
         var height, err = strconv.ParseInt(r.URL.Query().Get("height"), 10, 64)
         if err != nil || height < 0 {
@@ -932,9 +1003,6 @@ func Start(addr, token string, src Source) *http.Server {
         var back, swap = backToList(r)
         details(w, r, blocksSlot, back, swap, "", "", func(lang string) Info {
             var info = src.MinerInfo(lang, name)
-            // Drawn into the page rather than loaded after it, so the chart is
-            // there in the first response — it is the same for every reader, so
-            // the cached page can carry it.
             if info.OK {
                 var chart = src.MinerChart(lang, name, "blocks", "month")
                 info.Chart = &chart
@@ -942,9 +1010,6 @@ func Start(addr, token string, src Source) *http.Server {
             return info
         })
     }))
-    // The chart alone, which is what either row of buttons swaps in. It reads the
-    // blocks table, so a new block is what makes it stale: Notify("blocks") clears
-    // this cache, and the TTL covers the rest.
     mux.HandleFunc("/minerchart", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
         var name = strings.TrimSpace(r.URL.Query().Get("name"))
         if name == "" {
@@ -963,13 +1028,6 @@ func Start(addr, token string, src Source) *http.Server {
         var back, swap = backToAddrList(r)
         details(w, r, addressSlot, back, swap, "address", a, func(lang string) Info { return src.AddrInfo(lang, a) })
     }))
-    // The Addresses tab: one of three ranked lists, and what Back on an address
-    // page returns to. The whole panel re-renders on a switch — the buttons at
-    // its foot are part of it — so which list is showing is server-rendered
-    // rather than state the page has to keep.
-    //
-    // No SSE trigger rides on any of this, unlike the block list: the buckets
-    // are loaded offline by tools/csvimport, so there is nothing to announce.
     mux.HandleFunc("/addresses", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
         var to = r.URL.Query().Get("to")
         if !isPanel(to) { to = "addresses" }
@@ -979,9 +1037,6 @@ func Start(addr, token string, src Source) *http.Server {
         w.Header().Set("HX-Trigger", showtab(to))
         cached(addrsCache, w, r, func(lang string) []byte { return render(lang, "addresses", src.Addresses(lang, rng)) })
     }))
-    // The batch the sentinel below the rows appends as the reader reaches it.
-    // from=0 is refused rather than read as the top: it would append the first
-    // batch underneath itself, which is what an edited URL would otherwise do.
     mux.HandleFunc("/moreaddrs", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
         var from, err = strconv.Atoi(r.URL.Query().Get("from"))
         if err != nil || from <= 0 {
@@ -992,10 +1047,6 @@ func Start(addr, token string, src Source) *http.Server {
             return render(lang, "addrrows", src.Addresses(lang, AddrRange{Kind: addrKindOf(r), From: from}))
         })
     }))
-    // Never cached: every cache here is keyed by URL, which is identical for
-    // every user, so a cached watch list would be handed to the wrong person.
-    // This is also why the shell page ships an empty container rather than the
-    // rendered list — / is one copy shared by every visitor.
     mux.HandleFunc("/watches", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
         var started = time.Now().UnixNano()
         var b = render(language(r), "watches", src.Watches(chatOf(r.Header.Get("X-Telegram-Init-Data"))))
@@ -1007,13 +1058,8 @@ func Start(addr, token string, src Source) *http.Server {
         w.Write(b)
         logging.Info("mini app: %s %s [%.2f ms]", r.Method, r.RequestURI, float64(time.Now().UnixNano() - started) / 1e6)
     }))
-    // The watch button. GET renders it for the calling user, POST sets the watch
-    // and renders the result. Never cached: whether a given reader watches
-    // something is per-user, and every cache here is keyed by URL alone.
     mux.HandleFunc("/watch", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
         var started = time.Now().UnixNano()
-        // The bell names what it acts on in its URL; the alias dialog's Delete
-        // button posts from inside a form, so there they arrive as form values.
         var kind = r.URL.Query().Get("kind")
         var id = strings.TrimSpace(r.URL.Query().Get("id"))
         if kind == "" { kind = r.PostFormValue("kind") }
@@ -1025,18 +1071,12 @@ func Start(addr, token string, src Source) *http.Server {
         var chat = chatOf(r.Header.Get("X-Telegram-Init-Data"))
         var btn = watchButton{Kind: kind, Id: id}
         if r.Method == http.MethodPost {
-            // The desired state rides in the request rather than being toggled
-            // server-side, so a stale button cannot flip a watch the reader did
-            // not mean to touch: setting it twice is a no-op, not an undo.
             var on, serr = src.SetWatch(chat, kind, id, r.URL.Query().Get("on") == "1")
             if serr != nil {
                 logging.Err("mini app: set watch %s: %v", id, serr)
                 btn.Error = true
             }
             btn.On = on
-            // A watch that was just filed has no name yet, so the page is asked
-            // to open the alias dialog — the second half of the two-step add.
-            // Either way the watch list has changed and re-fetches itself.
             var events = map[string]any{"watchtab": ""}
             if on && !btn.Error { events["askalias"] = map[string]string{"kind": kind, "id": id} }
             w.Header().Set("HX-Trigger", trigger(events))
@@ -1052,11 +1092,6 @@ func Start(addr, token string, src Source) *http.Server {
         w.Write(b)
         logging.Info("mini app: %s %s [%.2f ms]", r.Method, r.RequestURI, float64(time.Now().UnixNano() - started) / 1e6)
     }))
-    // Naming a watch the reader already has: the dialog the bell opens after
-    // filing one, and the same dialog the Watches tab's edit icon opens. Both
-    // post from inside a form, so everything arrives as form values. The answer
-    // is no content and a watchtab event — the list re-fetches itself, and the
-    // dialog is closed by the page.
     mux.HandleFunc("/alias", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
         var started = time.Now().UnixNano()
         if r.Method != http.MethodPost {
@@ -1069,10 +1104,6 @@ func Start(addr, token string, src Source) *http.Server {
             http.Error(w, "nothing to name", http.StatusBadRequest)
             return
         }
-        // An empty alias leaves the watch alone rather than clearing its name:
-        // Save on an empty field is what a reader taps to dismiss the dialog.
-        // A long one is cut rather than refused — it is a label, and the field
-        // is capped in the page too, but this endpoint is reachable directly.
         var alias = strings.TrimSpace(r.PostFormValue("alias"))
         if len([]rune(alias)) > aliasMax { alias = string([]rune(alias)[:aliasMax]) }
         if alias == "" {
@@ -1088,14 +1119,8 @@ func Start(addr, token string, src Source) *http.Server {
         w.WriteHeader(http.StatusNoContent)
         logging.Info("mini app: %s %s [%.2f ms]", r.Method, r.RequestURI, float64(time.Now().UnixNano() - started) / 1e6)
     }))
-    // search classifies the query and hands off, in the same order info() does:
-    // the 64-hex shape first, because a string of 64 digits is also a valid
-    // height, then a height, then an address as the catch-all.
     mux.HandleFunc("/search", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
         var q = strings.TrimSpace(r.URL.Query().Get("q"))
-        // The search field is on Home and says nothing, so home is the default;
-        // an id tapped inside a details page passes that page's own origin, so
-        // Back still returns where the reader started.
         var from = r.URL.Query().Get("from")
         if !isPanel(from) { from = "home" }
         switch {
@@ -1112,8 +1137,6 @@ func Start(addr, token string, src Source) *http.Server {
         }
     }))
     var srv = &http.Server{Addr: addr, Handler: mux}
-    // Shutdown calls this before it starts waiting, so the streams end and the
-    // connections go idle instead of holding it open until the deadline.
     srv.RegisterOnShutdown(func() { close(closing) })
     go func() {
         logging.Status("mini app listening on %s", addr)

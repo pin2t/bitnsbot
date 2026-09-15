@@ -143,6 +143,15 @@ type addrCount struct {
 	count int
 }
 
+// address → tx count (cached)
+//
+// web status page
+//
+// progress reporter: prints every 5 seconds until progressDone is closed
+//
+// address → scriptHex
+//
+// release lock during I/O-bound Lookup
 func main() {
 	flag.Parse()
 	var d, err = bbolt.Open(*dbPath, 0600, nil)
@@ -167,14 +176,11 @@ func main() {
 	if tipErr != nil {
 		logging.Fatal("get tip: %v", tipErr)
 	}
-
-	var counts = make(map[string]int) // address → tx count (cached)
+	var counts = make(map[string]int)
 	var countsMu sync.Mutex
 	var began = time.Now()
 	const numWorkers = 16
 	var processed atomic.Int64
-
-	// web status page
 	if *webStatus != "" {
 		http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -184,18 +190,15 @@ func main() {
 				pct = float64(h) / float64(tip) * 100
 			}
 			var elapsed = time.Since(began).Round(time.Second)
-
 			countsMu.Lock()
 			var list []addrCount
 			for addr, cnt := range counts {
 				list = append(list, addrCount{addr: addr, count: cnt})
 			}
 			countsMu.Unlock()
-
 			sort.Slice(list, func(i, j int) bool {
 				return list[i].count > list[j].count
 			})
-
 			fmt.Fprintf(w, `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -239,7 +242,6 @@ tr:hover td{background:#161b22}
 			}
 		}()
 	}
-	// progress reporter: prints every 5 seconds until progressDone is closed
 	var progressDone = make(chan struct{})
 	go func() {
 		var ticker = time.NewTicker(5 * time.Second)
@@ -281,7 +283,7 @@ tr:hover td{background:#161b22}
 					processed.Add(1)
 					continue
 				}
-				var seen = make(map[string]string) // address → scriptHex
+				var seen = make(map[string]string)
 				for _, tx := range blk.Tx {
 					for _, vin := range tx.Vin {
 						if vin.Coinbase != "" { continue }
@@ -302,7 +304,7 @@ tr:hover td{background:#161b22}
 						countsMu.Unlock()
 						continue
 					}
-					countsMu.Unlock() // release lock during I/O-bound Lookup
+					countsMu.Unlock()
 					var script, _ = hex.DecodeString(scriptHex)
 					var touches, _ = addrindex.Lookup(script, 1000000000)
 					var cnt = len(touches)

@@ -56,6 +56,10 @@ func TestListFromSQLite(t *testing.T) {
 
 // The shard scan must find the address's every range and no one else's: a shard
 // holds every address whose hash starts with the same two bytes.
+//
+// block 1 pays the address, block 2 spends from it and pays change back
+//
+// the entries of every other address in the same shard must be filtered out
 func TestSQLiteTouches(t *testing.T) {
     openIndex(t)
     var srv = fakeCore(t, 3)
@@ -64,14 +68,12 @@ func TestSQLiteTouches(t *testing.T) {
     var touches, capped, err = sqliteTouches(path, payScript, 1000)
     if err != nil { t.Fatalf("lookup: %v", err) }
     if capped { t.Error("capped at a limit far above the fixture's two touches") }
-    // block 1 pays the address, block 2 spends from it and pays change back
     if len(touches) != 2 || touches[0].Height != 1 || touches[1].Height != 2 {
         t.Fatalf("touches = %v, want heights 1 and 2", touches)
     }
     if touches[0].TxIndex != 1 || touches[1].TxIndex != 1 {
         t.Errorf("touches = %v, want the second transaction of each block", touches)
     }
-    // the entries of every other address in the same shard must be filtered out
     var unrelated, _, uerr = sqliteTouches(path, []byte("no address ever paid this script"), 1000)
     if uerr != nil { t.Fatalf("lookup: %v", uerr) }
     if len(unrelated) != 0 { t.Errorf("an unindexed script matched %v", unrelated) }

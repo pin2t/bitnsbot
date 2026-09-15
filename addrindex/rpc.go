@@ -57,6 +57,11 @@ func (s *RPCBlockchain) Tip(ctx context.Context) (int, error) {
     return count, err
 }
 
+// Core reports an amount as a BTC number, and a float's nearest value to one
+// is often a hair under it — 0.29 BTC is 28999999.999999996 satoshi — so the
+// satoshi are rounded, never truncated.
+//
+// a coinbase's input has no prevout, so it spends nothing
 func (s *RPCBlockchain) BlockAt(ctx context.Context, height int) (Block, error) {
     var bctx, cancel = context.WithTimeout(ctx, blockTimeout)
     defer cancel()
@@ -72,9 +77,6 @@ func (s *RPCBlockchain) BlockAt(ctx context.Context, height int) (Block, error) 
         } `json:"tx"`
     }
     if err := s.call(bctx, "getblock", []interface{}{hash, 3}, &reply); err != nil { return Block{}, err }
-    // Core reports an amount as a BTC number, and a float's nearest value to one
-    // is often a hair under it — 0.29 BTC is 28999999.999999996 satoshi — so the
-    // satoshi are rounded, never truncated.
     var payment = func(o output) (Payment, error) {
         var script, err = hex.DecodeString(o.ScriptPubKey.Hex)
         if err != nil { return Payment{}, fmt.Errorf("block %s: malformed script %q", hash, o.ScriptPubKey.Hex) }
@@ -89,7 +91,6 @@ func (s *RPCBlockchain) BlockAt(ctx context.Context, height int) (Block, error) 
             if err != nil { return Block{}, err }
             tx.Outputs = append(tx.Outputs, p)
         }
-        // a coinbase's input has no prevout, so it spends nothing
         for _, in := range t.Vin {
             if in.PrevOut == nil { continue }
             var p, err = payment(*in.PrevOut)

@@ -76,8 +76,9 @@ func StartStats(src Source) {
     }()
 }
 
+// address list not loaded yet — nothing could be attributed
 func collect(src Source) {
-    if empty() { return } // address list not loaded yet — nothing could be attributed
+    if empty() { return }
     var ctx, cancel = context.WithTimeout(context.Background(), 10*time.Minute)
     defer cancel()
     var tip, err = src.Tip(ctx)
@@ -136,14 +137,15 @@ func collect(src Source) {
 // overwritten with the most recent (chunks run oldest-first, so the last write
 // wins). A pool's addresses and tags are rows of their own tables, so nothing
 // here can disturb them.
+//
+// An upsert rather than an update: the pool row is there already — a block is
+// only attributed to a pool mineraddr or minertag names, and those reference
+// this table — but a delta is not a thing to drop on the floor if it is not.
 func flush(deltas map[string]*record, last int64) error {
     if db == nil { return nil }
     var tx, err = db.Begin()
     if err != nil { return err }
     defer tx.Rollback()
-    // An upsert rather than an update: the pool row is there already — a block is
-    // only attributed to a pool mineraddr or minertag names, and those reference
-    // this table — but a delta is not a thing to drop on the floor if it is not.
     var stmt, perr = tx.Prepare(`insert into miners (name, blocks, reward, fees, totalWork, lastWork)
         values (?, ?, ?, ?, ?, ?)
         on conflict(name) do update set blocks = miners.blocks + excluded.blocks,
@@ -205,14 +207,14 @@ func Consumption(share, difficulty float64) float64 {
     return share * difficulty * workPerDifficulty / secondsPerBlock * joulesPerHash / 1e9
 }
 
+// A pool with no blocks is one the definitions name and the collector has
+// never attributed a block to. It is not a statistic: reporting it would fill
+// /miners with zeroes on a fresh install, and hand the app's miner page
+// zeroes to present as fact.
 func all() []Stat {
     if db == nil { return nil }
     var out []Stat
     var totalBlocks int64
-    // A pool with no blocks is one the definitions name and the collector has
-    // never attributed a block to. It is not a statistic: reporting it would fill
-    // /miners with zeroes on a fresh install, and hand the app's miner page
-    // zeroes to present as fact.
     var rows, err = db.Query("select name, blocks, reward, fees, lastWork from miners where blocks > 0")
     if err != nil {
         logging.Err("miners: %v", err)

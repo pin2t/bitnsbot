@@ -57,6 +57,12 @@ func (s summary) String() string {
 // a transaction lookup against the node. The touches come from the bbolt index
 // this tool builds, or, with -dbsqlite, from the SQLite copy tosqlite makes of
 // it; only the storage differs, and the listing is the same either way.
+//
+// the SQLite copy carries no cursor bucket, so there is nothing to warn
+// about: an index migrated at all was an index that had been built
+//
+// the stamp is padded because a single-digit day is a character
+// shorter, which would step the whole listing in and out
 func list(opt *options, address string) {
     var client, err = newRPC(opt.url, opt.user, opt.pass, opt.cookie)
     if err != nil { logging.Fatal("RPC client: %v", err) }
@@ -65,12 +71,9 @@ func list(opt *options, address string) {
     if serr != nil { logging.Fatal("%v", serr) }
     var script, derr = hex.DecodeString(scriptHex)
     if derr != nil { logging.Fatal("decode scriptPubKey: %v", derr) }
-
     var touches []addrindex.Touch
     var capped bool
     if opt.dbsqlite != "" {
-        // the SQLite copy carries no cursor bucket, so there is nothing to warn
-        // about: an index migrated at all was an index that had been built
         var err error
         touches, capped, err = sqliteTouches(opt.dbsqlite, script, opt.limit)
         if err != nil { logging.Fatal("%s: %v", opt.dbsqlite, err) }
@@ -118,8 +121,6 @@ func list(opt *options, address string) {
         if n := len(amount(e.net())); n > width { width = n }
     }
     for _, e := range entries {
-        // the stamp is padded because a single-digit day is a character
-        // shorter, which would step the whole listing in and out
         fmt.Printf("%-17s %s   %*s\n", stamp(e.at), shortID(e.txid), width, amount(e.net()))
     }
     fmt.Println(totals)

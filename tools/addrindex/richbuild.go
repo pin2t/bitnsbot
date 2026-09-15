@@ -22,6 +22,10 @@ import "bitnsbot/logging"
 // balances — tens of millions of rows rather than billions of movements — are
 // written to the database. See shards.go for why not SQLite the whole way, and
 // richdb.go for what the database ends up holding.
+//
+// A run that carries on from a stored height starts with what that height
+// left: every balance goes back in as one movement, so the shards hold the
+// whole history's total and not just this run's part of it.
 func richbuild(opt *options) error {
     if opt.dbsqlite == "" {
         return fmt.Errorf("richbuild writes SQLite: name the database with -dbsqlite")
@@ -62,9 +66,6 @@ func richbuild(opt *options) error {
     fmt.Printf("Summing balances over blocks %d..%d of %s into %s (%d shards under %s)\n",
         from, tip, chain, opt.dbsqlite, opt.shards, dir)
     var started = time.Now()
-    // A run that carries on from a stored height starts with what that height
-    // left: every balance goes back in as one movement, so the shards hold the
-    // whole history's total and not just this run's part of it.
     if built {
         var seeded int
         if err := store.each(func(script []byte, balance int64) error {
@@ -242,6 +243,10 @@ const fetchBackoff = 2 * time.Second
 // aggregate adds each shard up on its own and writes what survives. Only one
 // shard's scripts are in memory at a time, so this is where -shards decides the
 // run's peak memory: more shards, less of the chain in each.
+//
+// A balance cannot go below zero on a chain that only ever spends
+// outputs that exist, so one that does means this run's own
+// arithmetic is wrong somewhere — say so rather than write it.
 func aggregate(store *richStore, sh *shards, opt *options, tip int, hash string) error {
     var st, err = store.newState()
     if err != nil { return err }
@@ -260,9 +265,6 @@ func aggregate(store *richStore, sh *shards, opt *options, tip int, hash string)
         if len(sums) > largest { largest = len(sums) }
         for script, balance := range sums {
             if balance == 0 { continue }
-            // A balance cannot go below zero on a chain that only ever spends
-            // outputs that exist, so one that does means this run's own
-            // arithmetic is wrong somewhere — say so rather than write it.
             if balance < 0 {
                 negative++
                 logging.Warn("richbuild: %s holds %d sat, which cannot happen", addrindex.Address([]byte(script)), balance)

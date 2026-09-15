@@ -125,6 +125,9 @@ type row struct {
 // through decodeField like every other key here, so a binary one is given as
 // "hex:0000", and the scan is a Seek to it rather than a walk from the start —
 // which is what makes a prefix on a large bucket cheap.
+//
+// Seek lands on the first key at or above the prefix, so everything
+// matching runs from there until a key stops carrying it.
 func view(w http.ResponseWriter, r *http.Request) {
     var q = r.URL.Query()
     var page, _ = strconv.Atoi(q.Get("page"))
@@ -144,8 +147,6 @@ func view(w http.ResponseWriter, r *http.Request) {
         if b == nil { return errNoBucket }
         var c = b.Cursor()
         var k, v = c.First()
-        // Seek lands on the first key at or above the prefix, so everything
-        // matching runs from there until a key stops carrying it.
         if len(prefix) > 0 { k, v = c.Seek(prefix) }
         var matches = func() bool { return k != nil && bytes.HasPrefix(k, prefix) }
         for i := 0; i < page*size && matches(); i++ {
@@ -413,6 +414,9 @@ func filename(bucket string) string {
 // The write is therefore not one transaction. That is the same trade
 // tools/csvimport makes and safe for the same reason: every row is written by
 // key, so an import that fails partway is recovered by running it again.
+//
+// The export writes a header; a file that has one starts with it, and a
+// file that does not starts with data. Only the first record can be one.
 func importBucket(w http.ResponseWriter, r *http.Request) {
     if r.Method != http.MethodPost {
         http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -463,8 +467,6 @@ func importBucket(w http.ResponseWriter, r *http.Request) {
             http.Error(w, rerr.Error(), http.StatusBadRequest)
             return
         }
-        // The export writes a header; a file that has one starts with it, and a
-        // file that does not starts with data. Only the first record can be one.
         if first && strings.EqualFold(rec[0], "key") && strings.EqualFold(rec[1], "value") {
             continue
         }

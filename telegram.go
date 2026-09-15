@@ -60,6 +60,7 @@ type Chat struct {
     Type string `json:"type"`
 }
 
+// the token is in the URL, so it is deliberately never logged
 func (b *bot) call(ctx context.Context, method string, payload any) (json.RawMessage, error) {
     var buf, err = json.Marshal(payload)
     if err != nil { return nil, err }
@@ -68,7 +69,6 @@ func (b *bot) call(ctx context.Context, method string, payload any) (json.RawMes
     } else {
         logging.Net("telegram → %s %s", method, buf)
     }
-    // the token is in the URL, so it is deliberately never logged
     var url = fmt.Sprintf("%s/bot%s/%s", b.baseURL, b.token, method)
     req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(buf))
     if err != nil { return nil, err }

@@ -8,6 +8,9 @@ import "testing"
 
 // Buttons carry the *full* id as callback_data and the shortened id as the
 // label, so what the user taps matches what the message shows.
+//
+// a txid is exactly 64 characters — Telegram's callback_data limit — so it
+// has to travel with no prefix at all
 func TestButtonRows(t *testing.T) {
     var txid = "f21b47a9143a23e80cc59e81588d21558b394005580b285961957cb3bed5b3e0"
     var addr = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
@@ -21,17 +24,15 @@ func TestButtonRows(t *testing.T) {
     if rows[0][0]["text"] != short(txid) {
         t.Fatalf("label = %q, want the shortened id %q", rows[0][0]["text"], short(txid))
     }
-    // a txid is exactly 64 characters — Telegram's callback_data limit — so it
-    // has to travel with no prefix at all
     if len(txid) != 64 {
         t.Fatalf("fixture txid is %d chars, the limit case is 64", len(txid))
     }
 }
 
+// duplicates collapse, and the placeholders that stand in for unnamed
+// outputs are not ids at all
 func TestButtonRowsFilters(t *testing.T) {
     var addr = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
-    // duplicates collapse, and the placeholders that stand in for unnamed
-    // outputs are not ids at all
     var rows = buttonRows([]string{addr, addr, "", "(non-standard)", strings.Repeat("x", 65)})
     if len(rows) != 1 || len(rows[0]) != 1 {
         t.Fatalf("expected a single button, got %v", rows)
@@ -65,6 +66,8 @@ func TestButtonRowsCaps(t *testing.T) {
 
 // Tapping a button must acknowledge the query (Telegram spins the button until
 // it is answered) and then run the lookup for that id.
+//
+// the lookup then replies "not configured", which is still a reply
 func TestCallbackAnswersAndLooksUp(t *testing.T) {
     var mu = make(chan string, 8)
     var tg = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -75,7 +78,7 @@ func TestCallbackAnswersAndLooksUp(t *testing.T) {
     }))
     defer tg.Close()
     var b = newBot("TESTTOKEN", tg.URL)
-    core = nil // the lookup then replies "not configured", which is still a reply
+    core = nil
     update(b, Update{CallbackQuery: &CallbackQuery{
         ID:      "q1",
         Data:    "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa",

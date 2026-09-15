@@ -95,12 +95,20 @@ func statOf(t *testing.T, addr string) Stat {
 // The chain pays addrA twice and then spends from it, paying part back to addrB
 // and leaving the rest as a fee. Everything the record holds is asserted against
 // what those blocks actually moved.
+//
+// spends both of addrA's outputs, pays 7000 to addrB, so the fee is 1000
+//
+// the fee is charged once, though the transaction spends two of its outputs
+//
+// three transactions: two paying it, one spending from it
+//
+// an address nobody asked about is not stored, which is the whole point of
+// gathering for a set rather than for the chain
 func TestCollectGathersStatistics(t *testing.T) {
     open(t, addrA, addrB)
     var src = &fakeBlockchain{tip: 2, blocks: map[int]addrindex.Block{
         0: blockOf(1000, tx{outs: []addrindex.Payment{pay(scriptA, 5000)}}),
         1: blockOf(2000, tx{outs: []addrindex.Payment{pay(scriptA, 3000), pay(scriptC, 100)}}),
-        // spends both of addrA's outputs, pays 7000 to addrB, so the fee is 1000
         2: blockOf(3000,
             tx{outs: []addrindex.Payment{pay(scriptC, 50)}},
             tx{outs: []addrindex.Payment{pay(scriptB, 7000)}, spent: []addrindex.Payment{pay(scriptA, 5000), pay(scriptA, 3000)}}),
@@ -110,9 +118,7 @@ func TestCollectGathersStatistics(t *testing.T) {
     if a.Recv != 8000 || a.Sent != 8000 || a.Balance != 0 || a.Flow != 16000 {
         t.Errorf("addrA amounts = %+v", a)
     }
-    // the fee is charged once, though the transaction spends two of its outputs
     if a.Fees != 1000 { t.Errorf("addrA fees = %d, want 1000", a.Fees) }
-    // three transactions: two paying it, one spending from it
     if a.Txs != 3 { t.Errorf("addrA txs = %d, want 3", a.Txs) }
     if a.First != 1000 || a.Last != 3000 { t.Errorf("addrA dates = %d..%d, want 1000..3000", a.First, a.Last) }
     if a.Type != "segwit" { t.Errorf("addrA type = %q, want segwit", a.Type) }
@@ -121,8 +127,6 @@ func TestCollectGathersStatistics(t *testing.T) {
         t.Errorf("addrB = %+v", b)
     }
     if b.Type != "p2pkh" { t.Errorf("addrB type = %q, want p2pkh", b.Type) }
-    // an address nobody asked about is not stored, which is the whole point of
-    // gathering for a set rather than for the chain
     var n int
     if err := db.QueryRow("select count(*) from addrstat where addr = ?", addrC).Scan(&n); err != nil {
         t.Fatal(err)
@@ -170,6 +174,8 @@ func TestCollectResumes(t *testing.T) {
 // The three ranked address lists are built from these records, so a pass that
 // moved them says so — and one that found nothing to do says nothing, or every
 // idle tick would rebuild three indexes for no reason.
+//
+// nothing new: the cursor is at the tip, so there is nothing to announce
 func TestCollectSignalsWhenItHasCaughtUp(t *testing.T) {
     open(t, addrA)
     signals.Reset()
@@ -183,7 +189,6 @@ func TestCollectSignalsWhenItHasCaughtUp(t *testing.T) {
     default:
         t.Error("a pass that scanned a block did not signal")
     }
-    // nothing new: the cursor is at the tip, so there is nothing to announce
     if err := Collect(src); err != nil { t.Fatalf("Collect: %v", err) }
     select {
     case <-wake:

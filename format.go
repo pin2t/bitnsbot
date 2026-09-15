@@ -284,10 +284,12 @@ func comma(n int64) string {
 
 // change renders a move against an earlier price as both an absolute amount and
 // a percentage, always signed so a glance shows direction: "+$1,608.42 (+2.49%)".
+//
+// price() carries the minus itself
 func change(now, then float64) string {
     var delta = now - then
     var sign = "+"
-    if delta < 0 { sign = "" } // price() carries the minus itself
+    if delta < 0 { sign = "" }
     var pct = ""
     if then > 0 {
         pct = fmt.Sprintf(" (%s%s%%)", sign, trimNum(delta/then*100, 2))

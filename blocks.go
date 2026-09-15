@@ -183,6 +183,20 @@ func startBlockCache() {
     }()
 }
 
+// The place is the highest block stored: flushBlocks commits a chunk in one
+// transaction, so it advances with the batch that reached it. An empty table
+// is NULL, which starts from genesis.
+//
+// Announced only once the records are stored: the Mini App's Blocks tab
+// reads this bucket, so telling it earlier would have it re-fetch a list
+// the new blocks are not in yet.
+//
+// A pause between chunks, so catching up the whole chain does not hold
+// the node at full tilt for hours — but only when there is another chunk
+// to come. The condition used to be `from < tip`, which is true of the
+// chunk that *reaches* the tip as well, so every catch-up slept a minute
+// after its last flush: a minute between a block arriving and being
+// cached, now that this is the only path that caches one.
 func collectBlocks() {
     if core == nil || db == nil { return }
     var ctx, cancel = context.WithTimeout(context.Background(), 10*time.Minute)
@@ -192,9 +206,6 @@ func collectBlocks() {
         logging.Warn("blocks: %v", err)
         return
     }
-    // The place is the highest block stored: flushBlocks commits a chunk in one
-    // transaction, so it advances with the batch that reached it. An empty table
-    // is NULL, which starts from genesis.
     var last sql.NullInt64
     if err := db.QueryRow("select max(height) from blocks").Scan(&last); err != nil {
         logging.Err("blocks: last height: %v", err)
@@ -228,16 +239,7 @@ func collectBlocks() {
             logging.Err("blocks: flush %v", err)
             return
         }
-        // Announced only once the records are stored: the Mini App's Blocks tab
-        // reads this bucket, so telling it earlier would have it re-fetch a list
-        // the new blocks are not in yet.
         if len(infos) > 0 { app.Notify("blocks") }
-        // A pause between chunks, so catching up the whole chain does not hold
-        // the node at full tilt for hours — but only when there is another chunk
-        // to come. The condition used to be `from < tip`, which is true of the
-        // chunk that *reaches* the tip as well, so every catch-up slept a minute
-        // after its last flush: a minute between a block arriving and being
-        // cached, now that this is the only path that caches one.
         if to < tip { time.Sleep(blocksChunkPause) }
         from = to + 1
     }
@@ -272,6 +274,9 @@ func flushBlocks(bis []*blockInfo) error {
 // blockPairs builds the label/value lines a block is described by. Shared with
 // the Mini App's block details page, so the two cannot drift apart. A pair with
 // an empty value is a heading ("Fees", "Tx sizes"), not a field.
+//
+// a size, not a fee: Russian declines the two differently, so this is its
+// own key rather than the "average" the fee line above uses
 func blockPairs(bi *blockInfo, lang string) [][2]string {
     var difficulty = metric(bi.Difficulty, 2)
     var pairs = [][2]string{
@@ -300,8 +305,6 @@ func blockPairs(bi *blockInfo, lang string) [][2]string {
     pairs = append(pairs,
         [2]string{i18nl(lang).String("Tx sizes"), ""},
         [2]string{i18nl(lang).String("minimum"), group(int64(bi.TxSizeMin)) + " " + i18nl(lang).String("B")},
-        // a size, not a fee: Russian declines the two differently, so this is its
-        // own key rather than the "average" the fee line above uses
         [2]string{i18nl(lang).String("average-tx"), group(int64(bi.TxSizeAvg)) + " " + i18nl(lang).String("B")},
         [2]string{i18nl(lang).String("maximum"), group(int64(bi.TxSizeMax)) + " " + i18nl(lang).String("B")},
         [2]string{i18nl(lang).String("Reward"), amountLine(bi.Reward, time.Unix(bi.Time, 0), false, lang)},

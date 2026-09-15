@@ -34,10 +34,10 @@ import "strings"
 // "%*s" → "s", "%[1]d" → "d".
 var formatVerbRE = regexp.MustCompile(`%[+#\-0 ]*\[?(\d*)\]?\.?(\d*)([sdfvtqxbcegGp])`)
 
+// m[3] is the verb letter
 func formatVerbs(s string) string {
 	var verbs []string
 	for _, m := range formatVerbRE.FindAllStringSubmatch(s, -1) {
-		// m[3] is the verb letter
 		verbs = append(verbs, m[3])
 	}
 	return strings.Join(verbs, "")
@@ -98,6 +98,13 @@ func main() {
 
 // extractI18nStrings walks an AST and returns every string literal passed as the
 // first argument to i18n(…)/i18nl(…).Sprintf or .String.
+//
+// The receiver must be i18n(…) — a chat's language — or i18nl(…), the
+// same lookup by language code, which is how the Mini App translates.
+//
+// First argument is the format string
+//
+// Unquote the string literal
 func extractI18nStrings(f *ast.File) []string {
 	var strings []string
 	ast.Inspect(f, func(n ast.Node) bool {
@@ -106,17 +113,13 @@ func extractI18nStrings(f *ast.File) []string {
 		sel, ok := call.Fun.(*ast.SelectorExpr)
 		if !ok { return true }
 		if sel.Sel.Name != "Sprintf" && sel.Sel.Name != "String" { return true }
-		// The receiver must be i18n(…) — a chat's language — or i18nl(…), the
-		// same lookup by language code, which is how the Mini App translates.
 		call2, ok := sel.X.(*ast.CallExpr)
 		if !ok { return true }
 		ident, ok := call2.Fun.(*ast.Ident)
 		if !ok || (ident.Name != "i18n" && ident.Name != "i18nl") { return true }
-		// First argument is the format string
 		if len(call.Args) == 0 { return true }
 		lit, ok := call.Args[0].(*ast.BasicLit)
 		if !ok || lit.Kind != token.STRING { return true }
-		// Unquote the string literal
 		s, err := stringLiteral(lit.Value)
 		if err != nil { return true }
 		strings = append(strings, s)
@@ -157,6 +160,8 @@ func stringLiteral(s string) (string, error) {
 // parseTranslationSections reads i18n.go and extracts translation sections
 // delimited by // i18n-vet:translation <lang> and // i18n-vet:end translation.
 // Returns a map from language code to trans map.
+//
+// Matches a translation entry: "key": "value",
 func parseTranslationSections(path string) (map[string]map[string]string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil { return nil, err }
@@ -165,7 +170,6 @@ func parseTranslationSections(path string) (map[string]map[string]string, error)
 	var inSection bool
 	var currentLang string
 	var currentTrans map[string]string
-	// Matches a translation entry: "key": "value",
 	entryRE := regexp.MustCompile(`^\s*"((?:[^"\\]|\\.)*)"\s*:\s*"((?:[^"\\]|\\.)*)"\s*,?\s*$`)
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)

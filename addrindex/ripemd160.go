@@ -63,10 +63,12 @@ func rmdF(group int, x, y, z uint32) uint32 {
     }
 }
 
+// the same padding MD5 and SHA-1 use: a 1 bit, zeros, then the length in
+// bits as a little-endian 64-bit count
+//
+// the two lines are combined across the state, not into it
 func ripemd160(msg []byte) []byte {
     var h = [5]uint32{0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476, 0xc3d2e1f0}
-    // the same padding MD5 and SHA-1 use: a 1 bit, zeros, then the length in
-    // bits as a little-endian 64-bit count
     var padded = make([]byte, 0, len(msg)+72)
     padded = append(padded, msg...)
     padded = append(padded, 0x80)
@@ -74,7 +76,6 @@ func ripemd160(msg []byte) []byte {
     var length = make([]byte, 8)
     binary.LittleEndian.PutUint64(length, uint64(len(msg))*8)
     padded = append(padded, length...)
-
     var x [16]uint32
     for block := 0; block < len(padded); block += 64 {
         for i := 0; i < 16; i++ {
@@ -91,7 +92,6 @@ func ripemd160(msg []byte) []byte {
                 int(rmdShiftRight[i])) + ee
             aa, ee, dd, cc, bb = ee, dd, bits.RotateLeft32(cc, 10), bb, t
         }
-        // the two lines are combined across the state, not into it
         var t = h[1] + c + dd
         h[1] = h[2] + d + ee
         h[2] = h[3] + e + aa

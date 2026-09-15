@@ -146,14 +146,24 @@ func insertInto(name string, cols []string, replace bool) string {
     return verb + name + " (" + strings.Join(cols, ", ") + ") values (" + strings.Join(marks, ", ") + ")"
 }
 
+// The migration is what this tool does, so it is the bare form and stays the
+// way it has always been invoked; validate is the one command that has to be
+// named. Its flags come after it, as they do for tools/addrindex.
+//
+// read-only so a mistake here cannot damage the bot's database. bbolt holds an
+// exclusive lock while a writer has the file open, so this fails outright when
+// the bot is running rather than reading a torn file; the timeout turns that
+// into an error instead of a wait that never ends.
+//
+// an exit code, so a script can gate on it
+//
+// a pragma applies to the connection that ran it, so one connection is what
+// makes the whole set hold for every statement after it
 func main() {
     flag.Usage = func() {
         fmt.Fprintf(flag.CommandLine.Output(), "Usage:\n  %s [-src db -dst db.sqlite]\n  %s validate -src db -dst db.sqlite\n\n", os.Args[0], os.Args[0])
         flag.PrintDefaults()
     }
-    // The migration is what this tool does, so it is the bare form and stays the
-    // way it has always been invoked; validate is the one command that has to be
-    // named. Its flags come after it, as they do for tools/addrindex.
     var args = os.Args[1:]
     var checking bool
     if len(args) > 0 && args[0] == "validate" {
@@ -170,10 +180,6 @@ func main() {
     if !checking && dstErr == nil {
         logging.Fatal("%s already exists — remove it first", *dst)
     }
-    // read-only so a mistake here cannot damage the bot's database. bbolt holds an
-    // exclusive lock while a writer has the file open, so this fails outright when
-    // the bot is running rather than reading a torn file; the timeout turns that
-    // into an error instead of a wait that never ends.
     var source, err = bbolt.Open(*src, 0600, &bbolt.Options{ReadOnly: true, Timeout: 5 * time.Second})
     if err != nil {
         if errors.Is(err, bbolt.ErrTimeout) {
@@ -186,12 +192,9 @@ func main() {
     if err != nil { logging.Fatal("open %s: %v", *dst, err) }
     if checking {
         defer target.Close()
-        // an exit code, so a script can gate on it
         if !validate(source, target) { os.Exit(1) }
         return
     }
-    // a pragma applies to the connection that ran it, so one connection is what
-    // makes the whole set hold for every statement after it
     target.SetMaxOpenConns(1)
     var began = time.Now()
     for _, s := range append(append([]string{}, pragmas...), schema...) {

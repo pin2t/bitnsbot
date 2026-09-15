@@ -12,6 +12,8 @@ import "testing"
 // with no websocket and no server-pushed notifications, so there is no upgrade
 // handshake to fake and no connection to keep alive. Notifications arrive over
 // ZMQ instead, and tests drive those by calling the handlers directly.
+//
+// Core reports method errors in the body, with HTTP 500
 func newFakeCoreServer(t *testing.T, respond func(method string, params []interface{}) (interface{}, error)) *httptest.Server {
     var server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
         if user, pass, ok := r.BasicAuth(); !ok || user != "testuser" || pass != "testpass" {
@@ -29,7 +31,6 @@ func newFakeCoreServer(t *testing.T, respond func(method string, params []interf
         var result, callErr = respond(req.Method, req.Params)
         var resp = map[string]any{"id": "bitnsbot"}
         if callErr != nil {
-            // Core reports method errors in the body, with HTTP 500
             resp["error"] = map[string]any{"code": -1, "message": callErr.Error()}
             w.WriteHeader(http.StatusInternalServerError)
         } else {

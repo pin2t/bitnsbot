@@ -55,10 +55,11 @@ func TestParseTx(t *testing.T) {
 // end of the last output and never reads the witness or locktime, so truncating
 // *those* trailing bytes is legitimately not an error. Only cuts landing inside
 // the version, inputs or outputs are.
+//
+// version 4 + marker/flag 2 + one 41-byte input + count 1 + two 31-byte outputs
 func TestParseTxRejectsGarbage(t *testing.T) {
     var full, err = hex.DecodeString("020000000001011f9abe49ce4af64ac634ee3b151a2f2ac86533d7b8d007d2b8101867b4d647bd0000000000fdffffff02bcd6e40000000000160014f31640a577726488ea712f4b570e758bbe0cea508096980000000000160014e1b17a7a9c2d40669fc4f43b21fabd8dd8ba13d802473044022033ee7f6288732a9505c2782fdacdbb20288cfbf2ccc63e26f95fd5fa2640445c02202e1e1cf91fafbb36a8b82d675b1bf90b7780b79b74dc2744884a75b40d0b191d012102be5d9890238a0cdbfdd3f421df030908f78b09b93f911f6c20d01058ecc478c167000000")
     if err != nil { t.Fatalf("bad fixture: %v", err) }
-    // version 4 + marker/flag 2 + one 41-byte input + count 1 + two 31-byte outputs
     var outputsEnd = 4 + 2 + 1 + 41 + 1 + 31 + 31
     for n := 0; n < outputsEnd; n++ {
         if _, ok := parseTx(full[:n]); ok {

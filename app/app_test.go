@@ -206,16 +206,18 @@ const fakeMaxRows = 24
 
 // Two batches of blocks, newest first — the order the bucket's cursor hands them
 // to main, so the fixture is a chain rather than a canned page.
+//
+// the last row of each batch is unattributed, so every batch carries
+// both the linked and the plain form of the miner field
+//
+// a pool name with a space, so the link's URL encoding is exercised
 func liveBlocks() []Block {
     var all []Block
     for i := 0; i < 24; i++ {
         var h = int64(963268 - i)
         var row = Block{Height: strconv.FormatInt(h, 10), Num: h,
             Size: "1.56 MB", Txs: "4 000 txs", Miner: "AntPool", MinerKnown: true}
-        // the last row of each batch is unattributed, so every batch carries
-        // both the linked and the plain form of the miner field
         if i%fakeBatch == 11 { row.Miner, row.MinerKnown = "Unknown", false }
-        // a pool name with a space, so the link's URL encoding is exercised
         if i%fakeBatch == 5 { row.Miner = "SBI Crypto" }
         all = append(all, row)
     }
@@ -308,9 +310,10 @@ func liveNetwork() Network {
 // handler returns the routes Start wires. Start inlines the routing and always
 // launches a listener, so tests take its Handler and drive it with a recorder
 // rather than over a socket; the ephemeral listener is closed via t.Cleanup.
+//
+// The rendered-card caches are package state shared across tests, so each
+// test starts from empty rather than seeing the previous one's fixture.
 func handler(t *testing.T, token string, src Source) http.Handler {
-    // The rendered-card caches are package state shared across tests, so each
-    // test starts from empty rather than seeing the previous one's fixture.
     invalidateAll()
     watched = map[int64]map[string]bool{}
     aliases = map[int64]map[string]string{}
@@ -368,6 +371,9 @@ func TestServesPage(t *testing.T) {
 
 // The card must arrive already rendered: the page carries the fees, rather than
 // shipping a placeholder and fetching them in a second round trip.
+//
+// scoped to the fees card: the Watches panel legitimately ships a
+// placeholder, since its content is per-user and cannot be in a shared page
 func TestPageRendersFeesInline(t *testing.T) {
     var body = get(handler(t, "TESTTOKEN", fakeSource{f: liveFees()}), "/", "").Body.String()
     for _, want := range []string{"<h2>Network fees</h2>", ">Fastest<", ">~ 1 hour<", ">2+ hours<",
@@ -376,8 +382,6 @@ func TestPageRendersFeesInline(t *testing.T) {
             t.Errorf("page did not render %q inline", want)
         }
     }
-    // scoped to the fees card: the Watches panel legitimately ships a
-    // placeholder, since its content is per-user and cannot be in a shared page
     var card = body[strings.Index(body, `id="fees"`):strings.Index(body, `id="network"`)]
     if strings.Contains(card, "loading…") {
         t.Error(`the fees card still ships a "loading…" placeholder; it should be rendered server-side`)
@@ -521,6 +525,8 @@ func TestMarketColdCache(t *testing.T) {
 
 // The Blocks tab lists recent blocks newest first, each row carrying the four
 // fields, with the sentinel that loads the next batch below them.
+//
+// descending: the newest height must appear before the one below it
 func TestBlocksListRenders(t *testing.T) {
     var src = fakeSource{f: liveFees(), b: liveBlocks()}
     var body = get(handler(t, "TESTTOKEN", src), "/", "").Body.String()
@@ -537,7 +543,6 @@ func TestBlocksListRenders(t *testing.T) {
             t.Errorf("the pager is gone; %q should not be rendered", gone)
         }
     }
-    // descending: the newest height must appear before the one below it
     if strings.Index(body, "963268") > strings.Index(body, "963267") {
         t.Error("blocks are not in descending order")
     }
@@ -568,6 +573,10 @@ func TestBlockRowLinks(t *testing.T) {
 // Scrolling to the sentinel below the rows appends the next batch, which
 // continues below the lowest height on screen — a height, not a page number, so
 // a block mined mid-scroll cannot shift the boundary and repeat a row.
+//
+// a fragment, not a container: it is swapped in where the sentinel was
+//
+// the fixture ends there, so nothing more is offered
 func TestBlocksInfiniteScroll(t *testing.T) {
     var h = handler(t, "TESTTOKEN", fakeSource{b: liveBlocks()})
     var data = freshInitData("TESTTOKEN")
@@ -585,11 +594,9 @@ func TestBlocksInfiniteScroll(t *testing.T) {
     if !strings.Contains(next, "963256") || strings.Contains(next, "963268") {
         t.Errorf("the next batch should hold the twelve below 963257: %s", next)
     }
-    // a fragment, not a container: it is swapped in where the sentinel was
     if strings.Contains(next, `id="blocklist"`) {
         t.Error("an appended batch must not carry the list container")
     }
-    // the fixture ends there, so nothing more is offered
     if strings.Contains(next, "moreblocks?before=") {
         t.Error("the sentinel should be gone once the list is exhausted")
     }
@@ -617,6 +624,10 @@ func TestBlocksBadHeightsAreSafe(t *testing.T) {
 // A new block is prepended above the rows already on screen rather than
 // re-rendering the list, which is what keeps a reader who has scrolled where
 // they are. The sentinel replaces itself, so it comes back with the new height.
+//
+// a reader whose list topped out two blocks ago gets exactly those two
+//
+// the sentinel comes first, or the next block would land below these two
 func TestNewBlocksPrepend(t *testing.T) {
     var h = handler(t, "TESTTOKEN", fakeSource{b: liveBlocks()})
     var data = freshInitData("TESTTOKEN")
@@ -627,7 +638,6 @@ func TestNewBlocksPrepend(t *testing.T) {
     if !strings.Contains(list, `hx-trigger="sse:blocks, every 10m"`) {
         t.Error("the sentinel must refresh on the event, with the slow poll as a fallback")
     }
-    // a reader whose list topped out two blocks ago gets exactly those two
     var w = get(h, "/newblocks?after=963266", data)
     var got = w.Body.String()
     if n := strings.Count(got, `class="blk"`); n != 2 {
@@ -636,7 +646,6 @@ func TestNewBlocksPrepend(t *testing.T) {
     if !strings.Contains(got, `hx-get="newblocks?after=963268"`) {
         t.Error("the replacement sentinel must ask about the new newest height")
     }
-    // the sentinel comes first, or the next block would land below these two
     if strings.Index(got, "newblocks?after=") > strings.Index(got, `class="blk"`) {
         t.Errorf("the sentinel must stay above the rows it prepends: %s", got)
     }
@@ -722,6 +731,9 @@ func TestInlineAndRefreshMatch(t *testing.T) {
 //
 // The error handlers matter for the same symptom: HTMX does not swap a failed
 // response, so without them any failure also leaves "loading…" on screen.
+//
+// The fallback exists because a proxy that buffers the stream would
+// otherwise leave the cards frozen with no sign anything is wrong.
 func TestFeesTriggerIsNotRacy(t *testing.T) {
     var body = get(handler(t, "TESTTOKEN", fakeSource{}), "/", "").Body.String()
     if !strings.Contains(body, `hx-trigger="sse:fees, every 10m"`) {
@@ -730,8 +742,6 @@ func TestFeesTriggerIsNotRacy(t *testing.T) {
     if strings.Contains(body, `hx-trigger="every 60s"`) {
         t.Error("the 60s poll should be gone: the server pushes now")
     }
-    // The fallback exists because a proxy that buffers the stream would
-    // otherwise leave the cards frozen with no sign anything is wrong.
     if !strings.Contains(body, "every 10m") {
         t.Error("no polling fallback: a silently broken SSE stream would freeze the cards")
     }
@@ -838,6 +848,8 @@ func TestFeesColdCache(t *testing.T) {
 // The stream carries event names only. That is what lets it sit outside
 // requireInitData — EventSource cannot set headers — so it must never leak a
 // figure that the authenticated endpoints are there to protect.
+//
+// let the handler subscribe before notifying
 func TestEventStreamCarriesNoData(t *testing.T) {
     var h = handler(t, "TESTTOKEN", fakeSource{f: liveFees(), n: liveNetwork()})
     var r = httptest.NewRequest("GET", "/events", nil)
@@ -846,7 +858,6 @@ func TestEventStreamCarriesNoData(t *testing.T) {
     var w = httptest.NewRecorder()
     var done = make(chan struct{})
     go func() { h.ServeHTTP(w, r); close(done) }()
-    // let the handler subscribe before notifying
     var deadline = time.Now().Add(2 * time.Second)
     for subscribes() == 0 && time.Now().Before(deadline) {
         time.Sleep(5 * time.Millisecond)
@@ -930,9 +941,18 @@ func TestBlockHeightLinksToDetails(t *testing.T) {
 
 // The details page: the title, the Back button on the same row, and the same
 // lines the bot's /info prints for a block.
+//
+// html/template escapes "+" as &#43;, so "Reward + fees" needs unescaping
+//
+// Back sits on the title row and returns to the page the reader came from
+//
+// and scrolls the row the reader tapped back into view, since a list with no
+// pages has nothing else to return them to
+//
+// Back sits to the left of the title, which is centred between two equal
+// sides rather than filling the space the button leaves
 func TestBlockDetailsRender(t *testing.T) {
     var h = handler(t, "TESTTOKEN", fakeSource{b: liveBlocks(), d: liveBlockInfo()})
-    // html/template escapes "+" as &#43;, so "Reward + fees" needs unescaping
     var body = html.UnescapeString(get(h, "/block?height=963268&down=963257", freshInitData("TESTTOKEN")).Body.String())
     if !strings.Contains(body, "<h1>Block 963 268</h1>") {
         t.Errorf("missing the title: %s", body)
@@ -946,7 +966,6 @@ func TestBlockDetailsRender(t *testing.T) {
             t.Errorf("details page is missing %q", want)
         }
     }
-    // Back sits on the title row and returns to the page the reader came from
     var head = body[strings.Index(body, `class="head"`):strings.Index(body, `class="fields"`)]
     if !strings.Contains(head, "< Back") {
         t.Errorf("no Back button on the title row: %s", head)
@@ -954,13 +973,9 @@ func TestBlockDetailsRender(t *testing.T) {
     if !strings.Contains(head, `hx-get="blocks?down=963257&to=blocks"`) {
         t.Errorf("Back returns to the wrong place: %s", head)
     }
-    // and scrolls the row the reader tapped back into view, since a list with no
-    // pages has nothing else to return them to
     if !strings.Contains(head, `hx-swap="outerHTML show:#blk963257:top"`) {
         t.Errorf("Back does not restore the reader's position: %s", head)
     }
-    // Back sits to the left of the title, which is centred between two equal
-    // sides rather than filling the space the button leaves
     if strings.Index(head, "< Back") > strings.Index(head, "<h1>") {
         t.Errorf("Back should come before the title: %s", head)
     }
@@ -1074,6 +1089,12 @@ func TestSearchClassifiesQuery(t *testing.T) {
 
 // A transaction opens on the Blocks tab, titled with the short txid and with
 // Back to the block list.
+//
+// the confirmations line now carries a tappable block number, so it renders
+// in pieces — the text a reader sees is unchanged, the markup is not
+//
+// Back comes from a template *value*, so html/template escapes its "&" —
+// unlike the list's links, where the "&" is literal template text
 func TestTxDetailsRender(t *testing.T) {
     var h = handler(t, "TESTTOKEN", fakeSource{b: liveBlocks(), t: liveTx()})
     var body = get(h, "/tx?id="+liveTxid, freshInitData("TESTTOKEN")).Body.String()
@@ -1086,8 +1107,6 @@ func TestTxDetailsRender(t *testing.T) {
     if rt := get(h, "/tx?id="+liveTxid, freshInitData("TESTTOKEN")).Header().Get("HX-Retarget"); rt != "#blocklist" {
         t.Errorf("HX-Retarget = %q, want #blocklist", rt)
     }
-    // the confirmations line now carries a tappable block number, so it renders
-    // in pieces — the text a reader sees is unchanged, the markup is not
     for _, want := range []string{">Confirmations<", ">Amount<", ">Fee<", ">Size<",
         ">Inputs<", ">Outputs<", "412 (block ", ">#963268<", "9 990 000 sats"} {
         if !strings.Contains(body, want) {
@@ -1095,8 +1114,6 @@ func TestTxDetailsRender(t *testing.T) {
         }
     }
     var head = body[strings.Index(body, `class="head"`):strings.Index(body, `class="fields"`)]
-    // Back comes from a template *value*, so html/template escapes its "&" —
-    // unlike the list's links, where the "&" is literal template text
     if !strings.Contains(head, `hx-get="blocks?to=blocks"`) {
         t.Errorf("Back should return to the block list: %s", head)
     }
@@ -1107,6 +1124,9 @@ func TestTxDetailsRender(t *testing.T) {
 
 // An address opens on the Addresses tab, titled with the short address and with
 // Back to that tab's own content.
+//
+// the one search field names #blocklist as its target, so the response has
+// to correct it or an address page replaces the block list
 func TestAddressDetailsRender(t *testing.T) {
     var h = handler(t, "TESTTOKEN", fakeSource{a: liveAddr()})
     var w = get(h, "/address?a="+liveAddress, freshInitData("TESTTOKEN"))
@@ -1120,8 +1140,6 @@ func TestAddressDetailsRender(t *testing.T) {
     if trig := w.Header().Get("HX-Trigger"); trig != `{"showtab":"addresses"}` {
         t.Errorf("HX-Trigger = %q; a searched address must move the reader to Addresses", trig)
     }
-    // the one search field names #blocklist as its target, so the response has
-    // to correct it or an address page replaces the block list
     if rt := w.Header().Get("HX-Retarget"); rt != "#addrpanel" {
         t.Errorf("HX-Retarget = %q; without it the address page lands in the Blocks tab", rt)
     }
@@ -1203,6 +1221,10 @@ func TestSearchFieldIsWired(t *testing.T) {
 
 // The Watches tab lists the caller's own watches, both kinds, shortened and
 // linked to the same pages a search opens.
+//
+// each row links to the details page for its kind, carrying the full id
+// from=watches is what sends Back to the watch list rather than to the
+// Addresses placeholder or the block list
 func TestWatchesListsBoth(t *testing.T) {
     var h = handler(t, "TESTTOKEN", fakeSource{w: liveWatches()})
     var body = get(h, "/watches", freshInitData("TESTTOKEN")).Body.String()
@@ -1212,9 +1234,6 @@ func TestWatchesListsBoth(t *testing.T) {
             t.Errorf("the watch list is missing %q: %s", want, body)
         }
     }
-    // each row links to the details page for its kind, carrying the full id
-    // from=watches is what sends Back to the watch list rather than to the
-    // Addresses placeholder or the block list
     if !strings.Contains(body, `hx-get="address?a=`+liveAddress+`&from=watches"`) {
         t.Error("a watched address must open the address page, with the full id and its origin")
     }
@@ -1225,6 +1244,8 @@ func TestWatchesListsBoth(t *testing.T) {
 
 // The one thing that must never break: a watch list is per-user, and the caches
 // are keyed by URL — identical for everyone. Two users must not see each other.
+//
+// and back again, in case the first response was cached under the URL
 func TestWatchesAreNotSharedBetweenUsers(t *testing.T) {
     var h = handler(t, "TESTTOKEN", fakeSource{w: liveWatches()})
     var mine = signInitData("TESTTOKEN", map[string]string{
@@ -1241,7 +1262,6 @@ func TestWatchesAreNotSharedBetweenUsers(t *testing.T) {
     if !strings.Contains(b, "1A1zP1...DivfNa") || strings.Contains(b, "bc1qxy...hx0wlh") {
         t.Errorf("user 99 was served user 42's watches — the list must never be cached: %s", b)
     }
-    // and back again, in case the first response was cached under the URL
     if again := get(h, "/watches", mine).Body.String(); again != a {
         t.Error("user 42's second request differed; something is caching per-URL")
     }
@@ -1384,6 +1404,11 @@ func TestOriginIsValidated(t *testing.T) {
 }
 
 // The miner name in the block list opens its own page.
+//
+// pool names have spaces ("SBI Crypto", "Foundry USA"), so the link has to
+// survive the URL — an unescaped space would truncate the name
+//
+// an unattributed miner is still plain text: there is no pool to open
 func TestMinerLinkAndPage(t *testing.T) {
     var h = handler(t, "TESTTOKEN", fakeSource{b: liveBlocks()})
     var data = freshInitData("TESTTOKEN")
@@ -1391,12 +1416,9 @@ func TestMinerLinkAndPage(t *testing.T) {
     if !strings.Contains(list, `hx-get="miner?name=AntPool&down=963268"`) {
         t.Error("the miner name does not link to its page")
     }
-    // pool names have spaces ("SBI Crypto", "Foundry USA"), so the link has to
-    // survive the URL — an unescaped space would truncate the name
     if !strings.Contains(list, `hx-get="miner?name=SBI&#43;Crypto&down=963263"`) {
         t.Errorf("a pool name with a space is not url-escaped in its link")
     }
-    // an unattributed miner is still plain text: there is no pool to open
     if !strings.Contains(list, `<span class="mn">Unknown</span>`) {
         t.Error("Unknown must not become a link")
     }
@@ -1458,6 +1480,10 @@ func TestMinerNameHandling(t *testing.T) {
 // The bell sits in the title row of the two pages that have something to watch,
 // and loads its own state — the page around it is cached and shared, so the
 // pushed/unpushed state cannot be rendered into it.
+//
+// the shared, cached page must not carry anyone's watch state
+//
+// a block and a miner have nothing to watch
 func TestWatchButtonOnDetailsPages(t *testing.T) {
     var h = handler(t, "TESTTOKEN", fakeSource{t: liveTx(), a: liveAddr(), b: liveBlocks(), d: liveBlockInfo()})
     var data = freshInitData("TESTTOKEN")
@@ -1472,12 +1498,10 @@ func TestWatchButtonOnDetailsPages(t *testing.T) {
         if !strings.Contains(body, `hx-trigger="load"`) {
             t.Errorf("%s: the button must fetch its own state", c.path)
         }
-        // the shared, cached page must not carry anyone's watch state
         if strings.Contains(body, `class="bell`) {
             t.Errorf("%s rendered the button's state into the cached page", c.path)
         }
     }
-    // a block and a miner have nothing to watch
     for _, p := range []string{"/block?height=963268", "/miner?name=AntPool"} {
         if body := get(h, p, data).Body.String(); strings.Contains(body, "watch?kind=") {
             t.Errorf("%s should have no watch button", p)
@@ -1488,11 +1512,14 @@ func TestWatchButtonOnDetailsPages(t *testing.T) {
 // Pushed when watching, unpushed when not, and tapping flips it. The POST
 // carries the state it wants rather than toggling, so a stale button cannot
 // undo a watch the reader did not touch.
+//
+// it stays pushed on a fresh read, which is the whole point
+//
+// and tapping again removes it
 func TestWatchButtonTogglesAndReflectsState(t *testing.T) {
     var h = handler(t, "TESTTOKEN", fakeSource{a: liveAddr()})
     var data = freshInitData("TESTTOKEN")
     var url = "/watch?kind=address&id=" + liveAddress
-
     var off = get(h, url, data).Body.String()
     if strings.Contains(off, "bell on") {
         t.Errorf("an unwatched address should render unpushed: %s", off)
@@ -1500,7 +1527,6 @@ func TestWatchButtonTogglesAndReflectsState(t *testing.T) {
     if !strings.Contains(off, "&on=1") {
         t.Errorf("the unpushed button should offer to start watching: %s", off)
     }
-
     var on = post(h, url+"&on=1", data).Body.String()
     if !strings.Contains(on, "bell on") {
         t.Errorf("after watching, the button should be pushed: %s", on)
@@ -1508,11 +1534,9 @@ func TestWatchButtonTogglesAndReflectsState(t *testing.T) {
     if !strings.Contains(on, "&on=0") {
         t.Errorf("the pushed button should offer to stop watching: %s", on)
     }
-    // it stays pushed on a fresh read, which is the whole point
     if again := get(h, url, data).Body.String(); !strings.Contains(again, "bell on") {
         t.Errorf("the watch did not stick: %s", again)
     }
-    // and tapping again removes it
     var back = post(h, url+"&on=0", data).Body.String()
     if strings.Contains(back, "bell on") {
         t.Errorf("after unwatching, the button should be unpushed: %s", back)
@@ -1588,14 +1612,15 @@ func TestWatchButtonReportsFailure(t *testing.T) {
 // Font sizes are relative so the page follows the font size the reader chose in
 // their phone's settings; a px size ignores it, which is what made the text read
 // too small on a high-density screen.
+//
+// Every declaration must be relative — rem, or a min()/max() built on rem.
+// The root's own is the exception: it is the base the rest are fractions of,
+// so it cannot be relative to itself.
 func TestFontSizesAreRelative(t *testing.T) {
     var body = get(handler(t, "TESTTOKEN", fakeSource{f: liveFees()}), "/", "").Body.String()
     if n := strings.Count(body, "font-size: "); n == 0 {
         t.Fatal("no font sizes in the page at all")
     }
-    // Every declaration must be relative — rem, or a min()/max() built on rem.
-    // The root's own is the exception: it is the base the rest are fractions of,
-    // so it cannot be relative to itself.
     for _, i := range indexesOf(body, "font-size: ") {
         var decl = body[i : i+min(60, len(body)-i)]
         var end = strings.Index(decl, ";")
@@ -1613,6 +1638,11 @@ func TestFontSizesAreRelative(t *testing.T) {
 // Every size being relative is what lets one rule move the whole page, which is
 // how the text is made bigger on a phone: Telegram's webview does not pass the
 // reader's own font setting down to the root.
+//
+// Width alone matched Telegram Desktop too, which shows a Mini App in a
+// phone-width panel and came out oversized on a monitor.
+//
+// It must be set before the body renders, or every size jumps once it lands.
 func TestPhoneBaseFontSize(t *testing.T) {
     var body = get(handler(t, "TESTTOKEN", fakeSource{f: liveFees()}), "/", "").Body.String()
     if !strings.Contains(body, "@media (max-width: 480px)") {
@@ -1623,15 +1653,12 @@ func TestPhoneBaseFontSize(t *testing.T) {
     if !strings.Contains(block, "html.phone { font-size: 19px; }") {
         t.Errorf("the breakpoint does not raise the root: %q", block)
     }
-    // Width alone matched Telegram Desktop too, which shows a Mini App in a
-    // phone-width panel and came out oversized on a monitor.
     if !strings.Contains(body, `/^(android|android_x|ios)$/.test(tg.platform)`) {
         t.Error("nothing asks Telegram what platform it is, so a desktop gets the phone size")
     }
     if !strings.Contains(body, `classList.add("phone")`) {
         t.Error("the phone class is never set, so the breakpoint can never apply")
     }
-    // It must be set before the body renders, or every size jumps once it lands.
     var script = strings.Index(body, `classList.add("phone")`)
     if script > strings.Index(body, "<body") {
         t.Error("the phone class is set after the body, which would show a visible jump")
@@ -1641,6 +1668,11 @@ func TestPhoneBaseFontSize(t *testing.T) {
 // Windows renders the panel larger than the other desktops, so it takes the
 // opposite correction. Telegram cannot answer this one — Windows, Linux and
 // macOS all report "tdesktop" — so the OS is read from the browser.
+//
+// Both rules have equal specificity, so a device matching each would be
+// decided by their order in the stylesheet rather than by anything real.
+//
+// Set before the body renders, like the phone class, or the size jumps.
 func TestWindowsBaseFontSize(t *testing.T) {
     var body = get(handler(t, "TESTTOKEN", fakeSource{f: liveFees()}), "/", "").Body.String()
     var i = strings.Index(body, "@media (max-width: 480px)")
@@ -1658,27 +1690,26 @@ func TestWindowsBaseFontSize(t *testing.T) {
     if !strings.Contains(body, `classList.add("windows")`) {
         t.Error("the windows class is never set, so the rule can never apply")
     }
-    // Both rules have equal specificity, so a device matching each would be
-    // decided by their order in the stylesheet rather than by anything real.
     if !strings.Contains(body, `else if (windows)`) {
         t.Error("phone and windows are not exclusive; a device could take both")
     }
-    // Set before the body renders, like the phone class, or the size jumps.
     if strings.Index(body, `classList.add("windows")`) > strings.Index(body, "<body") {
         t.Error("the windows class is set after the body, which would show a visible jump")
     }
 }
 
 // Two sizes cannot simply scale, and both are guarded rather than left to break.
+//
+// below 16px iOS zooms the whole page whenever the search field is focused,
+// which a smaller font setting would otherwise cause
+//
+// six columns of percentages already measure their cells, so they yield to
+// the width once it runs out
 func TestFontSizeGuards(t *testing.T) {
     var body = get(handler(t, "TESTTOKEN", fakeSource{f: liveFees()}), "/", "").Body.String()
-    // below 16px iOS zooms the whole page whenever the search field is focused,
-    // which a smaller font setting would otherwise cause
     if !strings.Contains(body, "font-size: max(1.0625rem, 16px)") {
         t.Error("the search field has no 16px floor; a small font setting would make iOS zoom")
     }
-    // six columns of percentages already measure their cells, so they yield to
-    // the width once it runs out
     if !strings.Contains(body, "font-size: min(0.75rem, 3.34vw)") {
         t.Error("the market percentages are not width-capped; a large font setting overflows the row")
     }
@@ -1709,18 +1740,20 @@ func indexesOf(s, sub string) []int {
 // connections to fall idle and a stream never does on its own, so before this it
 // waited out the caller's whole timeout and then reported "context deadline
 // exceeded" — which is what the bot's logs showed on every restart.
+//
+// a real listener and a real connection: the point is what Shutdown does
+// with a live streaming request, which a recorder cannot exercise
+//
+// the bot allows 15s for every server together; a stream that ends when
+// asked takes milliseconds
 func TestShutdownDoesNotWaitForEventStreams(t *testing.T) {
-    // a real listener and a real connection: the point is what Shutdown does
-    // with a live streaming request, which a recorder cannot exercise
     var probe, err = net.Listen("tcp", "127.0.0.1:0")
     if err != nil { t.Fatalf("pick a port: %v", err) }
     var addr = probe.Addr().String()
     probe.Close()
-
     invalidateAll()
     var srv = Start(addr, "TESTTOKEN", fakeSource{f: liveFees()})
     t.Cleanup(func() { srv.Close() })
-
     var before = subscribes()
     var resp *http.Response
     var deadline = time.Now().Add(5 * time.Second)
@@ -1737,9 +1770,6 @@ func TestShutdownDoesNotWaitForEventStreams(t *testing.T) {
     if subscribes() != before+1 {
         t.Fatal("the stream never registered, so this would not prove anything")
     }
-
-    // the bot allows 15s for every server together; a stream that ends when
-    // asked takes milliseconds
     var ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
     defer cancel()
     var start = time.Now()
@@ -1768,6 +1798,8 @@ func postForm(h http.Handler, path, initData string, form url.Values) *httptest.
 
 // Filing a watch is only the first half: the answer asks the page to open the
 // alias dialog, which is what names it. Unwatching asks for nothing.
+//
+// and the watch list has changed, so it re-fetches itself
 func TestWatchAsksForAnAlias(t *testing.T) {
     var h = handler(t, "TESTTOKEN", fakeSource{a: liveAddr()})
     var data = freshInitData("TESTTOKEN")
@@ -1784,7 +1816,6 @@ func TestWatchAsksForAnAlias(t *testing.T) {
     if ask["kind"] != "address" || ask["id"] != liveAddress {
         t.Errorf("the dialog was asked about %v, want the address just watched", ask)
     }
-    // and the watch list has changed, so it re-fetches itself
     if _, ok := events["watchtab"]; !ok {
         t.Errorf("the watch list was not told to refresh: %s", on)
     }
@@ -1896,6 +1927,10 @@ func TestWatchRowsCarryAnEditIcon(t *testing.T) {
 // An id a details row mentions is tappable, and a tap is the same handoff a
 // search makes — so an address opens on the Addresses tab and a block on Blocks,
 // with no classification of its own.
+//
+// the text around an id stays plain, and the whole line still reads the same
+//
+// a row with no id in it renders as it always did
 func TestDetailsRowsLinkTheirIds(t *testing.T) {
     var h = handler(t, "TESTTOKEN", fakeSource{t: liveTx(), a: liveAddr(), d: liveBlockInfo()})
     var data = freshInitData("TESTTOKEN")
@@ -1909,13 +1944,11 @@ func TestDetailsRowsLinkTheirIds(t *testing.T) {
             t.Errorf("no link for %s in:\n%s", want, body)
         }
     }
-    // the text around an id stays plain, and the whole line still reads the same
     for _, want := range []string{">412 (block ", ">#963268<", ">1A1zP1...DivfNa<", ">, <"} {
         if !strings.Contains(body, want) {
             t.Errorf("the line was not kept intact around its ids (%s):\n%s", want, body)
         }
     }
-    // a row with no id in it renders as it always did
     if !strings.Contains(body, `<span class="val">9 990 000 sats (≈ $6,614)</span>`) {
         t.Errorf("a row with no ids should render plainly:\n%s", body)
     }
@@ -1923,6 +1956,10 @@ func TestDetailsRowsLinkTheirIds(t *testing.T) {
 
 // A tapped id carries the page's own origin, so Back keeps returning to where
 // the reader started rather than to whichever page they came through.
+//
+// and /search honours it, rather than sending everything back to Home
+//
+// an origin that is not a panel falls back to Home, since it reaches a URL
 func TestLinkedIdsKeepTheOrigin(t *testing.T) {
     var h = handler(t, "TESTTOKEN", fakeSource{t: liveTx(), a: liveAddr()})
     var data = freshInitData("TESTTOKEN")
@@ -1930,12 +1967,10 @@ func TestLinkedIdsKeepTheOrigin(t *testing.T) {
     if !strings.Contains(body, "&from=home") {
         t.Errorf("a page opened from Home should hand that on to its links:\n%s", body)
     }
-    // and /search honours it, rather than sending everything back to Home
     var res = get(h, "/search?q="+liveAddress+"&from=watches", data)
     if got := res.Header().Get("Location"); !strings.Contains(got, "from=watches") {
         t.Errorf("search redirected to %q, dropping the origin", got)
     }
-    // an origin that is not a panel falls back to Home, since it reaches a URL
     if res := get(h, "/search?q="+liveAddress+"&from=nonsense", data); !strings.Contains(res.Header().Get("Location"), "from=home") {
         t.Errorf("an unknown origin should fall back to Home: %q", res.Header().Get("Location"))
     }
@@ -1945,6 +1980,8 @@ func TestLinkedIdsKeepTheOrigin(t *testing.T) {
 // A block hash has a txid's shape, so it arrives at /tx — and comes back as a
 // block, which has nothing to watch. The bell follows what the page turned out
 // to be, not what the URL asked for.
+//
+// a real transaction at the same endpoint still has its bell
 func TestBlockByHashHasNoWatchButton(t *testing.T) {
     var hash = "0000000000000000000209d0dbbd5a37b0e0e0a2f8a1ba36d6f4f0e9c0b1a2f3"
     var txs = liveTx()
@@ -1963,7 +2000,6 @@ func TestBlockByHashHasNoWatchButton(t *testing.T) {
     if strings.Contains(body, "watch?kind=") {
         t.Errorf("a block page offers to watch something:\n%s", body)
     }
-    // a real transaction at the same endpoint still has its bell
     if body := get(h, "/tx?id="+liveTxid, data).Body.String(); !strings.Contains(body, `hx-get="watch?kind=tx&id=`+liveTxid+`"`) {
         t.Errorf("a transaction page lost its watch button:\n%s", body)
     }
@@ -1971,6 +2007,8 @@ func TestBlockByHashHasNoWatchButton(t *testing.T) {
 
 // The Addresses tab opens on Active: a first batch of rows, the button for that
 // list lit, and the sentinel that fetches the next batch below them.
+//
+// and the other two are offered, unlit
 func TestAddressListOpensOnActive(t *testing.T) {
     var h = handler(t, "TESTTOKEN", fakeSource{al: liveAddrs()})
     var body = get(h, "/addresses", freshInitData("TESTTOKEN")).Body.String()
@@ -1983,7 +2021,6 @@ func TestAddressListOpensOnActive(t *testing.T) {
     if !strings.Contains(body, `class="on" hx-get="addresses?kind=active"`) {
         t.Errorf("Active should be the lit button: %s", body)
     }
-    // and the other two are offered, unlit
     for _, kind := range []string{"rich", "abandoned"} {
         if !strings.Contains(body, `class="" hx-get="addresses?kind=`+kind+`"`) {
             t.Errorf("%s should be offered and unlit: %s", kind, body)

@@ -3,6 +3,7 @@ package signals
 import "sync"
 import "testing"
 
+// and only those waiting on that name
 func TestFireWakesEverySubscriber(t *testing.T) {
     Reset()
     var a, b = Subscribe(Block), Subscribe(Block)
@@ -15,7 +16,6 @@ func TestFireWakesEverySubscriber(t *testing.T) {
             t.Errorf("subscriber %d was not woken", i)
         }
     }
-    // and only those waiting on that name
     select {
     case <-other:
         t.Error("a signal reached a subscriber of another name")

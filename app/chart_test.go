@@ -27,6 +27,9 @@ func liveChart(name, data, period string) Chart {
 
 // The page a pool name opens draws its chart under the fields, on blocks over the
 // last month, so there is something to read before a button is touched.
+//
+// the data buttons are on the left and the periods on the right, so the
+// first group is the one naming what is plotted
 func TestMinerPageDrawsTheChart(t *testing.T) {
     var h = handler(t, "TESTTOKEN", fakeSource{})
     var body = html.UnescapeString(get(h, "/miner?name=AntPool", freshInitData("TESTTOKEN")).Body.String())
@@ -48,8 +51,6 @@ func TestMinerPageDrawsTheChart(t *testing.T) {
     if n := strings.Count(body, `<div class="bar" `); n != 30 {
         t.Errorf("a month is %d bars, want 30", n)
     }
-    // the data buttons are on the left and the periods on the right, so the
-    // first group is the one naming what is plotted
     var chart = body[at:]
     if strings.Index(chart, ">Consumption<") > strings.Index(chart, ">Month<") {
         t.Error("the data selection must come before the period selection")

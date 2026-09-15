@@ -11,6 +11,10 @@ import "bitnsbot/watches"
 // feature exists for: the webhook server is stopped first and waits for
 // in-flight handlers to finish, so a handler using the store never sees it
 // closed out from under it — and once shutdown returns, the store is closed.
+//
+// the store must still be open while a handler runs
+//
+// must wait for the in-flight handler, then close the store
 func TestShutdownDrainsHandlersBeforeClosingStore(t *testing.T) {
     var err error
     err = openDB(filepath.Join(t.TempDir(), "watches.db"))
@@ -24,7 +28,7 @@ func TestShutdownDrainsHandlersBeforeClosingStore(t *testing.T) {
     mux.HandleFunc("/slow", func(w http.ResponseWriter, r *http.Request) {
         close(started)
         time.Sleep(200 * time.Millisecond)
-        var _, listErr = watches.List() // the store must still be open while a handler runs
+        var _, listErr = watches.List()
         finished <- listErr
         w.WriteHeader(http.StatusOK)
     })
@@ -36,7 +40,7 @@ func TestShutdownDrainsHandlersBeforeClosingStore(t *testing.T) {
     go srv.Serve(ln)
     go http.Get("http://" + ln.Addr().String() + "/slow")
     <-started
-    shutdown(nil, srv) // must wait for the in-flight handler, then close the store
+    shutdown(nil, srv)
     if handlerErr := <-finished; handlerErr != nil {
         t.Fatalf("store was closed while a handler was still running: %v", handlerErr)
     }

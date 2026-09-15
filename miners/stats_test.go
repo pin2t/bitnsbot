@@ -38,14 +38,15 @@ func seedAddresses(t *testing.T, addrs map[string]string) {
 }
 
 // statOf reads one pool's aggregate, which every row of that pool repeats.
+//
+// an aggregate over no rows comes back as NULL, which is a pool with
+// nothing gathered rather than an error
 func statOf(t *testing.T, name string) record {
     t.Helper()
     var s record
     var err = db.QueryRow(`select max(blocks), max(reward), max(fees), max(totalWork), max(lastWork)
         from miners where name = ?`, name).Scan(&s.Blocks, &s.Reward, &s.Fees, &s.Work, &s.LastWork)
     if err != nil && err.Error() != "sql: no rows in result set" {
-        // an aggregate over no rows comes back as NULL, which is a pool with
-        // nothing gathered rather than an error
         var n int
         if db.QueryRow("select count(*) from miners where name = ?", name).Scan(&n) == nil && n == 0 {
             return record{}
@@ -107,6 +108,7 @@ func fixtureDB(t *testing.T) {
     seedAddresses(t, map[string]string{"aA": "PoolA", "aA2": "PoolA", "aB": "PoolB"})
 }
 
+// the unknown miner's block is not attributed to anyone
 func TestCollectStats(t *testing.T) {
     fixtureDB(t)
     setChunk(t, 1000)
@@ -122,12 +124,14 @@ func TestCollectStats(t *testing.T) {
     if b.Blocks != 1 { t.Fatalf("PoolB blocks = %d, want 1", b.Blocks) }
     equalSat(t, "PoolB reward", b.Reward, 640000000)
     equal(t, "PoolB last work", b.LastWork, 1.0e14*workPerDifficulty)
-    // the unknown miner's block is not attributed to anyone
     if s := statOf(t, "Unknown"); s.Blocks != 0 { t.Fatalf("unknown miner was stored: %+v", s) }
     var last, ok = cursor()
     if !ok || last != 5 { t.Fatalf("cursor = (%d, %v), want (5, true)", last, ok) }
 }
 
+// share of the 4 attributed blocks × the *current* network hashrate (last
+// block's difficulty × 2^32 ÷ 600s) × 1e-11 J/hash, in GW. Using accumulated
+// work instead would give 4.87 GW for PoolA, so this pins the LastWork formula.
 func TestTopConsumption(t *testing.T) {
     fixtureDB(t)
     setChunk(t, 1000)
@@ -138,9 +142,6 @@ func TestTopConsumption(t *testing.T) {
         t.Fatalf("top order = %q, %q; want PoolA, PoolB", top[0].Name, top[1].Name)
     }
     if top[0].Blocks != 3 { t.Fatalf("PoolA blocks = %d, want 3", top[0].Blocks) }
-    // share of the 4 attributed blocks × the *current* network hashrate (last
-    // block's difficulty × 2^32 ÷ 600s) × 1e-11 J/hash, in GW. Using accumulated
-    // work instead would give 4.87 GW for PoolA, so this pins the LastWork formula.
     equal(t, "PoolA GW", top[0].ConsumptionGW, (3.0/4.0)*(1.4e14*workPerDifficulty/secondsPerBlock)*joulesPerHash/1e9)
     equal(t, "PoolB GW", top[1].ConsumptionGW, (1.0/4.0)*(1.0e14*workPerDifficulty/secondsPerBlock)*joulesPerHash/1e9)
     if top[0].ConsumptionGW < 7.4 || top[0].ConsumptionGW > 7.6 {
@@ -176,6 +177,10 @@ func TestCollectChunks(t *testing.T) {
 
 // A second run resumes at the cursor: only the new blocks are fetched, and their
 // stats add to what is already stored.
+//
+// the window is over the total attributed blocks now (pool A 3 + pool B 3 = 6)
+//
+// equal block counts tie-break by name, so the list is stable across calls
 func TestCollectResumes(t *testing.T) {
     fixtureDB(t)
     setChunk(t, 1000)
@@ -195,7 +200,6 @@ func TestCollectResumes(t *testing.T) {
     equalSat(t, "PoolB fees", b.Fees, 15000000+20000000+10000000)
     var last, _ = cursor()
     if last != 7 { t.Fatalf("cursor = %d, want 7", last) }
-    // the window is over the total attributed blocks now (pool A 3 + pool B 3 = 6)
     var top = Top(10)
     var pb Stat
     for _, s := range top {
@@ -203,7 +207,6 @@ func TestCollectResumes(t *testing.T) {
     }
     if pb.Blocks != 3 { t.Fatalf("PoolB in top = %+v, want 3 blocks", pb) }
     equal(t, "PoolB GW", pb.ConsumptionGW, (3.0/6.0)*(1.4e14*workPerDifficulty/secondsPerBlock)*joulesPerHash/1e9)
-    // equal block counts tie-break by name, so the list is stable across calls
     if top[0].Name != "PoolA" || top[1].Name != "PoolB" {
         t.Fatalf("tied order = %q, %q; want PoolA, PoolB", top[0].Name, top[1].Name)
     }

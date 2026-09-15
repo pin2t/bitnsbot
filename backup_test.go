@@ -52,6 +52,7 @@ func hasWatch(records []string) bool {
         strings.Contains(records[0], "Savings")
 }
 
+// the temporary file the copy goes through must not be left behind
 func TestBackup(t *testing.T) {
     openBackupDB(t)
     var path = filepath.Join(t.TempDir(), "backup.db")
@@ -59,7 +60,6 @@ func TestBackup(t *testing.T) {
     if !hasWatch(readBackup(t, path)) {
         t.Fatalf("the watch is not in the backup: %#v", readBackup(t, path))
     }
-    // the temporary file the copy goes through must not be left behind
     if _, err := os.Stat(path + ".tmp"); !os.IsNotExist(err) {
         t.Fatalf("temporary file was left behind: %v", err)
     }
@@ -109,6 +109,8 @@ func TestBackupScript(t *testing.T) {
 // on it — the case that used to defeat the timeout completely, because killing
 // only the shell leaves that child holding the output pipe and CombinedOutput
 // blocks until every writer to it is gone.
+//
+// and the child must have been killed along with the shell, not left running
 func TestBackupScriptTimeout(t *testing.T) {
     openBackupDB(t)
     var saved = backupScriptTimeout
@@ -131,7 +133,6 @@ func TestBackupScriptTimeout(t *testing.T) {
     if elapsed := time.Since(began); elapsed > time.Second {
         t.Fatalf("backup took %s; the timeout should have freed it in ~200ms", elapsed)
     }
-    // and the child must have been killed along with the shell, not left running
     time.Sleep(2500 * time.Millisecond)
     if _, err := os.Stat(marker); !os.IsNotExist(err) {
         t.Fatalf("the script's background child outlived the timeout: %v", err)
@@ -153,6 +154,13 @@ func TestBackupWithoutScript(t *testing.T) {
 // at 80% of the interval — not yet due, so the startup check leaves it — which is
 // exactly the case a per-interval ticker got wrong: it would have waited a
 // further full interval and let the copy reach nearly twice the age asked for.
+//
+// the goroutine has to be stopped, not left running: it reads the shared db
+// handle, which the next test reopens
+//
+// due 400ms in; a ticker of one interval would not come round until 2s
+//
+// and what replaced the stale file is a real database, not a partial copy
 func TestStartBackupRetakesWhenStale(t *testing.T) {
     openBackupDB(t)
     var path = filepath.Join(t.TempDir(), "backup.db")
@@ -162,15 +170,11 @@ func TestStartBackupRetakesWhenStale(t *testing.T) {
     var old = backupCheck
     backupCheck = 50 * time.Millisecond
     defer func() { backupCheck = old }()
-    // the goroutine has to be stopped, not left running: it reads the shared db
-    // handle, which the next test reopens
     var _, stop = startBackup(path, 2*time.Second, "")
     defer stop()
-    // due 400ms in; a ticker of one interval would not come round until 2s
     var deadline = time.Now().Add(1200 * time.Millisecond)
     for time.Now().Before(deadline) {
         if info, err := os.Stat(path); err == nil && info.ModTime().After(aged) {
-            // and what replaced the stale file is a real database, not a partial copy
             if !hasWatch(readBackup(t, path)) {
                 t.Fatalf("the retaken backup is not a valid database: %#v", readBackup(t, path))
             }
@@ -183,8 +187,9 @@ func TestStartBackupRetakesWhenStale(t *testing.T) {
 
 // The check rate is the smaller of the hour and the interval, so a -backup-interval
 // shorter than an hour is not held back to one.
+//
+// a fresh file, so neither goroutine finds a backup due while it runs
 func TestBackupCheckRate(t *testing.T) {
-    // a fresh file, so neither goroutine finds a backup due while it runs
     var path = filepath.Join(t.TempDir(), "backup.db")
     if err := os.WriteFile(path, []byte("fresh"), 0600); err != nil { t.Fatal(err) }
     var daily, stopDaily = startBackup(path, 24*time.Hour, "")
@@ -201,6 +206,8 @@ func TestBackupCheckRate(t *testing.T) {
 
 // startBackup copies immediately when the destination is missing or stale, so a
 // bot that restarts more often than the interval still gets backed up.
+//
+// a fresh backup is not due again, so a restart within the interval leaves it
 func TestStartBackupRunsWhenDue(t *testing.T) {
     openBackupDB(t)
     var path = filepath.Join(t.TempDir(), "backup.db")
@@ -214,7 +221,6 @@ func TestStartBackupRunsWhenDue(t *testing.T) {
     if err != nil {
         t.Fatalf("no backup was taken at startup: %v", err)
     }
-    // a fresh backup is not due again, so a restart within the interval leaves it
     var before = info.ModTime()
     stop()
     var _, stopAgain = startBackup(path, time.Hour, "")

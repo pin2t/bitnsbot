@@ -54,6 +54,7 @@ func count(t *testing.T, db *sql.DB, query string, args ...any) int {
     return n
 }
 
+// total is the whole coinbase output, so the fees column is total - reward
 func TestCopyBlocks(t *testing.T) {
     var source, target = setup(t, func(tx *bbolt.Tx) error {
         put(t, tx, "blocks", itob(963268), blockInfo{
@@ -80,7 +81,6 @@ func TestCopyBlocks(t *testing.T) {
         t.Errorf("got %s %d %d %d %s", hash, ts, size, txs, miner)
     }
     if feesOK != 1 { t.Errorf("feesOK = %d, want 1", feesOK) }
-    // total is the whole coinbase output, so the fees column is total - reward
     if reward != 312500000 || fees != 7500000 { t.Errorf("reward=%d fees=%d, want 312500000 and 7500000", reward, fees) }
     if difficulty != 1.4e14 { t.Errorf("difficulty = %v", difficulty) }
     if got := count(t, target, "select feesOK from blocks where height = 963269"); got != 0 {
@@ -124,6 +124,13 @@ func TestCopyMarketToCents(t *testing.T) {
 
 // A pool becomes one row, and its addresses and tags a row each naming it — which
 // is what the bot reads back into the two maps attribution works from.
+//
+// a pool with definitions and nothing mined is still a row, and so is one that
+// mined and carries no definitions
+//
+// every address and tag names its pool
+//
+// and the pool that carries neither has neither
 func TestCopyMinersIntoThreeTables(t *testing.T) {
     var source, target = setup(t, func(tx *bbolt.Tx) error {
         put(t, tx, "miners", []byte("F2Pool"), poolRecord{
@@ -156,12 +163,9 @@ func TestCopyMinersIntoThreeTables(t *testing.T) {
     if blocks != 12 || reward != 3801 || fees != 39 || totalWork != 8.5 || lastWork != 6.0 {
         t.Errorf("F2Pool = %d %d %d %v %v", blocks, reward, fees, totalWork, lastWork)
     }
-    // a pool with definitions and nothing mined is still a row, and so is one that
-    // mined and carries no definitions
     if n := count(t, target, "select count(*) from miners where blocks = 0"); n != 2 {
         t.Errorf("%d pools with nothing mined, want 2 (AntPool and Foundry USA)", n)
     }
-    // every address and tag names its pool
     var name string
     if err := target.QueryRow("select name from mineraddr where address = 'addr-f2-2'").Scan(&name); err != nil {
         t.Fatal(err)
@@ -174,7 +178,6 @@ func TestCopyMinersIntoThreeTables(t *testing.T) {
     if n := count(t, target, "select count(*) from mineraddr where name = 'F2Pool'"); n != 2 {
         t.Errorf("F2Pool has %d addresses, want 2", n)
     }
-    // and the pool that carries neither has neither
     if n := count(t, target, "select count(*) from mineraddr where name = 'Braiins'"); n != 0 {
         t.Errorf("Braiins has %d addresses, want none", n)
     }
@@ -182,6 +185,12 @@ func TestCopyMinersIntoThreeTables(t *testing.T) {
 
 // A database written before the three buckets became one is read in its own
 // shape, which is what a backup taken before the migration still holds.
+//
+// four pools between the three buckets: two from the addresses, Foundry USA
+// from a tag alone, and Braiins from its aggregate alone
+//
+// a pool known only from its aggregate has no definitions, and one known only
+// from a tag has no addresses
 func TestCopyMinersReadsTheOldBuckets(t *testing.T) {
     var source, target = setup(t, func(tx *bbolt.Tx) error {
         put(t, tx, "miners", []byte("addr-f2-1"), []byte("F2Pool"))
@@ -194,8 +203,6 @@ func TestCopyMinersReadsTheOldBuckets(t *testing.T) {
         put(t, tx, "miners-stat", []byte("Braiins"), minerStat{Blocks: 1, Reward: 312, Fees: 4, Work: 1.5, LastWork: 1.5})
         return nil
     })
-    // four pools between the three buckets: two from the addresses, Foundry USA
-    // from a tag alone, and Braiins from its aggregate alone
     for _, c := range []struct {
         name string
         copy func(*bbolt.DB, sink) (int, int, error)
@@ -220,8 +227,6 @@ func TestCopyMinersReadsTheOldBuckets(t *testing.T) {
         t.Fatal(err)
     }
     if name != "AntPool" { t.Errorf("addr-ant belongs to %q", name) }
-    // a pool known only from its aggregate has no definitions, and one known only
-    // from a tag has no addresses
     if n := count(t, target, "select count(*) from mineraddr where name = 'Braiins'"); n != 0 {
         t.Errorf("Braiins has %d addresses, want none", n)
     }
@@ -230,12 +235,15 @@ func TestCopyMinersReadsTheOldBuckets(t *testing.T) {
     }
 }
 
+// the stored value carries only the price; the timestamp is the key
+//
+// a key that went through dbui's CSV export and came back undecoded
+//
+// 0x68b6b3fc — the hex: marker decoded back to the timestamp it stands for
 func TestCopyRatesReadsTimestampFromKey(t *testing.T) {
     var source, target = setup(t, func(tx *bbolt.Tx) error {
-        // the stored value carries only the price; the timestamp is the key
         put(t, tx, "rates", itob(1756771200), rateRecord{Cents: 6622300})
         put(t, tx, "rates", itob(1756771500), rateRecord{Cents: 6630000})
-        // a key that went through dbui's CSV export and came back undecoded
         put(t, tx, "rates", []byte("hex:0000000068b6b3fc"), rateRecord{Cents: 6700000})
         put(t, tx, "rates", []byte("short"), rateRecord{Cents: 1})
         put(t, tx, "rates", []byte("hex:nothexatall"), rateRecord{Cents: 2})
@@ -247,7 +255,6 @@ func TestCopyRatesReadsTimestampFromKey(t *testing.T) {
     if got := count(t, target, "select cents from rates where ts = 1756771200"); got != 6622300 {
         t.Errorf("cents = %d, want 6622300", got)
     }
-    // 0x68b6b3fc — the hex: marker decoded back to the timestamp it stands for
     if got := count(t, target, "select cents from rates where ts = 1756804092"); got != 6700000 {
         t.Errorf("a dbui-encoded key did not decode to its timestamp")
     }
@@ -256,11 +263,13 @@ func TestCopyRatesReadsTimestampFromKey(t *testing.T) {
     }
 }
 
+// the same chat watching the same address twice, which the bucket permits
+//
+// the same address under another chat is a different watch, not a duplicate
 func TestCopyWatchesCollapsesDuplicates(t *testing.T) {
     var source, target = setup(t, func(tx *bbolt.Tx) error {
         put(t, tx, "watches", itob(1), watchRecord{Created: 100, Chat: 42, Watch: "bc1qaaa", Alias: "cold"})
         put(t, tx, "watches", itob(2), watchRecord{Created: 200, Chat: 42, Watch: "bc1qbbb", Alias: ""})
-        // the same chat watching the same address twice, which the bucket permits
         put(t, tx, "watches", itob(3), watchRecord{Created: 300, Chat: 42, Watch: "bc1qaaa", Alias: "renamed"})
         put(t, tx, "watches", itob(4), watchRecord{Created: 400, Chat: 7, Watch: "bc1qaaa", Alias: "someone else"})
         return nil
@@ -275,12 +284,14 @@ func TestCopyWatchesCollapsesDuplicates(t *testing.T) {
         t.Fatal(err)
     }
     if alias != "renamed" || created != 300 { t.Errorf("alias=%q created=%d, want the last record to win", alias, created) }
-    // the same address under another chat is a different watch, not a duplicate
     if got := count(t, target, "select count(*) from watches where addr = 'bc1qaaa'"); got != 2 {
         t.Errorf("%d rows for bc1qaaa, want one per chat", got)
     }
 }
 
+// 0x010200000003, the whole six-byte key read as one big-endian integer
+//
+// packing must keep the order the index's cursor scan depends on
 func TestCopyAddrindexPacksShardAndRange(t *testing.T) {
     var keyOf = func(shard uint16, rangeIndex uint32) []byte {
         var k = make([]byte, 6)
@@ -298,12 +309,10 @@ func TestCopyAddrindexPacksShardAndRange(t *testing.T) {
     var rows, skipped, err = copyAddrindex(source, writerFor(target, "addrindex"))
     if err != nil { t.Fatal(err) }
     if rows != 3 || skipped != 1 { t.Fatalf("rows=%d skipped=%d, want 3 and 1", rows, skipped) }
-    // 0x010200000003, the whole six-byte key read as one big-endian integer
     var want int64 = 0x010200000003
     var data []byte
     if err := target.QueryRow("select data from addrindex where shard = ?", want).Scan(&data); err != nil { t.Fatal(err) }
     if string(data) != string([]byte{0xde, 0xad, 0xbe, 0xef}) { t.Errorf("data = % x", data) }
-    // packing must keep the order the index's cursor scan depends on
     var rowsOut, err2 = target.Query("select shard from addrindex order by shard")
     if err2 != nil { t.Fatal(err2) }
     defer rowsOut.Close()
@@ -320,6 +329,7 @@ func TestCopyAddrindexPacksShardAndRange(t *testing.T) {
     }
 }
 
+// 25 rows over a batch of 4 leaves a partial final transaction to commit
 func TestCopyAcrossBatches(t *testing.T) {
     var source, target = setup(t, func(tx *bbolt.Tx) error {
         for i := 0; i < 25; i++ { put(t, tx, "rates", itob(uint64(1756771200+i)), rateRecord{Cents: int64(i)}) }
@@ -330,7 +340,6 @@ func TestCopyAcrossBatches(t *testing.T) {
     defer func() { *batch = saved }()
     var rows, _, err = copyRates(source, writerFor(target, "rates"))
     if err != nil { t.Fatal(err) }
-    // 25 rows over a batch of 4 leaves a partial final transaction to commit
     if rows != 25 { t.Fatalf("rows = %d", rows) }
     if got := count(t, target, "select count(*) from rates"); got != 25 { t.Errorf("stored %d rows", got) }
 }
@@ -368,6 +377,9 @@ func TestRatesKeyIsTimestampAlone(t *testing.T) {
 
 // Each field of the record is a column of its own, the address is the key, and
 // the amounts cross as the satoshi the bot stores.
+//
+// an address the scan has not reached is a row of zeroes, not a missing row:
+// every column is NOT NULL and the record is what it is
 func TestCopyAddrstat(t *testing.T) {
     var source, target = setup(t, func(tx *bbolt.Tx) error {
         put(t, tx, "addrstat", []byte("34xp4vRoCGJym3xR7yCVPFHoCNxv4Twseo"), addrStat{
@@ -393,8 +405,6 @@ func TestCopyAddrstat(t *testing.T) {
     }
     if flow != 35140241000000 || fees != 1234567 || txs != 4447003 { t.Errorf("got %d %d %d", flow, fees, txs) }
     if first != 1231006505 || last != 1788220322 { t.Errorf("dates = %d..%d", first, last) }
-    // an address the scan has not reached is a row of zeroes, not a missing row:
-    // every column is NOT NULL and the record is what it is
     if got := count(t, target, "select txs from addrstat where addr = 'bc1qnew'"); got != 0 {
         t.Errorf("an ungathered record stored txs = %d", got)
     }
@@ -402,6 +412,8 @@ func TestCopyAddrstat(t *testing.T) {
 
 // The indexes are created after the rows are loaded, so they are not in the
 // schema — a fresh migration is what puts them there.
+//
+// and the planner uses one rather than sorting the table
 func TestAddrstatIndexes(t *testing.T) {
     var _, target = setup(t, func(tx *bbolt.Tx) error { return nil })
     for _, s := range indexes {
@@ -412,7 +424,6 @@ func TestAddrstatIndexes(t *testing.T) {
             "%("+col+")%")
         if n != 1 { t.Errorf("%s has %d indexes, want 1", col, n) }
     }
-    // and the planner uses one rather than sorting the table
     var plan string
     if err := target.QueryRow("explain query plan select addr from addrstat order by balance desc limit 10").Scan(
         new(int), new(int), new(int), &plan); err != nil {

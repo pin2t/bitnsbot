@@ -22,6 +22,8 @@ type rpc struct {
     auth   string
 }
 
+// -fetch blocks are read at once, two calls each, over hours: without idle
+// connections to reuse, all but two of them would be dialled afresh per call
 func newRPC(url, user, pass, cookieFile string) (*rpc, error) {
     if cookieFile != "" {
         var data, err = os.ReadFile(cookieFile)
@@ -30,8 +32,6 @@ func newRPC(url, user, pass, cookieFile string) (*rpc, error) {
         if len(parts) != 2 { return nil, fmt.Errorf("%s is not a Core cookie file", cookieFile) }
         user, pass = parts[0], parts[1]
     }
-    // -fetch blocks are read at once, two calls each, over hours: without idle
-    // connections to reuse, all but two of them would be dialled afresh per call
     var c = &rpc{url: url, client: &http.Client{Transport: &http.Transport{
         MaxIdleConns:        20,
         MaxIdleConnsPerHost: 10,
@@ -46,6 +46,9 @@ func newRPC(url, user, pass, cookieFile string) (*rpc, error) {
 // call speaks JSON-RPC 1.0 with positional params. Core reports method errors in
 // the body with HTTP 500, so a failing status is not on its own an error — the
 // body is decoded either way.
+//
+// Core answers bad credentials with an empty 401, which would otherwise
+// surface as a JSON decoder's EOF
 func (c *rpc) call(ctx context.Context, method string, params []interface{}, result interface{}) error {
     if params == nil { params = []interface{}{} }
     var body, err = json.Marshal(map[string]interface{}{
@@ -59,8 +62,6 @@ func (c *rpc) call(ctx context.Context, method string, params []interface{}, res
     var resp, doErr = c.client.Do(req)
     if doErr != nil { return doErr }
     defer resp.Body.Close()
-    // Core answers bad credentials with an empty 401, which would otherwise
-    // surface as a JSON decoder's EOF
     if resp.StatusCode == http.StatusUnauthorized {
         return fmt.Errorf("%s: unauthorized — pass -cookie, or -user and -pass", method)
     }
@@ -167,6 +168,9 @@ func (c *rpc) addressOf(ctx context.Context, script []byte) (string, error) {
 // with an array of results — matched back by id, since a batch reply is not
 // promised in order. The returned slice is aligned to scripts, with "" where the
 // script is nonstandard and has no address.
+//
+// one bad script must not lose the rest of the batch; it simply has no
+// address, which is the same answer a nonstandard script gives
 func (c *rpc) addressesOf(ctx context.Context, scripts [][]byte) ([]string, error) {
     var reqs = make([]map[string]interface{}, 0, len(scripts))
     for i, s := range scripts {
@@ -201,8 +205,6 @@ func (c *rpc) addressesOf(ctx context.Context, scripts [][]byte) ([]string, erro
         if d.ID < 0 || d.ID >= len(out) {
             return nil, fmt.Errorf("decodescript batch: reply id %d out of range", d.ID)
         }
-        // one bad script must not lose the rest of the batch; it simply has no
-        // address, which is the same answer a nonstandard script gives
         if d.Error != nil {
             logging.Warn("actbuild: decodescript: %s", d.Error.Message)
             continue

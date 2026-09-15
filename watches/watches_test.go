@@ -60,13 +60,16 @@ func TestList(t *testing.T) {
     }
 }
 
+// two chats watch the same address; a third watch is unrelated
+//
+// removing chat 1's watch on sharedAddr must not touch chat 2's identical watch
+//
+// removing a watch that doesn't belong to the chat removes nothing
 func TestRemove(t *testing.T) {
     openTestDB(t)
-    // two chats watch the same address; a third watch is unrelated
     Add(1, "sharedAddr", "")
     Add(2, "sharedAddr", "")
     Add(1, "otherAddr", "")
-    // removing chat 1's watch on sharedAddr must not touch chat 2's identical watch
     var removed, err = Remove(1, "sharedAddr")
     if err != nil {
         t.Fatalf("remove: %v", err)
@@ -83,7 +86,6 @@ func TestRemove(t *testing.T) {
             t.Fatalf("chat 1's sharedAddr watch should be gone: %#v", list)
         }
     }
-    // removing a watch that doesn't belong to the chat removes nothing
     if n, _ := Remove(999, "sharedAddr"); n != 0 {
         t.Fatalf("expected 0 removed for wrong chat, got %d", n)
     }
@@ -91,6 +93,8 @@ func TestRemove(t *testing.T) {
 
 // The pair is the primary key — `(chat, addr)` — so a row says whose it is
 // without anything being decoded, and a chat id is an integer rather than text.
+//
+// a negative chat id — a Telegram group — round-trips too
 func TestKeyFormat(t *testing.T) {
     var handle = open(t)
     if err := Add(260439275, "bc1q5rasj5fedy3f9vgh9x84jqlgtvj964k0xn5z6r", "Cold"); err != nil {
@@ -106,7 +110,6 @@ func TestKeyFormat(t *testing.T) {
         t.Errorf("row = %d %q %q", chat, addr, alias)
     }
     if created == 0 { t.Error("created was not stored") }
-    // a negative chat id — a Telegram group — round-trips too
     if err := Add(-1001234567890, "addrG", ""); err != nil { t.Fatal(err) }
     var list, err = List()
     if err != nil { t.Fatal(err) }

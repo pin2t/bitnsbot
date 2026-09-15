@@ -14,6 +14,8 @@ func scriptN(n uint64) []byte {
 }
 
 // The count rises once per call and is readable back through the merge.
+//
+// and the same after folding the buffer into the run
 func TestCounterCounts(t *testing.T) {
     var c = newCounter(0, 2)
     for i := 0; i < 5; i++ { c.add(payScript) }
@@ -25,7 +27,6 @@ func TestCounterCounts(t *testing.T) {
         t.Errorf("count = %d, want 1", got)
     }
     if c.entries() != 2 { t.Errorf("entries = %d, want 2", c.entries()) }
-    // and the same after folding the buffer into the run
     c.flush()
     if got := c.count(key(payScript)); got != 5 {
         t.Errorf("after flush count = %d, want 5", got)
@@ -35,11 +36,12 @@ func TestCounterCounts(t *testing.T) {
 
 // Counts have to survive many merges, arriving out of order and interleaved,
 // which is where a packed sorted run goes wrong.
+//
+// the run must come back sorted, or the binary search above was luck
 func TestCounterMergesKeepCounts(t *testing.T) {
     var old = bufferedAddrs
     bufferedAddrs = 8
     defer func() { bufferedAddrs = old }()
-
     var c = newCounter(0, 1000000)
     var want = map[uint64]uint32{}
     var rnd uint64 = 99
@@ -58,7 +60,6 @@ func TestCounterMergesKeepCounts(t *testing.T) {
             t.Errorf("count for %d = %d, want %d", k, got, n)
         }
     }
-    // the run must come back sorted, or the binary search above was luck
     for i := 1; i < len(c.run)/entryLen; i++ {
         if c.prefixAt(i-1) >= c.prefixAt(i) {
             t.Fatalf("run is not sorted at %d", i)

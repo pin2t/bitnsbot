@@ -5,6 +5,8 @@ import "time"
 
 // The oldest entry goes when capacity is exceeded, and reading one makes it the
 // newest — that is the whole contract callers rely on.
+//
+// a is now the newest, so b is what the third insert evicts
 func TestEvictsLeastRecentlyUsed(t *testing.T) {
     var c = New[string, int](2)
     c.Put("a", 1)
@@ -12,7 +14,6 @@ func TestEvictsLeastRecentlyUsed(t *testing.T) {
     if _, ok := c.Get("a"); !ok {
         t.Fatal("a was dropped while still within capacity")
     }
-    // a is now the newest, so b is what the third insert evicts
     c.Put("c", 3)
     if _, ok := c.Get("b"); ok {
         t.Error("b survived; the least recently used entry should have gone")

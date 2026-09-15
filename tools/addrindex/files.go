@@ -79,13 +79,17 @@ func (b *blockReader) read(p []byte) error {
 // next returns the next block's bytes, or nil at the end of the written data.
 // The slice is reused between calls, so a caller that keeps anything from it
 // must copy first — the scan only reads scripts out of it, so it does not.
+//
+// Core preallocates each file, so the written records are followed by zeros;
+// anything that is not the magic means this file is done.
+//
+// a half-written record at the end of the newest file is not an error,
+// it is simply where the chain currently stops
 func (b *blockReader) next() ([]byte, error) {
     var header = make([]byte, 8)
     var err = b.read(header)
     if err == io.EOF || err == io.ErrUnexpectedEOF { return nil, nil }
     if err != nil { return nil, err }
-    // Core preallocates each file, so the written records are followed by zeros;
-    // anything that is not the magic means this file is done.
     if string(header[:4]) != string(magic) { return nil, nil }
     var size = binary.LittleEndian.Uint32(header[4:])
     if size == 0 || size > maxBlock {
@@ -94,8 +98,6 @@ func (b *blockReader) next() ([]byte, error) {
     if cap(b.buf) < int(size) { b.buf = make([]byte, size) }
     b.buf = b.buf[:size]
     if err := b.read(b.buf); err != nil {
-        // a half-written record at the end of the newest file is not an error,
-        // it is simply where the chain currently stops
         if err == io.EOF || err == io.ErrUnexpectedEOF { return nil, nil }
         return nil, err
     }
@@ -113,9 +115,11 @@ func (b *blockReader) next() ([]byte, error) {
 // It lives here rather than in the addrindex package because these files are the
 // one place a block is binary. Everything else reads blocks over RPC, already
 // decoded into an addrindex.Block.
+//
+// block header
 func parseBlockOutputs(raw []byte) ([][]addrindex.Payment, bool) {
     var r = &reader{buf: raw}
-    r.skip(80) // block header
+    r.skip(80)
     var txCount, ok = r.varInt()
     if !ok { return nil, false }
     var result = make([][]addrindex.Payment, txCount)
@@ -128,23 +132,32 @@ func parseBlockOutputs(raw []byte) ([][]addrindex.Payment, bool) {
     return result, true
 }
 
+// version
+//
+// segwit marker; the real input count follows the flag byte
+//
+// prevout hash + index
+//
+// sequence
+//
+// locktime
 func skipTxKeepOutputs(r *reader) ([]addrindex.Payment, bool) {
-    r.skip(4) // version
+    r.skip(4)
     var inCount, ok = r.varInt()
     if !ok { return nil, false }
     var segwit bool
-    if inCount == 0 { // segwit marker; the real input count follows the flag byte
+    if inCount == 0 {
         segwit = true
         r.skip(1)
         inCount, ok = r.varInt()
         if !ok { return nil, false }
     }
     for i := uint64(0); i < inCount; i++ {
-        r.skip(36) // prevout hash + index
+        r.skip(36)
         var scriptLen, lenOK = r.varInt()
         if !lenOK { return nil, false }
         r.skip(int(scriptLen))
-        r.skip(4) // sequence
+        r.skip(4)
     }
     var outCount, outOK = r.varInt()
     if !outOK { return nil, false }
@@ -169,7 +182,7 @@ func skipTxKeepOutputs(r *reader) ([]addrindex.Payment, bool) {
             }
         }
     }
-    r.skip(4) // locktime
+    r.skip(4)
     return scripts, true
 }
 

@@ -25,6 +25,8 @@ import "bitnsbot/logging"
 var dbPath = flag.String("db", "", "path to the bbolt database (required; created when missing)")
 var batch = flag.Int("batch", 100000, "rows per write transaction")
 
+// every file is checked before anything is written, so a mistyped name is
+// reported instead of leaving half the import done
 func main() {
     flag.Usage = func() {
         fmt.Fprintf(flag.CommandLine.Output(), "Usage: %s -db <database> <file.csv> [file.csv ...]\n", os.Args[0])
@@ -34,8 +36,6 @@ func main() {
     if *dbPath == "" { logging.Fatal("-db is required") }
     if flag.NArg() == 0 { logging.Fatal("at least one CSV file is required") }
     if *batch < 1 { logging.Fatal("-batch must be at least 1") }
-    // every file is checked before anything is written, so a mistyped name is
-    // reported instead of leaving half the import done
     for _, path := range flag.Args() {
         if _, err := os.Stat(path); err != nil { logging.Fatal("%v", err) }
     }
@@ -61,6 +61,9 @@ func bucketName(path string) string {
 // is not atomic, and deliberately: a chain-sized table does not fit in one
 // transaction, and since a row is written by key the whole file can simply be
 // imported again after a failure.
+//
+// up front, so an empty file still leaves the bucket behind rather than
+// depending on there being a batch to write
 func importFile(db *bbolt.DB, path, name string) (int, int, error) {
     var f, err = os.Open(path)
     if err != nil { return 0, 0, err }
@@ -74,8 +77,6 @@ func importFile(db *bbolt.DB, path, name string) (int, int, error) {
         return 0, 0, fmt.Errorf("header is %q,%q, expected key,value", head[0], head[1])
     }
     var bucket = []byte(name)
-    // up front, so an empty file still leaves the bucket behind rather than
-    // depending on there being a batch to write
     if err := db.Update(func(tx *bbolt.Tx) error {
         var _, berr = tx.CreateBucketIfNotExists(bucket)
         return berr

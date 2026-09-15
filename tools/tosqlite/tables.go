@@ -153,10 +153,13 @@ func (w *writer) flush() error {
     return nil
 }
 
+// the cache moved out of blocks-stat and into blocks; this is pointed at
+// backups as often as at a live file, so it reads either
+//
+// the record keeps reward and total, where total is the whole coinbase
+// output (reward + fees), so the fees column is their difference
 func copyBlocks(source *bbolt.DB, w sink) (rows, skipped int, err error) {
     err = source.View(func(tx *bbolt.Tx) error {
-        // the cache moved out of blocks-stat and into blocks; this is pointed at
-        // backups as often as at a live file, so it reads either
         var b = tx.Bucket([]byte("blocks"))
         if b == nil { b = tx.Bucket([]byte("blocks-stat")) }
         if b == nil { return nil }
@@ -169,8 +172,6 @@ func copyBlocks(source *bbolt.DB, w sink) (rows, skipped int, err error) {
             logging.Db("blocks: %d", bi.Height)
             var feesOK int
             if bi.FeesOK { feesOK = 1 }
-            // the record keeps reward and total, where total is the whole coinbase
-            // output (reward + fees), so the fees column is their difference
             if err := w.add(bi.Height, bi.Hash, bi.Time, bi.Size, bi.NumTx, bi.Miner, feesOK,
                 bi.FeeMin, bi.FeeAvg, bi.FeeMax, bi.TxSizeMin, bi.TxSizeAvg, bi.TxSizeMax,
                 bi.Reward, bi.Total-bi.Reward, bi.Difficulty); err != nil { return err }
@@ -182,6 +183,8 @@ func copyBlocks(source *bbolt.DB, w sink) (rows, skipped int, err error) {
     return rows, skipped, w.flush()
 }
 
+// all three are stored as floating-point USD and land as integer cents,
+// the unit the rates bucket already uses to keep prices off floats
 func copyMarket(source *bbolt.DB, w sink) (rows, skipped int, err error) {
     err = source.View(func(tx *bbolt.Tx) error {
         var b = tx.Bucket([]byte("market"))
@@ -193,8 +196,6 @@ func copyMarket(source *bbolt.DB, w sink) (rows, skipped int, err error) {
                 return nil
             }
             logging.Db("market: %d", m.Timestamp)
-            // all three are stored as floating-point USD and land as integer cents,
-            // the unit the rates bucket already uses to keep prices off floats
             if err := w.add(m.Timestamp, cents(m.Price), cents(m.MarketCap), cents(m.Volume24h)); err != nil { return err }
             rows++
             return nil
@@ -269,6 +270,9 @@ type poolRecord struct {
 }
 
 // readMiners gathers every pool out of whichever shape the source is in.
+//
+// the older shape: two buckets keyed by the address or tag and valued by
+// the pool name, inverted here to gather each pool's own
 func readMiners(source *bbolt.DB, skipped *int) (map[string]poolRecord, error) {
     var pools = map[string]poolRecord{}
     var err = source.View(func(tx *bbolt.Tx) error {
@@ -285,8 +289,6 @@ func readMiners(source *bbolt.DB, skipped *int) (map[string]poolRecord, error) {
                 return nil
             })
         }
-        // the older shape: two buckets keyed by the address or tag and valued by
-        // the pool name, inverted here to gather each pool's own
         for _, from := range []struct {
             bucket string
             into   func(*poolRecord, string)
@@ -417,6 +419,8 @@ func watchKey(k []byte) (int64, string, bool) {
 // copyAddrindex packs the bbolt key into the single shard column. That key is a
 // 2-byte shard and a 4-byte block-range index, both big-endian, and reading all
 // six bytes as one integer keeps them in the same order the index relies on.
+//
+// bbolt's values are mmap'd and valid only inside this transaction
 func copyAddrindex(source *bbolt.DB, w sink) (rows, skipped int, err error) {
     err = source.View(func(tx *bbolt.Tx) error {
         var b = tx.Bucket([]byte("addrindex"))
@@ -428,7 +432,6 @@ func copyAddrindex(source *bbolt.DB, w sink) (rows, skipped int, err error) {
             }
             var shard int64
             for _, c := range k { shard = shard<<8 | int64(c) }
-            // bbolt's values are mmap'd and valid only inside this transaction
             if err := w.add(shard, append([]byte(nil), v...)); err != nil { return err }
             rows++
             return nil

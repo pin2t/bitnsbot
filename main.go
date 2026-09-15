@@ -89,6 +89,12 @@ const blocksMaxRows = blocksPerPage * 20
 // It asks for one row more than it returns: whether there is another batch below
 // this one is what the trailing sentinel is rendered on, and a count of the whole
 // table would be a scan of it.
+//
+// Down asks for every row back to the block a reader had scrolled to, which
+// is why the limit is the deeper one above rather than a batch.
+//
+// A restore renders down to the row that was tapped; that there are more
+// below it is what keeps the list's own sentinel alive.
 func (appSource) Blocks(lang string, rng app.Range) app.Blocks {
     var out = app.Blocks{Top: rng.After}
     if db == nil { return out }
@@ -101,8 +107,6 @@ func (appSource) Blocks(lang string, rng app.Range) app.Blocks {
     if rng.After > 0 {
         where, args = " where height > ?", []any{rng.After}
     }
-    // Down asks for every row back to the block a reader had scrolled to, which
-    // is why the limit is the deeper one above rather than a batch.
     if rng.Down > 0 {
         where, args = " where height >= ?", []any{rng.Down}
     }
@@ -131,8 +135,6 @@ func (appSource) Blocks(lang string, rng app.Range) app.Blocks {
             MinerKnown: bi.Miner != "",
         })
     }
-    // A restore renders down to the row that was tapped; that there are more
-    // below it is what keeps the list's own sentinel alive.
     if rng.Down > 0 && !out.More {
         var below int64
         out.More = db.QueryRow("select height from blocks where height < ? limit 1", rng.Down).Scan(&below) == nil
@@ -149,12 +151,13 @@ func (appSource) Blocks(lang string, rng app.Range) app.Blocks {
 // language — which arrives with the request rather than from a chat, since the
 // page has no chat behind it. A computed record is not stored: the collector is
 // the only thing that fills the cache.
+//
+// Title is set even when the lookup fails, so the page still names what was
+// asked for rather than reading "Block ". Kind says what this page is, which
+// the app cannot always tell from the URL: a block hash has a txid's shape,
+// so it arrives at the transaction endpoint and lands here — and a block has
+// nothing to watch.
 func (appSource) BlockInfo(lang string, height int64) app.Info {
-    // Title is set even when the lookup fails, so the page still names what was
-    // asked for rather than reading "Block ". Kind says what this page is, which
-    // the app cannot always tell from the URL: a block hash has a txid's shape,
-    // so it arrives at the transaction endpoint and lands here — and a block has
-    // nothing to watch.
     var out = app.Info{Title: i18nl(lang).String("Block") + " " + group(height), Kind: "block"}
     var bi, ok = loadBlock(height)
     if !ok {
@@ -178,6 +181,11 @@ func (appSource) BlockInfo(lang string, height int64) app.Info {
 // shape as a txid and only the node can tell them apart, so — exactly as info()
 // does for the bot — an id the node has a block header for is shown as that
 // block instead. Both live on the Blocks tab, so the handoff is seamless.
+//
+// the same ids the bot gives buttons for, which is already only what the
+// text shows: the block it confirmed in, and the addresses on either side
+//
+// a block is named by height there, as "#963268"
 func (appSource) TxInfo(lang, txid string) app.Info {
     var out = app.Info{Title: short(txid)}
     if core == nil { return out }
@@ -188,12 +196,9 @@ func (appSource) TxInfo(lang, txid string) app.Info {
     }
     var pairs, ids, canonical, ok = txPairs(ctx, lang, txid)
     if !ok { return out }
-    // the same ids the bot gives buttons for, which is already only what the
-    // text shows: the block it confirmed in, and the addresses on either side
     var links []linked
     for _, id := range ids {
         if _, err := strconv.ParseInt(id, 10, 64); err == nil {
-            // a block is named by height there, as "#963268"
             links = append(links, linked{"#" + id, id})
             continue
         }
@@ -204,10 +209,11 @@ func (appSource) TxInfo(lang, txid string) app.Info {
 
 // AddrInfo backs the address details page. An input that is not an address at
 // all says so, rather than reporting an empty history as fact.
+//
+// no core check here: an address the statistics collector follows is
+// answered out of the database, which is the whole point of gathering it
 func (appSource) AddrInfo(lang, addr string) app.Info {
     var out = app.Info{Title: short(addr)}
-    // no core check here: an address the statistics collector follows is
-    // answered out of the database, which is the whole point of gathering it
     var ctx, cancel = context.WithTimeout(context.Background(), 60*time.Second)
     defer cancel()
     var pairs, valid, err = addrPairs(ctx, lang, addr)
@@ -390,6 +396,9 @@ func (appSource) Fees() app.Fees {
 var ver = "1.3"
 var commit = ""
 
+// The statistics collector reads the same blocks on a pass of its own:
+// the index says which transactions an address is in, where this says
+// what they did to it, and the two advance at different rates.
 func main() {
     var b, _ = debug.ReadBuildInfo()
     if b != nil {
@@ -464,9 +473,6 @@ func main() {
     if core != nil {
         var src = addrindex.NewRPCBlockchain(core.call)
         addrindex.StartBackfill(src)
-        // The statistics collector reads the same blocks on a pass of its own:
-        // the index says which transactions an address is in, where this says
-        // what they did to it, and the two advance at different rates.
         addrstat.Start(src)
     }
     if *registerHook {
@@ -497,6 +503,8 @@ func main() {
     shutdown(bot, srv)
 }
 
+// both before closeDB, so the database is not closed under a copy in flight
+// or a rebuild that is writing to it
 func shutdown(bot *bot, srv *http.Server) {
     logging.Status("shutting down")
     var ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
@@ -510,8 +518,6 @@ func shutdown(bot *bot, srv *http.Server) {
         }
     }
     stopNotify()
-    // both before closeDB, so the database is not closed under a copy in flight
-    // or a rebuild that is writing to it
     if stopBackup != nil { stopBackup() }
     if err := closeDB(); err != nil {
         logging.Err("close watches database: %v", err)
@@ -1062,6 +1068,9 @@ func startMarketUpdates() {
     }()
 }
 
+// which woke it decides whether the peer count is re-scanned: a
+// block moves the height and nothing else here, and the scan is the
+// one expensive call (see refreshNetwork).
 func startNetworkStats() {
     if core == nil { return }
     go func() {
@@ -1070,9 +1079,6 @@ func startNetworkStats() {
         var t = time.NewTicker(10 * time.Minute)
         defer t.Stop()
         for {
-            // which woke it decides whether the peer count is re-scanned: a
-            // block moves the height and nothing else here, and the scan is the
-            // one expensive call (see refreshNetwork).
             select {
             case <-t.C:
                 refreshNetwork(true)
@@ -1089,6 +1095,16 @@ func startNetworkStats() {
 // the node knows — tens of thousands of entries and several megabytes on mainnet
 // — and the count it produces barely moves between blocks. The ticker asks for
 // it; a new block does not, and carries the last known count forward instead.
+//
+// Same rule as the peer count: a failure here keeps the last known figure
+// rather than blanking the field.
+//
+// A failed peer count must not blank the field or, worse, report 0 active
+// nodes — keep whatever we last knew.
+//
+// A fixed figure: nothing counts distinct addresses yet. The addrindex
+// package records touches per address but keeps no distinct total, so
+// this stands in until it can.
 func refreshNetwork(withNodes bool) {
     if core == nil { return }
     var ctx, cancel = context.WithTimeout(context.Background(), 60*time.Second)
@@ -1101,16 +1117,12 @@ func refreshNetwork(withNodes bool) {
     networkMu.Lock()
     var nodes, txs = cachedNetwork.Nodes, cachedNetwork.Txs
     networkMu.Unlock()
-    // Same rule as the peer count: a failure here keeps the last known figure
-    // rather than blanking the field.
     if stats, serr := core.getChainTxStats(ctx); serr == nil {
         txs = bigCount(stats.TxCount)
     } else {
         logging.Warn("network stats: chain tx stats: %v", serr)
         if txs == "" { txs = "—" }
     }
-    // A failed peer count must not blank the field or, worse, report 0 active
-    // nodes — keep whatever we last knew.
     if withNodes {
         if addrs, aerr := core.getNodeAddresses(ctx); aerr == nil {
             var cutoff = time.Now().Add(-activeNodeWindow).Unix()
@@ -1132,9 +1144,6 @@ func refreshNetwork(withNodes bool) {
         Size:   humSize(info.SizeOnDisk, 0, ""),
         Nodes:  nodes,
         Txs:    txs,
-        // A fixed figure: nothing counts distinct addresses yet. The addrindex
-        // package records touches per address but keeps no distinct total, so
-        // this stands in until it can.
         Addresses: "1.5 B",
     }
     networkMu.Unlock()

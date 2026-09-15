@@ -53,13 +53,14 @@ func TestIndexBlockDedups(t *testing.T) {
 // fresh addresses, block 103 spends one of them (via tx1) and the other (via
 // tx2) and pays four more. Indexing both blocks must produce the exact chain of
 // touches a wallet's transaction history should show.
+//
+// 0014ca66... is created by block102/tx1 and spent by block103/tx1
 func TestIndexBlockRealChain(t *testing.T) {
     var b102 = testBlock(t, "block102")
     var b103 = testBlock(t, "block103")
     var touches = map[string][]Touch{}
     indexBlock(touches, 102, b102)
     indexBlock(touches, 103, b103)
-    // 0014ca66... is created by block102/tx1 and spent by block103/tx1
     var script, _ = hex.DecodeString("0014ca66b88f1306d41e7e74a2eda7c1ad95e8060eec")
     var want = []Touch{{Height: 102, TxIndex: 1}, {Height: 103, TxIndex: 1}}
     if got := touches[string(Prefix(script))]; !reflect.DeepEqual(got, want) {

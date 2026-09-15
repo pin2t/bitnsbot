@@ -85,11 +85,12 @@ func Add(usd float64) error {
 
 // Last returns the most recently stored USD rate, reading only from the database
 // (never from an online API); false if none is stored.
+//
+// the newest sample is the largest primary key, which is the index's own end
 func Last() (float64, bool) {
     if db == nil { return 0, false }
     logging.Db("last rate")
     var cents int64
-    // the newest sample is the largest primary key, which is the index's own end
     if db.QueryRow("select cents from rates order by ts desc limit 1").Scan(&cents) != nil {
         return 0, false
     }
@@ -98,13 +99,14 @@ func Last() (float64, bool) {
 
 // At returns the stored USD rate closest in time to t, or false if none is within
 // tolerance (e.g. the transaction predates our rate history).
+//
+// The nearest sample is one of two rows: the last at or before the wanted
+// time, and the first after it. Both are one index seek, where scanning for
+// the smallest difference would read the whole series.
 func At(t time.Time) (float64, bool) {
     if db == nil { return 0, false }
     logging.Db("rate at %d", t.Unix())
     var target = t.Unix()
-    // The nearest sample is one of two rows: the last at or before the wanted
-    // time, and the first after it. Both are one index seek, where scanning for
-    // the smallest difference would read the whole series.
     var best int64
     var bestDiff int64 = 1 << 62
     var found bool

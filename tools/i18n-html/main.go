@@ -40,6 +40,7 @@ var translatable = map[string]bool{
 // tag.
 var raw = map[string]bool{"script": true, "style": true}
 
+// group the translations under the reference they belong to
 func main() {
     if len(os.Args) != 2 {
         fmt.Fprintln(os.Stderr, "usage: i18n-html <directory>")
@@ -50,7 +51,6 @@ func main() {
         fmt.Fprintf(os.Stderr, "i18n-html: %v\n", err)
         os.Exit(2)
     }
-    // group the translations under the reference they belong to
     var refs = map[string]bool{}
     var trans = map[string][]string{}
     for _, f := range files {
@@ -160,6 +160,11 @@ func skeleton(path string) ([]string, error) {
 // line per tag and per template action, in the order they appear. The text
 // between tags is dropped except for the actions inside it, since that text is
 // precisely what a translation rewrites.
+//
+// A comment is neither structure nor user-visible text, so a
+// translation is free to keep, drop or translate it.
+//
+// The body is not markup: skip it whole rather than scan it.
 func strip(src string) []string {
     var out []string
     for i := 0; i < len(src); {
@@ -173,8 +178,6 @@ func strip(src string) []string {
             continue
         }
         if strings.HasPrefix(src[i:], "<!--") {
-            // A comment is neither structure nor user-visible text, so a
-            // translation is free to keep, drop or translate it.
             var end = strings.Index(src[i:], "-->")
             if end < 0 { break }
             i += end + 3
@@ -185,7 +188,6 @@ func strip(src string) []string {
         out = append(out, norm)
         i = end
         if raw[name] {
-            // The body is not markup: skip it whole rather than scan it.
             var close = "</" + name
             var at = index(src[i:], close)
             if at < 0 { break }
@@ -245,14 +247,15 @@ func action(src string, i int) (string, int) {
 // reduced to the actions they contain. Collapsing the whitespace is what lets a
 // translation wrap its attributes differently — a longer word may not fit where
 // the original did.
+//
+// A doctype or a closing tag has no attributes — and no name to report,
+// since only an *opening* script or style tag begins a raw body. Naming the
+// closing one too made it skip ahead to the next </script>, swallowing
+// whatever tags lay between.
 func normalize(tag string) (string, string) {
     var inner = strings.TrimSuffix(strings.TrimPrefix(tag, "<"), ">")
     inner = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(inner), "/"))
     if inner == "" { return "", "<>" }
-    // A doctype or a closing tag has no attributes — and no name to report,
-    // since only an *opening* script or style tag begins a raw body. Naming the
-    // closing one too made it skip ahead to the next </script>, swallowing
-    // whatever tags lay between.
     if inner[0] == '!' || inner[0] == '/' {
         return "", "<" + strings.Join(strings.Fields(inner), " ") + ">"
     }
