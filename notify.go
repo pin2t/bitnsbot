@@ -9,6 +9,7 @@ import "sort"
 import "strings"
 import "sync"
 import "time"
+import "bitnsbot/core"
 import "bitnsbot/logging"
 import "bitnsbot/txwatches"
 import "bitnsbot/watches"
@@ -211,10 +212,10 @@ func alreadyNotified(txid string) bool {
 // transaction: this is a mempool transaction, so it has no undo data and Core
 // reports neither fee nor prevout for it at verbosity 2.
 func broadcast(txHex string) {
-    if core == nil { return }
+    if !core.Enabled() { return }
     var ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
     defer cancel()
-    var tx, err = core.decodeRawTransaction(ctx, txHex)
+    var tx, err = core.DecodeRawTransaction(ctx, txHex)
     if err != nil {
         logging.Err("decode notified tx: %v", err)
         return
@@ -230,11 +231,11 @@ func broadcast(txHex string) {
         }
     }
     recordOutpoints(tx.Txid, tx.Vout)
-    if full, ferr := core.getRawTransaction(ctx, tx.Txid); ferr == nil {
+    if full, ferr := core.GetRawTransaction(ctx, tx.Txid); ferr == nil {
         if _, _, spent, ok := txInputs(ctx, full); ok {
             n.sent = spent
         }
-        if entry, eerr := core.getMempoolEntry(ctx, tx.Txid); eerr == nil && entry.Vsize > 0 {
+        if entry, eerr := core.GetMempoolEntry(ctx, tx.Txid); eerr == nil && entry.Vsize > 0 {
             n.fee = toSat(entry.Fees.Base)
             n.feeRate = float64(toSat(entry.Fees.Base)) / float64(entry.Vsize)
             n.confEstimate = confEstimate(n.feeRate)
@@ -273,13 +274,13 @@ func broadcast(txHex string) {
 //
 // map each address's scriptPubKey so a scan hit can be attributed back
 func seedOutpoints(addrs []string) {
-    if core == nil || len(addrs) == 0 { return }
+    if !core.Enabled() || len(addrs) == 0 { return }
     go func() {
         var ctx, cancel = context.WithTimeout(context.Background(), 30*time.Minute)
         defer cancel()
         var owner = map[string]string{}
         for _, addr := range addrs {
-            var info, err = core.validateAddress(ctx, addr)
+            var info, err = core.ValidateAddress(ctx, addr)
             if err != nil || !info.IsValid {
                 logging.Warn("seed outpoints: validate %s: %v", short(addr), err)
                 continue
@@ -288,7 +289,7 @@ func seedOutpoints(addrs []string) {
             watchScript(info.ScriptPubKey, addr)
         }
         if len(owner) == 0 { return }
-        var result, err = core.scanTxOutSet(ctx, addrs)
+        var result, err = core.ScanTxOutSet(ctx, addrs)
         if err != nil {
             logging.Warn("scan UTXO set for %d address(es): %v — spends of existing balances may go unreported", len(addrs), err)
             return
@@ -336,7 +337,7 @@ func startNotify(bot *bot) {
         startNotifyChat(bot, w.Chat, w.Address, w.Alias)
     }
     var addrs = notifyAddresses()
-    if core != nil && len(addrs) > 0 {
+    if core.Enabled() && len(addrs) > 0 {
         seedOutpoints(addrs)
     }
 }
@@ -400,11 +401,11 @@ func confirmationMessage(chat int64, c txwatches.Confirmed, height int64) (strin
 // so an idle bot pays nothing per block. Runs off core's read-loop goroutine
 // (spawned by notifier.Handle) since it calls back into core.
 func processConfirms(b *bot, hash string) {
-    if b == nil || core == nil { return }
+    if b == nil || !core.Enabled() { return }
     if !txwatches.Any() { return }
     var ctx, cancel = context.WithTimeout(context.Background(), 30*time.Second)
     defer cancel()
-    var blk, err = core.getBlockTxids(ctx, hash)
+    var blk, err = core.GetBlockTxids(ctx, hash)
     if err != nil {
         logging.Warn("check confirmations for block %s: %v", short(hash), err)
         return

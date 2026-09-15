@@ -7,6 +7,7 @@ import "os"
 import "strings"
 import "time"
 import "bitnsbot/addrindex"
+import "bitnsbot/core"
 import "bitnsbot/logging"
 
 // entry is one line of the listing: a transaction the index says touched the
@@ -64,12 +65,12 @@ func (s summary) String() string {
 // the stamp is padded because a single-digit day is a character
 // shorter, which would step the whole listing in and out
 func list(opt *options, address string) {
-    var client, err = newRPC(opt.url, opt.user, opt.pass, opt.cookie)
-    if err != nil { logging.Fatal("RPC client: %v", err) }
+    if err := core.Init(opt.url, opt.user, opt.pass, opt.cookie); err != nil { logging.Fatal("RPC client: %v", err) }
     var ctx = context.Background()
-    var scriptHex, serr = client.scriptOf(ctx, address)
-    if serr != nil { logging.Fatal("%v", serr) }
-    var script, derr = hex.DecodeString(scriptHex)
+    var info, serr = core.ValidateAddress(ctx, address)
+    if serr != nil { logging.Fatal("validateaddress: %v", serr) }
+    if !info.IsValid { logging.Fatal("%s is not a Bitcoin address", address) }
+    var script, derr = hex.DecodeString(info.ScriptPubKey)
     if derr != nil { logging.Fatal("decode scriptPubKey: %v", derr) }
     var touches []addrindex.Touch
     var capped bool
@@ -95,7 +96,7 @@ func list(opt *options, address string) {
     for _, t := range touches {
         var ids, ok = txids[t.Height]
         if !ok {
-            var fetched, err = client.txidsAt(ctx, t.Height)
+            var fetched, err = txidsAt(ctx, t.Height)
             if err != nil {
                 fmt.Fprintf(os.Stderr, "block %d: %v\n", t.Height, err)
                 continue
@@ -106,12 +107,12 @@ func list(opt *options, address string) {
             fmt.Fprintf(os.Stderr, "block %d: no transaction at index %d\n", t.Height, t.TxIndex)
             continue
         }
-        var tx, terr = client.transaction(ctx, ids[t.TxIndex])
+        var tx, terr = core.GetRawTransaction(ctx, ids[t.TxIndex])
         if terr != nil {
             fmt.Fprintf(os.Stderr, "tx %s: %v\n", shortID(ids[t.TxIndex]), terr)
             continue
         }
-        var received, sent = tx.moved(address)
+        var received, sent = moved(tx, address)
         entries = append(entries, entry{at: tx.Time, txid: tx.Txid, received: received, sent: sent})
     }
     var totals summary
@@ -145,4 +146,34 @@ func day(unix int64) string {
 func shortID(s string) string {
     if len(s) <= 18 { return s }
     return s[:8] + ".." + s[len(s)-8:]
+}
+
+// txidsAt returns one block's transaction ids in order, which is what a touch's
+// TxIndex points into.
+func txidsAt(ctx context.Context, height uint32) ([]string, error) {
+    var hash, err = core.GetBlockHash(ctx, int64(height))
+    if err != nil { return nil, err }
+    var blk, berr = core.GetBlockTxids(ctx, hash)
+    if berr != nil { return nil, berr }
+    return blk.Tx, nil
+}
+
+// moved reports what one transaction did to this address: what it paid in and
+// what it spent out. The transaction is read at verbosity 2, where Core supplies
+// each input's prevout inline, so the spending side needs no extra calls. Amounts
+// are whole satoshi; Core reports BTC as a JSON number, and this is the one place
+// it is converted.
+func moved(t *core.Transaction, addr string) (received, sent int64) {
+    for _, v := range t.Vout {
+        if v.ScriptPubKey.Address == addr { received += toSat(v.Value) }
+    }
+    for _, v := range t.Vin {
+        if v.PrevOut != nil && v.PrevOut.ScriptPubKey.Address == addr { sent += toSat(v.PrevOut.Value) }
+    }
+    return received, sent
+}
+
+func toSat(btc float64) int64 {
+    if btc < 0 { return -int64(-btc*1e8 + 0.5) }
+    return int64(btc*1e8 + 0.5)
 }

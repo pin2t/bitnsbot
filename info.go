@@ -11,6 +11,7 @@ import "sync"
 import "time"
 import "bitnsbot/addrindex"
 import "bitnsbot/addrstat"
+import "bitnsbot/core"
 import "bitnsbot/logging"
 
 var pendingInfoMu sync.Mutex
@@ -27,14 +28,14 @@ func info(bot *bot, chat int64, arg string) {
     pendingInfoMu.Lock()
     delete(pendingInfoChats, chat)
     pendingInfoMu.Unlock()
-    if core == nil {
+    if !core.Enabled() {
         send(bot, chat, i18n(chat).String("Bitcoin node connection is not configured"), nil)
         return
     }
     var ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
     defer cancel()
     if isTxid(arg) {
-        if header, err := core.getBlockHeader(ctx, arg); err == nil {
+        if header, err := core.GetBlockHeader(ctx, arg); err == nil {
             block(ctx, bot, chat, header.Height)
             return
         }
@@ -61,7 +62,7 @@ func txPairs(ctx context.Context, lang string, txid string) ([][2]string, []stri
         confETAMedium: i18nl(lang).String("~1 hour"),
         confETASlow:   i18nl(lang).String("2+ hours"),
     }
-    var tx, err = core.getRawTransaction(ctx, txid)
+    var tx, err = core.GetRawTransaction(ctx, txid)
     if err != nil { return nil, nil, "", false }
     var total int64
     for _, vout := range tx.Vout { total += toSat(vout.Value) }
@@ -82,7 +83,7 @@ func txPairs(ctx context.Context, lang string, txid string) ([][2]string, []stri
         pairs = append(pairs, [2]string{i18nl(lang).String("Confirmations"), confText})
     } else {
         at, current = time.Unix(tx.Time, 0), false
-        if header, err := core.getBlockHeader(ctx, tx.BlockHash); err == nil {
+        if header, err := core.GetBlockHeader(ctx, tx.BlockHash); err == nil {
             blockHeight = header.Height
         }
         pairs = append(pairs, [2]string{i18nl(lang).String("Confirmations"), i18nl(lang).Sprintf("%d (block #%d)", tx.Confirmations, blockHeight)})
@@ -134,7 +135,7 @@ func transaction(ctx context.Context, bot *bot, chat int64, txid string) {
 // prevout there and each input's previous transaction still has to be fetched.
 // A fetch failure yields ok=false, so the reply degrades to "unavailable"
 // rather than showing a wrong fee.
-func txInputs(ctx context.Context, tx *coreTransaction) (fee int64, addrs []string, spent map[string]int64, ok bool) {
+func txInputs(ctx context.Context, tx *core.Transaction) (fee int64, addrs []string, spent map[string]int64, ok bool) {
     spent = make(map[string]int64)
     var inSum int64
     var complete = true
@@ -155,12 +156,12 @@ func txInputs(ctx context.Context, tx *coreTransaction) (fee int64, addrs []stri
 // fetchInputs is the mempool path: without undo data Core cannot supply prevouts,
 // so they are fetched concurrently (bounded, the same pattern the btcd client
 // used) and the fee derived from inputs − outputs.
-func fetchInputs(ctx context.Context, tx *coreTransaction) (fee int64, addrs []string, spent map[string]int64, ok bool) {
+func fetchInputs(ctx context.Context, tx *core.Transaction) (fee int64, addrs []string, spent map[string]int64, ok bool) {
     var ids = map[string]bool{}
     for _, in := range tx.Vin {
         ids[in.Txid] = true
     }
-    var prevouts = map[string]*coreTransaction{}
+    var prevouts = map[string]*core.Transaction{}
     var mu sync.Mutex
     var wg sync.WaitGroup
     var sem = make(chan struct{}, 16)
@@ -171,7 +172,7 @@ func fetchInputs(ctx context.Context, tx *coreTransaction) (fee int64, addrs []s
         go func(id string) {
             defer wg.Done()
             defer func() { <-sem }()
-            var p, e = core.getRawTransaction(ctx, id)
+            var p, e = core.GetRawTransaction(ctx, id)
             mu.Lock()
             if e != nil {
                 if fetchErr == nil { fetchErr = e }
@@ -200,7 +201,7 @@ func fetchInputs(ctx context.Context, tx *coreTransaction) (fee int64, addrs []s
     return inputsMinusOutputs(inSum, tx), addrs, spent, true
 }
 
-func inputsMinusOutputs(inSum int64, tx *coreTransaction) int64 {
+func inputsMinusOutputs(inSum int64, tx *core.Transaction) int64 {
     var outSum int64
     for _, v := range tx.Vout {
         outSum += toSat(v.Value)
@@ -214,7 +215,7 @@ func firstN(s []string, n int) []string {
     return s
 }
 
-func outputAddrs(tx *coreTransaction) []string {
+func outputAddrs(tx *core.Transaction) []string {
     var addrs []string
     for _, v := range tx.Vout {
         addrs = append(addrs, addressOf(v))
@@ -222,12 +223,12 @@ func outputAddrs(tx *coreTransaction) []string {
     return addrs
 }
 
-func addressOf(v coreVout) string { return addressOfScript(v.ScriptPubKey) }
+func addressOf(v core.Vout) string { return addressOfScript(v.ScriptPubKey) }
 
 // addressOfScript names the address an output pays. Core reports a single
 // "address" field; the plural "addresses" array btcd used (and old Core versions
 // emitted for bare multisig) is gone, so there is only the one field to read.
-func addressOfScript(s coreScriptPubKey) string {
+func addressOfScript(s core.ScriptPubKey) string {
     if s.Address != "" { return s.Address }
     return "(non-standard)"
 }
@@ -259,7 +260,7 @@ func block(ctx context.Context, bot *bot, chat int64, height int64) {
         send(bot, chat, formatBlock(bi, chatLang(chat)), nil)
         return
     }
-    var hash, err = core.getBlockHash(ctx, height)
+    var hash, err = core.GetBlockHash(ctx, height)
     if err != nil {
         send(bot, chat, i18n(chat).Sprintf("Couldn't find block %d", height), nil)
         return
@@ -280,7 +281,7 @@ func block(ctx context.Context, bot *bot, chat int64, height int64) {
 // The coinbase has no fee and is skipped.
 //
 // coinbase
-func feeStats(txs []coreTransaction) (low, avg, high int64, count int) {
+func feeStats(txs []core.Transaction) (low, avg, high int64, count int) {
     var total int64
     for i, t := range txs {
         if i == 0 { continue }
@@ -307,7 +308,7 @@ var addrTxLimit = 10000
 // themselves at verbosity 2, where Core supplies the prevouts and fee inline.
 // Both stages are concurrent and bounded, the same pattern the rest of the bot
 // uses. complete is false when the cap or the caller's deadline cut it short.
-func addressHistory(ctx context.Context, script []byte) (txs []*coreTransaction, complete bool) {
+func addressHistory(ctx context.Context, script []byte) (txs []*core.Transaction, complete bool) {
     var touches, capped = addrindex.Lookup(script, 10000)
     if len(touches) == 0 { return nil, !capped }
     if len(touches) > addrTxLimit {
@@ -330,9 +331,9 @@ func addressHistory(ctx context.Context, script []byte) (txs []*coreTransaction,
         go func(h uint32) {
             defer wg.Done()
             defer func() { <-sem }()
-            var hash, err = core.getBlockHash(ctx, int64(h))
+            var hash, err = core.GetBlockHash(ctx, int64(h))
             if err != nil { mu.Lock(); failed = true; mu.Unlock(); return }
-            var blk, berr = core.getBlockTxids(ctx, hash)
+            var blk, berr = core.GetBlockTxids(ctx, hash)
             if berr != nil { mu.Lock(); failed = true; mu.Unlock(); return }
             mu.Lock()
             for _, idx := range byHeight[h] {
@@ -348,7 +349,7 @@ func addressHistory(ctx context.Context, script []byte) (txs []*coreTransaction,
         go func(id string) {
             defer wg.Done()
             defer func() { <-sem }()
-            var tx, err = core.getRawTransaction(ctx, id)
+            var tx, err = core.GetRawTransaction(ctx, id)
             if err != nil { mu.Lock(); failed = true; mu.Unlock(); return }
             mu.Lock()
             txs = append(txs, tx)
@@ -365,7 +366,7 @@ func addressHistory(ctx context.Context, script []byte) (txs []*coreTransaction,
 // outgoing transactions, and the earliest/latest confirmed transaction times.
 // Confirmed transactions carry their prevouts and fee from Core directly, so both
 // the sending side and the fee read straight off the transaction.
-func addressStats(txs []*coreTransaction, addr string) (received, sent, fees int64, firstT, lastT int64) {
+func addressStats(txs []*core.Transaction, addr string) (received, sent, fees int64, firstT, lastT int64) {
     for _, tx := range txs {
         for _, v := range tx.Vout {
             if v.ScriptPubKey.Address == addr { received += toSat(v.Value) }
@@ -438,8 +439,8 @@ func addrTypeText(kind, addr string) string {
 // cannot decode falls back to what the node says about it
 func addrPairs(ctx context.Context, lang string, addr string) ([][2]string, bool, error) {
     if s, ok := addrstat.Get(addr); ok { return statPairs(addr, s, lang), true, nil }
-    if core == nil { return nil, false, errors.New("no node configured") }
-    var addrInfo, err = core.validateAddress(ctx, addr)
+    if !core.Enabled() { return nil, false, errors.New("no node configured") }
+    var addrInfo, err = core.ValidateAddress(ctx, addr)
     if err != nil { return nil, false, err }
     if !addrInfo.IsValid { return nil, false, nil }
     var _, kind, known = addrindex.Decode(addr)
@@ -453,7 +454,7 @@ func addrPairs(ctx context.Context, lang string, addr string) ([][2]string, bool
     }
     var pairs = [][2]string{{i18nl(lang).String("Type"), addrType}}
     var script, decodeErr = hex.DecodeString(addrInfo.ScriptPubKey)
-    var txs, complete = []*coreTransaction(nil), false
+    var txs, complete = []*core.Transaction(nil), false
     if decodeErr == nil {
         txs, complete = addressHistory(ctx, script)
     }

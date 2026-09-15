@@ -2,6 +2,7 @@ package main
 
 import "math"
 import "sort"
+import "bitnsbot/core"
 
 // Fee estimation follows mempool.space's algorithm rather than Core's
 // `estimatesmartfee`, because the two answer different questions and Core's
@@ -78,7 +79,7 @@ type recommendedFees struct {
 // rather than by itself — which is how Core's miner picks transactions too.
 // With no unconfirmed parents the ancestor figures equal the transaction's own,
 // so this reduces to fee ÷ vsize.
-func effectiveRate(e coreMempoolEntry) float64 {
+func effectiveRate(e core.MempoolEntry) float64 {
     if e.AncestorSize > 0 && e.Fees.Ancestor > 0 {
         return float64(toSat(e.Fees.Ancestor)) / float64(e.AncestorSize)
     }
@@ -104,7 +105,7 @@ func effectiveRate(e coreMempoolEntry) float64 {
 // older nodes omit weight
 //
 // the last block takes everything remaining rather than starting a new one
-func buildProjectedBlocks(entries map[string]coreMempoolEntry) []projectedBlock {
+func buildProjectedBlocks(entries map[string]core.MempoolEntry) []projectedBlock {
     var txs = make([]mempoolTx, 0, len(entries))
     for _, e := range entries {
         var weight = e.Weight

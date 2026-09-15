@@ -5,6 +5,7 @@ import "net/http"
 import "path/filepath"
 import "testing"
 import "time"
+import "bitnsbot/core"
 import "bitnsbot/watches"
 
 // TestShutdownDrainsHandlersBeforeClosingStore verifies the ordering the
@@ -21,7 +22,7 @@ func TestShutdownDrainsHandlersBeforeClosingStore(t *testing.T) {
     if err != nil {
         t.Fatalf("openDB: %v", err)
     }
-    core = nil
+    core.Reset()
     var started = make(chan struct{})
     var finished = make(chan error, 1)
     var mux = http.NewServeMux()

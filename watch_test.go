@@ -9,6 +9,8 @@ import "strings"
 import "sync"
 import "testing"
 import "time"
+import "bitnsbot/core"
+import "bitnsbot/core/coretest"
 import "bitnsbot/txwatches"
 import "bitnsbot/watches"
 
@@ -69,7 +71,7 @@ func TestWatchNotification(t *testing.T) {
     var b = newBot("TESTTOKEN", tg.URL)
     var watchedAddr = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
     var txid = "f21b47a9143a23e80cc59e81588d21558b394005580b285961957cb3bed5b3e0"
-    var srv = newFakeCoreServer(t, func(method string, params []interface{}) (interface{}, error) {
+    var srv = coretest.Server(t, func(method string, params []interface{}) (interface{}, error) {
         switch method {
         case "validateaddress":
             return map[string]any{"isvalid": true, "address": watchedAddr, "scriptPubKey": "76a914aa88ac"}, nil
@@ -100,8 +102,7 @@ func TestWatchNotification(t *testing.T) {
         }
         return nil, nil
     })
-    core = newFakeCoreConn(t, srv)
-    defer func() { core = nil }()
+    coretest.Use(t, srv)
     feesMu.Lock()
     cachedFees = recommendedFees{fastest: 50, halfHour: 30, hour: 20, economy: 10, minimum: 1}
     cachedFeesOK = true
@@ -175,7 +176,7 @@ func TestUnwatchFlow(t *testing.T) {
     }))
     defer server.Close()
     var b = newBot("TESTTOKEN", server.URL)
-    core = nil
+    core.Reset()
     stopNotify()
     defer stopNotify()
     openDB(filepath.Join(t.TempDir(), "watches.db"))
@@ -288,7 +289,7 @@ func TestWatchLimit(t *testing.T) {
     }))
     defer server.Close()
     var b = newBot("TESTTOKEN", server.URL)
-    core = nil
+    core.Reset()
     stopNotify()
     defer stopNotify()
     txwatches.Reset()
@@ -331,7 +332,7 @@ func TestTxConfirmation(t *testing.T) {
     defer tg.Close()
     var b = newBot("TESTTOKEN", tg.URL)
     var txid = "f21b47a9143a23e80cc59e81588d21558b394005580b285961957cb3bed5b3e0"
-    var srv = newFakeCoreServer(t, func(method string, params []interface{}) (interface{}, error) {
+    var srv = coretest.Server(t, func(method string, params []interface{}) (interface{}, error) {
         var p = params
         _ = p
         switch method {
@@ -347,8 +348,7 @@ func TestTxConfirmation(t *testing.T) {
         return nil, nil
     })
     defer srv.Close()
-    core = newFakeCoreConn(t, srv)
-    defer func() { core = nil }()
+    coretest.Use(t, srv)
     openDB(filepath.Join(t.TempDir(), "watches.db"))
     defer closeDB()
     stopNotify()
@@ -410,15 +410,14 @@ func TestAddrConfirmation(t *testing.T) {
     var b = newBot("TESTTOKEN", tg.URL)
     var addr = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
     var txid = "f21b47a9143a23e80cc59e81588d21558b394005580b285961957cb3bed5b3e0"
-    var srv = newFakeCoreServer(t, func(method string, params []interface{}) (interface{}, error) {
+    var srv = coretest.Server(t, func(method string, params []interface{}) (interface{}, error) {
         if method == "getblock" {
             return map[string]any{"height": 200, "tx": []string{txid}}, nil
         }
         return nil, nil
     })
     defer srv.Close()
-    core = newFakeCoreConn(t, srv)
-    defer func() { core = nil }()
+    coretest.Use(t, srv)
     stopNotify()
     defer stopNotify()
     txwatches.AddAddrConfirm(txid, 7, addr, "John", txwatches.Summary{})
@@ -468,7 +467,7 @@ func spendCoreServer(t *testing.T, watchedAddr, txid string, change bool) *httpt
         inValue = 2.5
         outs = append(outs, map[string]any{"value": 1.4999, "n": 1, "scriptPubKey": map[string]any{"address": watchedAddr, "hex": "76a914aa88ac"}})
     }
-    return newFakeCoreServer(t, func(method string, params []interface{}) (interface{}, error) {
+    return coretest.Server(t, func(method string, params []interface{}) (interface{}, error) {
         switch method {
         case "validateaddress":
             return map[string]any{"isvalid": true, "address": watchedAddr, "scriptPubKey": "76a914aa88ac"}, nil
@@ -536,7 +535,7 @@ func awaitNotification(t *testing.T, btcdSrv *httptest.Server, watchedAddr strin
         json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": true})
     }))
     var b = newBot("TESTTOKEN", tg.URL)
-    core = newFakeCoreConn(t, btcdSrv)
+    coretest.Use(t, btcdSrv)
     feesMu.Lock()
     cachedFees = recommendedFees{fastest: 50, halfHour: 30, hour: 20, economy: 10, minimum: 1}
     cachedFeesOK = true
@@ -546,7 +545,6 @@ func awaitNotification(t *testing.T, btcdSrv *httptest.Server, watchedAddr strin
     stopNotify()
     resetWatched()
     t.Cleanup(tg.Close)
-    t.Cleanup(func() { core = nil })
     t.Cleanup(func() { closeDB() })
     t.Cleanup(stopNotify)
     t.Cleanup(resetWatched)
@@ -640,7 +638,7 @@ func TestSpendWithChangeNotification(t *testing.T) {
 func TestSeedOutpoints(t *testing.T) {
     var addr = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
     var script = "76a914aabbccddeeff88ac"
-    var srv = newFakeCoreServer(t, func(method string, params []interface{}) (interface{}, error) {
+    var srv = coretest.Server(t, func(method string, params []interface{}) (interface{}, error) {
         switch method {
         case "validateaddress":
             return map[string]any{"isvalid": true, "address": addr, "scriptPubKey": script}, nil
@@ -656,9 +654,9 @@ func TestSeedOutpoints(t *testing.T) {
         }
         return nil, nil
     })
-    core = newFakeCoreConn(t, srv)
+    coretest.Use(t, srv)
     resetWatched()
-    t.Cleanup(func() { core = nil; resetWatched() })
+    t.Cleanup(resetWatched)
     seedOutpoints([]string{addr})
     var deadline = time.Now().Add(5 * time.Second)
     for time.Now().Before(deadline) {
@@ -745,15 +743,14 @@ func TestConfirmationLinksBlock(t *testing.T) {
     }))
     defer tg.Close()
     var b = newBot("TESTTOKEN", tg.URL)
-    var srv = newFakeCoreServer(t, func(method string, params []interface{}) (interface{}, error) {
+    var srv = coretest.Server(t, func(method string, params []interface{}) (interface{}, error) {
         if method == "getblock" {
             return map[string]any{"height": 959126, "tx": []string{txid}}, nil
         }
         return nil, nil
     })
-    core = newFakeCoreConn(t, srv)
+    coretest.Use(t, srv)
     stopNotify()
-    t.Cleanup(func() { core = nil })
     t.Cleanup(stopNotify)
     txwatches.AddAddrConfirm(txid, 42, addr, "", txwatches.Summary{})
     processConfirms(b, "0000000000000000abc")

@@ -3,10 +3,11 @@ package addrindex
 import "context"
 import "fmt"
 import "time"
+import "bitnsbot/core"
 import "bitnsbot/logging"
 import "bitnsbot/signals"
 
-// Block is what Blockchain hands over for one height: when it was mined, and its
+// Block is what BlockAt reads for one height: when it was mined, and its
 // transactions in block order, each with the outputs it pays and the prevouts
 // its inputs spend. That is everything a touch needs — which scripts a
 // transaction pays, and which it spends from — without a single txid: a touch is
@@ -26,14 +27,6 @@ type Tx struct {
     Spent   []Payment
 }
 
-// Blockchain supplies chain data to the backfill, mirroring how the miners
-// package takes its chain data through an interface because it can't reach Core
-// directly either. RPCBlockchain is the one implementation outside the tests.
-type Blockchain interface {
-    Tip(ctx context.Context) (int, error)
-    BlockAt(ctx context.Context, height int) (Block, error)
-}
-
 // chunkSize bounds how many blocks are merged into the index per bbolt
 // transaction, the same reasoning as the miners collector: catching up hundreds
 // of thousands of blocks must not build one giant transaction, and a crash
@@ -50,11 +43,11 @@ var backfillInterval = 2 * time.Minute
 // and keeps polling for new blocks afterward. It is meant to run for as long as
 // the bot does; building genesis-to-tip on a fresh index is a multi-hour, one-
 // time cost paid the same way the miners collector pays its own catch-up.
-func StartBackfill(src Blockchain) {
+func StartBackfill() {
     go func() {
         var wake = signals.Subscribe(signals.Block)
         for {
-            if err := Build(src); err != nil {
+            if err := Build(); err != nil {
                 logging.Warn("addrindex: %v", err)
             }
             select {
@@ -69,11 +62,12 @@ func StartBackfill(src Blockchain) {
 // StartBackfill is this on a loop; tools/addrindex calls it directly, so a
 // command-line build and the bot's own backfill advance the same cursor through
 // the same chunking.
-func Build(src Blockchain) error {
+func Build() error {
     var ctx, cancel = context.WithTimeout(context.Background(), 6*time.Hour)
     defer cancel()
-    var tip, err = src.Tip(ctx)
+    var count, err = core.GetBlockCount(ctx)
     if err != nil { return err }
+    var tip = int(count)
     var height, ok = Cursor()
     var from int
     if ok { from = height + 1 }
@@ -82,7 +76,7 @@ func Build(src Blockchain) error {
         if to > tip { to = tip }
         var touches = map[string][]Touch{}
         for h := from; h <= to; h++ {
-            var blk, berr = src.BlockAt(ctx, h)
+            var blk, berr = BlockAt(ctx, h)
             if berr != nil { return berr }
             indexBlock(touches, uint32(h), blk)
         }

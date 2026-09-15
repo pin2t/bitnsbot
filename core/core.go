@@ -1,33 +1,45 @@
-package main
+// Package core talks to Bitcoin Core over HTTP JSON-RPC. There is one node per
+// process, so the connection is the package's own: Init points it at the node,
+// and every function below calls through it. Unlike btcd there is no websocket
+// interface and so no long-lived connection to supervise: every call is an
+// independent request, and notifications arrive over ZMQ instead. That removes
+// the reconnection machinery the btcd client needed.
+package core
 
 import "bytes"
 import "context"
+import "errors"
 import "encoding/json"
 import "fmt"
 import "net/http"
 import "os"
 import "strings"
 import "sync"
+import "sync/atomic"
 import "time"
 import "bitnsbot/logging"
 import "bitnsbot/lru"
 
-// coreConn talks to Bitcoin Core over HTTP JSON-RPC. Unlike btcd there is no
-// websocket interface and so no long-lived connection to supervise: every call
-// is an independent request, and notifications arrive over ZMQ instead (see
-// zmq.go). That removes the reconnection machinery the btcd client needed.
-type coreConn struct {
+// conn is the node the package talks to. It is swapped whole rather than
+// edited, so a call already in flight finishes against the node it started on.
+type conn struct {
     url, user, pass, cookie string
     client *http.Client
     mu     sync.Mutex
     auth   string
 
-    blockTxidsCache   *lru.Cache[string, *coreBlockTxids]
-    blockVerboseCache *lru.Cache[string, *coreVerboseBlock]
+    blockTxidsCache   *lru.Cache[string, *BlockTxids]
+    blockVerboseCache *lru.Cache[string, *VerboseBlock]
 }
 
-func newCoreConn(url, user, pass, cookie string) (*coreConn, error) {
-    var c = &coreConn{
+var current atomic.Pointer[conn]
+
+var errUnconfigured = errors.New("bitcoin core is not configured")
+
+// Init points the package at a node. The cookie is read here, so a bad path
+// fails now rather than on the first call.
+func Init(url, user, pass, cookie string) error {
+    var c = &conn{
         url: url, user: user, pass: pass, cookie: cookie,
         client: &http.Client{
             Transport: &http.Transport{
@@ -38,17 +50,25 @@ func newCoreConn(url, user, pass, cookie string) (*coreConn, error) {
                 DisableKeepAlives:   false,
             },
         },
-        blockTxidsCache:   lru.New[string, *coreBlockTxids](100),
-        blockVerboseCache: lru.New[string, *coreVerboseBlock](100),
+        blockTxidsCache:   lru.New[string, *BlockTxids](100),
+        blockVerboseCache: lru.New[string, *VerboseBlock](100),
     }
-    if err := c.refreshAuth(); err != nil { return nil, err }
-    return c, nil
+    if err := c.refreshAuth(); err != nil { return err }
+    current.Store(c)
+    return nil
 }
+
+// Enabled reports whether Init has pointed the package at a node. The bot runs
+// without one, and everything that needs it checks this first.
+func Enabled() bool { return current.Load() != nil }
+
+// Reset forgets the node, so a test leaves the next one with none.
+func Reset() { current.Store(nil) }
 
 // refreshAuth rebuilds the basic-auth credentials. The cookie file is re-read
 // rather than cached forever because Core rewrites it with a fresh password on
 // every restart, and the bot outlives node restarts.
-func (c *coreConn) refreshAuth() error {
+func (c *conn) refreshAuth() error {
     var user, pass = c.user, c.pass
     if c.cookie != "" {
         var data, err = os.ReadFile(c.cookie)
@@ -69,20 +89,29 @@ func basicAuth(user, pass string) string {
     return req.Header.Get("Authorization")
 }
 
-type coreError struct {
+type Error struct {
     Code    int    `json:"code"`
     Message string `json:"message"`
 }
 
-func (e *coreError) Error() string { return fmt.Sprintf("%s (code %d)", e.Message, e.Code) }
+func (e *Error) Error() string { return fmt.Sprintf("%s (code %d)", e.Message, e.Code) }
 
-// call performs one JSON-RPC request. Core speaks JSON-RPC 1.0 with positional
-// params and reports method errors in the body (with HTTP 500), so a non-200
-// status is not on its own a failure — the body is decoded either way.
+// Call performs one JSON-RPC request against the node Init named. Core speaks
+// JSON-RPC 1.0 with positional params and reports method errors in the body
+// (with HTTP 500), so a non-200 status is not on its own a failure — the body is
+// decoded either way.
+func Call(ctx context.Context, method string, params []interface{}, result interface{}) error {
+    var c = current.Load()
+    if c == nil { return errUnconfigured }
+    return c.call(ctx, method, params, result)
+}
+
+// call is Call against one node, which is what lets GetBlockTxids and
+// GetBlockVerbose use the cache of the node they asked.
 //
 // the node restarted and rotated its cookie: pick up the new one so the
 // next call succeeds rather than failing forever
-func (c *coreConn) call(ctx context.Context, method string, params []interface{}, result interface{}) error {
+func (c *conn) call(ctx context.Context, method string, params []interface{}, result interface{}) error {
     if params == nil { params = []interface{}{} }
     var body, err = json.Marshal(map[string]interface{}{
         "jsonrpc": "1.0", "id": "bitnsbot", "method": method, "params": params,
@@ -104,7 +133,7 @@ func (c *coreConn) call(ctx context.Context, method string, params []interface{}
     }
     var decoded struct {
         Result json.RawMessage `json:"result"`
-        Error  *coreError      `json:"error"`
+        Error  *Error          `json:"error"`
     }
     if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
         return fmt.Errorf("%s: %s: %w", method, resp.Status, err)
@@ -115,62 +144,62 @@ func (c *coreConn) call(ctx context.Context, method string, params []interface{}
     return json.Unmarshal(decoded.Result, result)
 }
 
-func (c *coreConn) getBlockCount(ctx context.Context) (int64, error) {
+func GetBlockCount(ctx context.Context) (int64, error) {
     var count int64
-    var err = c.call(ctx, "getblockcount", nil, &count)
+    var err = Call(ctx, "getblockcount", nil, &count)
     return count, err
 }
 
-func (c *coreConn) getBlockHash(ctx context.Context, height int64) (string, error) {
+func GetBlockHash(ctx context.Context, height int64) (string, error) {
     var hash string
-    var err = c.call(ctx, "getblockhash", []interface{}{height}, &hash)
+    var err = Call(ctx, "getblockhash", []interface{}{height}, &hash)
     return hash, err
 }
 
-type coreBlockHeader struct {
+type BlockHeader struct {
     Hash   string `json:"hash"`
     Height int64  `json:"height"`
 }
 
-// getBlockHeader resolves a block hash to its height, erroring for a hash the
+// GetBlockHeader resolves a block hash to its height, erroring for a hash the
 // node has no block for — which is what lets /info tell a block hash from a txid.
-func (c *coreConn) getBlockHeader(ctx context.Context, hash string) (*coreBlockHeader, error) {
-    var header coreBlockHeader
-    var err = c.call(ctx, "getblockheader", []interface{}{hash, true}, &header)
+func GetBlockHeader(ctx context.Context, hash string) (*BlockHeader, error) {
+    var header BlockHeader
+    var err = Call(ctx, "getblockheader", []interface{}{hash, true}, &header)
     if err != nil { return nil, err }
     return &header, nil
 }
 
-type coreScriptPubKey struct {
+type ScriptPubKey struct {
     Address string `json:"address"`
     Hex     string `json:"hex"`
     Type    string `json:"type"`
 }
 
-type coreVout struct {
+type Vout struct {
     Value        float64          `json:"value"`
     N            uint32           `json:"n"`
-    ScriptPubKey coreScriptPubKey `json:"scriptPubKey"`
+    ScriptPubKey ScriptPubKey `json:"scriptPubKey"`
 }
 
-// corePrevOut is the spent output, which Core supplies inline for confirmed
+// PrevOut is the spent output, which Core supplies inline for confirmed
 // transactions (getrawtransaction verbosity 2, getblock verbosity 3) — the
 // per-input prevout fetching btcd forced on us is not needed for those.
-type corePrevOut struct {
+type PrevOut struct {
     Generated    bool             `json:"generated"`
     Height       int64            `json:"height"`
     Value        float64          `json:"value"`
-    ScriptPubKey coreScriptPubKey `json:"scriptPubKey"`
+    ScriptPubKey ScriptPubKey `json:"scriptPubKey"`
 }
 
-type coreVin struct {
+type Vin struct {
     Txid     string       `json:"txid"`
     Vout     uint32       `json:"vout"`
     Coinbase string       `json:"coinbase"`
-    PrevOut  *corePrevOut `json:"prevout"`
+    PrevOut  *PrevOut `json:"prevout"`
 }
 
-type coreTransaction struct {
+type Transaction struct {
     Txid          string     `json:"txid"`
     Hash          string     `json:"hash"`
     Size          int32      `json:"size"`
@@ -179,45 +208,47 @@ type coreTransaction struct {
     BlockHash     string     `json:"blockhash"`
     Time          int64      `json:"time"`
     Fee           float64    `json:"fee"`
-    Vin           []coreVin  `json:"vin"`
-    Vout          []coreVout `json:"vout"`
+    Vin           []Vin  `json:"vin"`
+    Vout          []Vout `json:"vout"`
 }
 
-// getRawTransaction fetches a transaction. Verbosity 2 additionally carries the
+// GetRawTransaction fetches a transaction. Verbosity 2 additionally carries the
 // fee and each input's prevout, but **only for confirmed transactions** — a
 // mempool transaction has no undo data, so both are absent there and the fee has
 // to come from getMempoolEntry instead. Needs -txindex for transactions outside
 // the mempool, exactly as btcd needed it.
-func (c *coreConn) getRawTransaction(ctx context.Context, txid string) (*coreTransaction, error) {
-    var tx coreTransaction
-    var err = c.call(ctx, "getrawtransaction", []interface{}{txid, 2}, &tx)
+func GetRawTransaction(ctx context.Context, txid string) (*Transaction, error) {
+    var tx Transaction
+    var err = Call(ctx, "getrawtransaction", []interface{}{txid, 2}, &tx)
     if err != nil { return nil, err }
     return &tx, nil
 }
 
-func (c *coreConn) decodeRawTransaction(ctx context.Context, txHex string) (*coreTransaction, error) {
-    var tx coreTransaction
-    var err = c.call(ctx, "decoderawtransaction", []interface{}{txHex}, &tx)
+func DecodeRawTransaction(ctx context.Context, txHex string) (*Transaction, error) {
+    var tx Transaction
+    var err = Call(ctx, "decoderawtransaction", []interface{}{txHex}, &tx)
     if err != nil { return nil, err }
     return &tx, nil
 }
 
-type coreBlockTxids struct {
+type BlockTxids struct {
     Height     int64    `json:"height"`
     Difficulty float64  `json:"difficulty"`
     Tx         []string `json:"tx"`
 }
 
-// getBlockTxids is getblock at verbosity 1: the header fields plus the txids
+// GetBlockTxids is getblock at verbosity 1: the header fields plus the txids
 // only, which is all the confirmation check and the miner collector need.
-func (c *coreConn) getBlockTxids(ctx context.Context, hash string) (*coreBlockTxids, error) {
+func GetBlockTxids(ctx context.Context, hash string) (*BlockTxids, error) {
+    var c = current.Load()
+    if c == nil { return nil, errUnconfigured }
     c.mu.Lock()
     if cached, ok := c.blockTxidsCache.Get(hash); ok {
         c.mu.Unlock()
         return cached, nil
     }
     c.mu.Unlock()
-    var blk coreBlockTxids
+    var blk BlockTxids
     var err = c.call(ctx, "getblock", []interface{}{hash, 1}, &blk)
     if err != nil { return nil, err }
     c.mu.Lock()
@@ -226,27 +257,29 @@ func (c *coreConn) getBlockTxids(ctx context.Context, hash string) (*coreBlockTx
     return &blk, nil
 }
 
-type coreVerboseBlock struct {
+type VerboseBlock struct {
     Hash       string            `json:"hash"`
     Height     int64             `json:"height"`
     Time       int64             `json:"time"`
     Size       int32             `json:"size"`
     Difficulty float64           `json:"difficulty"`
-    Tx         []coreTransaction `json:"tx"`
+    Tx         []Transaction     `json:"tx"`
 }
 
-// getBlockVerbose is getblock at verbosity 2. Two differences from btcd worth
+// GetBlockVerbose is getblock at verbosity 2. Two differences from btcd worth
 // knowing: the full transactions live under "tx" (btcd put them under "rawtx"),
 // and every non-coinbase transaction already carries its "fee" — so the block's
 // fee distribution needs no prevout fetching at all.
-func (c *coreConn) getBlockVerbose(ctx context.Context, hash string) (*coreVerboseBlock, error) {
+func GetBlockVerbose(ctx context.Context, hash string) (*VerboseBlock, error) {
+    var c = current.Load()
+    if c == nil { return nil, errUnconfigured }
     c.mu.Lock()
     if cached, ok := c.blockVerboseCache.Get(hash); ok {
         c.mu.Unlock()
         return cached, nil
     }
     c.mu.Unlock()
-    var blk coreVerboseBlock
+    var blk VerboseBlock
     var err = c.call(ctx, "getblock", []interface{}{hash, 2}, &blk)
     if err != nil { return nil, err }
     c.mu.Lock()
@@ -255,7 +288,7 @@ func (c *coreConn) getBlockVerbose(ctx context.Context, hash string) (*coreVerbo
     return &blk, nil
 }
 
-type coreAddressInfo struct {
+type AddressInfo struct {
     IsValid      bool   `json:"isvalid"`
     Address      string `json:"address"`
     ScriptPubKey string `json:"scriptPubKey"`
@@ -263,17 +296,17 @@ type coreAddressInfo struct {
     IsWitness    bool   `json:"iswitness"`
 }
 
-// validateAddress also returns the address's scriptPubKey, which is what makes
+// ValidateAddress also returns the address's scriptPubKey, which is what makes
 // local matching of ZMQ-delivered transactions possible without decoding any
 // address format in the bot.
-func (c *coreConn) validateAddress(ctx context.Context, address string) (*coreAddressInfo, error) {
-    var info coreAddressInfo
-    var err = c.call(ctx, "validateaddress", []interface{}{address}, &info)
+func ValidateAddress(ctx context.Context, address string) (*AddressInfo, error) {
+    var info AddressInfo
+    var err = Call(ctx, "validateaddress", []interface{}{address}, &info)
     if err != nil { return nil, err }
     return &info, nil
 }
 
-type coreMempoolInfo struct {
+type MempoolInfo struct {
     Size  int64 `json:"size"`
     Bytes int64 `json:"bytes"`
     // MempoolMinFee is the node's purge threshold in BTC/kvB — the rate below
@@ -282,55 +315,55 @@ type coreMempoolInfo struct {
     MempoolMinFee float64 `json:"mempoolminfee"`
 }
 
-type coreChainInfo struct {
+type ChainInfo struct {
     Blocks     int64 `json:"blocks"`
     SizeOnDisk int64 `json:"size_on_disk"`
 }
 
-type coreChainTxStats struct {
+type ChainTxStats struct {
     TxCount int64 `json:"txcount"`
 }
 
-func (c *coreConn) getChainTxStats(ctx context.Context) (*coreChainTxStats, error) {
-    var stats coreChainTxStats
-    var err = c.call(ctx, "getchaintxstats", nil, &stats)
+func GetChainTxStats(ctx context.Context) (*ChainTxStats, error) {
+    var stats ChainTxStats
+    var err = Call(ctx, "getchaintxstats", nil, &stats)
     if err != nil { return nil, err }
     return &stats, nil
 }
 
-func (c *coreConn) getBlockchainInfo(ctx context.Context) (*coreChainInfo, error) {
-    var info coreChainInfo
-    var err = c.call(ctx, "getblockchaininfo", nil, &info)
+func GetBlockchainInfo(ctx context.Context) (*ChainInfo, error) {
+    var info ChainInfo
+    var err = Call(ctx, "getblockchaininfo", nil, &info)
     if err != nil { return nil, err }
     return &info, nil
 }
 
-// coreNodeAddress is one entry of the node's address manager. Time is when the
+// NodeAddress is one entry of the node's address manager. Time is when the
 // node was last seen — gossiped, not verified, so this is the node's own view of
 // the network rather than a reachability scan.
-type coreNodeAddress struct {
+type NodeAddress struct {
     Time    int64  `json:"time"`
     Network string `json:"network"`
 }
 
-// getNodeAddresses asks for every address the node knows (count 0 means all).
+// GetNodeAddresses asks for every address the node knows (count 0 means all).
 // On mainnet that is tens of thousands of entries and several megabytes, so it
 // belongs in a background refresh, never in a request path.
-func (c *coreConn) getNodeAddresses(ctx context.Context) ([]coreNodeAddress, error) {
-    var addrs []coreNodeAddress
-    var err = c.call(ctx, "getnodeaddresses", []interface{}{0}, &addrs)
+func GetNodeAddresses(ctx context.Context) ([]NodeAddress, error) {
+    var addrs []NodeAddress
+    var err = Call(ctx, "getnodeaddresses", []interface{}{0}, &addrs)
     if err != nil { return nil, err }
     return addrs, nil
 }
 
-func (c *coreConn) getMempoolInfo(ctx context.Context) (*coreMempoolInfo, error) {
-    var info coreMempoolInfo
-    var err = c.call(ctx, "getmempoolinfo", nil, &info)
+func GetMempoolInfo(ctx context.Context) (*MempoolInfo, error) {
+    var info MempoolInfo
+    var err = Call(ctx, "getmempoolinfo", nil, &info)
     if err != nil { return nil, err }
     return &info, nil
 }
 
-type coreMempoolEntry struct {
+type MempoolEntry struct {
     Vsize int32 `json:"vsize"`
     // Weight is what projected blocks are packed by — a block's limit is 4M
     // weight units, and vsize is only weight/4 rounded up.
@@ -346,23 +379,23 @@ type coreMempoolEntry struct {
     } `json:"fees"`
 }
 
-// getMempoolEntry is where an *unconfirmed* transaction's fee comes from, since
+// GetMempoolEntry is where an *unconfirmed* transaction's fee comes from, since
 // getrawtransaction can't compute one without undo data.
-func (c *coreConn) getMempoolEntry(ctx context.Context, txid string) (*coreMempoolEntry, error) {
-    var entry coreMempoolEntry
-    var err = c.call(ctx, "getmempoolentry", []interface{}{txid}, &entry)
+func GetMempoolEntry(ctx context.Context, txid string) (*MempoolEntry, error) {
+    var entry MempoolEntry
+    var err = Call(ctx, "getmempoolentry", []interface{}{txid}, &entry)
     if err != nil { return nil, err }
     return &entry, nil
 }
 
-func (c *coreConn) rawMempoolVerbose(ctx context.Context) (map[string]coreMempoolEntry, error) {
-    var mp map[string]coreMempoolEntry
-    var err = c.call(ctx, "getrawmempool", []interface{}{true}, &mp)
+func RawMempoolVerbose(ctx context.Context) (map[string]MempoolEntry, error) {
+    var mp map[string]MempoolEntry
+    var err = Call(ctx, "getrawmempool", []interface{}{true}, &mp)
     if err != nil { return nil, err }
     return mp, nil
 }
 
-type coreScanResult struct {
+type ScanResult struct {
     Success  bool `json:"success"`
     Unspents []struct {
         Txid         string  `json:"txid"`
@@ -373,28 +406,28 @@ type coreScanResult struct {
     } `json:"unspents"`
 }
 
-// scanTxOutSet finds the current unspent outputs of the given addresses by
+// ScanTxOutSet finds the current unspent outputs of the given addresses by
 // scanning the UTXO set. Core has no address index, so this is how the watch
 // notifier learns which outpoints a watched address currently owns — many
 // addresses can be scanned in one pass, which matters because the scan walks the
 // whole UTXO set and takes minutes on mainnet.
-func (c *coreConn) scanTxOutSet(ctx context.Context, addresses []string) (*coreScanResult, error) {
+func ScanTxOutSet(ctx context.Context, addresses []string) (*ScanResult, error) {
     var descriptors = make([]string, 0, len(addresses))
     for _, a := range addresses {
         descriptors = append(descriptors, "addr("+a+")")
     }
-    var result coreScanResult
-    var err = c.call(ctx, "scantxoutset", []interface{}{"start", descriptors}, &result)
+    var result ScanResult
+    var err = Call(ctx, "scantxoutset", []interface{}{"start", descriptors}, &result)
     if err != nil { return nil, err }
     return &result, nil
 }
 
-// waitForBlock is Core's long-poll for a new tip. It is not used for the block
+// WaitForBlock is Core's long-poll for a new tip. It is not used for the block
 // notifications themselves (ZMQ delivers those) but gives tests a way to wait on
 // the node without polling.
-func (c *coreConn) waitForBlock(ctx context.Context, timeout time.Duration) (*coreBlockHeader, error) {
-    var header coreBlockHeader
-    var err = c.call(ctx, "waitfornewblock", []interface{}{timeout.Milliseconds()}, &header)
+func WaitForBlock(ctx context.Context, timeout time.Duration) (*BlockHeader, error) {
+    var header BlockHeader
+    var err = Call(ctx, "waitfornewblock", []interface{}{timeout.Milliseconds()}, &header)
     if err != nil { return nil, err }
     return &header, nil
 }

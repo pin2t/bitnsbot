@@ -1,15 +1,16 @@
 package main
 
 import "sync"
+import "bitnsbot/core/coretest"
 import "bitnsbot/app"
 import "testing"
 
-// fakeChain answers the three calls the Blockchain card makes, counting each so
-// a test can assert which ones a refresh actually issued.
-func fakeChain(t *testing.T, height int64) (*coreConn, func(string) int) {
+// fakeChain points core at a node answering the three calls the Blockchain card
+// makes, counting each so a test can assert which ones a refresh actually issued.
+func fakeChain(t *testing.T, height int64) func(string) int {
     var mu sync.Mutex
     var calls = map[string]int{}
-    var server = newFakeCoreServer(t, func(method string, params []interface{}) (interface{}, error) {
+    coretest.Start(t, func(method string, params []interface{}) (interface{}, error) {
         mu.Lock()
         calls[method]++
         mu.Unlock()
@@ -26,19 +27,14 @@ func fakeChain(t *testing.T, height int64) (*coreConn, func(string) int) {
         }
         return nil, nil
     })
-    t.Cleanup(server.Close)
-    var conn, err = newCoreConn(server.URL, "testuser", "testpass", "")
-    if err != nil { t.Fatalf("core conn: %v", err) }
-    return conn, func(m string) int { mu.Lock(); defer mu.Unlock(); return calls[m] }
+    return func(m string) int { mu.Lock(); defer mu.Unlock(); return calls[m] }
 }
 
 // A block must not trigger the peer scan: getnodeaddresses returns tens of
 // thousands of entries and several megabytes, and the count barely moves
 // between blocks. The ticker owns it.
 func TestBlockRefreshSkipsNodeScan(t *testing.T) {
-    var conn, count = fakeChain(t, 963400)
-    core = conn
-    defer func() { core = nil }()
+    var count = fakeChain(t, 963400)
     networkMu.Lock()
     cachedNetwork = app.Network{OK: true, Nodes: "31 751"}
     networkMu.Unlock()
@@ -64,9 +60,7 @@ func TestBlockRefreshSkipsNodeScan(t *testing.T) {
 
 // The ticker does the full refresh, peer scan included.
 func TestTickerRefreshScansNodes(t *testing.T) {
-    var conn, count = fakeChain(t, 963400)
-    core = conn
-    defer func() { core = nil }()
+    var count = fakeChain(t, 963400)
     networkMu.Lock()
     cachedNetwork = app.Network{OK: true, Nodes: ""}
     networkMu.Unlock()
@@ -85,9 +79,7 @@ func TestTickerRefreshScansNodes(t *testing.T) {
 // With no previous count and no scan, the field must not read "0" — that would
 // claim the network has no peers.
 func TestBlockRefreshNeverReportsZeroNodes(t *testing.T) {
-    var conn, _ = fakeChain(t, 963400)
-    core = conn
-    defer func() { core = nil }()
+    fakeChain(t, 963400)
     networkMu.Lock()
     cachedNetwork = app.Network{OK: true, Nodes: ""}
     networkMu.Unlock()

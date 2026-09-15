@@ -7,6 +7,7 @@ import "fmt"
 import "strings"
 import "sync"
 import "github.com/go-zeromq/zmq4"
+import "bitnsbot/core"
 import "bitnsbot/logging"
 import "bitnsbot/signals"
 
@@ -89,7 +90,7 @@ func matches(tx *parsedTx) bool {
 // watched address, so that spending it later is recognised — the same
 // bookkeeping btcd did inside its own filter, which the bot now has to do for
 // itself. Keyed by scriptPubKey so it never depends on address formatting.
-func recordOutpoints(txid string, vouts []coreVout) {
+func recordOutpoints(txid string, vouts []core.Vout) {
     watchedMu.Lock()
     defer watchedMu.Unlock()
     for _, v := range vouts {

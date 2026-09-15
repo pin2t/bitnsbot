@@ -5,6 +5,7 @@ import "net/http"
 import "net/http/httptest"
 import "strings"
 import "testing"
+import "bitnsbot/core"
 
 // Buttons carry the *full* id as callback_data and the shortened id as the
 // label, so what the user taps matches what the message shows.
@@ -78,7 +79,7 @@ func TestCallbackAnswersAndLooksUp(t *testing.T) {
     }))
     defer tg.Close()
     var b = newBot("TESTTOKEN", tg.URL)
-    core = nil
+    core.Reset()
     update(b, Update{CallbackQuery: &CallbackQuery{
         ID:      "q1",
         Data:    "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa",

@@ -1,29 +1,71 @@
 package miners
 
-import "context"
 import "errors"
+import "fmt"
 import "math"
 import "reflect"
+import "strconv"
+import "strings"
 import "testing"
 import "time"
+import "bitnsbot/core/coretest"
 
-// fakeSource stands in for the btcd-backed chain source: a fixed tip and a map of
-// blocks, recording every height fetched so tests can assert what was processed.
-type fakeSource struct {
+// mined is what one block's coinbase says: every address it pays, the fees on
+// top of the subsidy, and the difficulty the block was mined at.
+type mined struct {
+    addresses  []string
+    fees       int64
+    difficulty float64
+}
+
+// subsidy is the block reward at every height these tests use.
+const subsidy = 5000000000
+
+// chain is a node holding blocks, which the collector reads over RPC the way it
+// reads a real one. Every height whose hash is asked for is recorded in fetched,
+// after onBlock has run, and a height in err answers with the node's error.
+type chain struct {
     tip     int64
-    blocks  map[int64]Block
+    blocks  map[int64]mined
     fetched []int64
     onBlock func(h int64)
     err     map[int64]bool
 }
 
-func (f *fakeSource) Tip(ctx context.Context) (int64, error) { return f.tip, nil }
+// node points core at the chain for the rest of the test.
+func node(t *testing.T, c *chain) *chain {
+    coretest.Start(t, c.respond)
+    return c
+}
 
-func (f *fakeSource) Block(ctx context.Context, height int64) (Block, error) {
-    f.fetched = append(f.fetched, height)
-    if f.onBlock != nil { f.onBlock(height) }
-    if f.err[height] { return Block{}, errors.New("block unavailable") }
-    return f.blocks[height], nil
+// respond names each block by its height and its coinbase by the block, and pays
+// the coinbase's whole output to its last address: the payout is not the first
+// output in a real coinbase either, so attribution has to look at them all.
+func (c *chain) respond(method string, params []interface{}) (interface{}, error) {
+    switch method {
+    case "getblockcount":
+        return c.tip, nil
+    case "getblockhash":
+        var h = int64(params[0].(float64))
+        if c.onBlock != nil { c.onBlock(h) }
+        c.fetched = append(c.fetched, h)
+        if c.err[h] { return nil, errors.New("block unavailable") }
+        return fmt.Sprint(h), nil
+    case "getblock":
+        var h, _ = strconv.ParseInt(params[0].(string), 10, 64)
+        return map[string]interface{}{"height": h, "difficulty": c.blocks[h].difficulty, "tx": []string{"coinbase" + params[0].(string)}}, nil
+    case "getrawtransaction":
+        var h, _ = strconv.ParseInt(strings.TrimPrefix(params[0].(string), "coinbase"), 10, 64)
+        var b = c.blocks[h]
+        var vout = []interface{}{}
+        for i, a := range b.addresses {
+            var value float64
+            if i == len(b.addresses)-1 { value = float64(subsidy+b.fees) / 1e8 }
+            vout = append(vout, map[string]interface{}{"value": value, "scriptPubKey": map[string]string{"address": a}})
+        }
+        return map[string]interface{}{"txid": params[0], "vin": []interface{}{map[string]string{"coinbase": ""}}, "vout": vout}, nil
+    }
+    return nil, fmt.Errorf("unexpected call %s %v", method, params)
 }
 
 // seedAddresses puts the addresses into their pools' rows the way the definitions
@@ -89,16 +131,16 @@ func equal(t *testing.T, label string, got, want float64) {
 // Block 5 is at a higher difficulty — a retarget — so LastWork differs from the
 // per-block average and the consumption estimate can be told apart from one built
 // on accumulated work.
-func chainFixture() *fakeSource {
+func chainFixture() *chain {
     var lo, hi = 1.0e14, 1.4e14
-    return &fakeSource{
+    return &chain{
         tip: 5,
-        blocks: map[int64]Block{
-            1: {CoinbaseAddresses: []string{"aA"}, Reward: 650000000, Fees: 25000000, Difficulty: lo},
-            2: {CoinbaseAddresses: []string{"aB"}, Reward: 640000000, Fees: 15000000, Difficulty: lo},
-            3: {CoinbaseAddresses: []string{"unrelated", "aA2"}, Reward: 630000000, Fees: 5000000, Difficulty: lo},
-            4: {CoinbaseAddresses: []string{"nobody"}, Reward: 620000000, Fees: 10000000, Difficulty: lo},
-            5: {CoinbaseAddresses: []string{"aA"}, Reward: 660000000, Fees: 30000000, Difficulty: hi},
+        blocks: map[int64]mined{
+            1: {addresses: []string{"aA"}, fees: 25000000, difficulty: lo},
+            2: {addresses: []string{"aB"}, fees: 15000000, difficulty: lo},
+            3: {addresses: []string{"unrelated", "aA2"}, fees: 5000000, difficulty: lo},
+            4: {addresses: []string{"nobody"}, fees: 10000000, difficulty: lo},
+            5: {addresses: []string{"aA"}, fees: 30000000, difficulty: hi},
         },
     }
 }
@@ -112,17 +154,17 @@ func fixtureDB(t *testing.T) {
 func TestCollectStats(t *testing.T) {
     fixtureDB(t)
     setChunk(t, 1000)
-    var src = chainFixture()
-    collect(src)
+    node(t, chainFixture())
+    collect()
     var a = statOf(t, "PoolA")
     if a.Blocks != 3 { t.Fatalf("PoolA blocks = %d, want 3", a.Blocks) }
-    equalSat(t, "PoolA reward", a.Reward, 650000000+630000000+660000000)
+    equalSat(t, "PoolA reward", a.Reward, 3*subsidy+25000000+5000000+30000000)
     equalSat(t, "PoolA fees", a.Fees, 25000000+5000000+30000000)
     equal(t, "PoolA work", a.Work, (1.0e14+1.0e14+1.4e14)*workPerDifficulty)
     equal(t, "PoolA last work", a.LastWork, 1.4e14*workPerDifficulty)
     var b = statOf(t, "PoolB")
     if b.Blocks != 1 { t.Fatalf("PoolB blocks = %d, want 1", b.Blocks) }
-    equalSat(t, "PoolB reward", b.Reward, 640000000)
+    equalSat(t, "PoolB reward", b.Reward, subsidy+15000000)
     equal(t, "PoolB last work", b.LastWork, 1.0e14*workPerDifficulty)
     if s := statOf(t, "Unknown"); s.Blocks != 0 { t.Fatalf("unknown miner was stored: %+v", s) }
     var last, ok = cursor()
@@ -135,7 +177,8 @@ func TestCollectStats(t *testing.T) {
 func TestTopConsumption(t *testing.T) {
     fixtureDB(t)
     setChunk(t, 1000)
-    collect(chainFixture())
+    node(t, chainFixture())
+    collect()
     var top = Top(10)
     if len(top) != 2 { t.Fatalf("top = %d entries, want 2", len(top)) }
     if top[0].Name != "PoolA" || top[1].Name != "PoolB" {
@@ -159,13 +202,13 @@ func TestCollectChunks(t *testing.T) {
     fixtureDB(t)
     setChunk(t, 2)
     setCooldown(t, time.Millisecond)
-    var src = chainFixture()
+    var src = node(t, chainFixture())
     var flushed bool
     src.onBlock = func(h int64) {
         if h != 3 { return }
         flushed = statOf(t, "PoolA").Blocks == 1
     }
-    collect(src)
+    collect()
     if !flushed { t.Fatal("first chunk was not flushed before the second was processed") }
     if !reflect.DeepEqual(src.fetched, []int64{1, 2, 3, 4, 5}) {
         t.Fatalf("fetched %v, want 1..5 in order", src.fetched)
@@ -184,19 +227,19 @@ func TestCollectChunks(t *testing.T) {
 func TestCollectResumes(t *testing.T) {
     fixtureDB(t)
     setChunk(t, 1000)
-    var src = chainFixture()
-    collect(src)
+    var src = node(t, chainFixture())
+    collect()
     src.fetched = nil
     src.tip = 7
-    src.blocks[6] = Block{CoinbaseAddresses: []string{"aB"}, Reward: 610000000, Fees: 20000000, Difficulty: 1.4e14}
-    src.blocks[7] = Block{CoinbaseAddresses: []string{"aB"}, Reward: 620000000, Fees: 10000000, Difficulty: 1.4e14}
-    collect(src)
+    src.blocks[6] = mined{addresses: []string{"aB"}, fees: 20000000, difficulty: 1.4e14}
+    src.blocks[7] = mined{addresses: []string{"aB"}, fees: 10000000, difficulty: 1.4e14}
+    collect()
     if !reflect.DeepEqual(src.fetched, []int64{6, 7}) {
         t.Fatalf("second run fetched %v, want only 6 and 7", src.fetched)
     }
     var b = statOf(t, "PoolB")
     if b.Blocks != 3 { t.Fatalf("PoolB blocks = %d, want 3", b.Blocks) }
-    equalSat(t, "PoolB reward", b.Reward, 640000000+610000000+620000000)
+    equalSat(t, "PoolB reward", b.Reward, 3*subsidy+15000000+20000000+10000000)
     equalSat(t, "PoolB fees", b.Fees, 15000000+20000000+10000000)
     var last, _ = cursor()
     if last != 7 { t.Fatalf("cursor = %d, want 7", last) }
@@ -217,8 +260,8 @@ func TestCollectResumes(t *testing.T) {
 func TestCollectWaitsForAddresses(t *testing.T) {
     openTestDB(t)
     setChunk(t, 1000)
-    var src = chainFixture()
-    collect(src)
+    var src = node(t, chainFixture())
+    collect()
     if len(src.fetched) != 0 { t.Fatalf("fetched %v with no pool addresses loaded", src.fetched) }
     if _, ok := cursor(); ok { t.Fatal("cursor was stored with no pool addresses loaded") }
 }

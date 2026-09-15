@@ -1,8 +1,11 @@
 package miners
 
 import "context"
+import "fmt"
+import "math"
 import "sort"
 import "time"
+import "bitnsbot/core"
 import "bitnsbot/logging"
 import "bitnsbot/cursors"
 import "bitnsbot/signals"
@@ -26,20 +29,40 @@ const secondsPerBlock = 600.0
 // draw — the "if they ran today's best gear" figure.
 const joulesPerHash = 1.0e-11
 
-// Block is the per-block data the collector needs; the Source (implemented by the
-// caller, which owns the btcd connection) supplies it.
-type Block struct {
-    CoinbaseAddresses []string // every coinbase output address — the first known one attributes the block
-    CoinbaseScript    string   // the coinbase input's scriptSig (hex), carrying the pool tag
-    Reward            int64    // block subsidy + fees (satoshi) — the total coinbase output
-    Fees              int64    // fees only (satoshi)
-    Difficulty        float64
+// block is the per-block data the collector needs.
+type block struct {
+    addresses  []string // every coinbase output address — the first known one attributes the block
+    script     string   // the coinbase input's scriptSig (hex), carrying the pool tag
+    reward     int64    // block subsidy + fees (satoshi) — the total coinbase output
+    fees       int64    // fees only (satoshi)
+    difficulty float64
 }
 
-// Source supplies the chain data the collector reads.
-type Source interface {
-    Tip(ctx context.Context) (int64, error)
-    Block(ctx context.Context, height int64) (Block, error)
+// blockAt reads one block from the node: the header (getblock verbosity 1 →
+// difficulty + txids) and the coinbase transaction, from which it reads every
+// payout address, the coinbase script (which carries the pool tag) and the total
+// output (subsidy + fees); fees are that total minus the height's subsidy — 50
+// BTC, halving every 210000 blocks. All the coinbase addresses are kept (not just
+// the first) because the pool's payout isn't always output 0.
+//
+// Core reports an amount as a BTC number, so the satoshi are rounded rather than
+// truncated, the way the bot's toSat does.
+func blockAt(ctx context.Context, height int64) (block, error) {
+    var hash, err = core.GetBlockHash(ctx, height)
+    if err != nil { return block{}, err }
+    var header, herr = core.GetBlockTxids(ctx, hash)
+    if herr != nil { return block{}, herr }
+    if len(header.Tx) == 0 { return block{}, fmt.Errorf("block %d has no transactions", height) }
+    var cb, cerr = core.GetRawTransaction(ctx, header.Tx[0])
+    if cerr != nil { return block{}, cerr }
+    var b = block{difficulty: header.Difficulty}
+    for _, v := range cb.Vout {
+        b.reward += int64(math.Round(v.Value * 1e8))
+        if v.ScriptPubKey.Address != "" { b.addresses = append(b.addresses, v.ScriptPubKey.Address) }
+    }
+    if len(cb.Vin) > 0 { b.script = cb.Vin[0].Coinbase }
+    b.fees = b.reward - int64(5000000000)>>uint(height/210000)
+    return b, nil
 }
 
 // record is what the miners bucket holds under a pool's name: what that pool has
@@ -58,12 +81,11 @@ type record struct {
 
 // StartStats runs the by-miner statistics collector: it catches up from the last
 // processed block to the current tip, then again on every block notification and
-// every statInterval, whichever comes first. src supplies the chain data (it owns
-// the connection to the node).
-func StartStats(src Source) {
+// every statInterval, whichever comes first.
+func StartStats() {
     go func() {
         var wake = signals.Subscribe(signals.Block)
-        collect(src)
+        collect()
         var t = time.NewTicker(statInterval)
         defer t.Stop()
         for {
@@ -71,17 +93,17 @@ func StartStats(src Source) {
             case <-t.C:
             case <-wake:
             }
-            collect(src)
+            collect()
         }
     }()
 }
 
 // address list not loaded yet — nothing could be attributed
-func collect(src Source) {
+func collect() {
     if empty() { return }
     var ctx, cancel = context.WithTimeout(context.Background(), 10*time.Minute)
     defer cancel()
-    var tip, err = src.Tip(ctx)
+    var tip, err = core.GetBlockCount(ctx)
     if err != nil {
         logging.Warn("miners stats: tip: %v", err)
         return
@@ -100,22 +122,22 @@ func collect(src Source) {
         if to > tip { to = tip }
         var deltas = map[string]*record{}
         for h := from; h <= to; h++ {
-            var b, berr = src.Block(ctx, h)
+            var b, berr = blockAt(ctx, h)
             if berr != nil {
                 logging.Warn("miners stats: error on block %d: %v — retry on next run", h, berr)
                 return
             }
-            var name = Attribute(b.CoinbaseAddresses, b.CoinbaseScript)
+            var name = Attribute(b.addresses, b.script)
             if name == "" { continue }
-            var w = b.Difficulty * workPerDifficulty
+            var w = b.difficulty * workPerDifficulty
             var d = deltas[name]
             if d == nil {
                 d = &record{}
                 deltas[name] = d
             }
             d.Blocks++
-            d.Reward += b.Reward
-            d.Fees += b.Fees
+            d.Reward += b.reward
+            d.Fees += b.fees
             d.Work += w
             d.LastWork = w
         }
