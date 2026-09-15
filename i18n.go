@@ -517,9 +517,9 @@ func (t trans) DateTime(tm time.Time) string { return t.date(tm, "2 January 2006
 func (t trans) Date(tm time.Time) string { return t.date(tm, "2 January 2006") }
 
 func (t trans) date(tm time.Time, layout string) string {
-	formatted := tm.Format(layout)
+	var formatted = tm.Format(layout)
 	if t == nil { return formatted }
-	month := tm.Month().String()
+	var month = tm.Month().String()
 	if translated, ok := t[month]; ok {
 		formatted = strings.Replace(formatted, month, translated, 1)
 	}

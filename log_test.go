@@ -10,11 +10,11 @@ import "testing"
 import "bitnsbot/logging"
 
 func TestMessageLogging(t *testing.T) {
-    server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+    var server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
         w.Write([]byte(`{"ok":true,"result":true}`))
     }))
     defer server.Close()
-    bot := newBot("TESTTOKEN", server.URL)
+    var bot = newBot("TESTTOKEN", server.URL)
     logging.SetVerbose(1)
     defer logging.SetVerbose(0)
     var buf bytes.Buffer
