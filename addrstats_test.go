@@ -6,15 +6,21 @@ import "testing"
 // a confirmed transaction carries its own fee and its inputs' prevouts, so both
 // the spending side and the fee read straight off it — no prevout fetching and
 // no separate fee derivation, unlike the btcd path this replaces.
+//
+// received 1.0 BTC on 2015-01-01
+//
+// spent 1.0 on 2016-01-01: 0.9 out plus 0.0999 change back, fee 0.0001
+//
+// only the transaction the address actually spends from contributes a fee
 func TestAddressStats(t *testing.T) {
     var addr = "addresswithhistory"
     var txs = []*coreTransaction{
-        { // received 1.0 BTC on 2015-01-01
+        {
             Txid: "aa", Time: 1420070400,
             Vin:  []coreVin{{Txid: "x", PrevOut: &corePrevOut{Value: 1.0001, ScriptPubKey: coreScriptPubKey{Address: "other"}}}},
             Vout: []coreVout{{Value: 1.0, ScriptPubKey: coreScriptPubKey{Address: addr}}},
         },
-        { // spent 1.0 on 2016-01-01: 0.9 out plus 0.0999 change back, fee 0.0001
+        {
             Txid: "bb", Time: 1451606400, Fee: 0.0001,
             Vin:  []coreVin{{Txid: "aa", PrevOut: &corePrevOut{Value: 1.0, ScriptPubKey: coreScriptPubKey{Address: addr}}}},
             Vout: []coreVout{
@@ -30,7 +36,6 @@ func TestAddressStats(t *testing.T) {
     if sent != 100000000 {
         t.Fatalf("sent = %v, want 100000000 sats", sent)
     }
-    // only the transaction the address actually spends from contributes a fee
     if fees != 10000 {
         t.Fatalf("fees = %v, want 10000 sats", fees)
     }

@@ -4,6 +4,8 @@ import "testing"
 
 // English is the default table now, not nil: a source string still passes
 // straight through, but a context key resolves to the word it stands for.
+//
+// a plain source string is its own translation and is not in the table
 func TestEnglishIsTheDefault(t *testing.T) {
     for _, lang := range []string{"", "en", "zz"} {
         if got := i18nl(lang); got == nil {
@@ -12,7 +14,6 @@ func TestEnglishIsTheDefault(t *testing.T) {
         if got := i18nl(lang).String("average-tx"); got != "average" {
             t.Errorf("i18nl(%q) renders the context key as %q, want average", lang, got)
         }
-        // a plain source string is its own translation and is not in the table
         if got := i18nl(lang).String("Reward + fees"); got != "Reward + fees" {
             t.Errorf("i18nl(%q) mangled a source string: %q", lang, got)
         }

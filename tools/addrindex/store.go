@@ -34,19 +34,21 @@ const metaDDL = `create table meta (key text primary key, value text not null)`
 
 // openStore opens the database and creates each table it is given that is not
 // there yet, so a first run builds the file and a later one carries on with it.
+//
+// Rebuilding the answer table sorts every stored balance by address, which
+// for a mainnet run is gigabytes of scratch. SQLite would put that in /tmp,
+// which on this repo's own machine is a memory-backed filesystem — so it
+// goes beside the database, on whatever disk was big enough to hold it. This
+// has to happen before SQLite is first used, not merely before the sort:
+// modernc's libc copies the environment once, on the first call into it, and
+// never looks again.
+//
+// one connection, so the pragmas and the transactions below apply to the
+// same handle rather than to whichever of a pool a statement lands on
 func openStore(path string, ddls ...string) (store, error) {
-    // Rebuilding the answer table sorts every stored balance by address, which
-    // for a mainnet run is gigabytes of scratch. SQLite would put that in /tmp,
-    // which on this repo's own machine is a memory-backed filesystem — so it
-    // goes beside the database, on whatever disk was big enough to hold it. This
-    // has to happen before SQLite is first used, not merely before the sort:
-    // modernc's libc copies the environment once, on the first call into it, and
-    // never looks again.
     if dir := filepath.Dir(path); dir != "" { os.Setenv("SQLITE_TMPDIR", dir) }
     var db, err = sql.Open("sqlite", "file:"+path)
     if err != nil { return store{}, err }
-    // one connection, so the pragmas and the transactions below apply to the
-    // same handle rather than to whichever of a pool a statement lands on
     db.SetMaxOpenConns(1)
     for _, p := range pragmas {
         if _, err := db.Exec(p); err != nil {

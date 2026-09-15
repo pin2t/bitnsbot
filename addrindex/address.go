@@ -27,16 +27,19 @@ const hrp = "bc"
 // Address returns the address a scriptPubKey pays to, or "" when it pays
 // to none — an OP_RETURN, a bare multisig, anything nonstandard. These are the
 // same forms Core's decodescript reports an address for.
+//
+// P2PKH: OP_DUP OP_HASH160 <20> OP_EQUALVERIFY OP_CHECKSIG
+//
+// P2SH: OP_HASH160 <20> OP_EQUAL
+//
+// P2PK: <pubkey> OP_CHECKSIG — no hash in the script, so the key is hashed
 func Address(script []byte) string {
     switch {
-    // P2PKH: OP_DUP OP_HASH160 <20> OP_EQUALVERIFY OP_CHECKSIG
     case len(script) == 25 && script[0] == 0x76 && script[1] == 0xa9 && script[2] == 20 &&
         script[23] == 0x88 && script[24] == 0xac:
         return base58Check(p2pkhVersion, script[3:23])
-    // P2SH: OP_HASH160 <20> OP_EQUAL
     case len(script) == 23 && script[0] == 0xa9 && script[1] == 20 && script[22] == 0x87:
         return base58Check(p2shVersion, script[2:22])
-    // P2PK: <pubkey> OP_CHECKSIG — no hash in the script, so the key is hashed
     case len(script) == 35 && script[0] == 33 && script[34] == 0xac:
         return base58Check(p2pkhVersion, Hash160(script[1:34]))
     case len(script) == 67 && script[0] == 65 && script[66] == 0xac:
@@ -50,20 +53,23 @@ func Address(script []byte) string {
 
 // witness recognises a witness program: a version opcode followed by a single
 // push of 2 to 40 bytes, and nothing else.
+//
+// OP_1 .. OP_16
+//
+// v0 is only ever a 20-byte key hash or a 32-byte script hash
 func witness(script []byte) (version byte, program []byte, ok bool) {
     if len(script) < 4 || len(script) > 42 { return 0, nil, false }
     var op = script[0]
     switch {
     case op == 0x00:
         version = 0
-    case op >= 0x51 && op <= 0x60: // OP_1 .. OP_16
+    case op >= 0x51 && op <= 0x60:
         version = op - 0x50
     default:
         return 0, nil, false
     }
     var n = int(script[1])
     if n < 2 || n > 40 || len(script) != n+2 { return 0, nil, false }
-    // v0 is only ever a 20-byte key hash or a 32-byte script hash
     if version == 0 && n != 20 && n != 32 { return 0, nil, false }
     return version, script[2:], true
 }
@@ -81,8 +87,10 @@ func base58Check(version byte, payload []byte) string {
     return base58(full)
 }
 
+// long division of the whole number by 58, which is what the encoding is
+//
+// a leading zero byte is not a digit but a character in its own right
 func base58(b []byte) string {
-    // long division of the whole number by 58, which is what the encoding is
     var digits = []byte{0}
     for _, c := range b {
         var carry = int(c)
@@ -97,7 +105,6 @@ func base58(b []byte) string {
         }
     }
     var out = make([]byte, 0, len(digits)+len(b))
-    // a leading zero byte is not a digit but a character in its own right
     for _, c := range b {
         if c != 0 { break }
         out = append(out, base58Alphabet[0])

@@ -54,13 +54,21 @@ var opReturnScript = mustHex("6a0b68656c6c6f20776f726c64")
 //
 // inputs is never 0 — a zero input count is the segwit marker, so even a
 // coinbase carries one input, as it does on the real chain.
+//
+// version
+//
+// prevout hash + index
+//
+// empty scriptSig
+//
+// locktime
 func serialTx(inputs int, pays []addrindex.Payment) []byte {
     var out []byte
-    out = append(out, 1, 0, 0, 0) // version
+    out = append(out, 1, 0, 0, 0)
     out = append(out, varint(inputs)...)
     for i := 0; i < inputs; i++ {
-        out = append(out, make([]byte, 36)...) // prevout hash + index
-        out = append(out, varint(0)...)        // empty scriptSig
+        out = append(out, make([]byte, 36)...)
+        out = append(out, varint(0)...)
         out = append(out, 0xff, 0xff, 0xff, 0xff)
     }
     out = append(out, varint(len(pays))...)
@@ -71,7 +79,7 @@ func serialTx(inputs int, pays []addrindex.Payment) []byte {
         out = append(out, varint(len(p.Script))...)
         out = append(out, p.Script...)
     }
-    out = append(out, 0, 0, 0, 0) // locktime
+    out = append(out, 0, 0, 0, 0)
     return out
 }
 
@@ -83,8 +91,10 @@ func blockTime(height int) int64 { return 1231006505 + int64(height)*600 }
 // serialBlock is a block as Core's block files hold it. The header is otherwise
 // zeroed, but it carries a real time at offset 68, since that is where a block
 // file says when it happened.
+//
+// header
 func serialBlock(height int, txs [][]byte) []byte {
-    var out = make([]byte, 80) // header
+    var out = make([]byte, 80)
     binary.LittleEndian.PutUint32(out[68:72], uint32(blockTime(height)))
     out = append(out, varint(len(txs))...)
     for _, t := range txs { out = append(out, t...) }
@@ -203,6 +213,7 @@ func batchID(v interface{}) int {
 // fetch blocks concurrently through it, so it is atomic.
 var requests atomic.Int64
 
+// Core answers a batch — an array of requests — with an array of results.
 func rpcReply(t *testing.T, w http.ResponseWriter, r *http.Request, tip int) {
     requests.Add(1)
     var body, rerr = io.ReadAll(r.Body)
@@ -210,7 +221,6 @@ func rpcReply(t *testing.T, w http.ResponseWriter, r *http.Request, tip int) {
         t.Errorf("read rpc: %v", rerr)
         return
     }
-    // Core answers a batch — an array of requests — with an array of results.
     if len(body) > 0 && body[0] == '[' {
         var reqs []rpcCall
         if err := json.Unmarshal(body, &reqs); err != nil {
@@ -319,11 +329,12 @@ func capture(t *testing.T, f func()) string {
 
 // The whole tool end to end: build the index from a fake node's blocks,
 // then list an address out of it over the fake's JSON-RPC.
+//
+// the funding transaction, then the spend that paid change back
 func TestBuildThenList(t *testing.T) {
     openIndex(t)
     var srv = fakeCore(t, 3)
     var opt = &options{url: srv.URL, limit: 1000}
-
     var built = capture(t, func() { build(opt) })
     if !strings.Contains(built, "Building blocks 0..3") {
         t.Errorf("build did not report its range: %q", built)
@@ -331,13 +342,11 @@ func TestBuildThenList(t *testing.T) {
     if at, ok := addrindex.Cursor(); !ok || at != 3 {
         t.Fatalf("cursor = %d, %v; want 3 — the build must advance the shared cursor", at, ok)
     }
-
     var out = capture(t, func() { list(opt, address) })
     var lines = strings.Split(strings.TrimSpace(out), "\n")
     if len(lines) != 3 {
         t.Fatalf("want two transactions and a summary, got:\n%s", out)
     }
-    // the funding transaction, then the spend that paid change back
     if want := "21 oct 2021 21:00 bbbbbbbb..bbbbbbb1    20 000 sats"; lines[0] != want {
         t.Errorf("line 1 = %q, want %q", lines[0], want)
     }
@@ -375,6 +384,7 @@ func TestListUnknownAddress(t *testing.T) {
     }
 }
 
+// a spend is a negative line, so a column of them sums to the balance
 func TestFormatting(t *testing.T) {
     if got := stamp(1634850000); got != "21 oct 2021 21:00" {
         t.Errorf("stamp = %q", got)
@@ -388,12 +398,12 @@ func TestFormatting(t *testing.T) {
     if got := shortID("short"); got != "short" {
         t.Errorf("shortID mangled a short id: %q", got)
     }
-    // a spend is a negative line, so a column of them sums to the balance
     if got := amount(-10000); got != "-10 000 sats" {
         t.Errorf("amount = %q", got)
     }
 }
 
+// an empty history has no activity range to report
 func TestSummaryAndNet(t *testing.T) {
     var s summary
     s.add(entry{at: 1634850000, received: 20000})
@@ -405,7 +415,6 @@ func TestSummaryAndNet(t *testing.T) {
     if got := (entry{received: 10000, sent: 20000}).net(); got != -10000 {
         t.Errorf("net = %d, want -10000", got)
     }
-    // an empty history has no activity range to report
     if got := (summary{}).String(); strings.Contains(got, "Activity") {
         t.Errorf("summary = %q; nothing happened, so there is no range", got)
     }
@@ -429,6 +438,9 @@ func TestTook(t *testing.T) {
 // writeBlockFiles lays out a Core blocks directory: one blk file per group of
 // blocks, framed and obfuscated exactly as Core writes them, plus the xor.dat
 // that holds the key.
+//
+// Core preallocates, so the written records are followed by zeros — the
+// reader has to stop there rather than read them as a record
 func writeBlockFiles(t *testing.T, groups [][][]byte) string {
     var dir = t.TempDir()
     var key = []byte{0x66, 0xcb, 0x13, 0xcf, 0x57, 0x2a, 0x2e, 0x5f}
@@ -444,8 +456,6 @@ func writeBlockFiles(t *testing.T, groups [][][]byte) string {
             raw = append(raw, size...)
             raw = append(raw, b...)
         }
-        // Core preallocates, so the written records are followed by zeros — the
-        // reader has to stop there rather than read them as a record
         raw = append(raw, make([]byte, 64)...)
         for i := range raw { raw[i] ^= key[i%len(key)] }
         var name = filepath.Join(dir, fmt.Sprintf("blk%05d.dat", n))
@@ -573,10 +583,14 @@ func TestParseBlockReadsAmounts(t *testing.T) {
 
 // actbuild reads the block files, counts the transactions paying to each
 // address, and records the ones past the threshold.
+//
+// a threshold of 3: the fixture pays otherScript in four transactions (a
+// coinbase in each block plus one more) and payScript in two
+//
+// five: a coinbase paying otherScript in each of the four blocks, plus
+// block 2's transaction paying it as well
 func TestActbuildCountsFromBlocks(t *testing.T) {
     openIndex(t)
-    // a threshold of 3: the fixture pays otherScript in four transactions (a
-    // coinbase in each block plus one more) and payScript in two
     var opt = &options{limit: 1000, blocks: chainFiles(t), active: 3}
     var oldMin = activeMin
     activeMin = 3
@@ -589,8 +603,6 @@ func TestActbuildCountsFromBlocks(t *testing.T) {
     if _, ok := active[addrindex.Address(payScript)]; ok {
         t.Errorf("the address in 2 transactions was recorded as active: %v", active)
     }
-    // five: a coinbase paying otherScript in each of the four blocks, plus
-    // block 2's transaction paying it as well
     if n, ok := active[addrindex.Address(otherScript)]; !ok || n != 5 {
         t.Errorf("active = %v; want %s in 5 transactions", active, addrindex.Address(otherScript))
     }
@@ -635,10 +647,13 @@ func TestActbuildNeedsABlocksDirectory(t *testing.T) {
 }
 
 // The progress line carries a rate and, while there is chain left, an estimate.
+//
+// 100 blocks of 1000 done in 10s: 200 addr/sec, 900 blocks left at 10
+// blocks/sec is 90 seconds
+//
+// at the tip there is nothing left to estimate
 func TestProgressReportsRateAndETA(t *testing.T) {
     var started = time.Now().Add(-10 * time.Second)
-    // 100 blocks of 1000 done in 10s: 200 addr/sec, 900 blocks left at 10
-    // blocks/sec is 90 seconds
     var got = progress(started, 1, 100, 1000, 2000)
     if !strings.Contains(got, "200 addr/sec") {
         t.Errorf("progress = %q, want a 200 addr/sec rate", got)
@@ -646,7 +661,6 @@ func TestProgressReportsRateAndETA(t *testing.T) {
     if !strings.Contains(got, "ETA") {
         t.Errorf("progress = %q, want an estimate while blocks remain", got)
     }
-    // at the tip there is nothing left to estimate
     if got := progress(started, 1, 1000, 1000, 2000); strings.Contains(got, "ETA") {
         t.Errorf("progress = %q; there is no ETA once the scan is at the tip", got)
     }

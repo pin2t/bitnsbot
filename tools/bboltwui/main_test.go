@@ -46,6 +46,7 @@ func TestBuckets(t *testing.T) {
     }
 }
 
+// an unknown bucket is a 404, not a 200 with empty rows
 func TestView(t *testing.T) {
     testDB(t)
     var srv = httptest.NewServer(handler())
@@ -66,7 +67,6 @@ func TestView(t *testing.T) {
     if out.HasNext {
         t.Fatal("a two-key bucket in one page must not report a next page")
     }
-    // an unknown bucket is a 404, not a 200 with empty rows
     var missing, _ = http.Get(srv.URL + "/api/view?bucket=nope")
     if missing.StatusCode != http.StatusNotFound {
         t.Fatalf("missing bucket returned %d, want 404", missing.StatusCode)
@@ -114,6 +114,9 @@ func viewPage(t *testing.T, base, bucket string, page, size int) viewOut {
 
 func itoa(n int) string { return string(rune('0' + n)) }
 
+// edit it back
+//
+// a key that doesn't exist is a 404
 func TestGetAndPut(t *testing.T) {
     testDB(t)
     var srv = httptest.NewServer(handler())
@@ -125,7 +128,6 @@ func TestGetAndPut(t *testing.T) {
     if got.Value != "PoolA" {
         t.Fatalf("get = %q, want PoolA", got.Value)
     }
-    // edit it back
     var body = `{"bucket":"miners","key":"addrA","value":"Renamed"}`
     var put, _ = http.Post(srv.URL+"/api/put", "application/json", strings.NewReader(body))
     if put.StatusCode != http.StatusOK {
@@ -139,7 +141,6 @@ func TestGetAndPut(t *testing.T) {
     if stored != "Renamed" {
         t.Fatalf("stored value = %q, want Renamed", stored)
     }
-    // a key that doesn't exist is a 404
     var miss, _ = http.Get(srv.URL + "/api/get?bucket=miners&key=nope")
     if miss.StatusCode != http.StatusNotFound {
         t.Fatalf("missing key returned %d, want 404", miss.StatusCode)
@@ -148,6 +149,8 @@ func TestGetAndPut(t *testing.T) {
 
 // Binary keys and values survive a round trip through the text UI via the "hex:"
 // convention — without it a Put would corrupt the packed address index.
+//
+// put a new binary value back using the same encoding the view returned
 func TestBinaryRoundTrip(t *testing.T) {
     testDB(t)
     var srv = httptest.NewServer(handler())
@@ -159,7 +162,6 @@ func TestBinaryRoundTrip(t *testing.T) {
     if len(out.Rows) != 1 || out.Rows[0].Key != "hex:000100000000" || out.Rows[0].Value != "hex:deadbeef" {
         t.Fatalf("binary row = %+v", out.Rows)
     }
-    // put a new binary value back using the same encoding the view returned
     var body = `{"bucket":"addrindex","key":"hex:000100000000","value":"hex:cafe"}`
     http.Post(srv.URL+"/api/put", "application/json", strings.NewReader(body))
     var stored []byte
@@ -172,6 +174,11 @@ func TestBinaryRoundTrip(t *testing.T) {
     }
 }
 
+// control bytes
+//
+// invalid UTF-8
+//
+// invalid UTF-8
 func TestEncodeField(t *testing.T) {
     var cases = []struct {
         in   []byte
@@ -179,9 +186,9 @@ func TestEncodeField(t *testing.T) {
     }{
         {[]byte("PoolA"), "PoolA"},
         {[]byte(`{"a":1}`), `{"a":1}`},
-        {[]byte{0x00, 0x01}, "hex:0001"},          // control bytes
-        {[]byte{0xde, 0xad, 0xbe, 0xef}, "hex:deadbeef"}, // invalid UTF-8
-        {[]byte{0xff, 0xfe}, "hex:fffe"},          // invalid UTF-8
+        {[]byte{0x00, 0x01}, "hex:0001"},
+        {[]byte{0xde, 0xad, 0xbe, 0xef}, "hex:deadbeef"},
+        {[]byte{0xff, 0xfe}, "hex:fffe"},
         {[]byte("newlines\nand\ttabs are text"), "newlines\nand\ttabs are text"},
     }
     for _, c := range cases {
@@ -205,6 +212,8 @@ func TestPutRejectsWrongMethod(t *testing.T) {
     }
 }
 
+// bbolt treats deleting a missing key as success, and so does the UI — the
+// row is gone either way, which is all the caller wanted
 func TestDelete(t *testing.T) {
     testDB(t)
     var srv = httptest.NewServer(handler())
@@ -227,8 +236,6 @@ func TestDelete(t *testing.T) {
     if !kept {
         t.Fatal("delete removed a key it was not asked to")
     }
-    // bbolt treats deleting a missing key as success, and so does the UI — the
-    // row is gone either way, which is all the caller wanted
     var again, _ = http.Post(srv.URL+"/api/delete", "application/json", strings.NewReader(body))
     if again.StatusCode != http.StatusOK {
         t.Fatalf("deleting an absent key returned %d, want 200", again.StatusCode)
@@ -271,6 +278,11 @@ func TestDeleteRejectsWrongMethod(t *testing.T) {
     }
 }
 
+// verify the bucket still exists but is empty
+//
+// unknown bucket is 404
+//
+// GET is rejected
 func TestClearBucket(t *testing.T) {
     testDB(t)
     var srv = httptest.NewServer(handler())
@@ -288,7 +300,6 @@ func TestClearBucket(t *testing.T) {
     if !out.OK || out.Deleted != 2 {
         t.Fatalf("clear bucket response = %+v, want ok with 2 deleted", out)
     }
-    // verify the bucket still exists but is empty
     var exists, empty bool
     db.View(func(tx *bbolt.Tx) error {
         var b = tx.Bucket([]byte("miners"))
@@ -306,13 +317,11 @@ func TestClearBucket(t *testing.T) {
     if !empty {
         t.Fatal("bucket should be empty after clear")
     }
-    // unknown bucket is 404
     var missing = `{"bucket":"nope"}`
     var bad, _ = http.Post(srv.URL+"/api/clearbucket", "application/json", strings.NewReader(missing))
     if bad.StatusCode != http.StatusNotFound {
         t.Fatalf("clear on unknown bucket returned %d, want 404", bad.StatusCode)
     }
-    // GET is rejected
     var getResp, _ = http.Get(srv.URL + "/api/clearbucket")
     if getResp.StatusCode != http.StatusMethodNotAllowed {
         t.Fatalf("GET /api/clearbucket returned %d, want 405", getResp.StatusCode)
@@ -322,6 +331,8 @@ func TestClearBucket(t *testing.T) {
 // Create makes an empty bucket, and says so when there is already one of that
 // name — bbolt treats that as an error, and a Create that silently did nothing
 // would look like it had worked.
+//
+// and it is in the list the dropdown is built from
 func TestCreateBucket(t *testing.T) {
     testDB(t)
     var srv = httptest.NewServer(handler())
@@ -341,7 +352,6 @@ func TestCreateBucket(t *testing.T) {
         return nil
     })
     if !found { t.Fatal("the bucket was not created") }
-    // and it is in the list the dropdown is built from
     var resp, err = http.Get(srv.URL + "/api/buckets")
     if err != nil { t.Fatal(err) }
     defer resp.Body.Close()
@@ -369,6 +379,12 @@ func TestCreateBucket(t *testing.T) {
 
 // A prefix narrows the listing to the keys under it, and pages within them:
 // Seek goes straight to the first match, so the rest of the bucket is not walked.
+//
+// an empty prefix is the whole bucket, exactly as before
+//
+// paging stays inside the prefix, and hasNext must not point outside it
+//
+// one that matches nothing is an empty listing, not the whole bucket
 func TestViewPrefix(t *testing.T) {
     testDB(t)
     if err := db.Update(func(tx *bbolt.Tx) error {
@@ -397,10 +413,8 @@ func TestViewPrefix(t *testing.T) {
     if strings.Join(got, ",") != "bc1a,bc1b,bc1c" {
         t.Errorf("prefix bc1 gave %v", got)
     }
-    // an empty prefix is the whole bucket, exactly as before
     got, _ = list("")
     if len(got) != 6 { t.Errorf("no prefix gave %d rows, want all 6", len(got)) }
-    // paging stays inside the prefix, and hasNext must not point outside it
     got, hasNext := list("prefix=bc1&size=2")
     if strings.Join(got, ",") != "bc1a,bc1b" || !hasNext {
         t.Errorf("first page = %v hasNext=%v", got, hasNext)
@@ -409,13 +423,14 @@ func TestViewPrefix(t *testing.T) {
     if strings.Join(got, ",") != "bc1c" || hasNext {
         t.Errorf("second page = %v hasNext=%v; zz is outside the prefix", got, hasNext)
     }
-    // one that matches nothing is an empty listing, not the whole bucket
     got, _ = list("prefix=nothing")
     if len(got) != 0 { t.Errorf("unmatched prefix gave %v", got) }
 }
 
 // Keys are binary in places, so a prefix goes through the same hex: marker the
 // rest of the UI uses — without it the packed buckets could not be scanned.
+//
+// a prefix that is not hex at all is refused rather than taken literally
 func TestViewPrefixHex(t *testing.T) {
     testDB(t)
     var srv = httptest.NewServer(handler())
@@ -433,7 +448,6 @@ func TestViewPrefixHex(t *testing.T) {
     defer miss.Body.Close()
     json.NewDecoder(miss.Body).Decode(&out)
     if len(out.Rows) != 0 { t.Errorf("a prefix past the end gave %+v", out.Rows) }
-    // a prefix that is not hex at all is refused rather than taken literally
     var bad, berr = http.Get(srv.URL + "/api/view?bucket=addrindex&prefix=hex:zz")
     if berr != nil { t.Fatal(berr) }
     defer bad.Body.Close()
@@ -449,6 +463,8 @@ func httpGet(t *testing.T, url string) *http.Response {
 
 // Export writes CSV straight into the response: a header row, then one row per
 // key, with binary fields behind the hex: marker the rest of the UI uses.
+//
+// a binary bucket comes out hex-encoded, which is what makes it importable
 func TestExportStreamsCSV(t *testing.T) {
     testDB(t)
     var srv = httptest.NewServer(handler())
@@ -467,7 +483,6 @@ func TestExportStreamsCSV(t *testing.T) {
     if string(body) != want {
         t.Errorf("body =\n%q\nwant\n%q", body, want)
     }
-    // a binary bucket comes out hex-encoded, which is what makes it importable
     var bin = httpGet(t, srv.URL+"/api/export?bucket=addrindex")
     defer bin.Body.Close()
     body, _ = io.ReadAll(bin.Body)
@@ -520,6 +535,10 @@ func postCSV(t *testing.T, url, body string) *http.Response {
 
 // Import reads the CSV off the request body, with the bucket and the strategy in
 // the query — so the body is the file and nothing else.
+//
+// replace does overwrite
+//
+// a file with no header row is data from its first line
 func TestImportStreamsCSV(t *testing.T) {
     testDB(t)
     var srv = httptest.NewServer(handler())
@@ -539,7 +558,6 @@ func TestImportStreamsCSV(t *testing.T) {
         if string(b.Get([]byte("addrC"))) != "PoolC" { t.Error("the new key was not written") }
         return nil
     })
-    // replace does overwrite
     var rep = postCSV(t, srv.URL+"/api/import?bucket=miners&strategy=replace", "key,value\naddrA,Changed\n")
     defer rep.Body.Close()
     json.NewDecoder(rep.Body).Decode(&out)
@@ -550,7 +568,6 @@ func TestImportStreamsCSV(t *testing.T) {
         }
         return nil
     })
-    // a file with no header row is data from its first line
     var noHead = postCSV(t, srv.URL+"/api/import?bucket=miners&strategy=replace", "addrD,PoolD\n")
     defer noHead.Body.Close()
     json.NewDecoder(noHead.Body).Decode(&out)

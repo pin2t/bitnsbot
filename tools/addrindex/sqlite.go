@@ -25,27 +25,31 @@ const rangeBlocks = 1000
 // order a scan depends on — and copies each packed run of touches verbatim. So a
 // lookup is one range scan over the primary key, and the entries are unpacked
 // here the way the index packs them.
+//
+// a missing file would otherwise be opened as a new empty database and
+// answer "no such table", which reads like a broken migration rather than a
+// mistyped path
+//
+// read-only, so a listing cannot damage a database the migration spent hours
+// building
+//
+// every range of the one shard the address falls in, which is the whole of
+// what can hold it
+//
+// a shard holds every address whose hash starts with the same two bytes, so
+// the remainder stored per touch is what tells them apart
 func sqliteTouches(path string, script []byte, limit int) ([]addrindex.Touch, bool, error) {
-    // a missing file would otherwise be opened as a new empty database and
-    // answer "no such table", which reads like a broken migration rather than a
-    // mistyped path
     if _, err := os.Stat(path); err != nil { return nil, false, err }
-    // read-only, so a listing cannot damage a database the migration spent hours
-    // building
     var conn, err = sql.Open("sqlite", "file:"+path+"?mode=ro")
     if err != nil { return nil, false, err }
     defer conn.Close()
     var prefix = addrindex.Prefix(script)
     var shard = int64(binary.BigEndian.Uint16(prefix[:shardLen]))
-    // every range of the one shard the address falls in, which is the whole of
-    // what can hold it
     var rows, qerr = conn.Query(
         "select shard, data from addrindex where shard >= ? and shard < ? order by shard",
         shard<<32, (shard+1)<<32)
     if qerr != nil { return nil, false, qerr }
     defer rows.Close()
-    // a shard holds every address whose hash starts with the same two bytes, so
-    // the remainder stored per touch is what tells them apart
     var remainder = prefix[shardLen:prefixLen]
     var touches []addrindex.Touch
     for rows.Next() {

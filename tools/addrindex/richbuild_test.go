@@ -80,6 +80,12 @@ func storedHeight(t *testing.T, path, key string) int {
 
 // The whole command end to end: read the fake node's blocks and spent outputs
 // over RPC, and end up with what each address holds.
+//
+// the OP_RETURN's coins have no address, so they are kept in the state a
+// later run carries forward and left out of rich
+//
+// the movements are worth nothing once they are summed, so the run takes
+// its working directory away with it
 func TestRichBuild(t *testing.T) {
     var srv = fakeCore(t, 3)
     var opt = richOptions(t, srv.URL)
@@ -99,8 +105,6 @@ func TestRichBuild(t *testing.T) {
     if got := rich[addrindex.Address(otherScript)]; got != wantOther {
         t.Errorf("%s holds %d, want %d", addrindex.Address(otherScript), got, wantOther)
     }
-    // the OP_RETURN's coins have no address, so they are kept in the state a
-    // later run carries forward and left out of rich
     var balances = balanceRows(t, opt.dbsqlite)
     if got := balances[hex.EncodeToString(opReturnScript)]; got != 500 {
         t.Errorf("the addressless script holds %d in balances, want 500", got)
@@ -114,8 +118,6 @@ func TestRichBuild(t *testing.T) {
     if h := storedHeight(t, opt.dbsqlite, "rich"); h != 3 {
         t.Errorf("rich was built at %d, want 3", h)
     }
-    // the movements are worth nothing once they are summed, so the run takes
-    // its working directory away with it
     if _, err := os.Stat(opt.tmp); !os.IsNotExist(err) {
         t.Errorf("the shard directory %s outlived the run", opt.tmp)
     }
@@ -178,6 +180,9 @@ func TestRichBuildCarriesBalancesForward(t *testing.T) {
 }
 
 // -min is what makes it a rich list rather than every address on the chain.
+//
+// the state keeps every balance whatever -min says, or the next run would
+// carry a wrong total forward
 func TestRichBuildMinimum(t *testing.T) {
     var srv = fakeCore(t, 3)
     var opt = richOptions(t, srv.URL)
@@ -192,8 +197,6 @@ func TestRichBuildMinimum(t *testing.T) {
     if got := rich[addrindex.Address(otherScript)]; got != wantOther {
         t.Errorf("rich = %v; the address above -min should be", rich)
     }
-    // the state keeps every balance whatever -min says, or the next run would
-    // carry a wrong total forward
     if len(balanceRows(t, opt.dbsqlite)) != 3 {
         t.Errorf("balances = %v, want all three funded scripts", balanceRows(t, opt.dbsqlite))
     }
@@ -229,14 +232,18 @@ func TestVoidedIsMainnetOnly(t *testing.T) {
 
 // A shard has to hand back exactly what was put in it, since a balance is the
 // sum of every record and one lost byte is somebody's coins.
+//
+// a long script as well, since the length is a varint and 128 is where it
+// stops fitting in one byte
+//
+// each script's records all land in one shard, which is what lets a shard be
+// summed on its own
 func TestShardsRoundTrip(t *testing.T) {
     var dir = filepath.Join(t.TempDir(), "shards")
     var sh, err = newShards(dir, 8, 4)
     if err != nil { t.Fatalf("newShards: %v", err) }
     defer sh.remove()
     var want = map[string]int64{}
-    // a long script as well, since the length is a varint and 128 is where it
-    // stops fitting in one byte
     var scripts = []string{string(payScript), string(otherScript), strings.Repeat("x", 300)}
     for i, script := range scripts {
         for n := 0; n < 10; n++ {
@@ -262,8 +269,6 @@ func TestShardsRoundTrip(t *testing.T) {
             t.Errorf("script %.10q summed to %d, want %d", script, got[script], sat)
         }
     }
-    // each script's records all land in one shard, which is what lets a shard be
-    // summed on its own
     for i := 0; i < 8; i++ {
         var seen = map[string]bool{}
         sh.each(i, func(script []byte, sat int64) error {
@@ -280,16 +285,18 @@ func TestShardsRoundTrip(t *testing.T) {
 
 // richbuild's progress counts transactions against the node's own count, so it
 // can say how far through the chain a run is and how long the rest will take.
+//
+// 1000 transactions of 4000 in 10s: 100 tx/sec, 3000 left is 30 seconds
+//
+// a node that would not count its transactions leaves the estimate off
 func TestReadingReportsRateAndETA(t *testing.T) {
     var started = time.Now().Add(-10 * time.Second)
-    // 1000 transactions of 4000 in 10s: 100 tx/sec, 3000 left is 30 seconds
     var got = reading(started, 1000, 4000)
     for _, want := range []string{"100 tx/sec", "25.0% of 4 000 transactions", "ETA 30 sec"} {
         if !strings.Contains(got, want) {
             t.Errorf("reading = %q, want %q in it", got, want)
         }
     }
-    // a node that would not count its transactions leaves the estimate off
     if got := reading(started, 1000, 0); strings.Contains(got, "ETA") {
         t.Errorf("reading = %q; there is no estimate without a total", got)
     }
@@ -298,6 +305,9 @@ func TestReadingReportsRateAndETA(t *testing.T) {
 // Balances is the shared view of a block's movements, and the amounts and signs
 // it reports are what every figure downstream is made of: block 1 pays a
 // coinbase, pays the watched address, and spends block 0's coinbase.
+//
+// the miner was paid a subsidy and spent one of the same size, so nothing of
+// it stayed; the address it paid kept what it was sent
 func TestBalancesReportsBothSides(t *testing.T) {
     var moves = addrindex.Balances(chainBlocks()[1])
     var sums = map[string]int64{}
@@ -305,8 +315,6 @@ func TestBalancesReportsBothSides(t *testing.T) {
     if len(moves) != 3 {
         t.Fatalf("block 1 moved %d amounts, want the two outputs and the one spend", len(moves))
     }
-    // the miner was paid a subsidy and spent one of the same size, so nothing of
-    // it stayed; the address it paid kept what it was sent
     if got := sums[string(otherScript)]; got != 0 {
         t.Errorf("the miner's script moved %d, want 0 — it was paid and spent the same", got)
     }
@@ -317,6 +325,8 @@ func TestBalancesReportsBothSides(t *testing.T) {
 
 // The genesis coinbase is not in Core's UTXO set, so a mainnet run must not put
 // it in anybody's balance — the one fixup that changes a real answer.
+//
+// one coinbase less than the same chain sums to off mainnet
 func TestRichBuildVoidsTheGenesisCoinbase(t *testing.T) {
     var srv = fakeCore(t, 3)
     var old = fakeChain
@@ -326,7 +336,6 @@ func TestRichBuildVoidsTheGenesisCoinbase(t *testing.T) {
     capture(t, func() {
         if err := richbuild(opt); err != nil { t.Fatalf("richbuild: %v", err) }
     })
-    // one coinbase less than the same chain sums to off mainnet
     if got := richRows(t, opt.dbsqlite)[addrindex.Address(otherScript)]; got != wantOther-coinbaseSat {
         t.Errorf("the miner holds %d, want %d — genesis pays nobody", got, wantOther-coinbaseSat)
     }

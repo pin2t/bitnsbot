@@ -6,24 +6,34 @@ import "testing"
 import "time"
 import "bitnsbot/rates"
 
+// ≥ $100 → whole dollars, grouped
+//
+// 123456.70 rounds up
+//
+// exactly $100 → no cents
+//
+// < $100 → keep cents
+//
+// just under $100 → keep cents
 func TestUSDFormat(t *testing.T) {
-    if got := usd(150000000, 60000); got != "$90,000" { // ≥ $100 → whole dollars, grouped
+    if got := usd(150000000, 60000); got != "$90,000" {
         t.Fatalf("1.5 BTC @ 60000 = %q", got)
     }
-    if got := usd(1000000000, 12345.67); got != "$123,457" { // 123456.70 rounds up
+    if got := usd(1000000000, 12345.67); got != "$123,457" {
         t.Fatalf("grouping = %q", got)
     }
-    if got := usd(100000000, 100); got != "$100" { // exactly $100 → no cents
+    if got := usd(100000000, 100); got != "$100" {
         t.Fatalf("boundary = %q", got)
     }
-    if got := usd(100000, 58234.12); got != "$58.23" { // < $100 → keep cents
+    if got := usd(100000, 58234.12); got != "$58.23" {
         t.Fatalf("0.001 BTC @ 58234.12 = %q", got)
     }
-    if got := usd(50000000, 199); got != "$99.50" { // just under $100 → keep cents
+    if got := usd(50000000, 199); got != "$99.50" {
         t.Fatalf("sub-100 = %q", got)
     }
 }
 
+// no rate stored yet → sats only, no USD
 func TestAmountLineUSD(t *testing.T) {
     if err := openDB(filepath.Join(t.TempDir(), "watches.db")); err != nil {
         t.Fatalf("openDB: %v", err)
@@ -32,7 +42,6 @@ func TestAmountLineUSD(t *testing.T) {
     if err := rates.Init(db); err != nil {
         t.Fatalf("rates.Init: %v", err)
     }
-    // no rate stored yet → sats only, no USD
     if s := amountLine(150000000, time.Time{}, true, ""); strings.Contains(s, "$") {
         t.Fatalf("expected no USD without a rate: %q", s)
     }
@@ -43,6 +52,8 @@ func TestAmountLineUSD(t *testing.T) {
     }
 }
 
+// a confirmed tx whose block time predates our rate history (older than the
+// tolerance) still shows USD, falling back to the latest known rate.
 func TestAmountLineFallback(t *testing.T) {
     if err := openDB(filepath.Join(t.TempDir(), "watches.db")); err != nil {
         t.Fatalf("openDB: %v", err)
@@ -52,8 +63,6 @@ func TestAmountLineFallback(t *testing.T) {
         t.Fatalf("rates.Init: %v", err)
     }
     rates.Add(60000)
-    // a confirmed tx whose block time predates our rate history (older than the
-    // tolerance) still shows USD, falling back to the latest known rate.
     var s = amountLine(150000000, time.Now().Add(-5*24*time.Hour), false, "")
     if !strings.Contains(s, "$90,000") {
         t.Fatalf("expected USD via fallback for an old confirmed tx: %q", s)
@@ -81,20 +90,19 @@ func TestNegativeAmounts(t *testing.T) {
     }
 }
 
+// English (nil trans) — returns English month name unchanged.
+//
+// Russian — month translated to genitive form.
+//
+// Spanish.
 func TestDateTime(t *testing.T) {
     var tm = time.Date(2023, 6, 15, 10, 30, 0, 0, time.UTC)
-
-    // English (nil trans) — returns English month name unchanged.
     if got := trans(nil).DateTime(tm); got != "15 June 2023 10:30" {
         t.Fatalf("nil trans: expected '15 June 2023 10:30', got %q", got)
     }
-
-    // Russian — month translated to genitive form.
     if got := langTrans["ru"].DateTime(tm); got != "15 июня 2023 10:30" {
         t.Fatalf("ru: expected '15 июня 2023 10:30', got %q", got)
     }
-
-    // Spanish.
     if got := langTrans["es"].DateTime(tm); got != "15 junio 2023 10:30" {
         t.Fatalf("es: expected '15 junio 2023 10:30', got %q", got)
     }

@@ -191,12 +191,14 @@ func ipv4Peers(path string, liveOnly bool) ([]string, error) {
 // IPv4-mapped IPv6 address, and the port in network byte order. Tried entries
 // may carry extra bookkeeping after the address, but those bytes are never
 // needed to extract the IP:port.
+//
+// key (32) + nNew (4) + nTried (4)
 func corePeers(path string) ([]string, error) {
     var data, err = os.ReadFile(path)
     if err != nil {
         return nil, err
     }
-    if len(data) < 40 { // key (32) + nNew (4) + nTried (4)
+    if len(data) < 40 {
         return nil, fmt.Errorf("%s: too small for a peers.dat (%d bytes)", path, len(data))
     }
     var nNew = binary.LittleEndian.Uint32(data[32:36])

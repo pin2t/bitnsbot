@@ -16,6 +16,22 @@ import "bitnsbot/lru"
 // same shape as a txid.
 const infoBlockHash = "00000000000000000000524afad3a4cc1e4e190e1272de721de6cdb4e889f6aa"
 
+// a real node errors on a hash it doesn't have — which is exactly
+// what lets /info tell a 64-hex block hash from a 64-hex txid
+//
+// the input's prevout (value 1.5015 → fee 0.0015)
+//
+// received 1.0 BTC on 2015-01-01
+//
+// spent 1.0 on 2016-01-01: 0.9 to dest + 0.0999 change back, fee 0.0001
+//
+// a block hash is the same 64-hex shape as a txid, and must produce exactly
+// the message its height produces — not "couldn't find transaction"
+//
+// The history behind these stats now comes from the bot's own address index
+// rather than btcd's searchrawtransactions. With nothing indexed the reply
+// must say so plainly instead of reporting an empty history as fact —
+// addressStats itself is covered by TestAddressStats.
 func TestInfoFlow(t *testing.T) {
     var sent []string
     var lastMode string
@@ -78,8 +94,6 @@ func TestInfoFlow(t *testing.T) {
                 difficulty = 1e9
             case "0000000000000000000blockhash", infoBlockHash:
             default:
-                // a real node errors on a hash it doesn't have — which is exactly
-                // what lets /info tell a 64-hex block hash from a 64-hex txid
                 return nil, fmt.Errorf("Block not found")
             }
             return map[string]any{
@@ -103,7 +117,7 @@ func TestInfoFlow(t *testing.T) {
             }, nil
         case "getrawtransaction":
             var reqTxid, _ = p[0].(string)
-            if reqTxid == "prevtx" { // the input's prevout (value 1.5015 → fee 0.0015)
+            if reqTxid == "prevtx" {
                 return map[string]any{"vout": []map[string]any{{"value": 1.5015, "scriptPubKey": map[string]any{"address": "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"}}}}, nil
             }
             var txTime int64 = 1700000000
@@ -132,12 +146,12 @@ func TestInfoFlow(t *testing.T) {
                     return nil, fmt.Errorf("No information available about address")
                 }
                 return []map[string]any{
-                    { // received 1.0 BTC on 2015-01-01
+                    {
                         "txid": "aa", "time": 1420070400,
                         "vin":  []map[string]any{{"prevOut": map[string]any{"addresses": []string{"other"}, "value": 1.0001}}},
                         "vout": []map[string]any{{"value": 1.0, "scriptPubKey": map[string]any{"addresses": []string{"addresswithhistory"}}}},
                     },
-                    { // spent 1.0 on 2016-01-01: 0.9 to dest + 0.0999 change back, fee 0.0001
+                    {
                         "txid": "bb", "time": 1451606400,
                         "vin":  []map[string]any{{"prevOut": map[string]any{"addresses": []string{"addresswithhistory"}, "value": 1.0}}},
                         "vout": []map[string]any{
@@ -186,8 +200,6 @@ func TestInfoFlow(t *testing.T) {
             t.Fatalf("transaction reply missing %q: %q", want, sent[4])
         }
     }
-    // a block hash is the same 64-hex shape as a txid, and must produce exactly
-    // the message its height produces — not "couldn't find transaction"
     update(bot, Update{Message: &Message{Chat: Chat{ID: 9}, Text: "/info " + infoBlockHash}})
     if len(sent) != 6 {
         t.Fatalf("expected a block reply for the block hash, got %#v", sent)
@@ -204,10 +216,6 @@ func TestInfoFlow(t *testing.T) {
     if len(sent) != 8 {
         t.Fatalf("expected address reply, got %#v", sent)
     }
-    // The history behind these stats now comes from the bot's own address index
-    // rather than btcd's searchrawtransactions. With nothing indexed the reply
-    // must say so plainly instead of reporting an empty history as fact —
-    // addressStats itself is covered by TestAddressStats.
     for _, want := range []string{"segwit (bech32)", "Activity:", "still building"} {
         if !strings.Contains(sent[7], want) {
             t.Fatalf("address reply missing %q: %q", want, sent[7])
@@ -230,6 +238,11 @@ func TestInfoFlow(t *testing.T) {
     }
 }
 
+// an alias as the second parameter (one message)
+//
+// and through the bare-/watch follow-up — target and alias in the same message
+//
+// /watches lists the alias next to the id
 func TestWatchFlow(t *testing.T) {
     var sent []string
     server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -269,25 +282,36 @@ func TestWatchFlow(t *testing.T) {
     if len(sent) != 3 || sent[2] != "Watching "+txid {
         t.Fatalf("unexpected third reply: %#v", sent)
     }
-    // an alias as the second parameter (one message)
     var aliasAddr = "1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2"
     update(bot, Update{Message: &Message{Chat: Chat{ID: 5}, Text: "/watch " + aliasAddr + " Savings"}})
     if sent[len(sent)-1] != "Watching "+aliasAddr+" (Savings)" {
         t.Fatalf("unexpected alias reply: %#v", sent)
     }
-    // and through the bare-/watch follow-up — target and alias in the same message
     update(bot, Update{Message: &Message{Chat: Chat{ID: 6}, Text: "/watch"}})
     update(bot, Update{Message: &Message{Chat: Chat{ID: 6}, Text: aliasAddr + " Cold storage"}})
     if sent[len(sent)-1] != "Watching "+aliasAddr+" (Cold storage)" {
         t.Fatalf("unexpected pending-alias reply: %#v", sent)
     }
-    // /watches lists the alias next to the id
     update(bot, Update{Message: &Message{Chat: Chat{ID: 5}, Text: "/watches"}})
     if !strings.Contains(sent[len(sent)-1], "<code>"+aliasAddr+"</code> (Savings)") {
         t.Fatalf("expected alias in /watches listing: %q", sent[len(sent)-1])
     }
 }
 
+// not configured → fixed message
+//
+// configured: the estimate is now projected from the mempool itself rather
+// than asked of estimatesmartfee, so the fake serves a mempool. 8000
+// transactions of 1000 weight fill two blocks; rates ascend so block 0 holds
+// the dear half and its median lands near 6000 sat/vB.
+//
+// Populate cachedFees the same way startMempoolFees does, since fees() now
+// reads from the cache instead of calling Core on every request.
+//
+// the dear half of the mempool is in block 0, so the fastest tier must be far
+// above the 1 sat/vB floor — a plain floor would mean the projection did nothing
+//
+// Reset to not leak into TestFeesUnavailable.
 func TestFeesFlow(t *testing.T) {
     var sent []string
     var lastMode string
@@ -303,16 +327,11 @@ func TestFeesFlow(t *testing.T) {
     }))
     defer server.Close()
     var bot = newBot("TESTTOKEN", server.URL)
-    // not configured → fixed message
     core = nil
     update(bot, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/fees"}})
     if len(sent) != 1 || sent[0] != "Bitcoin node connection is not configured" {
         t.Fatalf("unexpected not-configured reply: %#v", sent)
     }
-    // configured: the estimate is now projected from the mempool itself rather
-    // than asked of estimatesmartfee, so the fake serves a mempool. 8000
-    // transactions of 1000 weight fill two blocks; rates ascend so block 0 holds
-    // the dear half and its median lands near 6000 sat/vB.
     var mempool = map[string]any{}
     for i := 0; i < 8000; i++ {
         mempool[fmt.Sprintf("tx%04d", i)] = map[string]any{
@@ -333,8 +352,6 @@ func TestFeesFlow(t *testing.T) {
     defer btcdServer.Close()
     core = newFakeCoreConn(t, btcdServer)
     defer func() { core = nil }()
-    // Populate cachedFees the same way startMempoolFees does, since fees() now
-    // reads from the cache instead of calling Core on every request.
     {
         var ctx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
         defer cancel()
@@ -358,15 +375,12 @@ func TestFeesFlow(t *testing.T) {
             t.Fatalf("fees reply missing %q: %q", want, sent[1])
         }
     }
-    // the dear half of the mempool is in block 0, so the fastest tier must be far
-    // above the 1 sat/vB floor — a plain floor would mean the projection did nothing
     if strings.Contains(sent[1], "Fastest (10-20 min): 1 sat/vB") {
         t.Fatalf("fastest tier fell back to the floor despite a full block: %q", sent[1])
     }
     if lastMode != "HTML" {
         t.Fatalf("expected HTML parse mode, got %q", lastMode)
     }
-    // Reset to not leak into TestFeesUnavailable.
     feesMu.Lock()
     cachedFeesOK = false
     feesMu.Unlock()
@@ -396,21 +410,37 @@ func TestFeesUnavailable(t *testing.T) {
     }
 }
 
+// exactly 3 shown in full
+//
+// >3 → first 3 + ...
+//
+// shortened
 func TestCompactAddrs(t *testing.T) {
     if got := compactAddrs(nil); got != "none" {
         t.Fatalf("empty = %q", got)
     }
-    if got := compactAddrs([]string{"a", "b", "c"}); got != "a, b, c" { // exactly 3 shown in full
+    if got := compactAddrs([]string{"a", "b", "c"}); got != "a, b, c" {
         t.Fatalf("three = %q", got)
     }
-    if got := compactAddrs([]string{"a", "b", "c", "d", "e"}); got != "a, b, c, ..." { // >3 → first 3 + ...
+    if got := compactAddrs([]string{"a", "b", "c", "d", "e"}); got != "a, b, c, ..." {
         t.Fatalf("more = %q", got)
     }
-    if got := compactAddrs([]string{"1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"}); got != "1A1zP1...DivfNa" { // shortened
+    if got := compactAddrs([]string{"1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"}); got != "1A1zP1...DivfNa" {
         t.Fatalf("short = %q", got)
     }
 }
 
+// → "6.7 k" txs, "3.5 M"
+//
+// Core nests the fee under fees.base; btcd used a flat "fee"
+//
+// fees sum 0.0003 = 30000 sats
+//
+// amounts sum 3.5 = 350000000 sats
+//
+// set cached totals so /mempool can read them (background goroutine not running)
+//
+// when no cached summary is available the totals are absent
 func TestMempoolFlow(t *testing.T) {
     var sent []string
     var server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -433,19 +463,18 @@ func TestMempoolFlow(t *testing.T) {
         _ = p
         switch method {
         case "getmempoolinfo":
-            return map[string]any{"size": 6700, "bytes": 3500000}, nil // → "6.7 k" txs, "3.5 M"
+            return map[string]any{"size": 6700, "bytes": 3500000}, nil
         case "getrawmempool":
-            // Core nests the fee under fees.base; btcd used a flat "fee"
             return map[string]any{
                 "tx1": map[string]any{"fees": map[string]any{"base": 0.0001}},
                 "tx2": map[string]any{"fees": map[string]any{"base": 0.0002}},
-            }, nil // fees sum 0.0003 = 30000 sats
+            }, nil
         case "getrawtransaction":
             switch id, _ := p[0].(string); id {
             case "tx1":
                 return map[string]any{"vout": []map[string]any{{"value": 1.0}}}, nil
             case "tx2":
-                return map[string]any{"vout": []map[string]any{{"value": 2.0}, {"value": 0.5}}}, nil // amounts sum 3.5 = 350000000 sats
+                return map[string]any{"vout": []map[string]any{{"value": 2.0}, {"value": 0.5}}}, nil
             }
             return nil, fmt.Errorf("no such tx")
         }
@@ -454,7 +483,6 @@ func TestMempoolFlow(t *testing.T) {
     defer btcdServer.Close()
     core = newFakeCoreConn(t, btcdServer)
     defer func() { core = nil }()
-    // set cached totals so /mempool can read them (background goroutine not running)
     summaryMu.Lock()
     summaryAmount, summaryFee, summaryOK = 350000000, 30000, true
     summaryMu.Unlock()
@@ -470,7 +498,6 @@ func TestMempoolFlow(t *testing.T) {
             t.Fatalf("mempool reply missing %q: %q", want, sent[1])
         }
     }
-    // when no cached summary is available the totals are absent
     summaryMu.Lock()
     summaryOK = false
     summaryMu.Unlock()
@@ -480,10 +507,25 @@ func TestMempoolFlow(t *testing.T) {
     }
 }
 
+// known divisor
+//
+// skip totals — this test is about the flow line
+//
+// baseline — no rate yet
+//
+// rate (1025-1000)/10 = 2.5, no change yet
+//
+// rate (1055-1025)/10 = 3.0, change 3.0-2.5 = 0.5
+//
+// count DROPPED (likely a mined block) → rate/change unchanged, baseline re-set
+//
+// increase from the re-set baseline: (950-900)/10 = 5.0, change 5.0-3.0 = 2.0
+//
+// and it renders in the /mempool reply
 func TestMempoolFlowRate(t *testing.T) {
     var savedInterval, savedLimit = flowInterval, mempoolSummaryLimit
-    flowInterval = 10 * time.Second // known divisor
-    mempoolSummaryLimit = 1         // skip totals — this test is about the flow line
+    flowInterval = 10 * time.Second
+    mempoolSummaryLimit = 1
     flowMu.Lock()
     flowHaveCount, flowRateOK, flowChangeOK = false, false, false
     flowMu.Unlock()
@@ -493,42 +535,41 @@ func TestMempoolFlowRate(t *testing.T) {
         flowHaveCount, flowRateOK, flowChangeOK = false, false, false
         flowMu.Unlock()
     }()
-    updateFlow(1000) // baseline — no rate yet
+    updateFlow(1000)
     flowMu.Lock()
     var ok1 = flowRateOK
     flowMu.Unlock()
     if ok1 {
         t.Fatal("expected no rate after one sample")
     }
-    updateFlow(1025) // rate (1025-1000)/10 = 2.5, no change yet
+    updateFlow(1025)
     flowMu.Lock()
     var r2, cok2 = flowRate, flowChangeOK
     flowMu.Unlock()
     if r2 != 2.5 || cok2 {
         t.Fatalf("after two samples: rate=%v changeOK=%v (want 2.5, false)", r2, cok2)
     }
-    updateFlow(1055) // rate (1055-1025)/10 = 3.0, change 3.0-2.5 = 0.5
+    updateFlow(1055)
     flowMu.Lock()
     var r3, ch3, cok3 = flowRate, flowChange, flowChangeOK
     flowMu.Unlock()
     if r3 != 3.0 || !cok3 || ch3 != 0.5 {
         t.Fatalf("after three samples: rate=%v change=%v (want 3.0, 0.5)", r3, ch3)
     }
-    updateFlow(900) // count DROPPED (likely a mined block) → rate/change unchanged, baseline re-set
+    updateFlow(900)
     flowMu.Lock()
     var rDrop, chDrop = flowRate, flowChange
     flowMu.Unlock()
     if rDrop != 3.0 || chDrop != 0.5 {
         t.Fatalf("after a decrease: rate=%v change=%v (want unchanged 3.0, 0.5)", rDrop, chDrop)
     }
-    updateFlow(950) // increase from the re-set baseline: (950-900)/10 = 5.0, change 5.0-3.0 = 2.0
+    updateFlow(950)
     flowMu.Lock()
     var rUp, chUp = flowRate, flowChange
     flowMu.Unlock()
     if rUp != 5.0 || chUp != 2.0 {
         t.Fatalf("after re-increase: rate=%v change=%v (want 5.0, 2.0)", rUp, chUp)
     }
-    // and it renders in the /mempool reply
     var sent []string
     var tg = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
         var body struct {
@@ -555,9 +596,13 @@ func TestMempoolFlowRate(t *testing.T) {
     }
 }
 
+// English (default) — no SetChatLanguage called
+//
+// Russian
+//
+// Spanish
 func TestI18nSetLanguage(t *testing.T) {
 	t.Cleanup(func() { chatLangs = lru.New[int64, string](10000) })
-
 	var sent []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
@@ -576,14 +621,10 @@ func TestI18nSetLanguage(t *testing.T) {
 	defer closeDB()
 	stopNotify()
 	defer stopNotify()
-
-	// English (default) — no SetChatLanguage called
 	update(bot, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/watch bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4 Test"}})
 	if len(sent) != 1 || !strings.Contains(sent[0], "Watching bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4 (Test)") {
 		t.Fatalf("expected English watch reply, got: %#v", sent)
 	}
-
-	// Russian
 	SetChatLanguage(2, "ru")
 	update(bot, Update{Message: &Message{Chat: Chat{ID: 2}, Text: "/watch bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4 Тест"}})
 	if len(sent) != 2 || !strings.Contains(sent[1], "Отслеживаю ") {
@@ -593,8 +634,6 @@ func TestI18nSetLanguage(t *testing.T) {
 	if len(sent) != 3 || !strings.Contains(sent[2], "Прекращено отслеживание") {
 		t.Fatalf("expected Russian unwatch reply, got: %#v", sent)
 	}
-
-	// Spanish
 	SetChatLanguage(3, "es")
 	update(bot, Update{Message: &Message{Chat: Chat{ID: 3}, Text: "/watch bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4 Prueba"}})
 	if len(sent) != 4 || !strings.Contains(sent[3], "Observando ") {
@@ -606,9 +645,12 @@ func TestI18nSetLanguage(t *testing.T) {
 	}
 }
 
+// Simulate a Telegram user with language_code "ru" — the update handler
+// should call SetChatLanguage automatically.
+//
+// Same chat, different language in a later message — should switch.
 func TestI18nAutoDetect(t *testing.T) {
 	t.Cleanup(func() { chatLangs = lru.New[int64, string](10000) })
-
 	var sent []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
@@ -627,9 +669,6 @@ func TestI18nAutoDetect(t *testing.T) {
 	defer closeDB()
 	stopNotify()
 	defer stopNotify()
-
-	// Simulate a Telegram user with language_code "ru" — the update handler
-	// should call SetChatLanguage automatically.
 	update(bot, Update{Message: &Message{
 		Chat: Chat{ID: 1},
 		From: &User{LanguageCode: "ru"},
@@ -638,8 +677,6 @@ func TestI18nAutoDetect(t *testing.T) {
 	if len(sent) != 1 || !strings.Contains(sent[0], "Отслеживаю ") {
 		t.Fatalf("expected auto-detected Russian reply, got: %#v", sent)
 	}
-
-	// Same chat, different language in a later message — should switch.
 	update(bot, Update{Message: &Message{
 		Chat: Chat{ID: 1},
 		From: &User{LanguageCode: "es"},
@@ -669,6 +706,8 @@ func TestPeriodText(t *testing.T) {
     }
 }
 
+// a processed window of blocks 0..9 with three attributed pools; LastWork
+// 6e23 is a ~10 GW network, so a 60% share draws ~6 GW
 func TestMinersFlow(t *testing.T) {
     var sent []string
     var server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -689,8 +728,6 @@ func TestMinersFlow(t *testing.T) {
     if len(sent) != 1 || !strings.Contains(sent[0], "still collecting") {
         t.Fatalf("unexpected empty-stats reply: %#v", sent)
     }
-    // a processed window of blocks 0..9 with three attributed pools; LastWork
-    // 6e23 is a ~10 GW network, so a 60% share draws ~6 GW
     var pools = []struct {
         name     string
         blocks   int

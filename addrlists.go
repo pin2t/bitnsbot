@@ -71,6 +71,18 @@ const addrsRestoreRows = addrsFirstPage + 20 * addrsPage
 // updates rows and never re-inserts them. So the order is the index's rather than
 // the query's, and TestAppAddressListRanksCollidingValues pins that paging through
 // a group of equal values sees each of them once.
+//
+// A restored list is as deep as the reader had scrolled, and always at least
+// the batch the tab opens with — restoring row 0 alone would be a one-row
+// list that the sentinel then had to refill.
+//
+// One row more than is wanted, which is how "is there another batch below
+// this one" is answered without counting the table.
+//
+// The same shape btcAmount gives, without its USD tail: a list row
+// has one column for this, and the price belongs on the details
+// page. Under a whole coin the satoshi are kept, or every small
+// balance would render as "0 BTC".
 func (appSource) Addresses(lang string, rng app.AddrRange) app.Addrs {
     var out = app.Addrs{Kind: rng.Kind}
     var list addrList
@@ -80,16 +92,11 @@ func (appSource) Addresses(lang string, rng app.AddrRange) app.Addrs {
     if db == nil || list.kind == "" || rng.From >= addrsMaxRows { return out }
     var want = addrsPage
     if rng.From == 0 { want = addrsFirstPage }
-    // A restored list is as deep as the reader had scrolled, and always at least
-    // the batch the tab opens with — restoring row 0 alone would be a one-row
-    // list that the sentinel then had to refill.
     if rng.Restore && rng.Down + 1 > want {
         want = rng.Down + 1
         if want > addrsRestoreRows { want = addrsRestoreRows }
     }
     if rng.From + want > addrsMaxRows { want = addrsMaxRows - rng.From }
-    // One row more than is wanted, which is how "is there another batch below
-    // this one" is answered without counting the table.
     var rows, err = db.Query("select addr, "+list.column+" from addrstat where "+list.keep+
         " order by "+list.column+" "+list.order+" limit ? offset ?", want+1, rng.From)
     if err != nil {
@@ -110,10 +117,6 @@ func (appSource) Addresses(lang string, rng app.AddrRange) app.Addrs {
         case "active":
             value = i18nl(lang).Sprintf("%s txs", group(n))
         case "rich":
-            // The same shape btcAmount gives, without its USD tail: a list row
-            // has one column for this, and the price belongs on the details
-            // page. Under a whole coin the satoshi are kept, or every small
-            // balance would render as "0 BTC".
             if n >= 1e8 {
                 value = strconv.FormatFloat(toBTC(n), 'f', 2, 64) + " BTC"
             } else {

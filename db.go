@@ -67,13 +67,14 @@ var schema = []string{
 // public chain data is the right trade against an fsync per commit).
 // busy_timeout is what turns "database is locked" into a wait: SQLite allows one
 // writer at a time, and the collectors do sometimes flush at once.
+//
+// on, so mineraddr and minertag cannot name a pool the miners table does
+// not have: an address is only ever attributed to a pool that exists
 func dsn(path string) string {
     return "file:" + path +
         "?_pragma=journal_mode(WAL)" +
         "&_pragma=synchronous(NORMAL)" +
         "&_pragma=busy_timeout(10000)" +
-        // on, so mineraddr and minertag cannot name a pool the miners table does
-        // not have: an address is only ever attributed to a pool that exists
         "&_pragma=foreign_keys(on)"
 }
 
@@ -85,13 +86,14 @@ func dsn(path string) string {
 // package silently does nothing — which is exactly how the address index came to
 // fetch and parse the whole chain while storing none of it. TestOpenDBTables
 // pins the full set.
+//
+// A few connections rather than one: reads should not queue behind a
+// thousand-block flush. Writes serialize on SQLite's own write lock, which
+// busy_timeout above is what makes them wait for rather than fail on.
 func openDB(path string) error {
     logging.Db("open %s", path)
     var opened, err = sql.Open("sqlite", dsn(path))
     if err != nil { return err }
-    // A few connections rather than one: reads should not queue behind a
-    // thousand-block flush. Writes serialize on SQLite's own write lock, which
-    // busy_timeout above is what makes them wait for rather than fail on.
     opened.SetMaxOpenConns(4)
     opened.SetMaxIdleConns(4)
     if err := opened.Ping(); err != nil { return err }
@@ -183,14 +185,29 @@ func startBackup(path string, interval time.Duration, script string) (time.Durat
 // VACUUM INTO writes its destination directly — so failing partway (a full disk)
 // would otherwise leave a truncated file exactly where the last good backup was.
 // It also refuses a destination that exists, which the rename is what keeps true.
+//
+// VACUUM INTO refuses a destination that exists, so a temporary file left by
+// a run that died is cleared first — but only if it is a file. Anything else
+// there is something this did not put there, and removing it is not this
+// function's business; the copy then fails and the last good backup stands.
+//
+// run through sh so the flag can be either a plain path to an executable
+// script or an inline command; the backup's path is passed both ways so
+// either style can find it — as $1, and in the environment as BACKUP_FILE
+//
+// Give the script its own process group and kill the whole group on timeout.
+// Killing only the shell is not enough: anything it leaves running — a
+// backgrounded upload, a child that outlives it — inherits the output pipe,
+// and CombinedOutput blocks until every writer to that pipe is gone. So the
+// timeout would not actually free this goroutine, which is the one thing it
+// exists to do. WaitDelay then bounds the wait even if something survives the
+// signal. (Setpgid is unix-only; this bot targets Linux and macOS.)
+//
+// exited on its own first
 func backup(path, script string) {
     if db == nil { return }
     var began = time.Now()
     var tmp = path + ".tmp"
-    // VACUUM INTO refuses a destination that exists, so a temporary file left by
-    // a run that died is cleared first — but only if it is a file. Anything else
-    // there is something this did not put there, and removing it is not this
-    // function's business; the copy then fails and the last good backup stands.
     if info, err := os.Stat(tmp); err == nil && info.Mode().IsRegular() { os.Remove(tmp) }
     var _, err = db.Exec("vacuum into ?", tmp)
     if err == nil {
@@ -207,22 +224,12 @@ func backup(path, script string) {
     if script == "" { return }
     var ctx, cancel = context.WithTimeout(context.Background(), backupScriptTimeout)
     defer cancel()
-    // run through sh so the flag can be either a plain path to an executable
-    // script or an inline command; the backup's path is passed both ways so
-    // either style can find it — as $1, and in the environment as BACKUP_FILE
     var cmd = exec.CommandContext(ctx, "sh", "-c", script, "sh", path)
     cmd.Env = append(os.Environ(), "BACKUP_FILE="+path)
-    // Give the script its own process group and kill the whole group on timeout.
-    // Killing only the shell is not enough: anything it leaves running — a
-    // backgrounded upload, a child that outlives it — inherits the output pipe,
-    // and CombinedOutput blocks until every writer to that pipe is gone. So the
-    // timeout would not actually free this goroutine, which is the one thing it
-    // exists to do. WaitDelay then bounds the wait even if something survives the
-    // signal. (Setpgid is unix-only; this bot targets Linux and macOS.)
     cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
     cmd.Cancel = func() error {
         var err = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-        if err == syscall.ESRCH { return os.ErrProcessDone } // exited on its own first
+        if err == syscall.ESRCH { return os.ErrProcessDone }
         return err
     }
     cmd.WaitDelay = backupScriptTimeout

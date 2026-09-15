@@ -20,6 +20,14 @@ import "bitnsbot/logging"
 //
 // The cost is a second read of the whole source, which for the address index is
 // hours — the same hours the migration took.
+//
+// Rows in the table that the source has nothing to say about: a record
+// deleted from the bucket since the migration, or a row from somewhere
+// else entirely. Counted rather than listed, there being no key to name.
+//
+// Every record the bucket holds either matched, differed, or was not
+// there at all, so the rows those account for is rows-missing — and
+// whatever the table holds beyond that came from somewhere else.
 func validate(source *bbolt.DB, target *sql.DB) bool {
     var began = time.Now()
     var ok = true
@@ -35,18 +43,12 @@ func validate(source *bbolt.DB, target *sql.DB) bool {
             ok = false
             continue
         }
-        // Rows in the table that the source has nothing to say about: a record
-        // deleted from the bucket since the migration, or a row from somewhere
-        // else entirely. Counted rather than listed, there being no key to name.
         var stored int
         if err := target.QueryRow("select count(*) from " + t.name).Scan(&stored); err != nil {
             logging.Err("%s: count: %v", t.name, err)
             ok = false
             continue
         }
-        // Every record the bucket holds either matched, differed, or was not
-        // there at all, so the rows those account for is rows-missing — and
-        // whatever the table holds beyond that came from somewhere else.
         var extra = stored - (rows - c.missing)
         if c.missing == 0 && c.differing == 0 && extra == 0 {
             var note string

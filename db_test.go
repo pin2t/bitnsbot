@@ -12,6 +12,25 @@ import "testing"
 // The schema is a copy of tools/tosqlite's, which is what makes that tool the
 // upgrade path from the bbolt database this replaced — so the set here is the set
 // it writes.
+//
+// the block-info cache
+//
+// rates
+//
+// watches
+//
+// miners
+//
+// per-address statistics
+//
+// every scan's place
+//
+// the address index's touches
+//
+// and the three indexes the address rankings are read through
+//
+// and the one the miner chart reads a period of blocks through, which the
+// planner has to actually use — without it the query is a scan of the chain
 func TestOpenDBTables(t *testing.T) {
     var path = filepath.Join(t.TempDir(), "bitnsbot.sqlite")
     if err := openDB(path); err != nil {
@@ -19,13 +38,13 @@ func TestOpenDBTables(t *testing.T) {
     }
     defer closeDB()
     var want = []string{
-        "blocks",                                          // the block-info cache
-        "rates", "market",                                 // rates
-        "watches",                                         // watches
-        "miners", "mineraddr", "minertag",                 // miners
-        "addrstat",                                        // per-address statistics
-        "cursors",                                         // every scan's place
-        "addrindex",                                       // the address index's touches
+        "blocks",
+        "rates", "market",
+        "watches",
+        "miners", "mineraddr", "minertag",
+        "addrstat",
+        "cursors",
+        "addrindex",
     }
     var got = map[string]bool{}
     var rows, err = db.Query("select name from sqlite_master where type = 'table'")
@@ -44,7 +63,6 @@ func TestOpenDBTables(t *testing.T) {
     if len(got) != len(want) {
         t.Errorf("table count = %d, want %d: %v", len(got), len(want), got)
     }
-    // and the three indexes the address rankings are read through
     for _, col := range []string{"balance", "txs", "last"} {
         var n int
         if err := db.QueryRow(`select count(*) from sqlite_master where type = 'index'
@@ -53,8 +71,6 @@ func TestOpenDBTables(t *testing.T) {
         }
         if n != 1 { t.Errorf("addrstat has %d indexes on %s, want 1", n, col) }
     }
-    // and the one the miner chart reads a period of blocks through, which the
-    // planner has to actually use — without it the query is a scan of the chain
     var plan string
     if err := db.QueryRow("explain query plan select ts, miner, difficulty from blocks where ts >= ?", 0).Scan(
         new(int), new(int), new(int), &plan); err != nil {

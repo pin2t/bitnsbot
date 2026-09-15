@@ -38,6 +38,10 @@ var activeMin = 1000
 // — not those that spent from it. Every address is still seen, since an input
 // can only spend an output paid earlier, but a busy spender whose receipts are
 // few will count lower here than the index would report.
+//
+// Every file, every time. The counts live only in memory, so a partial scan
+// would write partial counts and call them totals — there is no cursor to
+// resume from because a resumed run's numbers would be wrong.
 func actbuild(opt *options) {
     if opt.blocks == "" {
         logging.Fatal("actbuild needs -blocks pointing at Core's blocks directory")
@@ -47,10 +51,6 @@ func actbuild(opt *options) {
     var key, kerr = xorKey(opt.blocks)
     if kerr != nil { logging.Fatal("read xor.dat: %v", kerr) }
     if err := ensureBuckets(); err != nil { logging.Fatal("create buckets: %v", err) }
-
-    // Every file, every time. The counts live only in memory, so a partial scan
-    // would write partial counts and call them totals — there is no cursor to
-    // resume from because a resumed run's numbers would be wrong.
     fmt.Printf("Scanning %d files in %s for addresses in more than %d transactions\n",
         len(files), opt.blocks, activeMin)
     var started = time.Now()
@@ -78,6 +78,9 @@ func actbuild(opt *options) {
 
 // countFile reads one blk file end to end, counting every address each
 // transaction pays to.
+//
+// one transaction counts once per address, however many of its
+// outputs pay there
 func countFile(name string, key []byte, counts *counter) (blocks, scripts int, err error) {
     var r, oerr = openBlockFile(name, key)
     if oerr != nil { return 0, 0, oerr }
@@ -94,8 +97,6 @@ func countFile(name string, key []byte, counts *counter) (blocks, scripts int, e
             continue
         }
         for _, outputs := range txs {
-            // one transaction counts once per address, however many of its
-            // outputs pay there
             clear(seen)
             for _, o := range outputs {
                 if len(o.Script) == 0 || seen[string(o.Script)] { continue }
@@ -110,13 +111,14 @@ func countFile(name string, key []byte, counts *counter) (blocks, scripts int, e
 
 // storeActive writes the qualifying addresses, encoded from the scripts kept
 // when they crossed the threshold.
+//
+// a nonstandard script is not an address, so there is nothing to
+// record for it
 func storeActive(active map[string]uint32) error {
     return db.Update(func(tx *bbolt.Tx) error {
         var b = tx.Bucket(activeBucket)
         for script, n := range active {
             var addr = addrindex.Address([]byte(script))
-            // a nonstandard script is not an address, so there is nothing to
-            // record for it
             if addr == "" { continue }
             var v = make([]byte, 8)
             binary.BigEndian.PutUint64(v, uint64(n))

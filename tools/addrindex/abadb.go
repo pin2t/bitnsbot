@@ -161,6 +161,9 @@ func (s *abaState) rollback() {
 // same address, and there are hundreds of thousands of them on mainnet. Those
 // are also exactly the addresses this list is about, so taking the later of the
 // two scripts' dates matters as much as adding their coins.
+//
+// the thresholds the table was built with, so changing either and running
+// again rebuilds it instead of reporting that there is nothing to do
 func (s *abaStore) shortlist(min int64, top, height int) (int, error) {
     if _, err := s.db.Exec(`drop table if exists abandoned`); err != nil { return 0, err }
     if _, err := s.db.Exec(abandonedDDL); err != nil { return 0, err }
@@ -176,8 +179,6 @@ func (s *abaStore) shortlist(min int64, top, height int) (int, error) {
     if terr != nil { return int(rows), terr }
     defer tx.Rollback()
     if err := setMeta(tx, "abandoned", strconv.Itoa(height)); err != nil { return int(rows), err }
-    // the thresholds the table was built with, so changing either and running
-    // again rebuilds it instead of reporting that there is nothing to do
     if err := setMeta(tx, "min", strconv.FormatInt(min, 10)); err != nil { return int(rows), err }
     if err := setMeta(tx, "top", strconv.Itoa(top)); err != nil { return int(rows), err }
     return int(rows), tx.Commit()

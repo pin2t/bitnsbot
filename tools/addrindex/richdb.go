@@ -151,6 +151,9 @@ func (s *state) rollback() {
 // tens of millions of rows that is the difference between minutes and an
 // afternoon. Dropping the table rather than deleting from it costs nothing and
 // leaves no rows behind to be checked.
+//
+// the threshold rich was built with, so changing -min and running again
+// rebuilds it instead of reporting that there is nothing to do
 func (s *richStore) materialize(min int64, height int) (int, error) {
     if _, err := s.db.Exec(`drop table if exists rich`); err != nil { return 0, err }
     if _, err := s.db.Exec(richDDL); err != nil { return 0, err }
@@ -164,8 +167,6 @@ func (s *richStore) materialize(min int64, height int) (int, error) {
     if terr != nil { return int(rows), terr }
     defer tx.Rollback()
     if err := setMeta(tx, "rich", strconv.Itoa(height)); err != nil { return int(rows), err }
-    // the threshold rich was built with, so changing -min and running again
-    // rebuilds it instead of reporting that there is nothing to do
     if err := setMeta(tx, "min", strconv.FormatInt(min, 10)); err != nil { return int(rows), err }
     return int(rows), tx.Commit()
 }

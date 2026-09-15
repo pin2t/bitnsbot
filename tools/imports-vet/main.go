@@ -26,11 +26,11 @@ func main() {
     unitchecker.Main(analyzer)
 }
 
+// Unadjusted, so a //line directive cannot move a line the blank-line check counts.
 func run(pass *analysis.Pass) (any, error) {
     for _, f := range pass.Files {
         if ast.IsGenerated(f) { continue }
         var file = pass.Fset.File(f.Pos())
-        // Unadjusted, so a //line directive cannot move a line the blank-line check counts.
         var line = func(p token.Pos) int { return file.PositionFor(p, false).Line }
         var used = map[int]bool{}
         var first, last = 0, 0

@@ -31,6 +31,8 @@ func TestMessageEnvelope(t *testing.T) {
 
 // The version payload is written by hand, so pin its layout: the fixed fields,
 // the one-byte length prefix on the user agent, and relay=0 at the end.
+//
+// the address we tell the peer it is
 func TestVersionPayload(t *testing.T) {
     var payload = versionPayload(net.ParseIP("1.2.3.4"), 8333)
     var uaAt = 4 + 8 + 8 + 26 + 26 + 8
@@ -52,7 +54,6 @@ func TestVersionPayload(t *testing.T) {
     if payload[len(payload)-1] != 0 {
         t.Fatal("relay must be 0 so the peer doesn't stream transactions at us")
     }
-    // the address we tell the peer it is
     if got := net.IP(payload[28:44]); !got.Equal(net.ParseIP("1.2.3.4")) {
         t.Fatalf("addr_recv IP = %v, want 1.2.3.4", got)
     }
@@ -85,6 +86,9 @@ func TestAddrPayload(t *testing.T) {
 
 // Only IPv4 peers are contacted: IPv6 needs a working route and .onion needs Tor,
 // and peers.json is full of both.
+//
+// -live drops the address btcd has never managed to connect to; most of a
+// real peers.json is exactly that
 func TestIPv4Peers(t *testing.T) {
     var path = filepath.Join(t.TempDir(), "peers.json")
     var content = `{"Version":2,"Key":[1,2],"Addresses":[
@@ -105,8 +109,6 @@ func TestIPv4Peers(t *testing.T) {
     if !reflect.DeepEqual(got, want) {
         t.Fatalf("peers = %v, want %v", got, want)
     }
-    // -live drops the address btcd has never managed to connect to; most of a
-    // real peers.json is exactly that
     var live, lerr = ipv4Peers(path, true)
     if lerr != nil {
         t.Fatalf("ipv4Peers(live): %v", lerr)
@@ -119,6 +121,8 @@ func TestIPv4Peers(t *testing.T) {
 // The whole exchange against a peer that speaks the protocol: it must see our
 // version, then our verack once it sends its own version, and finally the addr
 // message naming the address we are advertising.
+//
+// noise before verack, must be ignored
 func TestAnnounce(t *testing.T) {
     var ln, err = net.Listen("tcp", "127.0.0.1:0")
     if err != nil {
@@ -137,7 +141,7 @@ func TestAnnounce(t *testing.T) {
             seen <- command
             switch command {
             case "version":
-                conn.Write(message("sendaddrv2", nil)) // noise before verack, must be ignored
+                conn.Write(message("sendaddrv2", nil))
                 conn.Write(message("version", versionPayload(net.IPv4(127, 0, 0, 1), 0)))
                 conn.Write(message("verack", nil))
             case "addr":
@@ -177,29 +181,48 @@ func TestAnnounce(t *testing.T) {
 // uint32 LE, then each address entry as a 34-byte record: a version int32, a
 // timestamp uint32, services uint64, 16-byte IPv4-mapped-IPv6 address and the
 // port in network byte order. Pure IPv6 and .onion addresses are skipped.
+//
+// 32-byte key (all zeros is fine for a test)
+//
+// nNew = 2, nTried = 1 (uint32 LE)
+//
+// nNew
+//
+// nTried
+//
+// helper to append one address entry
+//
+// version
+//
+// time
+//
+// services
+//
+// IP (16 bytes)
+//
+// port (BE)
+//
+// entry 1: IPv4 1.2.3.4:8333
+//
+// entry 2: pure IPv6 — must be skipped
+//
+// entry 3 (tried): IPv4 5.6.7.8:9333
 func TestCorePeers(t *testing.T) {
     var path = filepath.Join(t.TempDir(), "peers.dat")
     var buf = make([]byte, 0, 40+3*34)
-    // 32-byte key (all zeros is fine for a test)
     buf = append(buf, make([]byte, 32)...)
-    // nNew = 2, nTried = 1 (uint32 LE)
-    buf = binary.LittleEndian.AppendUint32(buf, 2) // nNew
-    buf = binary.LittleEndian.AppendUint32(buf, 1) // nTried
-    // helper to append one address entry
+    buf = binary.LittleEndian.AppendUint32(buf, 2)
+    buf = binary.LittleEndian.AppendUint32(buf, 1)
     appendEntry := func(ip net.IP, port uint16) {
-        buf = binary.LittleEndian.AppendUint32(buf, 1)       // version
-        buf = binary.LittleEndian.AppendUint32(buf, 0)       // time
-        buf = binary.LittleEndian.AppendUint64(buf, 0)       // services
-        buf = append(buf, ip.To16()...)                      // IP (16 bytes)
-        buf = binary.BigEndian.AppendUint16(buf, port)       // port (BE)
+        buf = binary.LittleEndian.AppendUint32(buf, 1)
+        buf = binary.LittleEndian.AppendUint32(buf, 0)
+        buf = binary.LittleEndian.AppendUint64(buf, 0)
+        buf = append(buf, ip.To16()...)
+        buf = binary.BigEndian.AppendUint16(buf, port)
     }
-    // entry 1: IPv4 1.2.3.4:8333
     appendEntry(net.ParseIP("1.2.3.4"), 8333)
-    // entry 2: pure IPv6 — must be skipped
     appendEntry(net.ParseIP("2600::1"), 1234)
-    // entry 3 (tried): IPv4 5.6.7.8:9333
     appendEntry(net.ParseIP("5.6.7.8"), 9333)
-
     if err := os.WriteFile(path, buf, 0600); err != nil {
         t.Fatalf("write: %v", err)
     }
@@ -225,9 +248,11 @@ func TestCorePeersTooShort(t *testing.T) {
 }
 
 // A peers.dat with zero entries returns an empty list without error.
+//
+// key + nNew=0 + nTried=0
 func TestCorePeersEmpty(t *testing.T) {
     var path = filepath.Join(t.TempDir(), "peers.dat")
-    var buf = make([]byte, 40) // key + nNew=0 + nTried=0
+    var buf = make([]byte, 40)
     if err := os.WriteFile(path, buf, 0600); err != nil {
         t.Fatalf("write: %v", err)
     }
@@ -240,6 +265,8 @@ func TestCorePeersEmpty(t *testing.T) {
     }
 }
 // A peer that never finishes the handshake must not hang the worker.
+//
+// accept and say nothing
 func TestAnnounceTimesOut(t *testing.T) {
     var ln, err = net.Listen("tcp", "127.0.0.1:0")
     if err != nil {
@@ -250,7 +277,7 @@ func TestAnnounceTimesOut(t *testing.T) {
         var conn, err = ln.Accept()
         if err != nil { return }
         defer conn.Close()
-        select {} // accept and say nothing
+        select {}
     }()
     var saved = *timeout
     *timeout = 300 * time.Millisecond

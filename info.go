@@ -51,6 +51,10 @@ func info(bot *bot, chat int64, arg string) {
 // txPairs builds the lines a transaction is described by, plus the ids the bot
 // turns into buttons and the node's own spelling of the txid. Shared with the
 // Mini App's transaction page, so the two cannot drift apart.
+//
+// only the ids the text actually shows get buttons — compactAddrs truncates
+// to shownAddrs with a trailing "...", and a button for something the reader
+// cannot see in the message would be a puzzle rather than a shortcut
 func txPairs(ctx context.Context, lang string, txid string) ([][2]string, []string, string, bool) {
     var estimates = map[string]string{
         confETAFast:   i18nl(lang).String("~10-20 min"),
@@ -99,9 +103,6 @@ func txPairs(ctx context.Context, lang string, txid string) ([][2]string, []stri
         pairs = append(pairs, [2]string{i18nl(lang).String("Inputs"), compactAddrs(inputs)})
     }
     pairs = append(pairs, [2]string{i18nl(lang).String("Outputs"), compactAddrs(outputAddrs(tx))})
-    // only the ids the text actually shows get buttons — compactAddrs truncates
-    // to shownAddrs with a trailing "...", and a button for something the reader
-    // cannot see in the message would be a puzzle rather than a shortcut
     var ids []string
     if blockHeight > 0 {
         ids = append(ids, strconv.FormatInt(blockHeight, 10))
@@ -277,10 +278,12 @@ func block(ctx context.Context, bot *bot, chat int64, height int64) {
 // this needs no prevout fetching at all — the bounded 16-way fan-out that used
 // to be here existed only because btcd made callers compute fees themselves.
 // The coinbase has no fee and is skipped.
+//
+// coinbase
 func feeStats(txs []coreTransaction) (low, avg, high int64, count int) {
     var total int64
     for i, t := range txs {
-        if i == 0 { continue } // coinbase
+        if i == 0 { continue }
         var fee = toSat(t.Fee)
         if count == 0 || fee < low { low = fee }
         if fee > high { high = fee }
@@ -429,15 +432,16 @@ func addrTypeText(kind, addr string) string {
 // all. Those are the addresses the ranked lists make reachable by tapping, and
 // they are the ones the live path below serves worst — the busiest holds
 // millions of transactions against its cap of ten thousand.
+//
+// the same classifier the stored records are typed by, so an address reads
+// the same whether it is answered from one or looked up live; a form it
+// cannot decode falls back to what the node says about it
 func addrPairs(ctx context.Context, lang string, addr string) ([][2]string, bool, error) {
     if s, ok := addrstat.Get(addr); ok { return statPairs(addr, s, lang), true, nil }
     if core == nil { return nil, false, errors.New("no node configured") }
     var addrInfo, err = core.validateAddress(ctx, addr)
     if err != nil { return nil, false, err }
     if !addrInfo.IsValid { return nil, false, nil }
-    // the same classifier the stored records are typed by, so an address reads
-    // the same whether it is answered from one or looked up live; a form it
-    // cannot decode falls back to what the node says about it
     var _, kind, known = addrindex.Decode(addr)
     var addrType = addrTypeText(kind, addr)
     if !known {

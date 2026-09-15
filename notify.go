@@ -67,6 +67,9 @@ func startNotifyChat(b *bot, chat int64, watch, alias string) {
 // txid in <code> for tap-to-copy. Only the supporting figures stay in the <pre>
 // block. The txid has to sit outside that block — Telegram does not parse
 // entities inside <pre>, so a <code> there would render literally.
+//
+// part of the spend came back as change, so the address is only down
+// by the difference
 func addressNotification(chat int64, n notification, watchID, alias string) (string, []string, txwatches.Summary, bool) {
     var lang = chatLang(chat)
     var estimates = map[string]string{
@@ -110,8 +113,6 @@ func addressNotification(chat int64, n notification, watchID, alias string) (str
         if len(recipients) > shownAddrs { header += "...\n" }
         pairs = append(pairs, [2]string{i18n(chat).String("Sending"), amountLine(out, time.Time{}, true, lang)})
         if gotIn {
-            // part of the spend came back as change, so the address is only down
-            // by the difference
             pairs = append(pairs,
                 [2]string{i18n(chat).String("Change back"), amountLine(in, time.Time{}, true, lang)},
                 [2]string{i18n(chat).String("Net"), amountLine(in-out, time.Time{}, true, lang)},
@@ -200,6 +201,15 @@ func alreadyNotified(txid string) bool {
     return seen
 }
 
+// record the outpoints this transaction creates for watched addresses, so a
+// later spend of them is recognised — the bookkeeping btcd used to do inside
+// its own filter
+//
+// the decoded transaction names only the receiving addresses — its inputs are
+// bare txid:vout refs — so the *sending* addresses need the prevouts, which
+// txInputs gathers. The fee comes from getmempoolentry rather than from the
+// transaction: this is a mempool transaction, so it has no undo data and Core
+// reports neither fee nor prevout for it at verbosity 2.
 func broadcast(txHex string) {
     if core == nil { return }
     var ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
@@ -219,15 +229,7 @@ func broadcast(txHex string) {
             n.received[a] += toSat(vout.Value)
         }
     }
-    // record the outpoints this transaction creates for watched addresses, so a
-    // later spend of them is recognised — the bookkeeping btcd used to do inside
-    // its own filter
     recordOutpoints(tx.Txid, tx.Vout)
-    // the decoded transaction names only the receiving addresses — its inputs are
-    // bare txid:vout refs — so the *sending* addresses need the prevouts, which
-    // txInputs gathers. The fee comes from getmempoolentry rather than from the
-    // transaction: this is a mempool transaction, so it has no undo data and Core
-    // reports neither fee nor prevout for it at verbosity 2.
     if full, ferr := core.getRawTransaction(ctx, tx.Txid); ferr == nil {
         if _, _, spent, ok := txInputs(ctx, full); ok {
             n.sent = spent
@@ -268,12 +270,13 @@ func broadcast(txHex string) {
 //
 // The scan walks the whole UTXO set and takes minutes on mainnet, which is why
 // it runs in the background and covers every address in a single pass.
+//
+// map each address's scriptPubKey so a scan hit can be attributed back
 func seedOutpoints(addrs []string) {
     if core == nil || len(addrs) == 0 { return }
     go func() {
         var ctx, cancel = context.WithTimeout(context.Background(), 30*time.Minute)
         defer cancel()
-        // map each address's scriptPubKey so a scan hit can be attributed back
         var owner = map[string]string{}
         for _, addr := range addrs {
             var info, err = core.validateAddress(ctx, addr)

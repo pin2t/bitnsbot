@@ -26,12 +26,22 @@ func (appSource) MinerChart(lang, name, data, period string) app.Chart {
 //
 // OK is false when the table holds no block in the period at all, which is a
 // collector that has not got there yet rather than a pool that mined nothing.
+//
+// where a month follows a day, and where it stands alone — Russian declines
+// the two differently ("14 мая" against "май 2026")
+//
+// blocks_ts is what makes this a range of the index rather than a scan of
+// every block on the chain
+//
+// a block stamped ahead of now lands in the last bucket, which is where
+// the search leaves anything past the last start
+//
+// the first, the last and the one in the middle: enough to read the
+// period off, and few enough not to collide at a phone's width
 func minerChart(lang, name, data, period string, now time.Time) app.Chart {
     var out = app.Chart{Name: name, Data: data, Period: period}
     if db == nil { return out }
     var t = i18nl(lang)
-    // where a month follows a day, and where it stands alone — Russian declines
-    // the two differently ("14 мая" against "май 2026")
     var short = []string{t.String("jan"), t.String("feb"), t.String("mar"), t.String("apr"), t.String("may"),
         t.String("jun"), t.String("jul"), t.String("aug"), t.String("sep"), t.String("oct"), t.String("nov"), t.String("dec")}
     var alone = []string{t.String("jan-alone"), t.String("feb-alone"), t.String("mar-alone"), t.String("apr-alone"),
@@ -55,8 +65,6 @@ func minerChart(lang, name, data, period string, now time.Time) app.Chart {
     }
     var mined, all = make([]int64, len(starts)), make([]int64, len(starts))
     var difficulty = make([]float64, len(starts))
-    // blocks_ts is what makes this a range of the index rather than a scan of
-    // every block on the chain
     var rows, err = db.Query("select ts, miner, difficulty from blocks where ts >= ?", starts[0].Unix())
     if err != nil {
         logging.Warn("mini app: miner chart: %v", err)
@@ -68,8 +76,6 @@ func minerChart(lang, name, data, period string, now time.Time) app.Chart {
         var miner string
         var d float64
         if rows.Scan(&ts, &miner, &d) != nil { continue }
-        // a block stamped ahead of now lands in the last bucket, which is where
-        // the search leaves anything past the last start
         var i = sort.Search(len(starts), func(i int) bool { return starts[i].Unix() > ts }) - 1
         all[i]++
         if miner == name {
@@ -122,8 +128,6 @@ func minerChart(lang, name, data, period string, now time.Time) app.Chart {
             bar.Label = alone[s.Month()-1] + " " + strconv.Itoa(s.Year())
             tick = bar.Label
         }
-        // the first, the last and the one in the middle: enough to read the
-        // period off, and few enough not to collide at a phone's width
         if i == 0 || i == len(starts)/2 || i == len(starts)-1 { bar.Tick = tick }
         out.Bars = append(out.Bars, bar)
     }

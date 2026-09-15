@@ -85,6 +85,8 @@ func TestStructuralDriftFails(t *testing.T) {
 
 // Cosmetic differences a translator legitimately introduces must not fail: a
 // longer word wraps its attributes differently.
+//
+// and an HTML comment is neither structure nor translatable text
 func TestFormattingIsIgnored(t *testing.T) {
     var rewrapped = strings.Replace(translated,
         `<input id="q" placeholder="Транзакция, блок или адрес"
@@ -95,7 +97,6 @@ func TestFormattingIsIgnored(t *testing.T) {
     if !same(t, reference, rewrapped) {
         t.Error("re-wrapping a tag's attributes should not count as drift")
     }
-    // and an HTML comment is neither structure nor translatable text
     var commented = strings.Replace(translated, "<body>", "<!-- перевод -->\n<body>", 1)
     if !same(t, reference, commented) {
         t.Error("an HTML comment should not count as drift")
@@ -127,6 +128,9 @@ func TestSkeletonKeepsStructureOnly(t *testing.T) {
 // A "<" inside a script is arithmetic, not a tag. Reading it as one made the
 // scanner swallow whatever followed, which differed between two translations
 // and failed a page that was in fact identical.
+//
+// The cost of that, stated outright: markup a script writes is invisible to
+// the check, so a translation may rename a class there and get away with it.
 func TestScriptBodyIsNotMarkup(t *testing.T) {
     var got = strings.Join(strip(reference), "\n")
     if strings.Count(got, "<script>") != 1 || strings.Count(got, "</script>") != 1 {
@@ -135,25 +139,25 @@ func TestScriptBodyIsNotMarkup(t *testing.T) {
     if strings.Contains(got, "<div class=\"empty\">") {
         t.Error("markup inside a script string is not part of the page's structure")
     }
-    // The cost of that, stated outright: markup a script writes is invisible to
-    // the check, so a translation may rename a class there and get away with it.
     if !same(t, reference, strings.Replace(translated, `class="empty"`, `class="empt"`, 1)) {
         t.Error("markup inside a script is documented as unchecked; this now checks it, so say so")
     }
 }
 
 // Which file is a translation of which.
+//
+// not a language tag, so it is a reference of its own rather than a
+// translation into "min"
+//
+// three letters is a real ISO 639-3 code, but reading a build artifact
+// as a translation is the worse mistake
 func TestSplitNamesTheReference(t *testing.T) {
     for _, c := range []struct{ path, base, lang string }{
         {"app/app.html", "app/app", ""},
         {"app/app.ru.html", "app/app", "ru"},
         {"app/app.pt-BR.html", "app/app", "pt-BR"},
-        // not a language tag, so it is a reference of its own rather than a
-        // translation into "min"
         {"app/app.min.html", "app/app.min", ""},
         {"app/app.HTML5.html", "app/app.HTML5", ""},
-        // three letters is a real ISO 639-3 code, but reading a build artifact
-        // as a translation is the worse mistake
         {"app/app.fil.html", "app/app.fil", ""},
     } {
         var base, lang = split(c.path)

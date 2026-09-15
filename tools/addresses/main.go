@@ -151,6 +151,33 @@ type addrEntry struct {
 	txCount int
 }
 
+// ensure the addresses and cursor buckets exist
+//
+// read the last processed height from the addresses-cursor bucket
+//
+// resume from the next block
+//
+// processedBlocks tracks which block heights have been fully processed
+// by workers. The collector uses it to advance the cursor past every
+// consecutive block that completed, so an interrupted run resumes from
+// the first gap instead of restarting.
+//
+// last committed cursor value
+//
+// collector receives (addr, txCount) from workers, deduplicates, and
+// flushes to bbolt in batches of batchSize.
+//
+// advance cursor past every consecutive processed block
+//
+// final partial batch
+//
+// progress reporter
+//
+// worker pool
+//
+// address → scriptHex
+//
+// signal collector to flush remaining and exit
 func main() {
 	flag.Parse()
 	var d, err = bbolt.Open(*dbPath, 0600, nil)
@@ -161,7 +188,6 @@ func main() {
 	if err := addrindex.Init(d); err != nil {
 		logging.Fatal("init addrindex: %v", err)
 	}
-	// ensure the addresses and cursor buckets exist
 	if err := d.Update(func(tx *bbolt.Tx) error {
 		for _, name := range [][]byte{addressesBucket, addressesCursorBucket} {
 			if _, err := tx.CreateBucketIfNotExists(name); err != nil {
@@ -186,14 +212,13 @@ func main() {
 	if tipErr != nil {
 		logging.Fatal("get tip: %v", tipErr)
 	}
-	// read the last processed height from the addresses-cursor bucket
 	var start int64
 	if err := d.View(func(tx *bbolt.Tx) error {
 		if v := tx.Bucket(addressesCursorBucket).Get([]byte("cursor")); v != nil {
 			var e error
 			start, e = strconv.ParseInt(string(v), 10, 64)
 			if e != nil { return e }
-			start++ // resume from the next block
+			start++
 		}
 		return nil
 	}); err != nil {
@@ -203,15 +228,9 @@ func main() {
 	const numWorkers = 64
 	const batchSize = 5000
 	var processed atomic.Int64
-	// processedBlocks tracks which block heights have been fully processed
-	// by workers. The collector uses it to advance the cursor past every
-	// consecutive block that completed, so an interrupted run resumes from
-	// the first gap instead of restarting.
 	var processedMu sync.Mutex
 	var processedBlocks = make(map[int64]struct{})
-	var cursor = start - 1 // last committed cursor value
-	// collector receives (addr, txCount) from workers, deduplicates, and
-	// flushes to bbolt in batches of batchSize.
+	var cursor = start - 1
 	var entries = make(chan addrEntry, 10000)
 	var collectorDone = make(chan struct{})
 	go func() {
@@ -230,7 +249,6 @@ func main() {
 					if err != nil { return err }
 					if err := b.Put([]byte(e.addr), val); err != nil { return err }
 				}
-				// advance cursor past every consecutive processed block
 				processedMu.Lock()
 				for {
 					if _, ok := processedBlocks[cursor+1]; ok {
@@ -255,10 +273,9 @@ func main() {
 			batch = append(batch, e)
 			if len(batch) >= batchSize { flush() }
 		}
-		flush() // final partial batch
+		flush()
 		fmt.Fprintf(os.Stderr, "collector finished: %d addresses written\n", totalWritten)
 	}()
-	// progress reporter
 	var progressDone = make(chan struct{})
 	go func() {
 		var ticker = time.NewTicker(5 * time.Second)
@@ -283,7 +300,6 @@ func main() {
 			}
 		}
 	}()
-	// worker pool
 	var heights = make(chan int64, numWorkers*2)
 	var wg sync.WaitGroup
 	for i := 0; i < numWorkers; i++ {
@@ -307,7 +323,7 @@ func main() {
 					processed.Add(1)
 					continue
 				}
-				var seen = make(map[string]string) // address → scriptHex
+				var seen = make(map[string]string)
 				for _, tx := range blk.Tx {
 					for _, vin := range tx.Vin {
 						if vin.Coinbase != "" { continue }
@@ -338,7 +354,7 @@ func main() {
 	close(heights)
 	wg.Wait()
 	close(progressDone)
-	close(entries) // signal collector to flush remaining and exit
+	close(entries)
 	<-collectorDone
 	fmt.Printf("\rprocessed %d / %d (100%%) in %s\n", tip, tip, time.Since(began).Round(time.Second))
 }

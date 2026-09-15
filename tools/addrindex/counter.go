@@ -73,6 +73,8 @@ func (c *counter) setCountAt(i int, n uint32) {
 // add records that one transaction paid to this script, and reports the count it
 // reached. The caller passes the script rather than the prefix because a prefix
 // that crosses the threshold needs its script kept.
+//
+// captured the first time it crosses, while the script is in hand
 func (c *counter) add(script []byte) uint32 {
     var key = binary.BigEndian.Uint64(addrindex.Prefix(script))
     var n uint32
@@ -88,7 +90,6 @@ func (c *counter) add(script []byte) uint32 {
         c.buf[key] = n
         if len(c.buf) >= bufferedAddrs { c.flush() }
     }
-    // captured the first time it crosses, while the script is in hand
     if n > c.min {
         if _, ok := c.qualified[key]; !ok {
             c.qualified[key] = append([]byte(nil), script...)

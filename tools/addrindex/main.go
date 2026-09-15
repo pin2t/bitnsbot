@@ -95,6 +95,13 @@ func usage() {
     fmt.Fprintln(os.Stderr, "  ababuild  rank the addresses that hold coins by how long since their coins last moved")
 }
 
+// -dbsqlite is the SQLite database: list reads a migrated index out of it and
+// richbuild writes balances to it, while build and actbuild write the bbolt
+// index named by -db. Opening -db for the two SQLite commands would create an
+// empty index beside the database actually being worked on.
+//
+// the same buckets the bot's openDB creates, so either can carry on from
+// the other's cursor
 func main() {
     if len(os.Args) < 2 {
         usage()
@@ -110,11 +117,6 @@ func main() {
     var opt = flags(fs)
     fs.Parse(os.Args[2:])
     logging.SetVerbose(opt.verbose)
-
-    // -dbsqlite is the SQLite database: list reads a migrated index out of it and
-    // richbuild writes balances to it, while build and actbuild write the bbolt
-    // index named by -db. Opening -db for the two SQLite commands would create an
-    // empty index beside the database actually being worked on.
     if opt.dbsqlite != "" && cmd != "list" && cmd != "richbuild" && cmd != "ababuild" {
         logging.Fatal("-dbsqlite is SQLite; %s writes the bbolt index named by -db", cmd)
     }
@@ -123,11 +125,8 @@ func main() {
         db, err = bbolt.Open(opt.db, 0600, &bbolt.Options{Timeout: 5 * time.Second})
         if err != nil { logging.Fatal("open %s: %v", opt.db, err) }
         defer db.Close()
-        // the same buckets the bot's openDB creates, so either can carry on from
-        // the other's cursor
         if err := addrindex.Init(db); err != nil { logging.Fatal("init index: %v", err) }
     }
-
     switch cmd {
     case "build":
         build(opt)

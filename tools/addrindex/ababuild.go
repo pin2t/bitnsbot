@@ -29,6 +29,15 @@ import "bitnsbot/logging"
 // selected, because the scripts of one address land in different shards and no
 // shard can rank an address it holds only part of. See abadb.go for what the
 // database ends up holding.
+//
+// A run that carries on from a stored height starts with what that height
+// left: every balance goes back in as one movement, carrying the date it was
+// stored with, so the shards hold the whole history and not just this run's
+// part of it. A script that held nothing at that height is not stored and so
+// is not carried, which costs nothing: it can only reach the answer table by
+// being paid again, and that payment is later than anything the dropped row
+// knew. TestAbaBuildCarriesStateForward pins the two runs landing on one
+// list.
 func ababuild(opt *options) error {
     if opt.dbsqlite == "" {
         return fmt.Errorf("ababuild writes SQLite: name the database with -dbsqlite")
@@ -72,14 +81,6 @@ func ababuild(opt *options) error {
     fmt.Printf("Tracking balances and last movements over blocks %d..%d of %s into %s (%d shards under %s)\n",
         from, tip, chain, opt.dbsqlite, opt.shards, dir)
     var started = time.Now()
-    // A run that carries on from a stored height starts with what that height
-    // left: every balance goes back in as one movement, carrying the date it was
-    // stored with, so the shards hold the whole history and not just this run's
-    // part of it. A script that held nothing at that height is not stored and so
-    // is not carried, which costs nothing: it can only reach the answer table by
-    // being paid again, and that payment is later than anything the dropped row
-    // knew. TestAbaBuildCarriesStateForward pins the two runs landing on one
-    // list.
     if built {
         var seeded int
         if err := store.each(func(script []byte, balance, last int64) error {
@@ -119,6 +120,12 @@ func (m *move) at(sat, when int64) {
 
 // track walks the blocks, turning each into the movements it makes and the dates
 // they happened on, and buffering them until there are enough to write out.
+//
+// The outputs Core's UTXO set never held are taken back out of the
+// balance, but not out of the date: a script whose only payment is one
+// of these ends up holding nothing and never reaches the answer table,
+// and every other script involved was paid again by the copy that did
+// survive, which is later and therefore wins the max anyway.
 func track(ctx context.Context, src *addrindex.RPCBlockchain, sh *shards, opt *options,
     chain string, from, tip int, total int64, started time.Time) (string, error) {
     var buf = make(map[string]move, opt.batch)
@@ -133,11 +140,6 @@ func track(ctx context.Context, src *addrindex.RPCBlockchain, sh *shards, opt *o
             e.at(m.Sat, f.blk.Time)
             buf[string(m.Script)] = e
         }
-        // The outputs Core's UTXO set never held are taken back out of the
-        // balance, but not out of the date: a script whose only payment is one
-        // of these ends up holding nothing and never reaches the answer table,
-        // and every other script involved was paid again by the copy that did
-        // survive, which is later and therefore wins the max anyway.
         for _, o := range voided(chain, f.height, f.blk) {
             var e = buf[string(o.Script)]
             e.sat -= o.Sat
@@ -186,6 +188,16 @@ func spill(sh *shards, buf map[string]move) error {
 //
 // The database takes one writer whatever else is going on, so the rows go in
 // under a lock while the summing that produced them does not.
+//
+// The addresses are encoded here rather than under the lock:
+// hashing a script is the expensive part of this loop, and there
+// are tens of millions of them, so doing it while another shard
+// is being summed is the point of summing several at once.
+//
+// A balance cannot go below zero on a chain that only ever
+// spends outputs that exist, so one that does means this
+// run's own arithmetic is wrong somewhere — say so rather
+// than write it.
 func combine(store *abaStore, sh *shards, opt *options, tip int, hash string) error {
     var st, err = store.newState()
     if err != nil { return err }
@@ -222,18 +234,10 @@ func combine(store *abaStore, sh *shards, opt *options, tip int, hash string) er
                     mu.Unlock()
                     return
                 }
-                // The addresses are encoded here rather than under the lock:
-                // hashing a script is the expensive part of this loop, and there
-                // are tens of millions of them, so doing it while another shard
-                // is being summed is the point of summing several at once.
                 var out = make([]abaRow, 0, len(sums))
                 var neg int
                 for script, m := range sums {
                     if m.sat == 0 { continue }
-                    // A balance cannot go below zero on a chain that only ever
-                    // spends outputs that exist, so one that does means this
-                    // run's own arithmetic is wrong somewhere — say so rather
-                    // than write it.
                     if m.sat < 0 {
                         neg++
                         logging.Warn("ababuild: %s holds %d sat, which cannot happen",

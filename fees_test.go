@@ -7,6 +7,8 @@ import "testing"
 // checked exactly: feed it the projected blocks *they* published and it must
 // reproduce the recommendation they published at the same moment. Captured live
 // from /api/v1/fees/mempool-blocks and /api/v1/fees/recommended.
+//
+// their minimumFee was 1, i.e. a purge rate at or below 1 sat/vB
 func TestRecommendationMatchesMempoolSpace(t *testing.T) {
     var blocks = []projectedBlock{
         {vsize: 997962, medianFee: 3.011},
@@ -15,7 +17,6 @@ func TestRecommendationMatchesMempoolSpace(t *testing.T) {
         {vsize: 997902, medianFee: 0.439},
         {vsize: 997994, medianFee: 0.375},
     }
-    // their minimumFee was 1, i.e. a purge rate at or below 1 sat/vB
     var got = calculateRecommendedFee(blocks, 0.00001)
     var want = recommendedFees{fastest: 4, halfHour: 3, hour: 1, economy: 1, minimum: 1}
     if got != want {
@@ -82,9 +83,12 @@ func TestHalfEmptyBlockIsNotCongestion(t *testing.T) {
 // medianFeeOf is not the median transaction's rate: it is the weighted average
 // of the middle 0.25% of the block's *weight*. With a full block of uniform
 // transactions that lands on the rate at the halfway mark.
+//
+// 4000 transactions of 1000 weight each = 4M weight, exactly one full block.
+// Rates ascend 1..4000, so the middle by weight is around 2000.
+//
+// one transaction cannot have a meaningful middle
 func TestMedianFeeOfSamplesTheMiddle(t *testing.T) {
-    // 4000 transactions of 1000 weight each = 4M weight, exactly one full block.
-    // Rates ascend 1..4000, so the middle by weight is around 2000.
     var txs []mempoolTx
     for i := 1; i <= 4000; i++ {
         txs = append(txs, mempoolTx{weight: 1000, rate: float64(i)})
@@ -93,7 +97,6 @@ func TestMedianFeeOfSamplesTheMiddle(t *testing.T) {
     if math.Abs(got-2000.5) > 5 {
         t.Fatalf("median = %v, want ≈2000 (the middle of an ascending 1..4000 block)", got)
     }
-    // one transaction cannot have a meaningful middle
     if got := medianFeeOf([]mempoolTx{{weight: 1000, rate: 5}}); got != 0 {
         t.Fatalf("single-transaction block = %v, want 0", got)
     }
@@ -103,6 +106,8 @@ func TestMedianFeeOfSamplesTheMiddle(t *testing.T) {
 // samples the cheap end of its transactions rather than their middle — you
 // barely need to outbid anything to get into a block that is not full. The same
 // transactions packed into a full block sample their true middle instead.
+//
+// and a full block of the same shape samples its middle, far higher
 func TestMedianFeeOfAccountsForEmptySpace(t *testing.T) {
     var half []mempoolTx
     for i := 1; i <= 2000; i++ {
@@ -111,7 +116,6 @@ func TestMedianFeeOfAccountsForEmptySpace(t *testing.T) {
     if got := medianFeeOf(half); got > 10 {
         t.Fatalf("half-full block median = %v; empty space should drop the sample to the cheapest few (~3)", got)
     }
-    // and a full block of the same shape samples its middle, far higher
     var full []mempoolTx
     for i := 1; i <= 4000; i++ {
         full = append(full, mempoolTx{weight: 1000, rate: float64(i)})
@@ -123,12 +127,17 @@ func TestMedianFeeOfAccountsForEmptySpace(t *testing.T) {
 
 // Packing fills blocks highest-rate-first up to the weight limit, so the first
 // projected block holds the most valuable transactions.
+//
+// 8000 transactions of 1000 weight = 8M weight = two full blocks
+//
+// rate = i+1 sat/vB
+//
+// the expensive half goes in the first block, so its median must be higher
 func TestBuildProjectedBlocksPacksByRate(t *testing.T) {
     var entries = map[string]coreMempoolEntry{}
-    // 8000 transactions of 1000 weight = 8M weight = two full blocks
     for i := 0; i < 8000; i++ {
         var e = coreMempoolEntry{Vsize: 250, Weight: 1000}
-        e.Fees.Base = float64(i+1) * 250 / 1e8 // rate = i+1 sat/vB
+        e.Fees.Base = float64(i+1) * 250 / 1e8
         e.Fees.Ancestor = e.Fees.Base
         e.AncestorSize = 250
         entries[string(rune(i))+"-"+trimNum(float64(i), 0)] = e
@@ -140,7 +149,6 @@ func TestBuildProjectedBlocksPacksByRate(t *testing.T) {
     if blocks[0].vsize != 1_000_000 || blocks[1].vsize != 1_000_000 {
         t.Fatalf("block vsizes = %v, %v; want 1M each", blocks[0].vsize, blocks[1].vsize)
     }
-    // the expensive half goes in the first block, so its median must be higher
     if blocks[0].medianFee <= blocks[1].medianFee {
         t.Fatalf("block 0 median %v is not above block 1's %v — packing is not rate-ordered",
             blocks[0].medianFee, blocks[1].medianFee)
@@ -149,15 +157,18 @@ func TestBuildProjectedBlocksPacksByRate(t *testing.T) {
 
 // A transaction dragged in by a high-fee child is rated by the whole package,
 // not by its own cheap rate — otherwise CPFP would be invisible to the estimate.
+//
+// 1 sat/vB alone
+//
+// a child paying for both: 400 vB package, 20 000 sats
 func TestEffectiveRateUsesAncestorPackage(t *testing.T) {
     var cheapParent = coreMempoolEntry{Vsize: 200, Weight: 800}
-    cheapParent.Fees.Base = 200 / 1e8    // 1 sat/vB alone
+    cheapParent.Fees.Base = 200 / 1e8
     cheapParent.Fees.Ancestor = 200 / 1e8
     cheapParent.AncestorSize = 200
     if got := effectiveRate(cheapParent); math.Abs(got-1) > 0.001 {
         t.Errorf("standalone rate = %v, want 1 sat/vB", got)
     }
-    // a child paying for both: 400 vB package, 20 000 sats
     var child = coreMempoolEntry{Vsize: 200, Weight: 800}
     child.Fees.Base = 19800 / 1e8
     child.Fees.Ancestor = 20000 / 1e8
@@ -169,10 +180,12 @@ func TestEffectiveRateUsesAncestorPackage(t *testing.T) {
 
 // Nodes that omit weight (or entries with none) must not vanish from the
 // projection — vsize×4 is the right fallback.
+//
+// no Weight
 func TestBuildProjectedBlocksFallsBackToVsize(t *testing.T) {
     var entries = map[string]coreMempoolEntry{}
     for i := 0; i < 10; i++ {
-        var e = coreMempoolEntry{Vsize: 250} // no Weight
+        var e = coreMempoolEntry{Vsize: 250}
         e.Fees.Base = 2500 / 1e8
         entries[trimNum(float64(i), 0)+"x"] = e
     }

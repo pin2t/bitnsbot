@@ -78,12 +78,12 @@ func (s *countingSource) Addresses(lang string, rng AddrRange) Addrs {
     return addrWindow(s.al[rng.Kind], rng)
 }
 
+// below the fixture: a batch that exists but holds nothing recognisable
+// — enough for the eviction test to scroll deep
 func (s *countingSource) Blocks(lang string, rng Range) Blocks {
     s.hit("blocks" + rangeKey(rng))
     var b = window(s.b, rng)
     if !b.OK && rng.Before > 0 {
-        // below the fixture: a batch that exists but holds nothing recognisable
-        // — enough for the eviction test to scroll deep
         var h = rng.Before - 1
         b = Blocks{OK: true, Top: h, Next: h, More: true,
             Rows: []Block{{Height: strconv.FormatInt(h, 10), Num: h}}}
@@ -161,6 +161,8 @@ func TestPageServedFromCache(t *testing.T) {
 
 // The page embeds every card, so whichever one moved, the page is stale — a
 // visitor arriving after a new block must not be served the pre-block shell.
+//
+// an event no card is keyed to must not throw the page away
 func TestAnyNotifyClearsPage(t *testing.T) {
     for _, event := range []string{"fees", "network", "market", "blocks"} {
         var src = newCounting()
@@ -172,7 +174,6 @@ func TestAnyNotifyClearsPage(t *testing.T) {
             t.Errorf("after Notify(%q) the page rendered %d times, want 2", event, n)
         }
     }
-    // an event no card is keyed to must not throw the page away
     var src = newCounting()
     var h = handler(t, "TESTTOKEN", src)
     get(h, "/", "")
@@ -226,6 +227,10 @@ func TestBlocksCachedPerPage(t *testing.T) {
 
 // The list cache is bounded, so an edited before= parameter cannot make the
 // process hold an unbounded number of rendered batches.
+//
+// the list itself is the least recently used of the blocksCached+1 renders
+//
+// the most recent batch is still held
 func TestBlocksCacheEvictsOldestPage(t *testing.T) {
     var src = newCounting()
     var h = handler(t, "TESTTOKEN", src)
@@ -234,12 +239,10 @@ func TestBlocksCacheEvictsOldestPage(t *testing.T) {
     for i := 0; i < blocksCached; i++ {
         get(h, "/moreblocks?before="+strconv.Itoa(963257-i), data)
     }
-    // the list itself is the least recently used of the blocksCached+1 renders
     get(h, "/blocks", data)
     if n := src.count("blockstop"); n != 2 {
         t.Errorf("the newest batch rendered %d times, want 2 — it should have been evicted", n)
     }
-    // the most recent batch is still held
     var last = strconv.Itoa(963257 - (blocksCached - 1))
     get(h, "/moreblocks?before="+last, data)
     if n := src.count("blocksbefore" + last); n != 1 {
@@ -250,6 +253,8 @@ func TestBlocksCacheEvictsOldestPage(t *testing.T) {
 // Nothing sweeps the caches on a timer, so the deadline has to be enforced on
 // read. This is the backstop for data that changes without a Notify — the block
 // collector fills the bucket in the background without announcing it.
+//
+// the page ages out on the same deadline
 func TestCacheExpires(t *testing.T) {
     var old = cacheTTL
     cacheTTL = 20 * time.Millisecond
@@ -266,7 +271,6 @@ func TestCacheExpires(t *testing.T) {
             t.Errorf("%s rendered %d times, want 2 — the entry should have aged out", name, n)
         }
     }
-    // the page ages out on the same deadline
     var psrc = newCounting()
     var ph = handler(t, "TESTTOKEN", psrc)
     get(ph, "/", "")

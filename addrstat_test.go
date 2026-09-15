@@ -22,6 +22,11 @@ func seedAddrStat(t *testing.T, addr string, s addrstat.Stat) {
 
 // An address the collector follows is answered from its record — with no node at
 // all, which is what the stored statistics are for.
+//
+// the answer must not need one
+//
+// the count carries no trailing "+": this history is whole, where the live
+// path's is capped
 func TestAddressAnsweredFromStatistics(t *testing.T) {
     var addr = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
     seedAddrStat(t, addr, addrstat.Stat{
@@ -29,7 +34,7 @@ func TestAddressAnsweredFromStatistics(t *testing.T) {
         Fees: 5000, Txs: 4321, First: 1231006505, Last: 1700000000,
     })
     var saved = core
-    core = nil // the answer must not need one
+    core = nil
     t.Cleanup(func() { core = saved })
     var pairs, valid, err = addrPairs(context.Background(), "", addr)
     if err != nil || !valid { t.Fatalf("addrPairs: valid=%v err=%v", valid, err) }
@@ -44,8 +49,6 @@ func TestAddressAnsweredFromStatistics(t *testing.T) {
     } {
         if got[label] != want { t.Errorf("%s = %q, want %q", label, got[label], want) }
     }
-    // the count carries no trailing "+": this history is whole, where the live
-    // path's is capped
     if strings.Contains(got["Transactions"], "+") { t.Error("a gathered count was marked partial") }
     if got["First tx"] == "" || got["Last tx"] == "" || got["Activity period"] == "" {
         t.Errorf("dates missing: %v", got)

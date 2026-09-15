@@ -164,10 +164,11 @@ func encodeEntry(prefix []byte, t Touch) []byte {
 // chunk covers whole ranges — which the backfill's chunking arranges — each key
 // is written exactly once and never rewritten; appending only happens where a
 // resumed backfill picks up mid-range.
+//
+// Not a silent no-op: a write path that reports success while discarding
+// everything is how a missing Init went unnoticed through a whole chain
+// backfill. Reads may degrade quietly; writes must not.
 func merge(touches map[string][]Touch, height int) error {
-    // Not a silent no-op: a write path that reports success while discarding
-    // everything is how a missing Init went unnoticed through a whole chain
-    // backfill. Reads may degrade quietly; writes must not.
     if db == nil && sqldb == nil {
         return errors.New("addrindex: not initialised (neither Init nor InitSQL was called)")
     }

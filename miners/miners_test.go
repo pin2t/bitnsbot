@@ -17,10 +17,10 @@ const ddl = `create table miners (name TEXT PRIMARY KEY, blocks INTEGER NOT NULL
     create table minertag (tag TEXT PRIMARY KEY, name TEXT NOT NULL references miners(name));
     create table cursors (name TEXT PRIMARY KEY, place INTEGER NOT NULL)`
 
+// foreign keys on, as the bot runs them: mineraddr and minertag cannot name a
+// pool the miners table does not have
 func openTestDB(t *testing.T) *sql.DB {
     t.Helper()
-    // foreign keys on, as the bot runs them: mineraddr and minertag cannot name a
-    // pool the miners table does not have
     var handle, err = sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "miners.db")+"?_pragma=foreign_keys(on)")
     if err != nil { t.Fatalf("open: %v", err) }
     if _, err := handle.Exec(ddl); err != nil { t.Fatal(err) }
@@ -40,6 +40,7 @@ func serve(t *testing.T, payload *string) {
     sourceURL = srv.URL
 }
 
+// an unknown coinbase address resolves to "" (the caller supplies "Unknown")
 func TestUpdateAndName(t *testing.T) {
     openTestDB(t)
     var payload = `[{"name":"PoolA","addresses":["addrA"]},{"name":"PoolB","addresses":["addrB1","addrB2"]}]`
@@ -57,16 +58,15 @@ func TestUpdateAndName(t *testing.T) {
     if got := Name("addrA"); got != "PoolA" {
         t.Fatalf("addrA → %q, want PoolA", got)
     }
-    // an unknown coinbase address resolves to "" (the caller supplies "Unknown")
     if got := Name("someoneElse"); got != "" {
         t.Fatalf("unknown → %q, want empty", got)
     }
 }
 
+// a first fetch has addrA; a later fetch drops it and adds addrB — because we
+// never delete, addrA must still resolve while addrB is added.
 func TestUpdateOnlyAdds(t *testing.T) {
     openTestDB(t)
-    // a first fetch has addrA; a later fetch drops it and adds addrB — because we
-    // never delete, addrA must still resolve while addrB is added.
     var payload = `[{"name":"PoolA","addresses":["addrA"]}]`
     serve(t, &payload)
     update()
@@ -80,27 +80,30 @@ func TestUpdateOnlyAdds(t *testing.T) {
     }
 }
 
+// an address hit wins outright, no tag needed
+//
+// the payout address is not always the first coinbase output
+//
+// a rotated (unlisted) payout address still attributes via the coinbase tag —
+// the real mainnet case for Foundry, which has no usable address in the list
+//
+// neither address nor tag → unattributed, and the caller decides what to show
 func TestAttribute(t *testing.T) {
     openTestDB(t)
     var payload = `[{"name":"AntPool","addresses":["3AntAddr"],"tags":["/AntPool/","Mined by AntPool"]},
                     {"name":"Foundry USA","addresses":[],"tags":["Foundry USA Pool"]}]`
     serve(t, &payload)
     update()
-    // an address hit wins outright, no tag needed
     if got := Attribute([]string{"3AntAddr"}, ""); got != "AntPool" {
         t.Fatalf("by address = %q, want AntPool", got)
     }
-    // the payout address is not always the first coinbase output
     if got := Attribute([]string{"unrelated", "3AntAddr"}, ""); got != "AntPool" {
         t.Fatalf("by later address = %q, want AntPool", got)
     }
-    // a rotated (unlisted) payout address still attributes via the coinbase tag —
-    // the real mainnet case for Foundry, which has no usable address in the list
     var script = hex.EncodeToString([]byte("\x03abcd/Foundry USA Pool #dropgold/\xfa\x01"))
     if got := Attribute([]string{"bc1qUnlisted"}, script); got != "Foundry USA" {
         t.Fatalf("by tag = %q, want Foundry USA", got)
     }
-    // neither address nor tag → unattributed, and the caller decides what to show
     if got := Attribute([]string{"bc1qUnlisted"}, hex.EncodeToString([]byte("nothing here"))); got != "" {
         t.Fatalf("unknown = %q, want empty", got)
     }

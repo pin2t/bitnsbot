@@ -140,8 +140,10 @@ func Start(src addrindex.Blockchain) {
 // Collect walks the chain from the cursor to the tip once and returns. Start is
 // this on a loop; it is exported for the same reason addrindex.Build is, so a
 // caller that wants one pass and an exit code can have one.
+//
+// no addresses to gather for
 func Collect(src addrindex.Blockchain) error {
-    if Count() == 0 { return nil } // no addresses to gather for
+    if Count() == 0 { return nil }
     var ctx, cancel = context.WithTimeout(context.Background(), 6*time.Hour)
     defer cancel()
     var tip, err = src.Tip(ctx)
@@ -179,12 +181,14 @@ func Collect(src addrindex.Blockchain) error {
 // The fee is the whole transaction's, charged to every address that spends in
 // it: the chain records who funded a transaction, not which of them paid for it,
 // and this is what the live path already does.
+//
+// a coinbase spends nothing and pays no fee
 func apply(deltas map[string]*Stat, blk addrindex.Block) {
     watchedMu.RLock()
     defer watchedMu.RUnlock()
     for _, tx := range blk.Txs {
         var fee int64
-        if len(tx.Spent) > 0 { // a coinbase spends nothing and pays no fee
+        if len(tx.Spent) > 0 {
             for _, p := range tx.Spent { fee += p.Sat }
             for _, p := range tx.Outputs { fee -= p.Sat }
         }

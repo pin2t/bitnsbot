@@ -111,12 +111,20 @@ type parsedTx struct {
 // does not compute the txid (that needs a double SHA-256 over the non-witness
 // serialization); the txid is filled in by the caller from the ZMQ topic or the
 // RPC path, and is only used to key the outpoints this transaction creates.
+//
+// version
+//
+// segwit marker: the real input count follows the flag byte
+//
+// sequence
+//
+// value
 func parseTx(raw []byte) (*parsedTx, bool) {
     var r = &reader{buf: raw}
-    r.skip(4) // version
+    r.skip(4)
     var count, ok = r.varInt()
     if !ok { return nil, false }
-    if count == 0 { // segwit marker: the real input count follows the flag byte
+    if count == 0 {
         r.skip(1)
         count, ok = r.varInt()
         if !ok { return nil, false }
@@ -129,13 +137,13 @@ func parseTx(raw []byte) (*parsedTx, bool) {
         var scriptLen, lenOK = r.varInt()
         if !lenOK { return nil, false }
         r.skip(int(scriptLen))
-        r.skip(4) // sequence
+        r.skip(4)
         tx.inputs = append(tx.inputs, outpoint{reverseHex(hash), index})
     }
     var outCount, outOK = r.varInt()
     if !outOK { return nil, false }
     for i := uint64(0); i < outCount; i++ {
-        r.skip(8) // value
+        r.skip(8)
         var scriptLen, lenOK = r.varInt()
         if !lenOK { return nil, false }
         var script, scriptOK = r.bytes(int(scriptLen))
@@ -205,13 +213,23 @@ func (r *reader) varInt() (uint64, bool) {
 // startZMQ subscribes to Core's block and mempool notifications. Losing messages
 // while the bot is down is accepted: the block cache backfills on startup and
 // pending confirmation watches were never persisted anyway.
+//
+// Core publishes each topic on whatever address its own -zmqpub* option
+// names, so the topics we want may live on one port or on several. A SUB
+// socket can dial every publisher and receive from all of them, and
+// subscribing to a topic an endpoint never publishes simply yields nothing.
+//
+// Everything else a block moves is behind this one signal: the
+// four chain scans, and the Mini App's fee and network cards,
+// each of which waits on it alongside a timer of its own. So
+// nothing here computes anything — this loop's job is to say a
+// block arrived, and the work happens on the goroutines that
+// were already going to do it. The confirmation messages are the
+// exception: they are per-block by nature, matching this block's
+// transactions against the watch list.
 func startZMQ(ctx context.Context, endpoints []string, b *bot) error {
     if len(endpoints) == 0 { return fmt.Errorf("no ZMQ endpoints configured") }
     var sub = zmq4.NewSub(ctx)
-    // Core publishes each topic on whatever address its own -zmqpub* option
-    // names, so the topics we want may live on one port or on several. A SUB
-    // socket can dial every publisher and receive from all of them, and
-    // subscribing to a topic an endpoint never publishes simply yields nothing.
     for _, endpoint := range endpoints {
         if err := sub.Dial(endpoint); err != nil { return fmt.Errorf("dial %s: %w", endpoint, err) }
     }
@@ -232,14 +250,6 @@ func startZMQ(ctx context.Context, endpoints []string, b *bot) error {
             case "hashblock":
                 var hash = hex.EncodeToString(msg.Frames[1])
                 go processConfirms(b, hash)
-                // Everything else a block moves is behind this one signal: the
-                // four chain scans, and the Mini App's fee and network cards,
-                // each of which waits on it alongside a timer of its own. So
-                // nothing here computes anything — this loop's job is to say a
-                // block arrived, and the work happens on the goroutines that
-                // were already going to do it. The confirmation messages are the
-                // exception: they are per-block by nature, matching this block's
-                // transactions against the watch list.
                 signals.Send(signals.Block)
             case "rawtx":
                 if !anyWatched() { continue }

@@ -79,6 +79,9 @@ func (e *coreError) Error() string { return fmt.Sprintf("%s (code %d)", e.Messag
 // call performs one JSON-RPC request. Core speaks JSON-RPC 1.0 with positional
 // params and reports method errors in the body (with HTTP 500), so a non-200
 // status is not on its own a failure — the body is decoded either way.
+//
+// the node restarted and rotated its cookie: pick up the new one so the
+// next call succeeds rather than failing forever
 func (c *coreConn) call(ctx context.Context, method string, params []interface{}, result interface{}) error {
     if params == nil { params = []interface{}{} }
     var body, err = json.Marshal(map[string]interface{}{
@@ -96,8 +99,6 @@ func (c *coreConn) call(ctx context.Context, method string, params []interface{}
     if doErr != nil { return doErr }
     defer resp.Body.Close()
     if resp.StatusCode == http.StatusUnauthorized {
-        // the node restarted and rotated its cookie: pick up the new one so the
-        // next call succeeds rather than failing forever
         if err := c.refreshAuth(); err != nil { return err }
         return fmt.Errorf("unauthorized (credentials reloaded, retry)")
     }
@@ -216,11 +217,9 @@ func (c *coreConn) getBlockTxids(ctx context.Context, hash string) (*coreBlockTx
         return cached, nil
     }
     c.mu.Unlock()
-
     var blk coreBlockTxids
     var err = c.call(ctx, "getblock", []interface{}{hash, 1}, &blk)
     if err != nil { return nil, err }
-
     c.mu.Lock()
     c.blockTxidsCache.Put(hash, &blk)
     c.mu.Unlock()
@@ -247,11 +246,9 @@ func (c *coreConn) getBlockVerbose(ctx context.Context, hash string) (*coreVerbo
         return cached, nil
     }
     c.mu.Unlock()
-
     var blk coreVerboseBlock
     var err = c.call(ctx, "getblock", []interface{}{hash, 2}, &blk)
     if err != nil { return nil, err }
-
     c.mu.Lock()
     c.blockVerboseCache.Put(hash, &blk)
     c.mu.Unlock()

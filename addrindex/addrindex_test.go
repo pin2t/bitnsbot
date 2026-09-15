@@ -53,6 +53,7 @@ func openTestDB(t *testing.T) {
     t.Cleanup(func() { d.Close(); db = nil })
 }
 
+// an address with no touches returns nothing, not an error
 func TestMergeAndLookup(t *testing.T) { both(t, func(t *testing.T) {
     openTestDB(t)
     var script = []byte("0014deadbeef")
@@ -69,7 +70,6 @@ func TestMergeAndLookup(t *testing.T) { both(t, func(t *testing.T) {
     if len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
         t.Fatalf("touches = %v, want %v", got, want)
     }
-    // an address with no touches returns nothing, not an error
     var empty, _ = Lookup([]byte("nevertouched"), 10000)
     if len(empty) != 0 {
         t.Fatalf("expected no touches, got %v", empty)
@@ -80,6 +80,8 @@ func TestMergeAndLookup(t *testing.T) { both(t, func(t *testing.T) {
 // only the lookup stops early. This is the visible payoff of the sharded,
 // append-only layout — the previous key-per-address scheme had to cap what it
 // wrote, because appending rewrote the address's whole value every time.
+//
+// raising the limit must reveal the rest: nothing was ever dropped on disk
 func TestLookupCaps(t *testing.T) { both(t, func(t *testing.T) {
     openTestDB(t)
     var script = []byte("hotaddress")
@@ -99,7 +101,6 @@ func TestLookupCaps(t *testing.T) { both(t, func(t *testing.T) {
     if got[0].Height != 0 || got[2].Height != 2 {
         t.Fatalf("expected the oldest 3 touches, got %v", got)
     }
-    // raising the limit must reveal the rest: nothing was ever dropped on disk
     var all, stillCapped = Lookup(script, 100)
     if stillCapped || len(all) != 5 {
         t.Fatalf("full history = %d touches (capped=%v), want all 5 stored", len(all), stillCapped)
@@ -230,6 +231,7 @@ func syntheticBlock(t *testing.T, outScripts []string, spentScripts []string) Bl
     return Block{Hash: "synthetic", Txs: []Tx{tx}}
 }
 
+// a second pass with nothing new fetches nothing
 func TestCatchUp(t *testing.T) { both(t, func(t *testing.T) {
     openTestDB(t)
     var saved = chunkSize
@@ -256,7 +258,6 @@ func TestCatchUp(t *testing.T) { both(t, func(t *testing.T) {
     if !ok || height != 2 {
         t.Fatalf("cursor = %+v ok=%v, want Height=2", height, ok)
     }
-    // a second pass with nothing new fetches nothing
     src.fetched = nil
     if err := Build(src); err != nil { t.Fatalf("second catchUp: %v", err) }
     if len(src.fetched) != 0 {
@@ -268,6 +269,10 @@ func TestCatchUp(t *testing.T) { both(t, func(t *testing.T) {
 // must abandon the chunk without advancing the cursor — same reasoning as the
 // miners collector: stepping the cursor over an unfetched block would drop it
 // from the index permanently.
+//
+// heights 0-1 (one full chunk) must have been flushed before the failure at 3
+//
+// fixing the block and retrying picks up from where it stopped
 func TestCatchUpChunksAndRetries(t *testing.T) {
     openTestDB(t)
     var savedChunk = chunkSize
@@ -282,7 +287,6 @@ func TestCatchUpChunksAndRetries(t *testing.T) {
     if err := Build(src); err == nil {
         t.Fatal("expected an error from the failing block")
     }
-    // heights 0-1 (one full chunk) must have been flushed before the failure at 3
     var raw, _ = hex.DecodeString(script)
     var touches, _ = Lookup(raw, 10000)
     if len(touches) != 2 {
@@ -292,7 +296,6 @@ func TestCatchUpChunksAndRetries(t *testing.T) {
     if height != 1 {
         t.Fatalf("cursor = %d, want 1 (stuck before the failed block)", height)
     }
-    // fixing the block and retrying picks up from where it stopped
     src.err = nil
     src.fetched = nil
     if err := Build(src); err != nil { t.Fatalf("retry: %v", err) }
@@ -312,6 +315,8 @@ func TestCatchUpChunksAndRetries(t *testing.T) {
 // one integer, which is what tools/tosqlite packs a migrated key into and what
 // tools/addrindex's SQLite reader unpacks. A drift here would leave a migrated index
 // readable by nobody.
+//
+// and the reader gets the range back out of the low half
 func TestSQLKeyMatchesTheBboltKey(t *testing.T) {
     var prefix = Prefix([]byte("0014deadbeef"))
     for _, r := range []uint32{0, 1, 965, 0xffff, 0xffffff} {
@@ -320,7 +325,6 @@ func TestSQLKeyMatchesTheBboltKey(t *testing.T) {
         if got := sqlKey(prefix, r); got != want {
             t.Errorf("range %d: sqlKey = %x, the bbolt key reads as %x", r, got, want)
         }
-        // and the reader gets the range back out of the low half
         if got := uint32(sqlKey(prefix, r) & 0xffffffff); got != r {
             t.Errorf("range %d came back as %d", r, got)
         }

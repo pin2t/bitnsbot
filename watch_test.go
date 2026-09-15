@@ -36,6 +36,22 @@ func watcherChats(watchID string) []int64 {
 // Core there is no server-side filter and no server push: ZMQ delivers every
 // mempool transaction and the bot matches locally, so the test hands the raw
 // transaction to broadcast exactly as zmq.go does on a rawtx frame.
+//
+// fee 0.0001 BTC = 10000 sat over 100 vB = 100 sat/vB
+//
+// 6-block target → 20 sat/vB
+//
+// 2-block target → 50 sat/vB
+//
+// Populate cachedFees so confEstimate can map fee rates to ETA without
+// calling Core's estimatesmartfee.
+//
+// alias "John"
+//
+// fee 0.0001 BTC = 10000 sat over 100 vB = 100 sat/vB; 100 >= 50 (2-block) → ~10-20 min
+//
+// the mempool notification also registers a one-shot confirmation watch, so
+// the chat gets a second message once this transaction is mined
 func TestWatchNotification(t *testing.T) {
     var sentMu sync.Mutex
     var sent []string
@@ -74,12 +90,11 @@ func TestWatchNotification(t *testing.T) {
                 "vout": []map[string]any{{"value": 2.5, "n": 0, "scriptPubKey": map[string]any{"address": watchedAddr, "hex": "76a914aa88ac"}}},
             }, nil
         case "getmempoolentry":
-            // fee 0.0001 BTC = 10000 sat over 100 vB = 100 sat/vB
             return map[string]any{"vsize": 100, "fees": map[string]any{"base": 0.0001}}, nil
         case "estimatesmartfee":
-            var rate = 0.0002 // 6-block target → 20 sat/vB
+            var rate = 0.0002
             if blocks, _ := params[0].(float64); blocks == 2 {
-                rate = 0.0005 // 2-block target → 50 sat/vB
+                rate = 0.0005
             }
             return map[string]any{"feerate": rate, "blocks": params[0]}, nil
         }
@@ -87,8 +102,6 @@ func TestWatchNotification(t *testing.T) {
     })
     core = newFakeCoreConn(t, srv)
     defer func() { core = nil }()
-    // Populate cachedFees so confEstimate can map fee rates to ETA without
-    // calling Core's estimatesmartfee.
     feesMu.Lock()
     cachedFees = recommendedFees{fastest: 50, halfHour: 30, hour: 20, economy: 10, minimum: 1}
     cachedFeesOK = true
@@ -99,7 +112,7 @@ func TestWatchNotification(t *testing.T) {
     stopNotify()
     resetWatched()
     defer stopNotify()
-    watchCmd(b, 42, watchedAddr+" John") // alias "John"
+    watchCmd(b, 42, watchedAddr+" John")
     broadcast("deadbeefrawtxhex")
     var deadline = time.Now().Add(3 * time.Second)
     for time.Now().Before(deadline) {
@@ -129,14 +142,11 @@ func TestWatchNotification(t *testing.T) {
     if !strings.Contains(found, "2.5 BTC") {
         t.Fatalf("expected 2.5 BTC in notification, got: %q", found)
     }
-    // fee 0.0001 BTC = 10000 sat over 100 vB = 100 sat/vB; 100 >= 50 (2-block) → ~10-20 min
     for _, want := range []string{"ETA ~10-20 min"} {
         if !strings.Contains(found, want) {
             t.Fatalf("notification missing %q: %q", want, found)
         }
     }
-    // the mempool notification also registers a one-shot confirmation watch, so
-    // the chat gets a second message once this transaction is mined
     var registered bool
     for _, c := range txwatches.Confirms([]string{txid}) {
         if c.ChatID == 42 && c.Addr == watchedAddr {
@@ -148,6 +158,11 @@ func TestWatchNotification(t *testing.T) {
     }
 }
 
+// chat 2 unwatches; only chat 1 must remain, both as a live watcher and in the store
+//
+// unwatching something not watched removes nothing
+//
+// bare /unwatch marks the chat pending and consumes the next plain message
 func TestUnwatchFlow(t *testing.T) {
     var sent []string
     var server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -171,7 +186,6 @@ func TestUnwatchFlow(t *testing.T) {
     if countWatchers(addr) != 2 {
         t.Fatalf("expected 2 watchers, got %d", countWatchers(addr))
     }
-    // chat 2 unwatches; only chat 1 must remain, both as a live watcher and in the store
     update(b, Update{Message: &Message{Chat: Chat{ID: 2}, Text: "/unwatch " + addr}})
     if sent[len(sent)-1] != "Stopped watching "+addr {
         t.Fatalf("unexpected unwatch reply: %#v", sent)
@@ -183,12 +197,10 @@ func TestUnwatchFlow(t *testing.T) {
     if len(records) != 1 || records[0].Chat != 1 {
         t.Fatalf("expected only chat 1's record in store, got %#v", records)
     }
-    // unwatching something not watched removes nothing
     update(b, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/unwatch bogusaddr"}})
     if sent[len(sent)-1] != "You're not watching bogusaddr" {
         t.Fatalf("unexpected not-watching reply: %q", sent[len(sent)-1])
     }
-    // bare /unwatch marks the chat pending and consumes the next plain message
     update(b, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/unwatch"}})
     if !pendingUnwatchChats[1] {
         t.Fatalf("expected chat 1 pending for unwatch")
@@ -205,6 +217,13 @@ func TestUnwatchFlow(t *testing.T) {
     }
 }
 
+// nothing watched yet
+//
+// full ids present (not shortened) and tap-to-copy wrapped
+//
+// scoping: another chat's watch must not appear
+//
+// a watch id containing HTML metacharacters must be escaped
 func TestWatchesFlow(t *testing.T) {
     var sent []string
     var server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -221,7 +240,6 @@ func TestWatchesFlow(t *testing.T) {
     defer closeDB()
     stopNotify()
     defer stopNotify()
-    // nothing watched yet
     update(b, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/watches"}})
     if sent[len(sent)-1] != "You're not watching anything yet" {
         t.Fatalf("unexpected empty reply: %q", sent[len(sent)-1])
@@ -233,7 +251,6 @@ func TestWatchesFlow(t *testing.T) {
     watches.Add(2, "someoneElsesAddress", "")
     update(b, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/watches"}})
     var msg = sent[len(sent)-1]
-    // full ids present (not shortened) and tap-to-copy wrapped
     if !strings.Contains(msg, "<code>"+addr+"</code>") {
         t.Fatalf("expected full address in <code>, got: %q", msg)
     }
@@ -243,11 +260,9 @@ func TestWatchesFlow(t *testing.T) {
     if !strings.Contains(msg, "Addresses:") || !strings.Contains(msg, "Transactions:") {
         t.Fatalf("expected grouped sections, got: %q", msg)
     }
-    // scoping: another chat's watch must not appear
     if strings.Contains(msg, "someoneElsesAddress") {
         t.Fatalf("must not list another chat's watch: %q", msg)
     }
-    // a watch id containing HTML metacharacters must be escaped
     watches.Add(3, "a<b>c", "")
     update(b, Update{Message: &Message{Chat: Chat{ID: 3}, Text: "/watches"}})
     if last := sent[len(sent)-1]; !strings.Contains(last, "a&lt;b&gt;c") {
@@ -257,6 +272,10 @@ func TestWatchesFlow(t *testing.T) {
 
 // TestWatchLimit seeds a chat up to maxSubscriptionsPerChat and checks that a new
 // /watch is rejected with the polite limit message instead of being stored.
+//
+// seed the chat exactly at the limit
+//
+// the rejected watch must not have been stored
 func TestWatchLimit(t *testing.T) {
     var sent []string
     var server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -276,7 +295,6 @@ func TestWatchLimit(t *testing.T) {
     defer txwatches.Reset()
     openDB(filepath.Join(t.TempDir(), "watches.db"))
     defer closeDB()
-    // seed the chat exactly at the limit
     for i := 0; i < maxSubscriptionsPerChat; i++ {
         if err := watches.Add(42, fmt.Sprintf("addr%d", i), ""); err != nil {
             t.Fatalf("seed watch %d: %v", i, err)
@@ -287,7 +305,6 @@ func TestWatchLimit(t *testing.T) {
     if last := sent[len(sent)-1]; !strings.Contains(last, "limit") {
         t.Fatalf("expected a limit rejection, got %q", last)
     }
-    // the rejected watch must not have been stored
     var records, _ = watches.List()
     for _, r := range records {
         if r.Chat == 42 && r.Address == addr {
@@ -296,6 +313,8 @@ func TestWatchLimit(t *testing.T) {
     }
 }
 
+// a hashblock frame is what zmq.go turns into a checkConfirmations that finds
+// txid in the new block and messages chat 7
 func TestTxConfirmation(t *testing.T) {
     var sentMu sync.Mutex
     var sent []string
@@ -335,8 +354,6 @@ func TestTxConfirmation(t *testing.T) {
     stopNotify()
     defer stopNotify()
     txwatches.Add(txid, 7, "Alice")
-    // a hashblock frame is what zmq.go turns into a checkConfirmations that finds
-    // txid in the new block and messages chat 7
     go processConfirms(b, "0000000000000000abc")
     var found string
     var deadline = time.Now().Add(3 * time.Second)
@@ -424,6 +441,7 @@ func TestAddrConfirmation(t *testing.T) {
     }
 }
 
+// the two identical address confirmations dedup to one; the direct watch (addr "") stays distinct
 func TestAddrConfirmDedup(t *testing.T) {
     txwatches.Reset()
     defer txwatches.Reset()
@@ -431,7 +449,6 @@ func TestAddrConfirmDedup(t *testing.T) {
     txwatches.AddAddrConfirm("txabc", 5, "addrX", "Alias", txwatches.Summary{})
     txwatches.Add("txabc", 5, "")
     var n = len(txwatches.Confirms([]string{"txabc"}))
-    // the two identical address confirmations dedup to one; the direct watch (addr "") stays distinct
     if n != 2 {
         t.Fatalf("expected 2 entries (deduped addr-confirm + distinct direct watch), got %d", n)
     }
@@ -492,6 +509,13 @@ func sentMessages(t *testing.T) []string {
     return append([]string(nil), captured...)
 }
 
+// Populate cachedFees so confEstimate can map fee rates to ETA without
+// calling Core's estimatesmartfee.
+//
+// cleanup runs after the caller's assertions, so stopNotify (which resets the
+// confirmation map) can't erase what the test is about to check
+//
+// ZMQ delivers the raw transaction; this is what zmq.go does with a rawtx frame
 func awaitNotification(t *testing.T, btcdSrv *httptest.Server, watchedAddr string) string {
     capturedMu.Lock()
     captured = nil
@@ -513,8 +537,6 @@ func awaitNotification(t *testing.T, btcdSrv *httptest.Server, watchedAddr strin
     }))
     var b = newBot("TESTTOKEN", tg.URL)
     core = newFakeCoreConn(t, btcdSrv)
-    // Populate cachedFees so confEstimate can map fee rates to ETA without
-    // calling Core's estimatesmartfee.
     feesMu.Lock()
     cachedFees = recommendedFees{fastest: 50, halfHour: 30, hour: 20, economy: 10, minimum: 1}
     cachedFeesOK = true
@@ -523,15 +545,12 @@ func awaitNotification(t *testing.T, btcdSrv *httptest.Server, watchedAddr strin
     openDB(filepath.Join(t.TempDir(), "watches.db"))
     stopNotify()
     resetWatched()
-    // cleanup runs after the caller's assertions, so stopNotify (which resets the
-    // confirmation map) can't erase what the test is about to check
     t.Cleanup(tg.Close)
     t.Cleanup(func() { core = nil })
     t.Cleanup(func() { closeDB() })
     t.Cleanup(stopNotify)
     t.Cleanup(resetWatched)
     watchCmd(b, 42, watchedAddr+" John")
-    // ZMQ delivers the raw transaction; this is what zmq.go does with a rawtx frame
     broadcast("deadbeefrawtxhex")
     var deadline = time.Now().Add(3 * time.Second)
     for time.Now().Before(deadline) {
@@ -552,6 +571,10 @@ func awaitNotification(t *testing.T, btcdSrv *httptest.Server, watchedAddr strin
 
 // Spending the whole balance with nothing back: the address only appears in the
 // inputs, so the notification is an outgoing one with no change/net lines.
+//
+// the whole 1.0001 BTC input left the address
+//
+// an outgoing transaction is worth a confirmation follow-up too
 func TestSpendNotification(t *testing.T) {
     var watchedAddr = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
     var txid = "f21b47a9143a23e80cc59e81588d21558b394005580b285961957cb3bed5b3e0"
@@ -564,7 +587,6 @@ func TestSpendNotification(t *testing.T) {
     if strings.Contains(got, "New transaction on") {
         t.Fatalf("a spend must not be reported as an incoming transaction: %q", got)
     }
-    // the whole 1.0001 BTC input left the address
     if !strings.Contains(got, "Sending:") || !strings.Contains(got, "1 BTC") {
         t.Fatalf("expected the sent amount: %q", got)
     }
@@ -578,7 +600,6 @@ func TestSpendNotification(t *testing.T) {
             t.Fatalf("notification missing %q: %q", want, got)
         }
     }
-    // an outgoing transaction is worth a confirmation follow-up too
     var registered bool
     for _, c := range txwatches.Confirms([]string{txid}) {
         if c.ChatID == 42 && c.Addr == watchedAddr { registered = true }
@@ -590,6 +611,8 @@ func TestSpendNotification(t *testing.T) {
 
 // The usual spend: part goes to the recipient and the rest returns as change, so
 // the address is in both the inputs and the outputs and the report is a net move.
+//
+// 2.5 spent, 1.4999 back as change, so the address is down 1.0001 BTC
 func TestSpendWithChangeNotification(t *testing.T) {
     var watchedAddr = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
     var txid = "f21b47a9143a23e80cc59e81588d21558b394005580b285961957cb3bed5b3e0"
@@ -599,7 +622,6 @@ func TestSpendWithChangeNotification(t *testing.T) {
     if !strings.Contains(got, "sending") {
         t.Fatalf("expected an outgoing-transaction notification: %q", got)
     }
-    // 2.5 spent, 1.4999 back as change, so the address is down 1.0001 BTC
     for _, want := range []string{"Sending:", "2.5 BTC", "Change back:", "1.4999 BTC", "Net:", "-1.0001 BTC"} {
         if !strings.Contains(got, want) {
             t.Fatalf("notification missing %q: %q", want, got)
@@ -611,6 +633,10 @@ func TestSpendWithChangeNotification(t *testing.T) {
 // a spend names the outpoint and never the address. Core answers that directly
 // with scantxoutset — no history replay, unlike the btcd path — and seeding runs
 // in the background, so this waits for it.
+//
+// the scan must be asked for every address in one pass
+//
+// an unspent belonging to a different script must not be attributed to us
 func TestSeedOutpoints(t *testing.T) {
     var addr = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
     var script = "76a914aabbccddeeff88ac"
@@ -619,7 +645,6 @@ func TestSeedOutpoints(t *testing.T) {
         case "validateaddress":
             return map[string]any{"isvalid": true, "address": addr, "scriptPubKey": script}, nil
         case "scantxoutset":
-            // the scan must be asked for every address in one pass
             if action, _ := params[0].(string); action != "start" {
                 t.Fatalf("scantxoutset action = %v, want start", params[0])
             }
@@ -654,7 +679,6 @@ func TestSeedOutpoints(t *testing.T) {
             t.Fatalf("outpoint %v not seeded (got %q): %v", op, watchedOutpoints[op], watchedOutpoints)
         }
     }
-    // an unspent belonging to a different script must not be attributed to us
     if _, ok := watchedOutpoints[outpoint{"other", 0}]; ok {
         t.Fatal("an unrelated address's outpoint was seeded")
     }
@@ -666,6 +690,10 @@ func TestSeedOutpoints(t *testing.T) {
 // produce exactly one message. Before this was fixed a watched payment produced
 // three messages: the mempool one, the confirmation, and a second "New
 // transaction" from the mined republish.
+//
+// the mined republish of the very same transaction
+//
+// a *different* transaction on the same address still notifies
 func TestBroadcastDedups(t *testing.T) {
     var watchedAddr = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
     var txid = "f21b47a9143a23e80cc59e81588d21558b394005580b285961957cb3bed5b3e0"
@@ -675,14 +703,12 @@ func TestBroadcastDedups(t *testing.T) {
     if !strings.Contains(got, "is sending") {
         t.Fatalf("expected a first notification, got %q", got)
     }
-    // the mined republish of the very same transaction
     var before = len(sentMessages(t))
     broadcast("deadbeefrawtxhex")
     time.Sleep(300 * time.Millisecond)
     if after := len(sentMessages(t)); after != before {
         t.Fatalf("a repeat broadcast sent %d extra message(s); it must send none", after-before)
     }
-    // a *different* transaction on the same address still notifies
     if alreadyNotified("some-other-txid") {
         t.Fatal("an unseen txid must not be reported as already notified")
     }

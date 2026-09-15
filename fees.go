@@ -100,11 +100,15 @@ func effectiveRate(e coreMempoolEntry) float64 {
 // unconfirmed parents, which is the overwhelming majority; it can misplace the
 // interior of a long CPFP chain. Since the recommendation reads the *middle* of
 // each block by weight, a few misplaced chain members do not move it.
+//
+// older nodes omit weight
+//
+// the last block takes everything remaining rather than starting a new one
 func buildProjectedBlocks(entries map[string]coreMempoolEntry) []projectedBlock {
     var txs = make([]mempoolTx, 0, len(entries))
     for _, e := range entries {
         var weight = e.Weight
-        if weight <= 0 { weight = int64(e.Vsize) * 4 } // older nodes omit weight
+        if weight <= 0 { weight = int64(e.Vsize) * 4 }
         if weight <= 0 { continue }
         txs = append(txs, mempoolTx{weight: weight, rate: effectiveRate(e)})
     }
@@ -117,7 +121,6 @@ func buildProjectedBlocks(entries map[string]coreMempoolEntry) []projectedBlock 
     var current []mempoolTx
     var currentWeight int64
     for _, t := range txs {
-        // the last block takes everything remaining rather than starting a new one
         var last = len(blocks) == projectedBlocksAmount-1
         if !last && currentWeight+t.weight > blockWeightUnits && len(current) > 0 {
             blocks = append(blocks, finishBlock(current, currentWeight))
@@ -180,6 +183,11 @@ func medianFeeOf(txs []mempoolTx) float64 {
 // recommendations. mempoolMinFee is the node's own purge threshold in BTC/kvB
 // (getmempoolinfo's mempoolminfee), which floors every answer: quoting below it
 // would recommend a fee the node itself would not even relay.
+//
+// each tier blends with the tier above it, so the numbers step down smoothly
+// instead of cliff-edging between blocks
+//
+// recommendations must never invert: paying for speed cannot cost less
 func calculateRecommendedFee(blocks []projectedBlock, mempoolMinFee float64) recommendedFees {
     var purgeRate = roundUpTo(mempoolMinFee*1e5, minIncrement)
     var minimum = math.Max(purgeRate, minIncrement)
@@ -190,8 +198,6 @@ func calculateRecommendedFee(blocks []projectedBlock, mempoolMinFee float64) rec
         if i < len(blocks) { return &blocks[i] }
         return nil
     }
-    // each tier blends with the tier above it, so the numbers step down smoothly
-    // instead of cliff-edging between blocks
     var first = optimizeMedianFee(at(0), at(1), 0, minimum)
     var second = minimum
     if at(1) != nil { second = optimizeMedianFee(at(1), at(2), first, minimum) }
@@ -201,7 +207,6 @@ func calculateRecommendedFee(blocks []projectedBlock, mempoolMinFee float64) rec
     var halfHour = math.Max(minimum, second)
     var hour = math.Max(minimum, third)
     var economy = math.Max(minimum, math.Min(2*minimum, third))
-    // recommendations must never invert: paying for speed cannot cost less
     fastest = math.Max(fastest, math.Max(halfHour, math.Max(hour, economy)))
     halfHour = math.Max(halfHour, math.Max(hour, economy))
     hour = math.Max(hour, economy)

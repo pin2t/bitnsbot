@@ -40,15 +40,23 @@ func values(c app.Chart) []string {
 // A month is the last thirty UTC days, today the last of them, and a bar counts
 // what the pool mined that day — nothing of another pool's, nothing from before
 // the first day, and a block stamped a little ahead of now in today's.
+//
+// the day before the first
+//
+// the first moment of the first
+//
+// an hour ahead of now
+//
+// the scale holds the peak of 3 at a round 4, and the bars are shares of it
 func TestMinerChartCountsByDay(t *testing.T) {
     chartDB(t,
-        at(1, utc(2026, time.August, 17, 23, 59, 59), "Foundry USA", 1e14), // the day before the first
-        at(2, utc(2026, time.August, 18, 0, 0, 0), "Foundry USA", 1e14),    // the first moment of the first
+        at(1, utc(2026, time.August, 17, 23, 59, 59), "Foundry USA", 1e14),
+        at(2, utc(2026, time.August, 18, 0, 0, 0), "Foundry USA", 1e14),
         at(3, utc(2026, time.September, 15, 23, 59, 59), "Foundry USA", 1e14),
         at(4, utc(2026, time.September, 16, 1, 0, 0), "Foundry USA", 1e14),
         at(5, utc(2026, time.September, 16, 5, 0, 0), "AntPool", 1e14),
         at(6, utc(2026, time.September, 16, 10, 0, 0), "Foundry USA", 1e14),
-        at(7, utc(2026, time.September, 16, 16, 30, 0), "Foundry USA", 1e14), // an hour ahead of now
+        at(7, utc(2026, time.September, 16, 16, 30, 0), "Foundry USA", 1e14),
     )
     var c = minerChart("", "Foundry USA", "blocks", "month", chartNow)
     if !c.OK { t.Fatal("a month with blocks in it is not OK") }
@@ -63,7 +71,6 @@ func TestMinerChartCountsByDay(t *testing.T) {
     if c.Bars[0].Label != "18 aug 2026" || c.Bars[29].Label != "16 sep 2026" {
         t.Errorf("the month runs %q to %q, want 18 aug 2026 to 16 sep 2026", c.Bars[0].Label, c.Bars[29].Label)
     }
-    // the scale holds the peak of 3 at a round 4, and the bars are shares of it
     if c.Top != "4" || c.Mid != "2" {
         t.Errorf("scale = %s / %s, want 4 / 2", c.Top, c.Mid)
     }
@@ -83,6 +90,15 @@ func TestMinerChartCountsByDay(t *testing.T) {
 // counted, since somebody mined them — at the difficulty its own blocks carried.
 // The figures are worked from the formula here rather than through
 // miners.Consumption, so the two cannot drift together.
+//
+// one block's worth of a network at 1e14: 1e14 × 2^32 hashes a 600s block,
+// at 1e-11 J a hash, in GW
+//
+// 2 of 4 blocks, at 1.5e14 on average
+//
+// 1 of 4 blocks at 1e14
+//
+// the whole month is one share: 3 of 8 blocks, at 4e14 / 3 on average
 func TestMinerChartConsumptionIsTheShareOfEachBucket(t *testing.T) {
     chartDB(t,
         at(1, utc(2026, time.September, 15, 1, 0, 0), "Foundry USA", 1e14),
@@ -94,20 +110,15 @@ func TestMinerChartConsumptionIsTheShareOfEachBucket(t *testing.T) {
         at(7, utc(2026, time.September, 16, 3, 0, 0), "AntPool", 1e14),
         at(8, utc(2026, time.September, 16, 4, 0, 0), "AntPool", 1e14),
     )
-    // one block's worth of a network at 1e14: 1e14 × 2^32 hashes a 600s block,
-    // at 1e-11 J a hash, in GW
     var gw = 1e14 * 4294967296 / 600 * 1e-11 / 1e9
     var c = minerChart("", "Foundry USA", "consumption", "month", chartNow)
     var yesterday, today = c.Bars[28], c.Bars[29]
-    // 2 of 4 blocks, at 1.5e14 on average
     if want := trimNum(0.5*1.5*gw, 2) + " GW"; yesterday.Value != want || want != "5.37 GW" {
         t.Errorf("yesterday = %q, want %q", yesterday.Value, want)
     }
-    // 1 of 4 blocks at 1e14
     if want := trimNum(0.25*gw, 2) + " GW"; today.Value != want || want != "1.79 GW" {
         t.Errorf("today = %q, want %q", today.Value, want)
     }
-    // the whole month is one share: 3 of 8 blocks, at 4e14 / 3 on average
     if want := trimNum(3.0/8*(4.0/3)*gw, 2) + " GW"; c.Value != want || want != "3.58 GW" {
         t.Errorf("the month = %q, want %q", c.Value, want)
     }
@@ -121,11 +132,17 @@ func TestMinerChartConsumptionIsTheShareOfEachBucket(t *testing.T) {
 
 // A quarter is thirteen weeks starting on a Monday, the running one last; a year
 // is twelve calendar months, the running one last.
+//
+// before the year's first month
+//
+// the Sunday before the quarter
+//
+// a week that straddles the new year names both years
 func TestMinerChartWeeksAndMonths(t *testing.T) {
     chartDB(t,
-        at(1, utc(2025, time.September, 30, 23, 59, 59), "F2Pool", 1e14), // before the year's first month
+        at(1, utc(2025, time.September, 30, 23, 59, 59), "F2Pool", 1e14),
         at(2, utc(2025, time.October, 31, 23, 59, 59), "F2Pool", 1e14),
-        at(3, utc(2026, time.June, 21, 23, 59, 59), "F2Pool", 1e14), // the Sunday before the quarter
+        at(3, utc(2026, time.June, 21, 23, 59, 59), "F2Pool", 1e14),
         at(4, utc(2026, time.June, 22, 0, 0, 0), "F2Pool", 1e14),
         at(5, utc(2026, time.September, 13, 23, 0, 0), "F2Pool", 1e14),
         at(6, utc(2026, time.September, 14, 0, 0, 0), "F2Pool", 1e14),
@@ -150,7 +167,6 @@ func TestMinerChartWeeksAndMonths(t *testing.T) {
         t.Errorf("months = %v, total %q", got, y.Value)
     }
     if y.Label != "last 12 months" { t.Errorf("label %q", y.Label) }
-    // a week that straddles the new year names both years
     var jan = minerChart("", "F2Pool", "blocks", "quarter", utc(2026, time.January, 7, 12, 0, 0))
     if got := jan.Bars[11].Label; got != "29 dec 2025 – 4 jan 2026" {
         t.Errorf("the week across the new year = %q", got)
@@ -181,6 +197,8 @@ func TestMinerChartIsTranslated(t *testing.T) {
 // A table with no block in the period is a collector that has not got there, not
 // a pool that mined nothing — so the chart says it has nothing rather than
 // drawing zeroes.
+//
+// while a period that has blocks, none of them the pool's, is zeroes as fact
 func TestMinerChartWithNoBlocksInThePeriod(t *testing.T) {
     chartDB(t, at(1, utc(2020, time.January, 1, 0, 0, 0), "AntPool", 1e14))
     for _, period := range []string{"month", "quarter", "year"} {
@@ -188,7 +206,6 @@ func TestMinerChartWithNoBlocksInThePeriod(t *testing.T) {
             t.Errorf("%s with no blocks in it is OK: %+v", period, c)
         }
     }
-    // while a period that has blocks, none of them the pool's, is zeroes as fact
     chartDB(t, at(1, chartNow, "AntPool", 1e14))
     var c = minerChart("", "Braiins Pool", "blocks", "month", chartNow)
     if !c.OK || c.Value != "0 blocks" || c.Top != "2" {
