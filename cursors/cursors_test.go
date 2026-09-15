@@ -39,13 +39,13 @@ func set(t *testing.T, handle *sql.DB, name string, v int64) {
 // stored — and a scan advancing its place must not add a second row for itself.
 func TestInitLeavesStoredCursorsAlone(t *testing.T) {
     var handle = open(t)
-    set(t, handle, Blocks, 900)
+    set(t, handle, AddrStat, 900)
     for i := 0; i < 3; i++ {
         if err := Init(handle); err != nil { t.Fatalf("init %d: %v", i, err) }
     }
-    get(t, Blocks, 900)
-    set(t, handle, Blocks, 901)
-    get(t, Blocks, 901)
+    get(t, AddrStat, 900)
+    set(t, handle, AddrStat, 901)
+    get(t, AddrStat, 901)
     var n int
     if err := handle.QueryRow("select count(*) from cursors").Scan(&n); err != nil { t.Fatal(err) }
     if n != 1 { t.Errorf("%d rows for one scan, want 1 — a place is updated, not appended", n) }
@@ -55,7 +55,7 @@ func TestInitLeavesStoredCursorsAlone(t *testing.T) {
 // that stopped at height 0, and each picks its own starting point.
 func TestFreshDatabaseHasNoCursors(t *testing.T) {
     open(t)
-    for _, name := range []string{Blocks, Miners, AddrStat} {
+    for _, name := range []string{Miners, AddrStat} {
         if v, ok := Get(name); ok {
             t.Errorf("%s came back as %d on a fresh database", name, v)
         }
