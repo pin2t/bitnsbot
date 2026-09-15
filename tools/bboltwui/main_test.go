@@ -306,7 +306,7 @@ func TestClearBucket(t *testing.T) {
         exists = b != nil
         if exists {
             var c = b.Cursor()
-            _, v := c.First()
+            var _, v = c.First()
             empty = v == nil
         }
         return nil

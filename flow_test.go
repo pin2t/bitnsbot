@@ -35,7 +35,7 @@ const infoBlockHash = "00000000000000000000524afad3a4cc1e4e190e1272de721de6cdb4e
 func TestInfoFlow(t *testing.T) {
     var sent []string
     var lastMode string
-    server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+    var server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
         var body struct {
             Text      string `json:"text"`
             ParseMode string `json:"parse_mode"`
@@ -46,7 +46,7 @@ func TestInfoFlow(t *testing.T) {
         json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": true})
     }))
     defer server.Close()
-    bot := newBot("TESTTOKEN", server.URL)
+    var bot = newBot("TESTTOKEN", server.URL)
     update(bot, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/info"}})
     if len(sent) != 1 || sent[0] != "Please send Bitcoin address or transaction or block number or block hash" {
         t.Fatalf("unexpected first reply: %#v", sent)
@@ -245,7 +245,7 @@ func TestInfoFlow(t *testing.T) {
 // /watches lists the alias next to the id
 func TestWatchFlow(t *testing.T) {
     var sent []string
-    server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+    var server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
         var body struct {
             Text string `json:"text"`
         }
@@ -254,7 +254,7 @@ func TestWatchFlow(t *testing.T) {
         json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": true})
     }))
     defer server.Close()
-    bot := newBot("TESTTOKEN", server.URL)
+    var bot = newBot("TESTTOKEN", server.URL)
     var err error
     err = openDB(filepath.Join(t.TempDir(), "watches.db"))
     if err != nil {
@@ -604,7 +604,7 @@ func TestMempoolFlowRate(t *testing.T) {
 func TestI18nSetLanguage(t *testing.T) {
 	t.Cleanup(func() { chatLangs = lru.New[int64, string](10000) })
 	var sent []string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	var server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Text string `json:"text"`
 		}
@@ -613,8 +613,8 @@ func TestI18nSetLanguage(t *testing.T) {
 		json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": true})
 	}))
 	defer server.Close()
-	bot := newBot("TESTTOKEN", server.URL)
-	err := openDB(filepath.Join(t.TempDir(), "watches.db"))
+	var bot = newBot("TESTTOKEN", server.URL)
+	var err = openDB(filepath.Join(t.TempDir(), "watches.db"))
 	if err != nil {
 		t.Fatalf("openDB: %v", err)
 	}
@@ -652,7 +652,7 @@ func TestI18nSetLanguage(t *testing.T) {
 func TestI18nAutoDetect(t *testing.T) {
 	t.Cleanup(func() { chatLangs = lru.New[int64, string](10000) })
 	var sent []string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	var server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Text string `json:"text"`
 		}
@@ -661,8 +661,8 @@ func TestI18nAutoDetect(t *testing.T) {
 		json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": true})
 	}))
 	defer server.Close()
-	bot := newBot("TESTTOKEN", server.URL)
-	err := openDB(filepath.Join(t.TempDir(), "watches.db"))
+	var bot = newBot("TESTTOKEN", server.URL)
+	var err = openDB(filepath.Join(t.TempDir(), "watches.db"))
 	if err != nil {
 		t.Fatalf("openDB: %v", err)
 	}

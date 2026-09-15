@@ -39,7 +39,7 @@ func main() {
     for _, path := range flag.Args() {
         if _, err := os.Stat(path); err != nil { logging.Fatal("%v", err) }
     }
-    db, err := bbolt.Open(*dbPath, 0600, nil)
+    var db, err = bbolt.Open(*dbPath, 0600, nil)
     if err != nil { logging.Fatal("open %s: %v", *dbPath, err) }
     defer db.Close()
     for _, path := range flag.Args() {

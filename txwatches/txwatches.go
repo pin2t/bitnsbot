@@ -158,7 +158,7 @@ func Confirms(txids []string) (res []Confirmed) {
     mu.Lock()
     defer mu.Unlock()
     for _, txid := range txids {
-        ws, ok := pending[txid]
+        var ws, ok = pending[txid]
         if !ok { continue }
         for _, w := range ws {
             res = append(res, Confirmed{Txid: txid, ChatID: w.chatID, Alias: w.alias, Addr: w.addr, WatchedAt: w.watchedAt, Summary: w.summary})

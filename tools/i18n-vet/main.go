@@ -48,14 +48,14 @@ func main() {
 		fmt.Fprintf(os.Stderr, "usage: i18n-vet <directory>\n")
 		os.Exit(2)
 	}
-	dir := os.Args[1]
+	var dir = os.Args[1]
 	var sourceStrings []string
-	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+	var err = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 		if err != nil { return err }
 		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
 			return nil
 		}
-		fset := token.NewFileSet()
+		var fset = token.NewFileSet()
 		f, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
 		if err != nil { return fmt.Errorf("%s: %w", path, err) }
 		sourceStrings = append(sourceStrings, extractI18nStrings(f)...)
@@ -65,7 +65,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "walk: %v\n", err)
 		os.Exit(1)
 	}
-	i18nPath := filepath.Join(dir, "i18n.go")
+	var i18nPath = filepath.Join(dir, "i18n.go")
 	translations, err := parseTranslationSections(i18nPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "parse translations: %v\n", err)
@@ -74,14 +74,14 @@ func main() {
 	var errors int
 	for _, src := range sourceStrings {
 		for lang, langTrans := range translations {
-			translated, ok := langTrans[src]
+			var translated, ok = langTrans[src]
 			if !ok {
 				fmt.Printf("%s: missing translation for %q\n", lang, src)
 				errors++
 				continue
 			}
-			srcVerbs := formatVerbs(src)
-			trVerbs := formatVerbs(translated)
+			var srcVerbs = formatVerbs(src)
+			var trVerbs = formatVerbs(translated)
 			if srcVerbs != trVerbs {
 				fmt.Printf("%s: format specifier mismatch for %q\n", lang, src)
 				fmt.Printf("  original:    %q (verbs: %q)\n", src, srcVerbs)
@@ -108,7 +108,7 @@ func main() {
 func extractI18nStrings(f *ast.File) []string {
 	var strings []string
 	ast.Inspect(f, func(n ast.Node) bool {
-		call, ok := n.(*ast.CallExpr)
+		var call, ok = n.(*ast.CallExpr)
 		if !ok { return true }
 		sel, ok := call.Fun.(*ast.SelectorExpr)
 		if !ok { return true }
@@ -120,7 +120,7 @@ func extractI18nStrings(f *ast.File) []string {
 		if len(call.Args) == 0 { return true }
 		lit, ok := call.Args[0].(*ast.BasicLit)
 		if !ok || lit.Kind != token.STRING { return true }
-		s, err := stringLiteral(lit.Value)
+		var s, err = stringLiteral(lit.Value)
 		if err != nil { return true }
 		strings = append(strings, s)
 		return true
@@ -135,7 +135,7 @@ func stringLiteral(s string) (string, error) {
 	}
 	if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
 		var buf bytes.Buffer
-		inner := s[1 : len(s)-1]
+		var inner = s[1 : len(s)-1]
 		for i := 0; i < len(inner); i++ {
 			if inner[i] == '\\' && i+1 < len(inner) {
 				i++
@@ -163,18 +163,18 @@ func stringLiteral(s string) (string, error) {
 //
 // Matches a translation entry: "key": "value",
 func parseTranslationSections(path string) (map[string]map[string]string, error) {
-	data, err := os.ReadFile(path)
+	var data, err = os.ReadFile(path)
 	if err != nil { return nil, err }
-	lines := strings.Split(string(data), "\n")
-	result := make(map[string]map[string]string)
+	var lines = strings.Split(string(data), "\n")
+	var result = make(map[string]map[string]string)
 	var inSection bool
 	var currentLang string
 	var currentTrans map[string]string
-	entryRE := regexp.MustCompile(`^\s*"((?:[^"\\]|\\.)*)"\s*:\s*"((?:[^"\\]|\\.)*)"\s*,?\s*$`)
+	var entryRE = regexp.MustCompile(`^\s*"((?:[^"\\]|\\.)*)"\s*:\s*"((?:[^"\\]|\\.)*)"\s*,?\s*$`)
 	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
+		var trimmed = strings.TrimSpace(line)
 		if strings.Contains(trimmed, "i18n-vet:translation ") {
-			parts := strings.Fields(trimmed)
+			var parts = strings.Fields(trimmed)
 			if len(parts) >= 3 {
 				currentLang = parts[len(parts)-1]
 				currentTrans = make(map[string]string)
@@ -192,9 +192,9 @@ func parseTranslationSections(path string) (map[string]map[string]string, error)
 			continue
 		}
 		if inSection {
-			m := entryRE.FindStringSubmatch(line)
+			var m = entryRE.FindStringSubmatch(line)
 			if m != nil {
-				key, err := stringLiteral("\"" + m[1] + "\"")
+				var key, err = stringLiteral("\"" + m[1] + "\"")
 				if err != nil { continue }
 				val, err := stringLiteral("\"" + m[2] + "\"")
 				if err != nil { continue }

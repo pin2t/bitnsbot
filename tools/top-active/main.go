@@ -299,7 +299,7 @@ tr:hover td{background:#161b22}
 				}
 				for addr, scriptHex := range seen {
 					countsMu.Lock()
-					_, ok := counts[addr]
+					var _, ok = counts[addr]
 					if ok {
 						countsMu.Unlock()
 						continue

@@ -238,7 +238,7 @@ func main() {
 		var seen = make(map[string]bool)
 		var batch []addrEntry
 		var totalWritten int64
-		flush := func() {
+		var flush = func() {
 			if len(batch) == 0 { return }
 			if err := d.Update(func(tx *bbolt.Tx) error {
 				var b = tx.Bucket(addressesBucket)

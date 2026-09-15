@@ -93,7 +93,7 @@ func list(opt *options, address string) {
     var entries []entry
     var txids = map[uint32][]string{}
     for _, t := range touches {
-        ids, ok := txids[t.Height]
+        var ids, ok = txids[t.Height]
         if !ok {
             var fetched, err = client.txidsAt(ctx, t.Height)
             if err != nil {

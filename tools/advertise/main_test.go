@@ -213,7 +213,7 @@ func TestCorePeers(t *testing.T) {
     buf = append(buf, make([]byte, 32)...)
     buf = binary.LittleEndian.AppendUint32(buf, 2)
     buf = binary.LittleEndian.AppendUint32(buf, 1)
-    appendEntry := func(ip net.IP, port uint16) {
+    var appendEntry = func(ip net.IP, port uint16) {
         buf = binary.LittleEndian.AppendUint32(buf, 1)
         buf = binary.LittleEndian.AppendUint32(buf, 0)
         buf = binary.LittleEndian.AppendUint64(buf, 0)
