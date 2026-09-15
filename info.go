@@ -269,7 +269,6 @@ func block(ctx context.Context, bot *bot, chat int64, height int64) {
         send(bot, chat, i18n(chat).String("Sorry, something went wrong fetching that block"), nil)
         return
     }
-    storeBlock(bi)
     send(bot, chat, formatBlock(bi, chatLang(chat)), nil)
 }
 

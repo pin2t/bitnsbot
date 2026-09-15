@@ -147,7 +147,8 @@ func (appSource) Blocks(lang string, rng app.Range) app.Blocks {
 // BlockInfo backs the Mini App's block details page. It loads or computes the
 // same record /info uses and renders the same lines from it, in the reader's
 // language — which arrives with the request rather than from a chat, since the
-// page has no chat behind it.
+// page has no chat behind it. A computed record is not stored: the collector is
+// the only thing that fills the cache.
 func (appSource) BlockInfo(lang string, height int64) app.Info {
     // Title is set even when the lookup fails, so the page still names what was
     // asked for rather than reading "Block ". Kind says what this page is, which
@@ -167,7 +168,6 @@ func (appSource) BlockInfo(lang string, height int64) app.Info {
             logging.Warn("mini app: compute block %d: %v", height, err)
             return out
         }
-        storeBlock(bi)
     }
     out.OK = true
     out.Rows = linkFields(blockPairs(bi, lang), []linked{{short(bi.Hash), bi.Hash}})
