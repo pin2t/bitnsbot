@@ -14,7 +14,7 @@ func chartDB(t *testing.T, blocks ...blockInfo) {
     }
     t.Cleanup(func() { closeDB() })
     for i := range blocks {
-        if err := storeBlock(&blocks[i]); err != nil { t.Fatalf("store block: %v", err) }
+        if err := flushBlocks([]*blockInfo{&blocks[i]}); err != nil { t.Fatalf("store block: %v", err) }
     }
 }
 

@@ -66,12 +66,12 @@ func TestAppSectionsAreTranslated(t *testing.T) {
         t.Fatalf("open db: %v", err)
     }
     defer closeDB()
-    if err := storeBlock(&blockInfo{Height: 700001, Hash: "0000000000000000000abc", Time: 1700000000,
+    if err := flushBlocks([]*blockInfo{{Height: 700001, Hash: "0000000000000000000abc", Time: 1700000000,
         Size: 1500000, NumTx: 4000, Miner: "AntPool", Difficulty: 9e13,
-        Reward: 312500000, Total: 320000000}); err != nil {
+        Reward: 312500000, Total: 320000000}}); err != nil {
         t.Fatalf("store block: %v", err)
     }
-    if err := storeBlock(&blockInfo{Height: 700002, Hash: "0000000000000000000abd", NumTx: 2100}); err != nil {
+    if err := flushBlocks([]*blockInfo{{Height: 700002, Hash: "0000000000000000000abd", NumTx: 2100}}); err != nil {
         t.Fatalf("store block: %v", err)
     }
     var labels = func(i app.Info) string {
@@ -148,9 +148,9 @@ func TestBlockHashIsLinked(t *testing.T) {
     }
     defer closeDB()
     var hash = "0000000000000000000209d0dbbd5a37b0e0e0a2f8a1ba36d6f4f0e9c0b1a2f3"
-    if err := storeBlock(&blockInfo{Height: 700001, Hash: hash, Time: 1700000000,
+    if err := flushBlocks([]*blockInfo{{Height: 700001, Hash: hash, Time: 1700000000,
         Size: 1500000, NumTx: 4000, Miner: "AntPool", Difficulty: 9e13,
-        Reward: 312500000, Total: 320000000}); err != nil {
+        Reward: 312500000, Total: 320000000}}); err != nil {
         t.Fatalf("store block: %v", err)
     }
     var info = appSource{}.BlockInfo("", 700001)
@@ -263,8 +263,8 @@ func TestTxInfoOnABlockHashIsABlockPage(t *testing.T) {
     if err := openDB(filepath.Join(t.TempDir(), "watches.db")); err != nil { t.Fatal(err) }
     defer closeDB()
     var hash = "0000000000000000000209d0dbbd5a37b0e0e0a2f8a1ba36d6f4f0e9c0b1a2f3"
-    if err := storeBlock(&blockInfo{Height: 700001, Hash: hash, Time: 1700000000,
-        Size: 1500000, NumTx: 4000, Miner: "AntPool", Reward: 312500000, Total: 320000000}); err != nil {
+    if err := flushBlocks([]*blockInfo{{Height: 700001, Hash: hash, Time: 1700000000,
+        Size: 1500000, NumTx: 4000, Miner: "AntPool", Reward: 312500000, Total: 320000000}}); err != nil {
         t.Fatal(err)
     }
     var srv = newFakeCoreServer(t, func(method string, params []interface{}) (interface{}, error) {

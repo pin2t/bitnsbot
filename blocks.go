@@ -58,13 +58,6 @@ func blockInit(handle *sql.DB) error {
 // the record carries the whole coinbase output as Total, and reward + fees
 // recovers it exactly. That is the column tools/tosqlite writes, so a migrated
 // database and one the bot wrote are the same database.
-func storeBlock(bi *blockInfo) error {
-    if db == nil { return nil }
-    logging.Db("blocks: store %d", bi.Height)
-    var _, err = db.Exec(blockInsert, blockArgs(bi)...)
-    return err
-}
-
 const blockInsert = `insert into blocks (height, hash, ts, size, txs, miner, feesOK, minFee, avgFee,
     maxFee, txSizeMin, txSizeAvg, txSizeMax, reward, fees, difficulty)
     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -256,7 +249,9 @@ func collectBlocks() {
 
 // flushBlocks stores a chunk of block info in one transaction. On error nothing
 // is stored, so the highest height does not move and the next run retries the
-// whole chunk.
+// whole chunk. It is the only thing that writes the blocks table: a lookup that
+// computes a block the collector has not reached shows it without storing it,
+// since the highest height stored is where the collector resumes.
 func flushBlocks(bis []*blockInfo) error {
     if db == nil { return nil }
     var tx, err = db.Begin()

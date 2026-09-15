@@ -1,7 +1,10 @@
 package main
 
 import "context"
+import "encoding/json"
 import "fmt"
+import "net/http"
+import "net/http/httptest"
 import "path/filepath"
 import "strconv"
 import "strings"
@@ -45,13 +48,13 @@ func TestCirculatingSupply(t *testing.T) {
     }
 }
 
-func TestStoreLoadBlock(t *testing.T) {
+func TestFlushLoadBlock(t *testing.T) {
     if err := openDB(filepath.Join(t.TempDir(), "watches.db")); err != nil {
         t.Fatalf("openDB: %v", err)
     }
     defer closeDB()
     var bi = &blockInfo{Height: 700000, Hash: "abc", Miner: "PoolX", NumTx: 5, Reward: 625000000}
-    if err := storeBlock(bi); err != nil {
+    if err := flushBlocks([]*blockInfo{bi}); err != nil {
         t.Fatalf("store: %v", err)
     }
     var got, ok = loadBlock(700000)
@@ -205,6 +208,52 @@ func TestBlockNotification(t *testing.T) {
     }
 }
 
+// A block the collector has not reached is computed for /info and for the Mini
+// App's block page, and shown, but not stored: the highest height stored is where
+// the collector resumes, so a lookup above it would step the collector over every
+// block in between.
+func TestBlockLookupDoesNotStore(t *testing.T) {
+    if err := openDB(filepath.Join(t.TempDir(), "watches.db")); err != nil {
+        t.Fatalf("openDB: %v", err)
+    }
+    defer closeDB()
+    var srv = newFakeCoreServer(t, func(method string, params []interface{}) (interface{}, error) {
+        switch method {
+        case "getblockhash":
+            return "0000000000000000abc500", nil
+        case "getblock":
+            return map[string]any{"hash": params[0], "height": 500, "time": 1700000000, "size": 300,
+                "tx": []map[string]any{{"txid": "cb", "size": 100, "vin": []map[string]any{{"coinbase": "03"}}, "vout": []map[string]any{{"value": 50.0}}}}}, nil
+        }
+        return nil, fmt.Errorf("unexpected method %s", method)
+    })
+    core = newFakeCoreConn(t, srv)
+    defer func() { core = nil }()
+    var sent []string
+    var tg = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        var body struct{ Text string `json:"text"` }
+        json.NewDecoder(r.Body).Decode(&body)
+        sent = append(sent, body.Text)
+        json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": true})
+    }))
+    defer tg.Close()
+    block(context.Background(), newBot("TESTTOKEN", tg.URL), 1, 500)
+    if len(sent) != 1 || !strings.Contains(sent[0], "Block #500") {
+        t.Fatalf("/info 500 replied %q", sent)
+    }
+    if info := (appSource{}).BlockInfo("", 500); !info.OK {
+        t.Fatal("the Mini App's block page did not show a block it had to compute")
+    }
+    if _, ok := loadBlock(500); ok {
+        t.Error("a looked-up block was stored; only the collector fills the cache")
+    }
+    var n int
+    if err := db.QueryRow("select count(*) from blocks").Scan(&n); err != nil { t.Fatal(err) }
+    if n != 0 {
+        t.Errorf("%d rows in blocks after two lookups, want 0", n)
+    }
+}
+
 // The collector used to keep its place in cursors. A row left there by that
 // version is dropped on open, rather than sitting beside the table that is now
 // the place and disagreeing with it.
@@ -233,7 +282,7 @@ func TestAppBlocksWindows(t *testing.T) {
     }
     defer closeDB()
     for h := int64(700000); h < 700050; h++ {
-        if err := storeBlock(&blockInfo{Height: h, Hash: "h", NumTx: 3, Miner: "PoolX"}); err != nil {
+        if err := flushBlocks([]*blockInfo{{Height: h, Hash: "h", NumTx: 3, Miner: "PoolX"}}); err != nil {
             t.Fatalf("store %d: %v", h, err)
         }
     }
