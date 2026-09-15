@@ -6,9 +6,7 @@ import "net/http/httptest"
 import "path/filepath"
 import "testing"
 import "time"
-
 import "database/sql"
-
 import _ "modernc.org/sqlite"
 
 // The two tables as openDB creates them, from the schema tools/tosqlite defines.

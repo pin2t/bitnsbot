@@ -1,7 +1,6 @@
 package main
 
 import "strconv"
-
 import "bitnsbot/app"
 import "bitnsbot/logging"
 

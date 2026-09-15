@@ -5,7 +5,6 @@ import "fmt"
 import "strconv"
 import "strings"
 import "time"
-
 import "database/sql"
 import "bitnsbot/app"
 import "bitnsbot/logging"

@@ -3,7 +3,6 @@ package cursors
 import "database/sql"
 import "path/filepath"
 import "testing"
-
 import _ "modernc.org/sqlite"
 
 // The table as openDB creates it, from the schema tools/tosqlite defines.

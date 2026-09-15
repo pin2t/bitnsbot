@@ -9,7 +9,6 @@ import "sort"
 import "strings"
 import "sync"
 import "time"
-
 import "bitnsbot/logging"
 import "bitnsbot/txwatches"
 import "bitnsbot/watches"

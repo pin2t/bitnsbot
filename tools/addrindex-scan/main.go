@@ -16,7 +16,6 @@ import "net/http"
 import "os"
 import "strings"
 import "time"
-
 import "go.etcd.io/bbolt"
 import "bitnsbot/addrindex"
 import "bitnsbot/logging"

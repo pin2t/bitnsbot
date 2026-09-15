@@ -9,7 +9,6 @@ import "os"
 import "strconv"
 import "strings"
 import "time"
-
 import "database/sql"
 import "bitnsbot/logging"
 

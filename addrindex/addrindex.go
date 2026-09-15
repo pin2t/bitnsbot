@@ -49,9 +49,7 @@ import "crypto/sha256"
 import "encoding/binary"
 import "strconv"
 import "errors"
-
 import "database/sql"
-
 import "go.etcd.io/bbolt"
 import "bitnsbot/cursors"
 import "bitnsbot/logging"

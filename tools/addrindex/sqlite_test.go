@@ -5,7 +5,6 @@ import "encoding/binary"
 import "path/filepath"
 import "strings"
 import "testing"
-
 import "go.etcd.io/bbolt"
 
 // migrate copies the built bbolt index into a SQLite database shaped exactly as

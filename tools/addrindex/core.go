@@ -9,7 +9,6 @@ import "net/http"
 import "os"
 import "strings"
 import "time"
-
 import "bitnsbot/logging"
 
 // rpc is a minimal Bitcoin Core JSON-RPC client — what the builds read the chain

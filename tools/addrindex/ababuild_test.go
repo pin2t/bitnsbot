@@ -6,7 +6,6 @@ import "os"
 import "path/filepath"
 import "strings"
 import "testing"
-
 import "bitnsbot/addrindex"
 
 // The fixture chain pays otherScript a coinbase in every one of its four blocks

@@ -9,8 +9,6 @@ import "path/filepath"
 import "strconv"
 import "strings"
 import "testing"
-
-
 import "bitnsbot/app"
 import "bitnsbot/cursors"
 import "bitnsbot/miners"

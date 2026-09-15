@@ -7,7 +7,6 @@ import "io"
 import "os"
 import "path/filepath"
 import "sort"
-
 import "bitnsbot/addrindex"
 
 // magic is what precedes every block in a blk file — mainnet's network magic,

@@ -4,9 +4,7 @@ import "bytes"
 import "context"
 import "path/filepath"
 import "testing"
-
 import "database/sql"
-
 import _ "modernc.org/sqlite"
 import "bitnsbot/addrindex"
 import "bitnsbot/cursors"

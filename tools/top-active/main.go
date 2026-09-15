@@ -20,7 +20,6 @@ import "strings"
 import "sync"
 import "sync/atomic"
 import "time"
-
 import "go.etcd.io/bbolt"
 import "bitnsbot/addrindex"
 import "bitnsbot/logging"

@@ -5,7 +5,6 @@ import "net/http"
 import "path/filepath"
 import "testing"
 import "time"
-
 import "bitnsbot/watches"
 
 // TestShutdownDrainsHandlersBeforeClosingStore verifies the ordering the

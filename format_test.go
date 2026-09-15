@@ -4,7 +4,6 @@ import "path/filepath"
 import "strings"
 import "testing"
 import "time"
-
 import "bitnsbot/rates"
 
 func TestUSDFormat(t *testing.T) {

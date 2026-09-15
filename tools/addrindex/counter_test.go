@@ -2,7 +2,6 @@ package main
 
 import "encoding/binary"
 import "testing"
-
 import "bitnsbot/addrindex"
 
 func key(script []byte) uint64 { return binary.BigEndian.Uint64(addrindex.Prefix(script)) }

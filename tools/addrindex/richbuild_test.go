@@ -7,7 +7,6 @@ import "path/filepath"
 import "strings"
 import "testing"
 import "time"
-
 import "bitnsbot/addrindex"
 
 // The fixture chain pays the miner a coinbase in each of its four blocks, funds
