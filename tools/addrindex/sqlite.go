@@ -4,7 +4,6 @@ import "bytes"
 import "database/sql"
 import "encoding/binary"
 import "os"
-
 import _ "modernc.org/sqlite"
 import "bitnsbot/addrindex"
 

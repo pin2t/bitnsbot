@@ -9,9 +9,7 @@ import "path/filepath"
 import "encoding/binary"
 import "reflect"
 import "testing"
-
 import "database/sql"
-
 import "go.etcd.io/bbolt"
 import _ "modernc.org/sqlite"
 import "bitnsbot/cursors"

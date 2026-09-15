@@ -2,7 +2,6 @@ package watches
 
 import "database/sql"
 import "time"
-
 import "bitnsbot/logging"
 
 var db *sql.DB

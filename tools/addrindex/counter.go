@@ -2,7 +2,6 @@ package main
 
 import "encoding/binary"
 import "sort"
-
 import "bitnsbot/addrindex"
 
 // entryLen is one record of the counter: the script's 8-byte index prefix and a

@@ -3,7 +3,6 @@ package miners
 import "context"
 import "sort"
 import "time"
-
 import "bitnsbot/logging"
 import "bitnsbot/cursors"
 import "bitnsbot/signals"

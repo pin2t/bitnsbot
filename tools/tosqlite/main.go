@@ -28,7 +28,6 @@ import "fmt"
 import "os"
 import "strings"
 import "time"
-
 import "go.etcd.io/bbolt"
 import _ "modernc.org/sqlite"
 import "bitnsbot/logging"

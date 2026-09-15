@@ -5,9 +5,7 @@ import "net/http"
 import "net/http/httptest"
 import "path/filepath"
 import "testing"
-
 import "database/sql"
-
 import _ "modernc.org/sqlite"
 import "bitnsbot/cursors"
 

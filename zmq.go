@@ -6,7 +6,6 @@ import "encoding/hex"
 import "fmt"
 import "strings"
 import "sync"
-
 import "github.com/go-zeromq/zmq4"
 import "bitnsbot/logging"
 import "bitnsbot/signals"

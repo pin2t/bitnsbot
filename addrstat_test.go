@@ -4,7 +4,6 @@ import "context"
 import "path/filepath"
 import "strings"
 import "testing"
-
 import "bitnsbot/addrstat"
 
 // seedAddrStat writes the record the collector would have gathered for one

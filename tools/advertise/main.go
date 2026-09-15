@@ -23,7 +23,6 @@ import "strings"
 import "sync"
 import "sync/atomic"
 import "time"
-
 import "bitnsbot/logging"
 
 var peersPath = flag.String("peers", "", "path to btcd's peers.json (optional)")

@@ -19,7 +19,6 @@ import "io"
 import "os"
 import "path/filepath"
 import "strings"
-
 import "go.etcd.io/bbolt"
 import "bitnsbot/logging"
 

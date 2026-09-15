@@ -10,7 +10,6 @@ import "net/url"
 import "path/filepath"
 import "strings"
 import "testing"
-
 import "go.etcd.io/bbolt"
 
 // testDB opens a seeded database and makes it the one the handlers read. The

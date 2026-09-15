@@ -7,7 +7,6 @@ import "os/exec"
 import "strings"
 import "syscall"
 import "time"
-
 import _ "modernc.org/sqlite"
 import "bitnsbot/addrindex"
 import "bitnsbot/addrstat"

@@ -22,7 +22,6 @@ import "strings"
 import "syscall"
 import "time"
 import "unicode/utf8"
-
 import "go.etcd.io/bbolt"
 import "bitnsbot/logging"
 

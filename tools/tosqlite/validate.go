@@ -5,7 +5,6 @@ import "database/sql"
 import "fmt"
 import "strings"
 import "time"
-
 import "go.etcd.io/bbolt"
 import "bitnsbot/logging"
 

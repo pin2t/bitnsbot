@@ -4,7 +4,6 @@ import "database/sql"
 import "path/filepath"
 import "testing"
 import "time"
-
 import _ "modernc.org/sqlite"
 
 // The table as openDB creates it, from the schema tools/tosqlite defines.

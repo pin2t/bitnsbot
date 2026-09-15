@@ -2,7 +2,6 @@ package main
 
 import "database/sql"
 import "testing"
-
 import "go.etcd.io/bbolt"
 
 // seedEverything fills one bucket of every kind, so a validate run has all eight

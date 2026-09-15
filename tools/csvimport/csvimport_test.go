@@ -5,7 +5,6 @@ import "os"
 import "path/filepath"
 import "strings"
 import "testing"
-
 import "go.etcd.io/bbolt"
 
 // csvFile writes a CSV of the given lines into a temp directory and returns its

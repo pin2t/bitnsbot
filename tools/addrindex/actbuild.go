@@ -4,7 +4,6 @@ import "encoding/binary"
 import "fmt"
 import "strconv"
 import "time"
-
 import "go.etcd.io/bbolt"
 import "bitnsbot/addrindex"
 import "bitnsbot/logging"

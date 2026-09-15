@@ -6,9 +6,7 @@ import "path/filepath"
 import "strings"
 import "testing"
 import "time"
-
 import "database/sql"
-
 import _ "modernc.org/sqlite"
 import "bitnsbot/watches"
 

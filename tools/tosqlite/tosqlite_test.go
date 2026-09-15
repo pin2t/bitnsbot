@@ -5,7 +5,6 @@ import "encoding/json"
 import "path/filepath"
 import "strings"
 import "testing"
-
 import "go.etcd.io/bbolt"
 
 // setup builds a bbolt database from seed plus an empty SQLite database carrying
