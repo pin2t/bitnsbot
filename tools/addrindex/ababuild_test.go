@@ -229,8 +229,8 @@ func TestAbaBuildCarriesStateForward(t *testing.T) {
     if !strings.Contains(out, "blocks 3..3") {
         t.Errorf("the second run should only read what is new: %q", out)
     }
-    var gotAddrs, gotBalance, gotLast = abandonedRows(t, parts.dbsqlite)
-    var wantAddrs, wantBalance, wantLastTx = abandonedRows(t, whole.dbsqlite)
+    var gotAddrs, gotBalance, gotMoved = abandonedRows(t, parts.dbsqlite)
+    var wantAddrs, wantBalance, wantMoved = abandonedRows(t, whole.dbsqlite)
     if len(gotAddrs) != len(wantAddrs) {
         t.Fatalf("two runs = %v, one run = %v", gotAddrs, wantAddrs)
     }
@@ -238,9 +238,9 @@ func TestAbaBuildCarriesStateForward(t *testing.T) {
         if gotAddrs[i] != addr {
             t.Fatalf("two runs ranked %v, one run %v", gotAddrs, wantAddrs)
         }
-        if gotBalance[addr] != wantBalance[addr] || gotLast[addr] != wantLastTx[addr] {
+        if gotBalance[addr] != wantBalance[addr] || gotMoved[addr] != wantMoved[addr] {
             t.Errorf("%s = %d sat last moved %d after two runs, %d/%d after one",
-                addr, gotBalance[addr], gotLast[addr], wantBalance[addr], wantLastTx[addr])
+                addr, gotBalance[addr], gotMoved[addr], wantBalance[addr], wantMoved[addr])
         }
     }
 }
