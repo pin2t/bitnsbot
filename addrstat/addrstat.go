@@ -18,6 +18,7 @@ import "sync"
 import "time"
 import "database/sql"
 import "bitnsbot/addrindex"
+import "bitnsbot/core"
 import "bitnsbot/cursors"
 import "bitnsbot/logging"
 import "bitnsbot/signals"
@@ -121,14 +122,11 @@ func Count() int {
 
 // Start runs the collector: a catch-up to the tip, then again on every block
 // notification and every interval, whichever comes first.
-// src is the same chain source the address index is built from — one getblock
-// at verbosity 3 a block, whose prevouts are where a spend's script and amount,
-// and so a transaction's fee, are written down.
-func Start(src addrindex.Blockchain) {
+func Start() {
     go func() {
         var wake = signals.Subscribe(signals.Block)
         for {
-            if err := Collect(src); err != nil { logging.Warn("addrstat: %v", err) }
+            if err := Collect(); err != nil { logging.Warn("addrstat: %v", err) }
             select {
             case <-time.After(interval):
             case <-wake:
@@ -139,25 +137,28 @@ func Start(src addrindex.Blockchain) {
 
 // Collect walks the chain from the cursor to the tip once and returns. Start is
 // this on a loop; it is exported for the same reason addrindex.Build is, so a
-// caller that wants one pass and an exit code can have one.
+// caller that wants one pass and an exit code can have one. The blocks are the
+// ones the address index is built from — addrindex.BlockAt, one getblock at
+// verbosity 3 a block, whose prevouts are where a spend's script and amount,
+// and so a transaction's fee, are written down.
 //
 // no addresses to gather for
-func Collect(src addrindex.Blockchain) error {
+func Collect() error {
     if Count() == 0 { return nil }
     var ctx, cancel = context.WithTimeout(context.Background(), 6*time.Hour)
     defer cancel()
-    var tip, err = src.Tip(ctx)
+    var tip, err = core.GetBlockCount(ctx)
     if err != nil { return err }
     var last, ok = cursors.Get(cursors.AddrStat)
     var curr int64
     if ok { curr = last + 1 }
     var began = curr
-    for curr <= int64(tip) {
+    for curr <= tip {
         var to = curr + chunkSize - 1
-        if to > int64(tip) { to = int64(tip) }
+        if to > tip { to = tip }
         var deltas = map[string]*Stat{}
         for h := curr; h <= to; h++ {
-            var blk, berr = src.BlockAt(ctx, int(h))
+            var blk, berr = addrindex.BlockAt(ctx, int(h))
             if berr != nil { return berr }
             apply(deltas, blk)
         }

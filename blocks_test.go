@@ -9,6 +9,7 @@ import "path/filepath"
 import "strconv"
 import "strings"
 import "testing"
+import "bitnsbot/core/coretest"
 import "bitnsbot/app"
 import "bitnsbot/cursors"
 import "bitnsbot/miners"
@@ -101,7 +102,7 @@ func TestComputeBlockInfo(t *testing.T) {
         if _, err := db.Exec(q); err != nil { t.Fatalf("seed miners: %v", err) }
     }
     if err := miners.Init(db); err != nil { t.Fatalf("reload miners: %v", err) }
-    var srv = newFakeCoreServer(t, func(method string, params []interface{}) (interface{}, error) {
+    var srv = coretest.Server(t, func(method string, params []interface{}) (interface{}, error) {
         var p = params
         _ = p
         switch method {
@@ -127,8 +128,7 @@ func TestComputeBlockInfo(t *testing.T) {
         return nil, fmt.Errorf("unexpected method %s", method)
     })
     defer srv.Close()
-    core = newFakeCoreConn(t, srv)
-    defer func() { core = nil }()
+    coretest.Use(t, srv)
     var bi, err = computeBlockInfo(context.Background(), "hash500")
     if err != nil {
         t.Fatalf("computeBlockInfo: %v", err)
@@ -192,7 +192,7 @@ func TestBlockNotification(t *testing.T) {
     defer closeDB()
     var tip = 100
     var fetched []int64
-    var srv = newFakeCoreServer(t, func(method string, params []interface{}) (interface{}, error) {
+    var srv = coretest.Server(t, func(method string, params []interface{}) (interface{}, error) {
         switch method {
         case "getblockcount":
             return tip, nil
@@ -207,8 +207,7 @@ func TestBlockNotification(t *testing.T) {
         return nil, fmt.Errorf("unexpected method %s", method)
     })
     defer srv.Close()
-    core = newFakeCoreConn(t, srv)
-    defer func() { core = nil }()
+    coretest.Use(t, srv)
     var saved = blocksChunkSize
     blocksChunkSize = 1000
     defer func() { blocksChunkSize = saved }()
@@ -238,7 +237,7 @@ func TestBlockLookupDoesNotStore(t *testing.T) {
         t.Fatalf("openDB: %v", err)
     }
     defer closeDB()
-    var srv = newFakeCoreServer(t, func(method string, params []interface{}) (interface{}, error) {
+    var srv = coretest.Server(t, func(method string, params []interface{}) (interface{}, error) {
         switch method {
         case "getblockhash":
             return "0000000000000000abc500", nil
@@ -248,8 +247,7 @@ func TestBlockLookupDoesNotStore(t *testing.T) {
         }
         return nil, fmt.Errorf("unexpected method %s", method)
     })
-    core = newFakeCoreConn(t, srv)
-    defer func() { core = nil }()
+    coretest.Use(t, srv)
     var sent []string
     var tg = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
         var body struct{ Text string `json:"text"` }

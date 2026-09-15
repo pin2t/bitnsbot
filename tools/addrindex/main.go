@@ -33,6 +33,7 @@ import "os"
 import "time"
 import "go.etcd.io/bbolt"
 import "bitnsbot/addrindex"
+import "bitnsbot/core"
 import "bitnsbot/logging"
 
 // options are the flags every command shares. Every command that talks to a
@@ -153,15 +154,14 @@ var db *bbolt.DB
 // keeps polling. Both call addrindex.Build, so both chunk and advance the cursor
 // identically and either can resume what the other started.
 func build(opt *options) {
-    var client, cerr = newRPC(opt.url, opt.user, opt.pass, opt.cookie)
-    if cerr != nil { logging.Fatal("RPC client: %v", cerr) }
-    var src = addrindex.NewRPCBlockchain(client.call)
+    if err := core.Init(opt.url, opt.user, opt.pass, opt.cookie); err != nil { logging.Fatal("RPC client: %v", err) }
     var ctx, cancel = context.WithTimeout(context.Background(), 30*time.Second)
-    var tip, err = src.Tip(ctx)
+    var count, err = core.GetBlockCount(ctx)
     cancel()
     if err != nil {
         logging.Fatal("Core RPC is unreachable at %s (%v)", opt.url, err)
     }
+    var tip = int(count)
     var from = 0
     if h, ok := addrindex.Cursor(); ok { from = h + 1 }
     if from > tip {
@@ -170,7 +170,7 @@ func build(opt *options) {
     }
     fmt.Printf("Building blocks %d..%d\n", from, tip)
     var started = time.Now()
-    if err := addrindex.Build(src); err != nil {
+    if err := addrindex.Build(); err != nil {
         logging.Fatal("build: %v", err)
     }
     var at, _ = addrindex.Cursor()

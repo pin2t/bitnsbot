@@ -7,6 +7,7 @@ import "os"
 import "path/filepath"
 import "reflect"
 import "testing"
+import "bitnsbot/core/coretest"
 
 // Two real blocks from a Bitcoin Core v31.1.0 regtest node, as getblock
 // verbosity 3 reported them (testdata/block<h>.json). Block 113's second
@@ -39,7 +40,7 @@ func TestRPCReadsTheBlock(t *testing.T) {
         {Script: mustHex(t, "5120e6e2debb61c212ca7f3efdd85be34fae01c922172718f6a573687d295cb3bcc0"), Sat: 310000000},
     }}
     for height, wantSpent := range map[int][][]Payment{0: {{}}, 113: spent113} {
-        var blk, err = NewRPCBlockchain(reply(string(fixture(t, fmt.Sprintf("block%d.json", height))))).BlockAt(context.Background(), height)
+        var blk, err = blockFrom(t, string(fixture(t, fmt.Sprintf("block%d.json", height))), height)
         if err != nil { t.Fatalf("block %d: %v", height, err) }
         if blk.Time != times[height] {
             t.Errorf("block %d: time %d, want the header's %d", height, blk.Time, times[height])
@@ -64,10 +65,10 @@ func TestRPCReadsTheBlock(t *testing.T) {
 // satoshi are rounded, never truncated — one short, and a balance summed from
 // genesis ends a satoshi out for every such amount.
 func TestRPCAmountsAreExactSatoshi(t *testing.T) {
-    var blk, err = NewRPCBlockchain(reply(`{"tx":[{"vin":[`+
+    var blk, err = blockFrom(t, `{"tx":[{"vin":[`+
         `{"prevout":{"value":0.29,"scriptPubKey":{"hex":"51"}}},`+
         `{"prevout":{"value":20999999.97690000,"scriptPubKey":{"hex":"52"}}}],`+
-        `"vout":[{"value":0.29,"scriptPubKey":{"hex":"53"}}]}]}`)).BlockAt(context.Background(), 1)
+        `"vout":[{"value":0.29,"scriptPubKey":{"hex":"53"}}]}]}`, 1)
     if err != nil { t.Fatalf("BlockAt: %v", err) }
     var tx = blk.Txs[0]
     if len(tx.Spent) != 2 || tx.Spent[0].Sat != 29000000 || tx.Spent[1].Sat != 2099999997690000 {
@@ -81,22 +82,24 @@ func TestRPCAmountsAreExactSatoshi(t *testing.T) {
 // A script that is not hex is an error, not an empty script: an empty one is
 // skipped by every scan, so the payment would vanish without a word.
 func TestRPCRefusesAMalformedScript(t *testing.T) {
-    var _, err = NewRPCBlockchain(reply(`{"tx":[{"vout":[{"value":1,"scriptPubKey":{"hex":"not hex"}}]}]}`)).BlockAt(context.Background(), 1)
+    var _, err = blockFrom(t, `{"tx":[{"vout":[{"value":1,"scriptPubKey":{"hex":"not hex"}}]}]}`, 1)
     if err == nil { t.Error("a script that is not hex was accepted") }
 }
 
-// reply is a node that knows one block, whatever height is asked for.
-func reply(verbose string) Caller {
-    return func(ctx context.Context, method string, params []interface{}, result interface{}) error {
+// blockFrom reads height through BlockAt from a node that knows one block,
+// whatever height is asked for, and answers getblock at verbosity 3 with the JSON
+// verbose.
+func blockFrom(t *testing.T, verbose string, height int) (Block, error) {
+    coretest.Start(t, func(method string, params []interface{}) (interface{}, error) {
         switch {
         case method == "getblockhash":
-            *result.(*string) = "fixture"
-            return nil
-        case method == "getblock" && params[0] == "fixture" && params[1] == 3:
-            return json.Unmarshal([]byte(verbose), result)
+            return "fixture", nil
+        case method == "getblock" && params[0] == "fixture" && params[1] == float64(3):
+            return json.RawMessage(verbose), nil
         }
-        return fmt.Errorf("unexpected call %s %v", method, params)
-    }
+        return nil, fmt.Errorf("unexpected call %s %v", method, params)
+    })
+    return BlockAt(context.Background(), height)
 }
 
 func fixture(t *testing.T, name string) []byte {

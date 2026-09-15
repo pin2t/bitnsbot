@@ -5,6 +5,7 @@ import "fmt"
 import "path/filepath"
 import "strings"
 import "testing"
+import "bitnsbot/core/coretest"
 import "bitnsbot/app"
 import "bitnsbot/cursors"
 import "bitnsbot/rates"
@@ -215,7 +216,7 @@ func TestTxInfoLinksBlockAndAddresses(t *testing.T) {
     var blockHash = "0000000000000000000209d0dbbd5a37b0e0e0a2f8a1ba36d6f4f0e9c0b1a2f3"
     var from = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
     var to = "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh"
-    var srv = newFakeCoreServer(t, func(method string, params []interface{}) (interface{}, error) {
+    var srv = coretest.Server(t, func(method string, params []interface{}) (interface{}, error) {
         switch method {
         case "getblockheader":
             if id, _ := params[0].(string); id == blockHash {
@@ -235,8 +236,7 @@ func TestTxInfoLinksBlockAndAddresses(t *testing.T) {
         return nil, nil
     })
     defer srv.Close()
-    core = newFakeCoreConn(t, srv)
-    defer func() { core = nil }()
+    coretest.Use(t, srv)
     var info = appSource{}.TxInfo("", txid)
     if !info.OK { t.Fatal("no transaction page") }
     var linked = map[string]string{}
@@ -277,15 +277,14 @@ func TestTxInfoOnABlockHashIsABlockPage(t *testing.T) {
         Size: 1500000, NumTx: 4000, Miner: "AntPool", Reward: 312500000, Total: 320000000}}); err != nil {
         t.Fatal(err)
     }
-    var srv = newFakeCoreServer(t, func(method string, params []interface{}) (interface{}, error) {
+    var srv = coretest.Server(t, func(method string, params []interface{}) (interface{}, error) {
         if method == "getblockheader" {
             if id, _ := params[0].(string); id == hash { return map[string]any{"height": 700001}, nil }
         }
         return nil, errors.New("Block not found")
     })
     defer srv.Close()
-    core = newFakeCoreConn(t, srv)
-    defer func() { core = nil }()
+    coretest.Use(t, srv)
     var info = appSource{}.TxInfo("", hash)
     if !info.OK || info.Title != "Block 700 001" {
         t.Fatalf("a block hash should open the block page, got %#v", info.Title)

@@ -7,6 +7,7 @@ import "strings"
 import "time"
 import "database/sql"
 import "bitnsbot/app"
+import "bitnsbot/core"
 import "bitnsbot/logging"
 import "bitnsbot/miners"
 import "bitnsbot/signals"
@@ -131,7 +132,7 @@ func subsidy(height int64) int64 {
 // (reward + fees = coinbase output) are always available; the fee min/avg/max
 // need the prevout fetches, so FeesOK records whether they succeeded.
 func computeBlockInfo(ctx context.Context, hash string) (*blockInfo, error) {
-    var blk, err = core.getBlockVerbose(ctx, hash)
+    var blk, err = core.GetBlockVerbose(ctx, hash)
     if err != nil { return nil, err }
     if len(blk.Tx) == 0 { return nil, fmt.Errorf("block %s has no transactions", short(hash)) }
     var szMin, szMax = blk.Tx[0].Size, blk.Tx[0].Size
@@ -198,10 +199,10 @@ func startBlockCache() {
 // after its last flush: a minute between a block arriving and being
 // cached, now that this is the only path that caches one.
 func collectBlocks() {
-    if core == nil || db == nil { return }
+    if !core.Enabled() || db == nil { return }
     var ctx, cancel = context.WithTimeout(context.Background(), 10*time.Minute)
     defer cancel()
-    var tip, err = core.getBlockCount(ctx)
+    var tip, err = core.GetBlockCount(ctx)
     if err != nil {
         logging.Warn("blocks: %v", err)
         return
@@ -220,7 +221,7 @@ func collectBlocks() {
         var infos []*blockInfo
         for h := from; h <= to; h++ {
             var bctx, bcancel = context.WithTimeout(context.Background(), 60*time.Second)
-            var hash, herr = core.getBlockHash(bctx, h)
+            var hash, herr = core.GetBlockHash(bctx, h)
             bcancel()
             if herr != nil {
                 logging.Warn("blocks: block %d hash: %v — retrying next run", h, herr)
@@ -315,42 +316,4 @@ func blockPairs(bi *blockInfo, lang string) [][2]string {
 
 func formatBlock(bi *blockInfo, lang string) string {
     return i18nl(lang).Sprintf("Block #%d\n\n<pre>%s</pre>", bi.Height, joinAlign(blockPairs(bi, lang)))
-}
-
-// minerSource adapts the core connection to the miners package's stats collector:
-// per block it fetches the header (verbosity 1 → height + difficulty + txids) and
-// the coinbase transaction, from which it reads every payout address, the coinbase
-// script (which carries the pool tag) and the total output (subsidy + fees); fees
-// are that total minus the height's subsidy. All the coinbase addresses are passed
-// on (not just the first) because the pool's payout isn't always output 0 — the
-// same reason computeBlockInfo collects them all.
-type minerSource struct{}
-
-func (minerSource) Tip(ctx context.Context) (int64, error) {
-    return core.getBlockCount(ctx)
-}
-
-func (minerSource) Block(ctx context.Context, height int64) (miners.Block, error) {
-    var hash, err = core.getBlockHash(ctx, height)
-    if err != nil { return miners.Block{}, err }
-    var blk, berr = core.getBlockTxids(ctx, hash)
-    if berr != nil { return miners.Block{}, berr }
-    if len(blk.Tx) == 0 { return miners.Block{}, fmt.Errorf("block %d has no transactions", height) }
-    var cb, cerr = core.getRawTransaction(ctx, blk.Tx[0])
-    if cerr != nil { return miners.Block{}, cerr }
-    var total int64
-    var addrs []string
-    for _, v := range cb.Vout {
-        total += toSat(v.Value)
-        if v.ScriptPubKey.Address != "" { addrs = append(addrs, v.ScriptPubKey.Address) }
-    }
-    var script string
-    if len(cb.Vin) > 0 { script = cb.Vin[0].Coinbase }
-    return miners.Block{
-        CoinbaseAddresses: addrs,
-        CoinbaseScript:    script,
-        Reward:            total,
-        Fees:              total - subsidy(height),
-        Difficulty:        blk.Difficulty,
-    }, nil
 }

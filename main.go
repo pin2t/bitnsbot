@@ -20,6 +20,7 @@ import "github.com/pin2t/flagex"
 import "bitnsbot/addrindex"
 import "bitnsbot/addrstat"
 import "bitnsbot/app"
+import "bitnsbot/core"
 import "bitnsbot/logging"
 import "bitnsbot/miners"
 import "bitnsbot/rates"
@@ -53,7 +54,6 @@ var appListen       = flag.String("app-listen", "127.0.0.1:8080", "address the T
 var dbuiListen      = flag.String("dbui-listen", "", "ignored — the database UI speaks bbolt and is tools/bboltwui now; kept so a config file that sets it still starts")
 var historyFile     = flag.String("history-file", "", "path to a JSON file containing historical BTC/USD rates (same format as blockchain.info/charts/market-price); backfilled from this file on first run instead of fetching over the network")
 
-var core *coreConn
 var appSrv *http.Server
 
 
@@ -161,10 +161,10 @@ func (appSource) BlockInfo(lang string, height int64) app.Info {
     var out = app.Info{Title: i18nl(lang).String("Block") + " " + group(height), Kind: "block"}
     var bi, ok = loadBlock(height)
     if !ok {
-        if core == nil { return out }
+        if !core.Enabled() { return out }
         var ctx, cancel = context.WithTimeout(context.Background(), 60*time.Second)
         defer cancel()
-        var hash, err = core.getBlockHash(ctx, height)
+        var hash, err = core.GetBlockHash(ctx, height)
         if err != nil { return out }
         bi, err = computeBlockInfo(ctx, hash)
         if err != nil {
@@ -188,10 +188,10 @@ func (appSource) BlockInfo(lang string, height int64) app.Info {
 // a block is named by height there, as "#963268"
 func (appSource) TxInfo(lang, txid string) app.Info {
     var out = app.Info{Title: short(txid)}
-    if core == nil { return out }
+    if !core.Enabled() { return out }
     var ctx, cancel = context.WithTimeout(context.Background(), 60*time.Second)
     defer cancel()
-    if header, err := core.getBlockHeader(ctx, txid); err == nil {
+    if header, err := core.GetBlockHeader(ctx, txid); err == nil {
         return appSource{}.BlockInfo(lang, header.Height)
     }
     var pairs, ids, canonical, ok = txPairs(ctx, lang, txid)
@@ -442,12 +442,11 @@ func main() {
         logging.Status("backing up the database to %s when the copy there is over %s old, checked every %s", *backupPath, *backupInterval, check)
     }
     if *coreURL != "" {
-        core, err = newCoreConn(*coreURL, *coreUser, *corePass, *coreCookie)
-        if err != nil {
+        if err := core.Init(*coreURL, *coreUser, *corePass, *coreCookie); err != nil {
             logging.Fatal("Bitcoin Core client: %v", err)
         }
         var ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
-        var height, herr = core.getBlockCount(ctx)
+        var height, herr = core.GetBlockCount(ctx)
         cancel()
         if herr != nil {
             logging.Fatal("Bitcoin Core at %s: %v", *coreURL, herr)
@@ -456,8 +455,8 @@ func main() {
     }
     startNotify(bot)
     miners.Start()
-    if core != nil {
-        miners.StartStats(minerSource{})
+    if core.Enabled() {
+        miners.StartStats()
     }
     startBlockCache()
     startMempoolFlow()
@@ -465,15 +464,14 @@ func main() {
     startMempoolFees()
     startNetworkStats()
     startMarketUpdates()
-    if core != nil && *coreZMQ != "" {
+    if core.Enabled() && *coreZMQ != "" {
         if err := startZMQ(context.Background(), strings.Split(*coreZMQ, ","), bot); err != nil {
             logging.Fatal("subscribe to Bitcoin Core ZMQ: %v", err)
         }
     }
-    if core != nil {
-        var src = addrindex.NewRPCBlockchain(core.call)
-        addrindex.StartBackfill(src)
-        addrstat.Start(src)
+    if core.Enabled() {
+        addrindex.StartBackfill()
+        addrstat.Start()
     }
     if *registerHook {
         if *webhookURL == "" {
@@ -734,7 +732,7 @@ func addWatch(b *bot, chat int64, target, alias string) error {
     } else {
         if err := watches.Add(chat, target, alias); err != nil { return err }
         startNotifyChat(b, chat, target, alias)
-        if core != nil { seedOutpoints([]string{target}) }
+        if core.Enabled() { seedOutpoints([]string{target}) }
     }
     logging.Info("added subscription %s for chat %d (alias %q)", target, chat, alias)
     return nil
@@ -902,7 +900,7 @@ func watchesCmd(bot *bot, chat int64) {
 const typicalTxVsize = 140
 
 func fees(bot *bot, chat int64) {
-    if core == nil {
+    if !core.Enabled() {
         send(bot, chat, i18n(chat).String("Bitcoin node connection is not configured"), nil)
         return
     }
@@ -997,11 +995,11 @@ func updateFlow(count int64) {
 // to updateFlow, so /mempool can show a live flow rate. The goroutine isn't
 // stopped on shutdown — like the rates updater, the process exits right after.
 func startMempoolFlow() {
-    if core == nil { return }
+    if !core.Enabled() { return }
     go func() {
         var sample = func() {
             var ctx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
-            var info, err = core.getMempoolInfo(ctx)
+            var info, err = core.GetMempoolInfo(ctx)
             cancel()
             if err != nil {
                 logging.Warn("mempool flow: %v", err)
@@ -1022,7 +1020,7 @@ func startMempoolFlow() {
 // 10 minutes in the background and stores them so /mempool can reply instantly
 // with a ~-prefixed cached value instead of summing on every request.
 func startMempoolSummary() {
-    if core == nil { return }
+    if !core.Enabled() { return }
     go func() {
         var calc = func() {
             var ctx, cancel = context.WithTimeout(context.Background(), 60*time.Second)
@@ -1072,7 +1070,7 @@ func startMarketUpdates() {
 // block moves the height and nothing else here, and the scan is the
 // one expensive call (see refreshNetwork).
 func startNetworkStats() {
-    if core == nil { return }
+    if !core.Enabled() { return }
     go func() {
         var wake = signals.Subscribe(signals.Block)
         refreshNetwork(true)
@@ -1106,10 +1104,10 @@ func startNetworkStats() {
 // package records touches per address but keeps no distinct total, so
 // this stands in until it can.
 func refreshNetwork(withNodes bool) {
-    if core == nil { return }
+    if !core.Enabled() { return }
     var ctx, cancel = context.WithTimeout(context.Background(), 60*time.Second)
     defer cancel()
-    var info, err = core.getBlockchainInfo(ctx)
+    var info, err = core.GetBlockchainInfo(ctx)
     if err != nil {
         logging.Warn("network stats: %v", err)
         return
@@ -1117,14 +1115,14 @@ func refreshNetwork(withNodes bool) {
     networkMu.Lock()
     var nodes, txs = cachedNetwork.Nodes, cachedNetwork.Txs
     networkMu.Unlock()
-    if stats, serr := core.getChainTxStats(ctx); serr == nil {
+    if stats, serr := core.GetChainTxStats(ctx); serr == nil {
         txs = bigCount(stats.TxCount)
     } else {
         logging.Warn("network stats: chain tx stats: %v", serr)
         if txs == "" { txs = "—" }
     }
     if withNodes {
-        if addrs, aerr := core.getNodeAddresses(ctx); aerr == nil {
+        if addrs, aerr := core.GetNodeAddresses(ctx); aerr == nil {
             var cutoff = time.Now().Add(-activeNodeWindow).Unix()
             var active int64
             for _, a := range addrs {
@@ -1151,7 +1149,7 @@ func refreshNetwork(withNodes bool) {
 }
 
 func startMempoolFees() {
-    if core == nil { return }
+    if !core.Enabled() { return }
     go func() {
         var wake = signals.Subscribe(signals.Block)
         refreshFees()
@@ -1169,16 +1167,16 @@ func startMempoolFees() {
 
 // refreshFees recomputes the projection and pushes it to any open page.
 func refreshFees() {
-    if core == nil { return }
+    if !core.Enabled() { return }
     var ctx, cancel = context.WithTimeout(context.Background(), 60*time.Second)
     defer cancel()
-    var entries, err = core.rawMempoolVerbose(ctx)
+    var entries, err = core.RawMempoolVerbose(ctx)
     if err != nil {
         logging.Warn("fees: %v", err)
         return
     }
     var minFee float64
-    if info, ierr := core.getMempoolInfo(ctx); ierr == nil {
+    if info, ierr := core.GetMempoolInfo(ctx); ierr == nil {
         minFee = info.MempoolMinFee
     }
     var rec = calculateRecommendedFee(buildProjectedBlocks(entries), minFee)
@@ -1198,13 +1196,13 @@ var mempoolSummaryLimit int64 = 20000
 // when the mempool is small enough to total up in reasonable time — the summed
 // output amount and summed fees of every mempool transaction, in sats and USD.
 func mempoolCmd(bot *bot, chat int64) {
-    if core == nil {
+    if !core.Enabled() {
         send(bot, chat, i18n(chat).String("Bitcoin node connection is not configured"), nil)
         return
     }
     var ctx, cancel = context.WithTimeout(context.Background(), 30*time.Second)
     defer cancel()
-    var info, err = core.getMempoolInfo(ctx)
+    var info, err = core.GetMempoolInfo(ctx)
     if err != nil {
         logging.Err("get mempool info: %v", err)
         send(bot, chat, i18n(chat).String("Sorry, something went wrong reading the mempool"), nil)
@@ -1244,7 +1242,7 @@ func mempoolCmd(bot *bot, chat int64) {
 // passes — is tolerated (its outputs are just skipped); a context timeout means
 // the mempool was too large and returns ok=false so the reply shows "unavailable".
 func mempoolTotals(ctx context.Context) (amount, fee int64, ok bool) {
-    var mp, err = core.rawMempoolVerbose(ctx)
+    var mp, err = core.RawMempoolVerbose(ctx)
     if err != nil { return 0, 0, false }
     var txids = make([]string, 0, len(mp))
     for id, e := range mp {
@@ -1260,7 +1258,7 @@ func mempoolTotals(ctx context.Context) (amount, fee int64, ok bool) {
         go func(id string) {
             defer wg.Done()
             defer func() { <-sem }()
-            var tx, e = core.getRawTransaction(ctx, id)
+            var tx, e = core.GetRawTransaction(ctx, id)
             if e != nil { return }
             var out int64
             for _, v := range tx.Vout { out += toSat(v.Value) }

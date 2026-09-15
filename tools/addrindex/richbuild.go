@@ -5,6 +5,7 @@ import "fmt"
 import "strconv"
 import "time"
 import "bitnsbot/addrindex"
+import "bitnsbot/core"
 import "bitnsbot/logging"
 
 // richbuild adds up what every address on the chain currently holds and writes
@@ -35,17 +36,16 @@ func richbuild(opt *options) error {
     defer store.close()
     var ctx, cancel = context.WithCancel(context.Background())
     defer cancel()
-    var client, cerr = newRPC(opt.url, opt.user, opt.pass, opt.cookie)
-    if cerr != nil { return fmt.Errorf("RPC client: %w", cerr) }
-    var src = addrindex.NewRPCBlockchain(client.call)
+    if err := core.Init(opt.url, opt.user, opt.pass, opt.cookie); err != nil { return fmt.Errorf("RPC client: %w", err) }
     var tipCtx, tipCancel = context.WithTimeout(ctx, 30*time.Second)
-    var tip, terr = src.Tip(tipCtx)
+    var count, terr = core.GetBlockCount(tipCtx)
     tipCancel()
     if terr != nil {
         return fmt.Errorf("Core RPC is unreachable at %s (%v)", opt.url, terr)
     }
+    var tip = int(count)
     if opt.to > 0 && opt.to < tip { tip = opt.to }
-    var chain, total = chainFacts(ctx, client)
+    var chain, total = chainFacts(ctx)
     var at, built, herr = store.height("height")
     if herr != nil { return herr }
     var from = 0
@@ -53,7 +53,7 @@ func richbuild(opt *options) error {
         from = at + 1
         var stored, _, merr = store.meta("hash")
         if merr != nil { return merr }
-        if err := sameChain(ctx, client, stored, at); err != nil { return err }
+        if err := sameChain(ctx, stored, at); err != nil { return err }
     }
     if from > tip {
         return atTip(store, opt, at, tip)
@@ -76,7 +76,7 @@ func richbuild(opt *options) error {
         }
         fmt.Printf("Carried %s balances forward from block %d\n", group(int64(seeded)), at)
     }
-    var last, scanErr = scan(ctx, src, sh, opt, chain, from, tip, total, started)
+    var last, scanErr = scan(ctx, sh, opt, chain, from, tip, total, started)
     if scanErr != nil { return scanErr }
     if err := sh.flush(); err != nil { return err }
     fmt.Printf("Read blocks %d..%d in %s: %s movements, %.1f GB of shards\n",
@@ -93,13 +93,13 @@ const shardBufferKB = 512
 
 // scan walks the blocks, turning each into the balance movements it makes and
 // buffering them until there are enough to be worth writing out.
-func scan(ctx context.Context, src *addrindex.RPCBlockchain, sh *shards, opt *options,
+func scan(ctx context.Context, sh *shards, opt *options,
     chain string, from, tip int, total int64, started time.Time) (string, error) {
     var buf = make(map[string]int64, opt.batch)
     var reported = time.Now()
     var read int64
     var last string
-    for f := range stream(ctx, src, from, tip, opt.fetch) {
+    for f := range stream(ctx, from, tip, opt.fetch) {
         if f.err != nil { return "", fmt.Errorf("block %d: %w", f.height, f.err) }
         last = f.blk.Hash
         for _, m := range addrindex.Balances(f.blk) { buf[string(m.Script)] += m.Sat }
@@ -180,7 +180,7 @@ type fetched struct {
 // blocks from 71 to 116 a second and 120 to 197 MB/s. Order still matters — a
 // balance is a running total — so each height gets its own one-slot channel and
 // the results are read in the order the heights were queued.
-func stream(ctx context.Context, src *addrindex.RPCBlockchain, from, to, workers int) <-chan fetched {
+func stream(ctx context.Context, from, to, workers int) <-chan fetched {
     if workers < 1 { workers = 1 }
     var queue = make(chan chan fetched, workers)
     go func() {
@@ -189,7 +189,7 @@ func stream(ctx context.Context, src *addrindex.RPCBlockchain, from, to, workers
             var height = h
             var c = make(chan fetched, 1)
             go func() {
-                var blk, err = fetchBlock(ctx, src, height)
+                var blk, err = fetchBlock(ctx, height)
                 c <- fetched{height: height, blk: blk, err: err}
             }()
             select {
@@ -219,7 +219,7 @@ func stream(ctx context.Context, src *addrindex.RPCBlockchain, from, to, workers
 // again from the last stored height. Only the last error is reported, since a
 // height that fails three times is failing for one reason. Its warning names no
 // command, since ababuild reads the chain through this too.
-func fetchBlock(ctx context.Context, src *addrindex.RPCBlockchain, height int) (addrindex.Block, error) {
+func fetchBlock(ctx context.Context, height int) (addrindex.Block, error) {
     var blk addrindex.Block
     var err error
     for attempt := 0; attempt < fetchAttempts; attempt++ {
@@ -231,7 +231,7 @@ func fetchBlock(ctx context.Context, src *addrindex.RPCBlockchain, height int) (
                 return blk, ctx.Err()
             }
         }
-        blk, err = src.BlockAt(ctx, height)
+        blk, err = addrindex.BlockAt(ctx, height)
         if err == nil || ctx.Err() != nil { return blk, err }
     }
     return blk, err
@@ -294,10 +294,10 @@ func aggregate(store *richStore, sh *shards, opt *options, tip int, hash string)
 // away minutes later — after which resuming from the stored height would keep
 // counting coins from a block the node no longer has, quietly and for good.
 // State written before this check kept no hash, and is simply not checked.
-func sameChain(ctx context.Context, client *rpc, stored string, at int) error {
+func sameChain(ctx context.Context, stored string, at int) error {
     if stored == "" { return nil }
-    var now string
-    if err := client.call(ctx, "getblockhash", []interface{}{at}, &now); err != nil {
+    var now, err = core.GetBlockHash(ctx, int64(at))
+    if err != nil {
         return fmt.Errorf("read block %d: %w", at, err)
     }
     if now == stored { return nil }
@@ -342,15 +342,15 @@ func report(store *richStore, opt *options, height int, started time.Time) error
 // is, and the alternative, quietly skipping the fixups, would be wrong in the
 // direction nobody would notice. One that will not count its transactions just
 // leaves the estimate off.
-func chainFacts(ctx context.Context, client *rpc) (string, int64) {
+func chainFacts(ctx context.Context) (string, int64) {
     var info struct {
         Chain string `json:"chain"`
     }
     var stats struct {
         Txs int64 `json:"txcount"`
     }
-    client.call(ctx, "getchaintxstats", nil, &stats)
-    if err := client.call(ctx, "getblockchaininfo", nil, &info); err != nil || info.Chain == "" {
+    core.Call(ctx, "getchaintxstats", nil, &stats)
+    if err := core.Call(ctx, "getblockchaininfo", nil, &info); err != nil || info.Chain == "" {
         return "main", stats.Txs
     }
     return info.Chain, stats.Txs

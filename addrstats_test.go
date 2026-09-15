@@ -1,6 +1,7 @@
 package main
 
 import "testing"
+import "bitnsbot/core"
 
 // addressStats sums an address's history from resolved transactions. Under Core
 // a confirmed transaction carries its own fee and its inputs' prevouts, so both
@@ -14,18 +15,18 @@ import "testing"
 // only the transaction the address actually spends from contributes a fee
 func TestAddressStats(t *testing.T) {
     var addr = "addresswithhistory"
-    var txs = []*coreTransaction{
+    var txs = []*core.Transaction{
         {
             Txid: "aa", Time: 1420070400,
-            Vin:  []coreVin{{Txid: "x", PrevOut: &corePrevOut{Value: 1.0001, ScriptPubKey: coreScriptPubKey{Address: "other"}}}},
-            Vout: []coreVout{{Value: 1.0, ScriptPubKey: coreScriptPubKey{Address: addr}}},
+            Vin:  []core.Vin{{Txid: "x", PrevOut: &core.PrevOut{Value: 1.0001, ScriptPubKey: core.ScriptPubKey{Address: "other"}}}},
+            Vout: []core.Vout{{Value: 1.0, ScriptPubKey: core.ScriptPubKey{Address: addr}}},
         },
         {
             Txid: "bb", Time: 1451606400, Fee: 0.0001,
-            Vin:  []coreVin{{Txid: "aa", PrevOut: &corePrevOut{Value: 1.0, ScriptPubKey: coreScriptPubKey{Address: addr}}}},
-            Vout: []coreVout{
-                {Value: 0.9, ScriptPubKey: coreScriptPubKey{Address: "dest"}},
-                {Value: 0.0999, ScriptPubKey: coreScriptPubKey{Address: addr}},
+            Vin:  []core.Vin{{Txid: "aa", PrevOut: &core.PrevOut{Value: 1.0, ScriptPubKey: core.ScriptPubKey{Address: addr}}}},
+            Vout: []core.Vout{
+                {Value: 0.9, ScriptPubKey: core.ScriptPubKey{Address: "dest"}},
+                {Value: 0.0999, ScriptPubKey: core.ScriptPubKey{Address: addr}},
             },
         },
     }

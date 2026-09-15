@@ -1,17 +1,18 @@
 package addrindex
 
 import "bytes"
-import "context"
 import "encoding/hex"
 import "errors"
 import "fmt"
 import "path/filepath"
 import "encoding/binary"
 import "reflect"
+import "strconv"
 import "testing"
 import "database/sql"
 import "go.etcd.io/bbolt"
 import _ "modernc.org/sqlite"
+import "bitnsbot/core/coretest"
 import "bitnsbot/cursors"
 
 // The index has two stores — bbolt for tools/addrindex, SQLite for the bot — and
@@ -198,19 +199,49 @@ func TestDistinctScriptsDistinctKeys(t *testing.T) {
     }
 }
 
-type fakeBlockchain struct {
+// chain is a node holding blocks, which BlockAt reads over RPC the way it reads a
+// real one. Every getblock is recorded in fetched, and a height in err answers
+// with the node's error instead.
+type chain struct {
     tip     int
     blocks  map[int]Block
     fetched []int
     err     map[int]bool
 }
 
-func (f *fakeBlockchain) Tip(ctx context.Context) (int, error) { return f.tip, nil }
+// serve points core at the chain for the rest of the test.
+func serve(t *testing.T, c *chain) *chain {
+    coretest.Start(t, c.respond)
+    return c
+}
 
-func (f *fakeBlockchain) BlockAt(ctx context.Context, height int) (Block, error) {
-    f.fetched = append(f.fetched, height)
-    if f.err[height] { return Block{}, errors.New("fetch failed") }
-    return f.blocks[height], nil
+// respond names each block by its height, and answers getblock with the block
+// as verbosity 3 reports it: an input per spent prevout, and none carrying one
+// for a transaction that spends nothing, which is how a coinbase reads.
+func (c *chain) respond(method string, params []interface{}) (interface{}, error) {
+    switch method {
+    case "getblockcount":
+        return c.tip, nil
+    case "getblockhash":
+        return fmt.Sprint(params[0]), nil
+    case "getblock":
+        var height, _ = strconv.Atoi(params[0].(string))
+        c.fetched = append(c.fetched, height)
+        if c.err[height] { return nil, errors.New("fetch failed") }
+        var amount = func(p Payment) map[string]interface{} {
+            return map[string]interface{}{"value": float64(p.Sat) / 1e8, "scriptPubKey": map[string]string{"hex": hex.EncodeToString(p.Script)}}
+        }
+        var txs = []interface{}{}
+        for _, tx := range c.blocks[height].Txs {
+            var vin = []interface{}{}
+            var vout = []interface{}{}
+            for _, p := range tx.Spent { vin = append(vin, map[string]interface{}{"prevout": amount(p)}) }
+            for _, p := range tx.Outputs { vout = append(vout, amount(p)) }
+            txs = append(txs, map[string]interface{}{"vin": vin, "vout": vout})
+        }
+        return map[string]interface{}{"time": c.blocks[height].Time, "tx": txs}, nil
+    }
+    return nil, fmt.Errorf("unexpected call %s %v", method, params)
 }
 
 // A tiny synthetic chain: height 0 pays scriptA, height 1 spends it (pays
@@ -238,12 +269,12 @@ func TestCatchUp(t *testing.T) { both(t, func(t *testing.T) {
     t.Cleanup(func() { chunkSize = saved })
     chunkSize = 1000
     var scriptA, scriptB = "0014aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "0014bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-    var src = &fakeBlockchain{tip: 2, blocks: map[int]Block{
+    var src = serve(t, &chain{tip: 2, blocks: map[int]Block{
         0: syntheticBlock(t, []string{scriptA}, nil),
         1: syntheticBlock(t, []string{scriptB}, []string{scriptA}),
         2: syntheticBlock(t, nil, nil),
-    }}
-    if err := Build(src); err != nil { t.Fatalf("catchUp: %v", err) }
+    }})
+    if err := Build(); err != nil { t.Fatalf("catchUp: %v", err) }
     var rawA, _ = hex.DecodeString(scriptA)
     var rawB, _ = hex.DecodeString(scriptB)
     var touchesA, _ = Lookup(rawA, 10000)
@@ -259,7 +290,7 @@ func TestCatchUp(t *testing.T) { both(t, func(t *testing.T) {
         t.Fatalf("cursor = %+v ok=%v, want Height=2", height, ok)
     }
     src.fetched = nil
-    if err := Build(src); err != nil { t.Fatalf("second catchUp: %v", err) }
+    if err := Build(); err != nil { t.Fatalf("second catchUp: %v", err) }
     if len(src.fetched) != 0 {
         t.Fatalf("second catchUp refetched %v, want nothing (already at tip)", src.fetched)
     }
@@ -283,8 +314,8 @@ func TestCatchUpChunksAndRetries(t *testing.T) {
     for h := 0; h < 5; h++ {
         blocks[h] = syntheticBlock(t, []string{script}, nil)
     }
-    var src = &fakeBlockchain{tip: 4, blocks: blocks, err: map[int]bool{3: true}}
-    if err := Build(src); err == nil {
+    var src = serve(t, &chain{tip: 4, blocks: blocks, err: map[int]bool{3: true}})
+    if err := Build(); err == nil {
         t.Fatal("expected an error from the failing block")
     }
     var raw, _ = hex.DecodeString(script)
@@ -298,7 +329,7 @@ func TestCatchUpChunksAndRetries(t *testing.T) {
     }
     src.err = nil
     src.fetched = nil
-    if err := Build(src); err != nil { t.Fatalf("retry: %v", err) }
+    if err := Build(); err != nil { t.Fatalf("retry: %v", err) }
     var deepFetched = append([]int{}, src.fetched...)
     if len(deepFetched) != 3 || deepFetched[0] != 2 {
         t.Fatalf("retry fetched %v, want [2 3 4]", deepFetched)

@@ -2,6 +2,7 @@ package main
 
 import "math"
 import "testing"
+import "bitnsbot/core"
 
 // The recommendation stage is a port of mempool.space's fee-api.ts, so it can be
 // checked exactly: feed it the projected blocks *they* published and it must
@@ -134,9 +135,9 @@ func TestMedianFeeOfAccountsForEmptySpace(t *testing.T) {
 //
 // the expensive half goes in the first block, so its median must be higher
 func TestBuildProjectedBlocksPacksByRate(t *testing.T) {
-    var entries = map[string]coreMempoolEntry{}
+    var entries = map[string]core.MempoolEntry{}
     for i := 0; i < 8000; i++ {
-        var e = coreMempoolEntry{Vsize: 250, Weight: 1000}
+        var e = core.MempoolEntry{Vsize: 250, Weight: 1000}
         e.Fees.Base = float64(i+1) * 250 / 1e8
         e.Fees.Ancestor = e.Fees.Base
         e.AncestorSize = 250
@@ -162,14 +163,14 @@ func TestBuildProjectedBlocksPacksByRate(t *testing.T) {
 //
 // a child paying for both: 400 vB package, 20 000 sats
 func TestEffectiveRateUsesAncestorPackage(t *testing.T) {
-    var cheapParent = coreMempoolEntry{Vsize: 200, Weight: 800}
+    var cheapParent = core.MempoolEntry{Vsize: 200, Weight: 800}
     cheapParent.Fees.Base = 200 / 1e8
     cheapParent.Fees.Ancestor = 200 / 1e8
     cheapParent.AncestorSize = 200
     if got := effectiveRate(cheapParent); math.Abs(got-1) > 0.001 {
         t.Errorf("standalone rate = %v, want 1 sat/vB", got)
     }
-    var child = coreMempoolEntry{Vsize: 200, Weight: 800}
+    var child = core.MempoolEntry{Vsize: 200, Weight: 800}
     child.Fees.Base = 19800 / 1e8
     child.Fees.Ancestor = 20000 / 1e8
     child.AncestorSize = 400
@@ -183,9 +184,9 @@ func TestEffectiveRateUsesAncestorPackage(t *testing.T) {
 //
 // no Weight
 func TestBuildProjectedBlocksFallsBackToVsize(t *testing.T) {
-    var entries = map[string]coreMempoolEntry{}
+    var entries = map[string]core.MempoolEntry{}
     for i := 0; i < 10; i++ {
-        var e = coreMempoolEntry{Vsize: 250}
+        var e = core.MempoolEntry{Vsize: 250}
         e.Fees.Base = 2500 / 1e8
         entries[trimNum(float64(i), 0)+"x"] = e
     }

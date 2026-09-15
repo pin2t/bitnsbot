@@ -5,38 +5,9 @@ import "encoding/hex"
 import "fmt"
 import "math"
 import "time"
+import "bitnsbot/core"
 
-// Caller is one JSON-RPC call to Bitcoin Core: a method, its positional params,
-// and where to decode the result. The bot's client and tools/addrindex's each
-// have a call of exactly this shape, so each hands over its own method value and
-// keeps its own credentials, cookie handling and logging.
-type Caller func(ctx context.Context, method string, params []interface{}, result interface{}) error
-
-// RPCBlockchain builds Block values from Bitcoin Core's JSON-RPC, the same interface
-// everything else in the bot talks to, so a node needs nothing enabled beyond
-// its RPCBlockchain server and ZMQ.
-//
-// One getblock at verbosity 3 carries all of it: every output's script and
-// amount, and every input's prevout with the same two — which Core reads from
-// its undo data, the only place a spend's script is written down. The reply is
-// read straight into a Block; nothing is serialized, and nothing but the fields a
-// scan uses is kept.
-//
-// The price is JSON. Verbosity 3 of a full mainnet block is ~13.7 MB where the
-// same block and its spent outputs serialized are ~1.95 MB, and Core has to write
-// every field of it; a full-chain pass is correspondingly slower than one over
-// the binary REST endpoints this replaced.
-//
-// It lives here rather than in the caller because this is how the index is
-// built: the bot and tools/addrindex both drive the backfill, and a second copy
-// would be free to drift.
-type RPCBlockchain struct {
-    call Caller
-}
-
-func NewRPCBlockchain(call Caller) *RPCBlockchain { return &RPCBlockchain{call: call} }
-
-// blockTimeout bounds one block's two calls. Nothing else does — the bot's
+// blockTimeout bounds one block's two calls. Nothing else does — the core
 // client sets no timeout of its own and a build runs under a context hours long
 // — so without it a node that stops answering would hold a pass for as long as
 // it stayed silent. A minute is far past what verbosity 3 of a full block takes.
@@ -51,22 +22,37 @@ type output struct {
     } `json:"scriptPubKey"`
 }
 
-func (s *RPCBlockchain) Tip(ctx context.Context) (int, error) {
-    var count int
-    var err = s.call(ctx, "getblockcount", nil, &count)
-    return count, err
-}
-
+// BlockAt reads one block from Bitcoin Core's JSON-RPC, the same interface
+// everything else in the bot talks to, so a node needs nothing enabled beyond
+// its RPC server and ZMQ.
+//
+// One getblock at verbosity 3 carries all of it: every output's script and
+// amount, and every input's prevout with the same two — which Core reads from
+// its undo data, the only place a spend's script is written down. The reply is
+// read straight into a Block; nothing is serialized, and nothing but the fields a
+// scan uses is kept. It goes through core.Call rather than GetBlockVerbose,
+// whose transactions decode every field and whose cache would hold a hundred of
+// these.
+//
+// The price is JSON. Verbosity 3 of a full mainnet block is ~13.7 MB where the
+// same block and its spent outputs serialized are ~1.95 MB, and Core has to write
+// every field of it; a full-chain pass is correspondingly slower than one over
+// the binary REST endpoints this replaced.
+//
+// It lives here rather than in core because this is how the index is built: the
+// bot and tools/addrindex both drive the backfill, and addrstat and the tool's
+// rankings read the same blocks.
+//
 // Core reports an amount as a BTC number, and a float's nearest value to one
 // is often a hair under it — 0.29 BTC is 28999999.999999996 satoshi — so the
 // satoshi are rounded, never truncated.
 //
 // a coinbase's input has no prevout, so it spends nothing
-func (s *RPCBlockchain) BlockAt(ctx context.Context, height int) (Block, error) {
+func BlockAt(ctx context.Context, height int) (Block, error) {
     var bctx, cancel = context.WithTimeout(ctx, blockTimeout)
     defer cancel()
-    var hash string
-    if err := s.call(bctx, "getblockhash", []interface{}{height}, &hash); err != nil { return Block{}, err }
+    var hash, err = core.GetBlockHash(bctx, int64(height))
+    if err != nil { return Block{}, err }
     var reply struct {
         Time int64 `json:"time"`
         Tx   []struct {
@@ -76,7 +62,7 @@ func (s *RPCBlockchain) BlockAt(ctx context.Context, height int) (Block, error) 
             Vout []output `json:"vout"`
         } `json:"tx"`
     }
-    if err := s.call(bctx, "getblock", []interface{}{hash, 3}, &reply); err != nil { return Block{}, err }
+    if err := core.Call(bctx, "getblock", []interface{}{hash, 3}, &reply); err != nil { return Block{}, err }
     var payment = func(o output) (Payment, error) {
         var script, err = hex.DecodeString(o.ScriptPubKey.Hex)
         if err != nil { return Payment{}, fmt.Errorf("block %s: malformed script %q", hash, o.ScriptPubKey.Hex) }

@@ -9,6 +9,8 @@ import "path/filepath"
 import "strings"
 import "testing"
 import "time"
+import "bitnsbot/core"
+import "bitnsbot/core/coretest"
 import "bitnsbot/cursors"
 import "bitnsbot/lru"
 
@@ -54,7 +56,7 @@ func TestInfoFlow(t *testing.T) {
     if !pendingInfoChats[1] {
         t.Fatalf("expected chat 1 to be pending")
     }
-    core = nil
+    core.Reset()
     update(bot, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "hello world"}})
     if len(sent) != 2 || sent[1] != "Bitcoin node connection is not configured" {
         t.Fatalf("unexpected second reply: %#v", sent)
@@ -72,7 +74,7 @@ func TestInfoFlow(t *testing.T) {
     }
     var recentTxid = "aaaa47a9143a23e80cc59e81588d21558b394005580b285961957cb3bed5b3e0"
     var recentTime = time.Now().Add(-48 * time.Hour).Unix()
-    var btcdServer = newFakeCoreServer(t, func(method string, params []interface{}) (interface{}, error) {
+    var btcdServer = coretest.Server(t, func(method string, params []interface{}) (interface{}, error) {
         var p = params
         _ = p
         switch method {
@@ -166,8 +168,7 @@ func TestInfoFlow(t *testing.T) {
         return nil, fmt.Errorf("unexpected method %s", method)
     })
     defer btcdServer.Close()
-    core = newFakeCoreConn(t, btcdServer)
-    defer func() { core = nil }()
+    coretest.Use(t, btcdServer)
     update(bot, Update{Message: &Message{Chat: Chat{ID: 5}, Text: "/info 100"}})
     if len(sent) != 4 {
         t.Fatalf("expected block reply, got %#v", sent)
@@ -327,7 +328,7 @@ func TestFeesFlow(t *testing.T) {
     }))
     defer server.Close()
     var bot = newBot("TESTTOKEN", server.URL)
-    core = nil
+    core.Reset()
     update(bot, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/fees"}})
     if len(sent) != 1 || sent[0] != "Bitcoin node connection is not configured" {
         t.Fatalf("unexpected not-configured reply: %#v", sent)
@@ -340,7 +341,7 @@ func TestFeesFlow(t *testing.T) {
             "fees": map[string]any{"base": float64(i+1) * 250 / 1e8, "ancestor": float64(i+1) * 250 / 1e8},
         }
     }
-    var btcdServer = newFakeCoreServer(t, func(method string, params []interface{}) (interface{}, error) {
+    var btcdServer = coretest.Server(t, func(method string, params []interface{}) (interface{}, error) {
         switch method {
         case "getrawmempool":
             return mempool, nil
@@ -350,13 +351,12 @@ func TestFeesFlow(t *testing.T) {
         return nil, fmt.Errorf("unexpected method %s", method)
     })
     defer btcdServer.Close()
-    core = newFakeCoreConn(t, btcdServer)
-    defer func() { core = nil }()
+    coretest.Use(t, btcdServer)
     {
         var ctx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
         defer cancel()
-        var entries, _ = core.rawMempoolVerbose(ctx)
-        var info, _ = core.getMempoolInfo(ctx)
+        var entries, _ = core.RawMempoolVerbose(ctx)
+        var info, _ = core.GetMempoolInfo(ctx)
         var rec = calculateRecommendedFee(buildProjectedBlocks(entries), info.MempoolMinFee)
         feesMu.Lock()
         cachedFees, cachedFeesOK, cachedFeesCount = rec, true, len(entries)
@@ -398,12 +398,11 @@ func TestFeesUnavailable(t *testing.T) {
     }))
     defer server.Close()
     var bot = newBot("TESTTOKEN", server.URL)
-    var btcdServer = newFakeCoreServer(t, func(method string, params []interface{}) (interface{}, error) {
+    var btcdServer = coretest.Server(t, func(method string, params []interface{}) (interface{}, error) {
         return nil, fmt.Errorf("not enough blocks have been observed")
     })
     defer btcdServer.Close()
-    core = newFakeCoreConn(t, btcdServer)
-    defer func() { core = nil }()
+    coretest.Use(t, btcdServer)
     update(bot, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/fees"}})
     if len(sent) != 1 || !strings.Contains(sent[0], "aren't available") {
         t.Fatalf("unexpected unavailable reply: %#v", sent)
@@ -453,12 +452,12 @@ func TestMempoolFlow(t *testing.T) {
     }))
     defer server.Close()
     var bot = newBot("TESTTOKEN", server.URL)
-    core = nil
+    core.Reset()
     update(bot, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/mempool"}})
     if len(sent) != 1 || sent[0] != "Bitcoin node connection is not configured" {
         t.Fatalf("unexpected not-configured reply: %#v", sent)
     }
-    var btcdServer = newFakeCoreServer(t, func(method string, params []interface{}) (interface{}, error) {
+    var btcdServer = coretest.Server(t, func(method string, params []interface{}) (interface{}, error) {
         var p = params
         _ = p
         switch method {
@@ -481,8 +480,7 @@ func TestMempoolFlow(t *testing.T) {
         return nil, fmt.Errorf("unexpected method %s", method)
     })
     defer btcdServer.Close()
-    core = newFakeCoreConn(t, btcdServer)
-    defer func() { core = nil }()
+    coretest.Use(t, btcdServer)
     summaryMu.Lock()
     summaryAmount, summaryFee, summaryOK = 350000000, 30000, true
     summaryMu.Unlock()
@@ -581,15 +579,14 @@ func TestMempoolFlowRate(t *testing.T) {
     }))
     defer tg.Close()
     var b = newBot("TESTTOKEN", tg.URL)
-    var srv = newFakeCoreServer(t, func(method string, params []interface{}) (interface{}, error) {
+    var srv = coretest.Server(t, func(method string, params []interface{}) (interface{}, error) {
         if method == "getmempoolinfo" {
             return map[string]any{"size": 5000, "bytes": 2000000}, nil
         }
         return nil, fmt.Errorf("unexpected method %s", method)
     })
     defer srv.Close()
-    core = newFakeCoreConn(t, srv)
-    defer func() { core = nil }()
+    coretest.Use(t, srv)
     update(b, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/mempool"}})
     if len(sent) != 1 || !strings.Contains(sent[0], "Flow rate:") || !strings.Contains(sent[0], "5.0 tx/sec (+2.0)") {
         t.Fatalf("expected flow rate line in reply: %#v", sent)

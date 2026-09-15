@@ -4,6 +4,7 @@ import "context"
 import "path/filepath"
 import "strings"
 import "testing"
+import "bitnsbot/core"
 import "bitnsbot/addrstat"
 
 // seedAddrStat writes the record the collector would have gathered for one
@@ -33,9 +34,7 @@ func TestAddressAnsweredFromStatistics(t *testing.T) {
         Type: "p2pkh", Balance: 9990000, Recv: 10000000, Sent: 10000, Flow: 10010000,
         Fees: 5000, Txs: 4321, First: 1231006505, Last: 1700000000,
     })
-    var saved = core
-    core = nil
-    t.Cleanup(func() { core = saved })
+    core.Reset()
     var pairs, valid, err = addrPairs(context.Background(), "", addr)
     if err != nil || !valid { t.Fatalf("addrPairs: valid=%v err=%v", valid, err) }
     var got = map[string]string{}
@@ -61,9 +60,7 @@ func TestAddressAnsweredFromStatistics(t *testing.T) {
 func TestAddressTypeFromTheAddressWhenTheRecordHasNone(t *testing.T) {
     var addr = "bc1p0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4k9hcz7vqzk5jj0"
     seedAddrStat(t, addr, addrstat.Stat{Recv: 100, Txs: 1})
-    var saved = core
-    core = nil
-    t.Cleanup(func() { core = saved })
+    core.Reset()
     var pairs, _, err = addrPairs(context.Background(), "", addr)
     if err != nil { t.Fatal(err) }
     if pairs[0][1] != "taproot (P2TR)" { t.Errorf("Type = %q, want taproot (P2TR)", pairs[0][1]) }
@@ -74,9 +71,7 @@ func TestAddressTypeFromTheAddressWhenTheRecordHasNone(t *testing.T) {
 func TestAppAddressPageUsesStatistics(t *testing.T) {
     var addr = "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"
     seedAddrStat(t, addr, addrstat.Stat{Type: "segwit", Balance: 100000000, Recv: 100000000, Txs: 7})
-    var saved = core
-    core = nil
-    t.Cleanup(func() { core = saved })
+    core.Reset()
     var info = appSource{}.AddrInfo("", addr)
     if !info.OK { t.Fatal("the app got nothing for a gathered address") }
     var labels []string
