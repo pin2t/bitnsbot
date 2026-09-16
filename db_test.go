@@ -9,10 +9,6 @@ import "testing"
 // those packages guard on a nil handle, so the bot runs, logs progress, and
 // stores nothing. The address index shipped in exactly that state.
 //
-// The schema is a copy of tools/tosqlite's, which is what makes that tool the
-// upgrade path from the bbolt database this replaced — so the set here is the set
-// it writes.
-//
 // the block-info cache
 //
 // rates

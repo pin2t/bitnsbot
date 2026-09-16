@@ -40,14 +40,14 @@ import "bitnsbot/logging"
 // knew. TestAbaBuildCarriesStateForward pins the two runs landing on one
 // list.
 func ababuild(opt *options) error {
-    if opt.dbsqlite == "" {
-        return fmt.Errorf("ababuild writes SQLite: name the database with -dbsqlite")
+    if opt.db == "" {
+        return fmt.Errorf("ababuild writes SQLite: name the database with -db")
     }
     if opt.top < 1 {
         return fmt.Errorf("-top is how many addresses to keep, so it cannot be %d", opt.top)
     }
-    var store, err = openAba(opt.dbsqlite)
-    if err != nil { return fmt.Errorf("open %s: %w", opt.dbsqlite, err) }
+    var store, err = openAba(opt.db)
+    if err != nil { return fmt.Errorf("open %s: %w", opt.db, err) }
     defer store.close()
     var ctx, cancel = context.WithCancel(context.Background())
     defer cancel()
@@ -74,12 +74,12 @@ func ababuild(opt *options) error {
         return alreadyBuilt(store, opt, at, tip)
     }
     var dir = opt.tmp
-    if dir == "" { dir = opt.dbsqlite + ".shards" }
+    if dir == "" { dir = opt.db + ".shards" }
     var sh, serr = newTimedShards(dir, opt.shards, shardBufferKB)
     if serr != nil { return serr }
     defer sh.remove()
     fmt.Printf("Tracking balances and last movements over blocks %d..%d of %s into %s (%d shards under %s)\n",
-        from, tip, chain, opt.dbsqlite, opt.shards, dir)
+        from, tip, chain, opt.db, opt.shards, dir)
     var started = time.Now()
     if built {
         var seeded int

@@ -27,7 +27,7 @@ type Tx struct {
     Spent   []Payment
 }
 
-// chunkSize bounds how many blocks are merged into the index per bbolt
+// chunkSize bounds how many blocks are merged into the index per
 // transaction, the same reasoning as the miners collector: catching up hundreds
 // of thousands of blocks must not build one giant transaction, and a crash
 // mid-catch-up should resume from the last flushed chunk, not the beginning. A

@@ -34,8 +34,7 @@ type rate struct {
     Cents int64
 }
 
-// Init stores the shared handle. The two tables are created by openDB, from the
-// schema tools/tosqlite defines.
+// Init stores the shared handle. The two tables are created by openDB.
 func Init(handle *sql.DB) error {
     db = handle
     return nil
@@ -413,8 +412,7 @@ func Snapshot() (Market, bool) {
 // rate records so the newest is the last key in the bucket.
 // cents is how money is stored, the unit the rates table already keeps a price
 // in: a market capitalisation in trillions has no business being a float64 that
-// drifts. tools/tosqlite converts the same way, which is what keeps a migrated
-// database and one the bot wrote indistinguishable.
+// drifts.
 func cents(usd float64) int64 { return int64(math.Round(usd * 100)) }
 
 func storeMarket(m Market) error {

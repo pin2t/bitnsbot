@@ -19,7 +19,7 @@ const wantPay = 10000
 const wantOther = 4*coinbaseSat - coinbaseSat + 10000
 
 func richOptions(t *testing.T, url string) *options {
-    return &options{dbsqlite: filepath.Join(t.TempDir(), "rich.db"), url: url,
+    return &options{db: filepath.Join(t.TempDir(), "rich.db"), url: url,
         shards: 4, batch: 2, fetch: 2, tmp: filepath.Join(t.TempDir(), "shards")}
 }
 
@@ -95,7 +95,7 @@ func TestRichBuild(t *testing.T) {
     if !strings.Contains(out, "blocks 0..3") {
         t.Errorf("richbuild did not report its range: %q", out)
     }
-    var rich = richRows(t, opt.dbsqlite)
+    var rich = richRows(t, opt.db)
     if len(rich) != 2 {
         t.Fatalf("rich = %v, want exactly the two addresses that hold coins", rich)
     }
@@ -105,17 +105,17 @@ func TestRichBuild(t *testing.T) {
     if got := rich[addrindex.Address(otherScript)]; got != wantOther {
         t.Errorf("%s holds %d, want %d", addrindex.Address(otherScript), got, wantOther)
     }
-    var balances = balanceRows(t, opt.dbsqlite)
+    var balances = balanceRows(t, opt.db)
     if got := balances[hex.EncodeToString(opReturnScript)]; got != 500 {
         t.Errorf("the addressless script holds %d in balances, want 500", got)
     }
     if len(balances) != 3 {
         t.Errorf("balances = %v, want the three funded scripts", balances)
     }
-    if h := storedHeight(t, opt.dbsqlite, "height"); h != 3 {
+    if h := storedHeight(t, opt.db, "height"); h != 3 {
         t.Errorf("stored height = %d, want the tip 3", h)
     }
-    if h := storedHeight(t, opt.dbsqlite, "rich"); h != 3 {
+    if h := storedHeight(t, opt.db, "rich"); h != 3 {
         t.Errorf("rich was built at %d, want 3", h)
     }
     if _, err := os.Stat(opt.tmp); !os.IsNotExist(err) {
@@ -152,10 +152,10 @@ func TestRichBuildCarriesBalancesForward(t *testing.T) {
     capture(t, func() {
         if err := richbuild(parts); err != nil { t.Fatalf("to block 1: %v", err) }
     })
-    if h := storedHeight(t, parts.dbsqlite, "height"); h != 1 {
+    if h := storedHeight(t, parts.db, "height"); h != 1 {
         t.Fatalf("stopped at %d, want block 1", h)
     }
-    if got := richRows(t, parts.dbsqlite)[addrindex.Address(payScript)]; got != 20000 {
+    if got := richRows(t, parts.db)[addrindex.Address(payScript)]; got != 20000 {
         t.Errorf("after block 1 the address holds %d, want the 20000 it was paid", got)
     }
     parts.to = 0
@@ -168,7 +168,7 @@ func TestRichBuildCarriesBalancesForward(t *testing.T) {
     if !strings.Contains(out, "blocks 2..3") {
         t.Errorf("the second run should only read what is new: %q", out)
     }
-    var got, want = richRows(t, parts.dbsqlite), richRows(t, whole.dbsqlite)
+    var got, want = richRows(t, parts.db), richRows(t, whole.db)
     if len(got) != len(want) {
         t.Fatalf("two runs = %v, one run = %v", got, want)
     }
@@ -190,26 +190,25 @@ func TestRichBuildMinimum(t *testing.T) {
     capture(t, func() {
         if err := richbuild(opt); err != nil { t.Fatalf("richbuild: %v", err) }
     })
-    var rich = richRows(t, opt.dbsqlite)
+    var rich = richRows(t, opt.db)
     if _, ok := rich[addrindex.Address(payScript)]; ok {
         t.Errorf("rich = %v; the address below -min should not be in it", rich)
     }
     if got := rich[addrindex.Address(otherScript)]; got != wantOther {
         t.Errorf("rich = %v; the address above -min should be", rich)
     }
-    if len(balanceRows(t, opt.dbsqlite)) != 3 {
-        t.Errorf("balances = %v, want all three funded scripts", balanceRows(t, opt.dbsqlite))
+    if len(balanceRows(t, opt.db)) != 3 {
+        t.Errorf("balances = %v, want all three funded scripts", balanceRows(t, opt.db))
     }
 }
 
-// It writes SQLite and nothing else, so it has nowhere to put the answer without
-// being told where.
+// It has nowhere to put the answer without being told where.
 func TestRichBuildNeedsADatabase(t *testing.T) {
     var srv = fakeCore(t, 3)
     var opt = richOptions(t, srv.URL)
-    opt.dbsqlite = ""
+    opt.db = ""
     if err := richbuild(opt); err == nil {
-        t.Error("richbuild without -dbsqlite should say so, not write somewhere of its own choosing")
+        t.Error("richbuild without -db should say so, not write somewhere of its own choosing")
     }
 }
 
@@ -336,7 +335,7 @@ func TestRichBuildVoidsTheGenesisCoinbase(t *testing.T) {
     capture(t, func() {
         if err := richbuild(opt); err != nil { t.Fatalf("richbuild: %v", err) }
     })
-    if got := richRows(t, opt.dbsqlite)[addrindex.Address(otherScript)]; got != wantOther-coinbaseSat {
+    if got := richRows(t, opt.db)[addrindex.Address(otherScript)]; got != wantOther-coinbaseSat {
         t.Errorf("the miner holds %d, want %d — genesis pays nobody", got, wantOther-coinbaseSat)
     }
 }
@@ -350,7 +349,7 @@ func TestRichBuildRefusesAfterAReorg(t *testing.T) {
     capture(t, func() {
         if err := richbuild(opt); err != nil { t.Fatalf("first run: %v", err) }
     })
-    var db, err = sql.Open("sqlite", "file:"+opt.dbsqlite)
+    var db, err = sql.Open("sqlite", "file:"+opt.db)
     if err != nil { t.Fatalf("open: %v", err) }
     if _, err := db.Exec("update meta set value = ? where key = 'hash'", strings.Repeat("f", 64)); err != nil {
         t.Fatalf("rewrite the stored hash: %v", err)
@@ -375,8 +374,8 @@ func TestRichBuildRebuildsWhenMinChanges(t *testing.T) {
     capture(t, func() {
         if err := richbuild(opt); err != nil { t.Fatalf("first run: %v", err) }
     })
-    if len(richRows(t, opt.dbsqlite)) != 2 {
-        t.Fatalf("first run wrote %v", richRows(t, opt.dbsqlite))
+    if len(richRows(t, opt.db)) != 2 {
+        t.Fatalf("first run wrote %v", richRows(t, opt.db))
     }
     opt.min = wantPay + 1
     var out = capture(t, func() {
@@ -385,7 +384,7 @@ func TestRichBuildRebuildsWhenMinChanges(t *testing.T) {
     if strings.Contains(out, "already at block") {
         t.Errorf("a new -min should rebuild rich, got %q", out)
     }
-    if got := richRows(t, opt.dbsqlite); len(got) != 1 {
+    if got := richRows(t, opt.db); len(got) != 1 {
         t.Errorf("rich = %v, want only the address above the new -min", got)
     }
 }

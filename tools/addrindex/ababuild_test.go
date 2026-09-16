@@ -19,7 +19,7 @@ var wantLast = map[string]int64{
 }
 
 func abaOptions(t *testing.T, url string) *options {
-    return &options{dbsqlite: filepath.Join(t.TempDir(), "abandoned.db"), url: url,
+    return &options{db: filepath.Join(t.TempDir(), "abandoned.db"), url: url,
         shards: 4, batch: 2, fetch: 2, sum: 3, top: 10, tmp: filepath.Join(t.TempDir(), "shards")}
 }
 
@@ -61,7 +61,7 @@ func TestAbaBuild(t *testing.T) {
     if !strings.Contains(out, "blocks 0..3") {
         t.Errorf("ababuild did not report its range: %q", out)
     }
-    var addrs, balance, last = abandonedRows(t, opt.dbsqlite)
+    var addrs, balance, last = abandonedRows(t, opt.db)
     if len(addrs) != 2 {
         t.Fatalf("abandoned = %v, want exactly the two addresses that hold coins", addrs)
     }
@@ -80,13 +80,13 @@ func TestAbaBuild(t *testing.T) {
     if got := balance[addrindex.Address(otherScript)]; got != wantOther {
         t.Errorf("%s holds %d, want %d", addrindex.Address(otherScript), got, wantOther)
     }
-    if got := abaBalances(t, opt.dbsqlite)[hex.EncodeToString(opReturnScript)]; got.sat != 500 {
+    if got := abaBalances(t, opt.db)[hex.EncodeToString(opReturnScript)]; got.sat != 500 {
         t.Errorf("the addressless script holds %d in the state, want 500", got.sat)
     }
-    if h := storedHeight(t, opt.dbsqlite, "height"); h != 3 {
+    if h := storedHeight(t, opt.db, "height"); h != 3 {
         t.Errorf("stored height = %d, want the tip 3", h)
     }
-    if h := storedHeight(t, opt.dbsqlite, "abandoned"); h != 3 {
+    if h := storedHeight(t, opt.db, "abandoned"); h != 3 {
         t.Errorf("the list was built at %d, want 3", h)
     }
     if _, err := os.Stat(opt.tmp); !os.IsNotExist(err) {
@@ -131,15 +131,15 @@ func TestAbaLastMovedRule(t *testing.T) {
     if err := sh.putAt(string(otherScript), -100, 300); err != nil { t.Fatalf("put: %v", err) }
     if err := sh.putAt(string(otherScript), 1000, 800); err != nil { t.Fatalf("put: %v", err) }
     if err := sh.flush(); err != nil { t.Fatalf("flush: %v", err) }
-    var opt = &options{dbsqlite: filepath.Join(t.TempDir(), "abandoned.db"), shards: 4, sum: 2, top: 10}
-    var store, oerr = openAba(opt.dbsqlite)
+    var opt = &options{db: filepath.Join(t.TempDir(), "abandoned.db"), shards: 4, sum: 2, top: 10}
+    var store, oerr = openAba(opt.db)
     if oerr != nil { t.Fatalf("open: %v", oerr) }
     defer store.close()
     capture(t, func() {
         if err := combine(store, sh, opt, 9, "hash"); err != nil { t.Fatalf("combine: %v", err) }
         if _, err := store.shortlist(0, opt.top, 9); err != nil { t.Fatalf("shortlist: %v", err) }
     })
-    var addrs, balance, last = abandonedRows(t, opt.dbsqlite)
+    var addrs, balance, last = abandonedRows(t, opt.db)
     if len(addrs) != 2 { t.Fatalf("abandoned = %v, want both scripts", addrs) }
     if got := last[addrindex.Address(otherScript)]; got != 800 {
         t.Errorf("the script that spent at 300 and was paid at 800 reports %d, want 800 — "+
@@ -182,15 +182,15 @@ func TestAbaCombinesScriptsOfOneAddress(t *testing.T) {
     if err := sh.putAt(string(p2pk), 5000, 200); err != nil { t.Fatalf("put: %v", err) }
     if err := sh.putAt(string(p2pkh), 3000, 600); err != nil { t.Fatalf("put: %v", err) }
     if err := sh.flush(); err != nil { t.Fatalf("flush: %v", err) }
-    var opt = &options{dbsqlite: filepath.Join(t.TempDir(), "abandoned.db"), shards: 4, sum: 2, top: 10}
-    var store, oerr = openAba(opt.dbsqlite)
+    var opt = &options{db: filepath.Join(t.TempDir(), "abandoned.db"), shards: 4, sum: 2, top: 10}
+    var store, oerr = openAba(opt.db)
     if oerr != nil { t.Fatalf("open: %v", oerr) }
     defer store.close()
     capture(t, func() {
         if err := combine(store, sh, opt, 9, "hash"); err != nil { t.Fatalf("combine: %v", err) }
         if _, err := store.shortlist(0, opt.top, 9); err != nil { t.Fatalf("shortlist: %v", err) }
     })
-    var addrs, balance, last = abandonedRows(t, opt.dbsqlite)
+    var addrs, balance, last = abandonedRows(t, opt.db)
     if len(addrs) != 1 {
         t.Fatalf("abandoned = %v, want the one address both scripts pay", addrs)
     }
@@ -216,7 +216,7 @@ func TestAbaBuildCarriesStateForward(t *testing.T) {
     capture(t, func() {
         if err := ababuild(parts); err != nil { t.Fatalf("to block 2: %v", err) }
     })
-    if h := storedHeight(t, parts.dbsqlite, "height"); h != 2 {
+    if h := storedHeight(t, parts.db, "height"); h != 2 {
         t.Fatalf("stopped at %d, want block 2", h)
     }
     parts.to = 0
@@ -229,8 +229,8 @@ func TestAbaBuildCarriesStateForward(t *testing.T) {
     if !strings.Contains(out, "blocks 3..3") {
         t.Errorf("the second run should only read what is new: %q", out)
     }
-    var gotAddrs, gotBalance, gotMoved = abandonedRows(t, parts.dbsqlite)
-    var wantAddrs, wantBalance, wantMoved = abandonedRows(t, whole.dbsqlite)
+    var gotAddrs, gotBalance, gotMoved = abandonedRows(t, parts.db)
+    var wantAddrs, wantBalance, wantMoved = abandonedRows(t, whole.db)
     if len(gotAddrs) != len(wantAddrs) {
         t.Fatalf("two runs = %v, one run = %v", gotAddrs, wantAddrs)
     }
@@ -257,12 +257,12 @@ func TestAbaBuildTop(t *testing.T) {
     capture(t, func() {
         if err := ababuild(opt); err != nil { t.Fatalf("ababuild: %v", err) }
     })
-    var addrs, _, _ = abandonedRows(t, opt.dbsqlite)
+    var addrs, _, _ = abandonedRows(t, opt.db)
     if len(addrs) != 1 || addrs[0] != addrindex.Address(payScript) {
         t.Errorf("abandoned = %v, want only the most abandoned address", addrs)
     }
-    if len(abaBalances(t, opt.dbsqlite)) != 3 {
-        t.Errorf("the state = %v, want all three funded scripts", abaBalances(t, opt.dbsqlite))
+    if len(abaBalances(t, opt.db)) != 3 {
+        t.Errorf("the state = %v, want all three funded scripts", abaBalances(t, opt.db))
     }
 }
 
@@ -288,19 +288,18 @@ func TestAbaBuildRebuildsWhenTopChanges(t *testing.T) {
     if strings.Contains(out, "already at block") {
         t.Errorf("a new -top should rebuild the list, got %q", out)
     }
-    if addrs, _, _ := abandonedRows(t, opt.dbsqlite); len(addrs) != 1 {
+    if addrs, _, _ := abandonedRows(t, opt.db); len(addrs) != 1 {
         t.Errorf("abandoned = %v, want the one address the new -top allows", addrs)
     }
 }
 
-// It writes SQLite and nothing else, so it has nowhere to put the answer without
-// being told where.
+// It has nowhere to put the answer without being told where.
 func TestAbaBuildNeedsADatabase(t *testing.T) {
     var srv = fakeCore(t, 3)
     var opt = abaOptions(t, srv.URL)
-    opt.dbsqlite = ""
+    opt.db = ""
     if err := ababuild(opt); err == nil {
-        t.Error("ababuild without -dbsqlite should say so, not write somewhere of its own choosing")
+        t.Error("ababuild without -db should say so, not write somewhere of its own choosing")
     }
 }
 

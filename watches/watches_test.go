@@ -6,7 +6,7 @@ import "testing"
 import "time"
 import _ "modernc.org/sqlite"
 
-// The table as openDB creates it, from the schema tools/tosqlite defines.
+// The table as openDB creates it.
 const ddl = `create table watches (chat INTEGER NOT NULL, addr TEXT NOT NULL, alias TEXT NOT NULL,
     created INTEGER NOT NULL, PRIMARY KEY (chat, addr))`
 

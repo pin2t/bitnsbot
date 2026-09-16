@@ -1,23 +1,14 @@
 package main
 
-import "encoding/binary"
 import "fmt"
 import "strconv"
 import "time"
-import "go.etcd.io/bbolt"
 import "bitnsbot/addrindex"
 import "bitnsbot/logging"
 
-// activeBucket holds the addresses busy enough to be worth calling out: the key
-// is the address, the value its transaction count at the time it qualified.
-var activeBucket = []byte("addrindex-active")
-
-// activeCursor is this pass's own place, kept in the index's cursor bucket
-// beside the index's own so neither disturbs the other. It counts **block
-// files**, not heights — a scan of the raw files has no cheap notion of height,
-// and the name is deliberately not the old height-based one, so a cursor written
-// by an earlier version cannot be read as a file number.
-const activeCursor = "actbuild-file"
+// activeDDL is the table the addresses busy enough to be worth calling out land
+// in: the address, and its transaction count at the time it qualified.
+const activeDDL = `create table if not exists active (addr TEXT PRIMARY KEY, txs INTEGER NOT NULL)`
 
 // activeMin is how many transactions an address needs before it counts as
 // active.
@@ -25,7 +16,7 @@ var activeMin = 1000
 
 // actbuild walks Core's raw block files and counts, for every address the chain
 // pays to, how many transactions paid to it. Anything past activeMin is written
-// to addrindex-active when the scan finishes.
+// to the active table when the scan finishes.
 //
 // It reads nothing but the files. An earlier version asked the index for each
 // address's history, which is what made the scan impossibly slow: a Lookup walks
@@ -50,7 +41,7 @@ func actbuild(opt *options) {
     if err != nil { logging.Fatal("%v", err) }
     var key, kerr = xorKey(opt.blocks)
     if kerr != nil { logging.Fatal("read xor.dat: %v", kerr) }
-    if err := ensureBuckets(); err != nil { logging.Fatal("create buckets: %v", err) }
+    if _, err := db.Exec(activeDDL); err != nil { logging.Fatal("create the active table: %v", err) }
     fmt.Printf("Scanning %d files in %s for addresses in more than %d transactions\n",
         len(files), opt.blocks, activeMin)
     var started = time.Now()
@@ -110,22 +101,25 @@ func countFile(name string, key []byte, counts *counter) (blocks, scripts int, e
 }
 
 // storeActive writes the qualifying addresses, encoded from the scripts kept
-// when they crossed the threshold.
+// when they crossed the threshold, in one transaction. An address already in the
+// table takes the new count.
 //
 // a nonstandard script is not an address, so there is nothing to
 // record for it
 func storeActive(active map[string]uint32) error {
-    return db.Update(func(tx *bbolt.Tx) error {
-        var b = tx.Bucket(activeBucket)
-        for script, n := range active {
-            var addr = addrindex.Address([]byte(script))
-            if addr == "" { continue }
-            var v = make([]byte, 8)
-            binary.BigEndian.PutUint64(v, uint64(n))
-            if err := b.Put([]byte(addr), v); err != nil { return err }
-        }
-        return nil
-    })
+    var tx, err = db.Begin()
+    if err != nil { return err }
+    defer tx.Rollback()
+    var stmt, perr = tx.Prepare(`insert into active (addr, txs) values (?, ?)
+        on conflict(addr) do update set txs = excluded.txs`)
+    if perr != nil { return perr }
+    defer stmt.Close()
+    for script, n := range active {
+        var addr = addrindex.Address([]byte(script))
+        if addr == "" { continue }
+        if _, err := stmt.Exec(addr, int64(n)); err != nil { return err }
+    }
+    return tx.Commit()
 }
 
 // progress reports how fast the scan is going and how much longer it has. The
@@ -161,11 +155,4 @@ func group(n int64) string {
         out = append(out, digits[i])
     }
     return string(out)
-}
-
-func ensureBuckets() error {
-    return db.Update(func(tx *bbolt.Tx) error {
-        var _, err = tx.CreateBucketIfNotExists(activeBucket)
-        return err
-    })
 }

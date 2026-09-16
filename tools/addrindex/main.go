@@ -1,70 +1,68 @@
 // Command addrindex builds and queries the bot's address index from the command
 // line. It drives the same addrindex package the bot does, against the same
-// bbolt buckets and the same cursor, so an index built here is one the bot can
+// SQLite tables and the same cursor, so an index built here is one the bot can
 // serve and vice versa — point -db at the bot's own database to extend it, or at
 // a file of its own to work on a copy.
 //
 // Usage:
 //
-//	addrindex build    -db ai.db -url http://127.0.0.1:8332 -cookie ./cookie
-//	addrindex list     -db ai.db -url http://127.0.0.1:8332 -cookie ./cookie <address>
-//	addrindex list     -dbsqlite ai.sqlite.db -url http://127.0.0.1:8332 -cookie ./cookie <address>
+//	addrindex build     -db ai.db -url http://127.0.0.1:8332 -cookie ./cookie
+//	addrindex list      -db ai.db -url http://127.0.0.1:8332 -cookie ./cookie <address>
 //	addrindex actbuild  -db ai.db -blocks ~/.bitcoin/blocks
-//	addrindex richbuild -dbsqlite rich.db -url http://127.0.0.1:8332
-//	addrindex ababuild  -dbsqlite abandoned.db -url http://127.0.0.1:8332
+//	addrindex richbuild -db rich.db -url http://127.0.0.1:8332
+//	addrindex ababuild  -db abandoned.db -url http://127.0.0.1:8332
 //
 // build catches the index up from its cursor to the chain tip and exits; list
-// prints every transaction the index holds for an address, then a summary —
-// reading the bbolt index, or with -dbsqlite the SQLite copy tools/tosqlite
-// makes of it, which prints the same listing;
+// prints every transaction the index holds for an address, then a summary;
 // actbuild reads Core's raw block files and records the addresses whose history
-// is longer than -active transactions. It talks to no node at all — it reads the
-// files and encodes the addresses itself — so it needs neither -url nor -cookie;
-// richbuild reads the whole chain over RPC and writes what every address holds
-// now to a SQLite table named rich, keeping no bbolt index at all; ababuild
-// reads it the same way and writes the addresses that still hold coins but whose
-// coins have gone longest without moving, to a SQLite table named abandoned.
+// is longer than -active transactions in a table named active. It talks to no
+// node at all — it reads the files and encodes the addresses itself — so it
+// needs neither -url nor -cookie; richbuild reads the whole chain over RPC and
+// writes what every address holds now to a table named rich, keeping no index
+// at all; ababuild reads it the same way and writes the addresses that still
+// hold coins but whose coins have gone longest without moving, to a table named
+// abandoned.
 package main
 
 import "context"
+import "database/sql"
 import "flag"
 import "fmt"
 import "os"
 import "time"
-import "go.etcd.io/bbolt"
+import _ "modernc.org/sqlite"
 import "bitnsbot/addrindex"
 import "bitnsbot/core"
+import "bitnsbot/cursors"
 import "bitnsbot/logging"
 
 // options are the flags every command shares. Every command that talks to a
 // node does it over JSON-RPC, so one -url and one set of credentials cover the
 // builds and the lookups alike.
 type options struct {
-    db       string
-    dbsqlite string
-    url      string
-    cookie   string
-    user     string
-    pass     string
-    limit    int
-    active   int
-    blocks   string
-    addrs    int
-    batch    int
-    shards   int
-    fetch    int
-    min      int64
-    to       int
-    tmp      string
-    top      int
-    sum      int
-    verbose  int
+    db      string
+    url     string
+    cookie  string
+    user    string
+    pass    string
+    limit   int
+    active  int
+    blocks  string
+    addrs   int
+    batch   int
+    shards  int
+    fetch   int
+    min     int64
+    to      int
+    tmp     string
+    top     int
+    sum     int
+    verbose int
 }
 
 func flags(fs *flag.FlagSet) *options {
     var o = &options{}
-    fs.StringVar(&o.db, "db", "addrindex.db", "path to the bbolt database holding the index")
-    fs.StringVar(&o.dbsqlite, "dbsqlite", "", "the SQLite database: list reads a migrated index from it, richbuild and ababuild write their tables to it")
+    fs.StringVar(&o.db, "db", "", "the SQLite database: the index for build, list and actbuild, the tables richbuild and ababuild write")
     fs.StringVar(&o.url, "url", "http://127.0.0.1:8332", "Bitcoin Core JSON-RPC URL")
     fs.StringVar(&o.cookie, "cookie", "", "path to Core's .cookie file, for RPC auth")
     fs.StringVar(&o.user, "user", "", "Core RPC username, instead of a cookie")
@@ -86,23 +84,21 @@ func flags(fs *flag.FlagSet) *options {
 }
 
 func usage() {
-    fmt.Fprintln(os.Stderr, "usage: addrindex <command> [flags] [address]")
+    fmt.Fprintln(os.Stderr, "usage: addrindex <command> -db <database> [flags] [address]")
     fmt.Fprintln(os.Stderr, "")
     fmt.Fprintln(os.Stderr, "commands:")
     fmt.Fprintln(os.Stderr, "  build     catch the index up from its cursor to the chain tip")
-    fmt.Fprintln(os.Stderr, "  list      print every transaction the index holds for an address, from -db or -dbsqlite")
+    fmt.Fprintln(os.Stderr, "  list      print every transaction the index holds for an address")
     fmt.Fprintln(os.Stderr, "  actbuild  record the addresses with more than -active transactions, from -blocks")
-    fmt.Fprintln(os.Stderr, "  richbuild sum every address's balance over the whole chain into -dbsqlite")
+    fmt.Fprintln(os.Stderr, "  richbuild sum every address's balance over the whole chain into -db")
     fmt.Fprintln(os.Stderr, "  ababuild  rank the addresses that hold coins by how long since their coins last moved")
 }
 
-// -dbsqlite is the SQLite database: list reads a migrated index out of it and
-// richbuild writes balances to it, while build and actbuild write the bbolt
-// index named by -db. Opening -db for the two SQLite commands would create an
-// empty index beside the database actually being worked on.
-//
-// the same buckets the bot's openDB creates, so either can carry on from
-// the other's cursor
+// build, list and actbuild open -db as the index; richbuild and ababuild open it
+// as their own store instead, which holds no index, so opening it as one would
+// create an empty index beside the tables actually being worked on. list only
+// reads, so a -db that does not exist is a mistyped path rather than an index to
+// create.
 func main() {
     if len(os.Args) < 2 {
         usage()
@@ -118,15 +114,10 @@ func main() {
     var opt = flags(fs)
     fs.Parse(os.Args[2:])
     logging.SetVerbose(opt.verbose)
-    if opt.dbsqlite != "" && cmd != "list" && cmd != "richbuild" && cmd != "ababuild" {
-        logging.Fatal("-dbsqlite is SQLite; %s writes the bbolt index named by -db", cmd)
-    }
-    if opt.dbsqlite == "" && cmd != "richbuild" && cmd != "ababuild" {
-        var err error
-        db, err = bbolt.Open(opt.db, 0600, &bbolt.Options{Timeout: 5 * time.Second})
-        if err != nil { logging.Fatal("open %s: %v", opt.db, err) }
+    if cmd != "richbuild" && cmd != "ababuild" {
+        if opt.db == "" { logging.Fatal("%s needs -db naming the SQLite database that holds the index", cmd) }
+        if err := openIndex(opt.db, cmd == "list"); err != nil { logging.Fatal("open %s: %v", opt.db, err) }
         defer db.Close()
-        if err := addrindex.Init(db); err != nil { logging.Fatal("init index: %v", err) }
     }
     switch cmd {
     case "build":
@@ -148,7 +139,42 @@ func main() {
 }
 
 // db is the open index, shared by the commands.
-var db *bbolt.DB
+var db *sql.DB
+
+// indexDDL is the index's two tables exactly as the bot's openDB creates them, so
+// -db can be the bot's own database and either side carries on from the other's
+// cursor.
+var indexDDL = []string{
+    `create table if not exists addrindex (shard INTEGER PRIMARY KEY, data BLOB NOT NULL)`,
+    `create table if not exists cursors (name TEXT PRIMARY KEY, place INTEGER NOT NULL)`,
+}
+
+// openIndex opens the database with the pragmas the bot opens its own with —
+// WAL, so the index can be read while a build writes it, and a busy timeout, so
+// a bot sharing the file makes this wait rather than fail — creates the index's
+// tables when they are missing, and hands the handle to the packages that read
+// and write them.
+//
+// existing is list's: SQLite would otherwise create the file and answer with an
+// empty index, which reads like a build that never ran rather than a mistyped
+// path.
+func openIndex(path string, existing bool) error {
+    if existing {
+        if _, err := os.Stat(path); err != nil { return err }
+    }
+    var opened, err = sql.Open("sqlite", "file:"+path+
+        "?_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=busy_timeout(10000)")
+    if err != nil { return err }
+    for _, ddl := range indexDDL {
+        if _, err := opened.Exec(ddl); err != nil {
+            opened.Close()
+            return err
+        }
+    }
+    db = opened
+    if err := cursors.Init(db); err != nil { return err }
+    return addrindex.Init(db)
+}
 
 // build catches the index up to the tip and exits, where the bot's StartBackfill
 // keeps polling. Both call addrindex.Build, so both chunk and advance the cursor

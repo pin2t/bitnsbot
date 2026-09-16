@@ -19,8 +19,7 @@ type Watch struct {
 // every row to find out whose it is. `created` is the one fact about a watch that
 // is otherwise unrecoverable; nothing reads it but List's ordering.
 //
-// Init stores the shared handle. The table itself is created by openDB, from the
-// schema tools/tosqlite defines.
+// Init stores the shared handle. The table itself is created by openDB.
 func Init(handle *sql.DB) error {
     db = handle
     return nil

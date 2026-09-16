@@ -56,8 +56,7 @@ func blockInit(handle *sql.DB) error {
 
 // The blocks table keeps the fees as `total - reward`, which is what they are —
 // the record carries the whole coinbase output as Total, and reward + fees
-// recovers it exactly. That is the column tools/tosqlite writes, so a migrated
-// database and one the bot wrote are the same database.
+// recovers it exactly.
 const blockInsert = `insert into blocks (height, hash, ts, size, txs, miner, feesOK, minFee, avgFee,
     maxFee, txSizeMin, txSizeAvg, txSizeMax, reward, fees, difficulty)
     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)

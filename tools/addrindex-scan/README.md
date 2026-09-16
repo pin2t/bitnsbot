@@ -12,7 +12,7 @@ addrindex-scan <address> -db=<path> -core-url=<url> [-core-cookie=<path>]
 
 | Flag | Default | Description |
 |---|---|---|
-| `-db` | `bitnsbot.db` | Path to the bbolt database |
+| `-db` | `bitnsbot.sqlite` | Path to the SQLite database holding the address index |
 | `-core-url` | | Bitcoin Core JSON-RPC URL (e.g. `http://127.0.0.1:8332`) |
 | `-core-user` | | RPC username |
 | `-core-pass` | | RPC password |
@@ -22,7 +22,7 @@ addrindex-scan <address> -db=<path> -core-url=<url> [-core-cookie=<path>]
 
 ```
 addrindex-scan bc1qeandws6k5jqxsjn7dw08pfkgnd64l4sw6uv49u \
-  -db=bitnsbot.db \
+  -db=bitnsbot.sqlite \
   -core-url=http://127.0.0.1:8332 \
   -core-cookie=/path/to/.cookie
 ```

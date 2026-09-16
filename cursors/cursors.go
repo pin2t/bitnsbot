@@ -18,9 +18,9 @@ import "database/sql"
 const Miners = "miners"
 const AddrStat = "addrstat"
 
-// AddrIndex is the index build's place when the index is in SQLite, which is how
-// the bot keeps it. tools/addrindex drives the same package against bbolt and
-// keeps its place in a bucket of that file instead — same name, different store.
+// AddrIndex is the index build's place, whether the bot or tools/addrindex built
+// it: both drive the same package against the same table, so either resumes
+// where the other stopped.
 const AddrIndex = "addrindex"
 
 var db *sql.DB

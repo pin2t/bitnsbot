@@ -8,7 +8,7 @@
 # Layout it creates (self-contained under /opt/bitnsbot):
 #   /opt/bitnsbot/bitnsbot        the binary
 #   /opt/bitnsbot/bitnsbot.conf    config (name=value; created as a template if absent)
-#   /opt/bitnsbot/bitnsbot.db     bbolt database (created by the service on first run)
+#   /opt/bitnsbot/bitnsbot.db     SQLite database (created by the service on first run)
 #   /opt/bitnsbot/update.sh       copy of the auto-update script (run by cron)
 #   /opt/bitnsbot/deploy.env      records REPO_DIR and BUILD_USER for update.sh
 set -euo pipefail
