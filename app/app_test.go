@@ -293,12 +293,12 @@ func liveAddrs() map[string][]Addr {
 
 func liveMarket() Market {
     return Market{OK: true, Price: "$66,202.00", Changes: []Change{
-        {Label: "1d", Pct: "+2.5%", Up: true},
-        {Label: "1w", Pct: "-3.1%"},
-        {Label: "1mo", Pct: "+12.4%", Up: true},
-        {Label: "3mo", Pct: "-8.7%"},
-        {Label: "1y", Pct: "+64.2%", Up: true},
-        {Label: "5y", Pct: "+512.9%", Up: true},
+        {Label: "1 d", Pct: "+2.5%", Up: true},
+        {Label: "1 w", Pct: "-3.1%"},
+        {Label: "1 mo", Pct: "+12.4%", Up: true},
+        {Label: "3 mo", Pct: "-8.7%"},
+        {Label: "1 y", Pct: "+64.2%", Up: true},
+        {Label: "5 y", Pct: "+512.9%", Up: true},
     }}
 }
 
@@ -466,7 +466,7 @@ func TestPageRendersMarketInline(t *testing.T) {
     var src = fakeSource{f: liveFees(), n: liveNetwork(), m: liveMarket()}
     var body = html.UnescapeString(get(handler(t, "TESTTOKEN", src), "/", "").Body.String())
     for _, want := range []string{"<h2>Market</h2>", "$66,202.00",
-        ">1d<", ">1w<", ">1mo<", ">3mo<", ">1y<", ">5y<",
+        ">1 d<", ">1 w<", ">1 mo<", ">3 mo<", ">1 y<", ">5 y<",
         "+2.5%", "-3.1%", "+512.9%"} {
         if !strings.Contains(body, want) {
             t.Errorf("page did not render %q inline", want)
@@ -487,9 +487,9 @@ func TestPageRendersMarketInline(t *testing.T) {
 // A rise is green and a fall is red; a period with no baseline is neither.
 func TestMarketColoursDirection(t *testing.T) {
     var src = fakeSource{m: Market{OK: true, Price: "$1.00", Changes: []Change{
-        {Label: "1d", Pct: "+2.5%", Up: true},
-        {Label: "1w", Pct: "-3.1%"},
-        {Label: "5y", Pct: "—", Neutral: true},
+        {Label: "1 d", Pct: "+2.5%", Up: true},
+        {Label: "1 w", Pct: "-3.1%"},
+        {Label: "5 y", Pct: "—", Neutral: true},
     }}}
     var body = html.UnescapeString(get(handler(t, "TESTTOKEN", src), "/", "").Body.String())
     for _, want := range []string{`class="pct up">+2.5%`, `class="pct down">-3.1%`, `class="pct flat">—`} {

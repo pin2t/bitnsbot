@@ -135,10 +135,10 @@ func TestAppSectionsAreTranslated(t *testing.T) {
     }
     rates.Add(65000)
     var market = appSource{}.Market("ru")
-    if len(market.Changes) == 0 || market.Changes[0].Label != "1д" {
+    if len(market.Changes) == 0 || market.Changes[0].Label != "1 д" {
         t.Errorf("market periods = %+v, want them translated", market.Changes)
     }
-    if got := (appSource{}).Market("").Changes[0].Label; got != "1d" {
+    if got := (appSource{}).Market("").Changes[0].Label; got != "1 d" {
         t.Errorf("English market period = %q", got)
     }
 }
