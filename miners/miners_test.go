@@ -9,8 +9,8 @@ import "database/sql"
 import _ "modernc.org/sqlite"
 import "bitnsbot/cursors"
 
-// The tables as openDB creates them, from the schema tools/tosqlite defines: a row
-// per pool, and a row per address and per tag naming the pool it belongs to.
+// The tables as openDB creates them: a row per pool, and a row per address and
+// per tag naming the pool it belongs to.
 const ddl = `create table miners (name TEXT PRIMARY KEY, blocks INTEGER NOT NULL,
     reward INTEGER NOT NULL, fees INTEGER NOT NULL, totalWork REAL NOT NULL, lastWork REAL NOT NULL);
     create table mineraddr (address TEXT PRIMARY KEY, name TEXT NOT NULL references miners(name));

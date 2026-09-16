@@ -8,7 +8,7 @@ systemd Linux host). The runtime package is **self-contained** under
 |-----------------------------|--------------------------------------------------|
 | `/opt/bitnsbot/bitnsbot`    | the binary                                        |
 | `/opt/bitnsbot/bitnsbot.conf`| config (`name=value`; `chmod 600` — holds secrets)|
-| `/opt/bitnsbot/bitnsbot.db` | bbolt database (created on first run)             |
+| `/opt/bitnsbot/bitnsbot.db` | SQLite database (created on first run)            |
 | `/opt/bitnsbot/update.sh`   | copy of the auto-update script (run by cron)      |
 | `/opt/bitnsbot/deploy.env`  | records `REPO_DIR` / `BUILD_USER` for updates     |
 

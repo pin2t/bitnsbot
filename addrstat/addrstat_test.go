@@ -82,7 +82,7 @@ func (c *chain) respond(method string, params []interface{}) (interface{}, error
     return nil, fmt.Errorf("unexpected call %s %v", method, params)
 }
 
-// The two tables as openDB creates them, from the schema tools/tosqlite defines.
+// The two tables as openDB creates them.
 const ddl = `create table addrstat (addr TEXT PRIMARY KEY, type TEXT NOT NULL, balance INTEGER NOT NULL,
     recv INTEGER NOT NULL, sent INTEGER NOT NULL, flow INTEGER NOT NULL, fees INTEGER NOT NULL,
     txs INTEGER NOT NULL, first INTEGER NOT NULL, last INTEGER NOT NULL);

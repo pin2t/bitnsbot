@@ -9,7 +9,7 @@ import "time"
 import "database/sql"
 import _ "modernc.org/sqlite"
 
-// The two tables as openDB creates them, from the schema tools/tosqlite defines.
+// The two tables as openDB creates them.
 const ddl = `create table rates (ts INTEGER PRIMARY KEY, cents INTEGER NOT NULL);
     create table market (ts INTEGER PRIMARY KEY, price INTEGER NOT NULL, cap INTEGER NOT NULL,
         volume24h INTEGER NOT NULL)`

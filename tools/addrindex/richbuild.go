@@ -28,11 +28,11 @@ import "bitnsbot/logging"
 // left: every balance goes back in as one movement, so the shards hold the
 // whole history's total and not just this run's part of it.
 func richbuild(opt *options) error {
-    if opt.dbsqlite == "" {
-        return fmt.Errorf("richbuild writes SQLite: name the database with -dbsqlite")
+    if opt.db == "" {
+        return fmt.Errorf("richbuild writes SQLite: name the database with -db")
     }
-    var store, err = openRich(opt.dbsqlite)
-    if err != nil { return fmt.Errorf("open %s: %w", opt.dbsqlite, err) }
+    var store, err = openRich(opt.db)
+    if err != nil { return fmt.Errorf("open %s: %w", opt.db, err) }
     defer store.close()
     var ctx, cancel = context.WithCancel(context.Background())
     defer cancel()
@@ -59,12 +59,12 @@ func richbuild(opt *options) error {
         return atTip(store, opt, at, tip)
     }
     var dir = opt.tmp
-    if dir == "" { dir = opt.dbsqlite + ".shards" }
+    if dir == "" { dir = opt.db + ".shards" }
     var sh, serr = newShards(dir, opt.shards, shardBufferKB)
     if serr != nil { return serr }
     defer sh.remove()
     fmt.Printf("Summing balances over blocks %d..%d of %s into %s (%d shards under %s)\n",
-        from, tip, chain, opt.dbsqlite, opt.shards, dir)
+        from, tip, chain, opt.db, opt.shards, dir)
     var started = time.Now()
     if built {
         var seeded int

@@ -5,57 +5,33 @@ import "encoding/hex"
 import "errors"
 import "fmt"
 import "path/filepath"
-import "encoding/binary"
-import "reflect"
 import "strconv"
 import "testing"
 import "database/sql"
-import "go.etcd.io/bbolt"
 import _ "modernc.org/sqlite"
 import "bitnsbot/core/coretest"
 import "bitnsbot/cursors"
 
-// The index has two stores — bbolt for tools/addrindex, SQLite for the bot — and
-// every test below runs against whichever `backend` names, so the two are held to
-// the same assertions rather than one being taken on trust. `both` is what drives
-// that; `openTestDB` opens the one the current subtest asked for.
-var backend = "bbolt"
-
-// both runs one test body against each store.
-func both(t *testing.T, body func(t *testing.T)) {
-    for _, b := range []string{"bbolt", "sqlite"} {
-        t.Run(b, func(t *testing.T) {
-            var saved = backend
-            backend = b
-            t.Cleanup(func() { backend = saved })
-            body(t)
-        })
-    }
-}
-
-// The two tables as openDB creates them, from the schema tools/tosqlite defines.
+// The two tables as openDB creates them.
 const ddl = `create table addrindex (shard INTEGER PRIMARY KEY, data BLOB NOT NULL);
     create table cursors (name TEXT PRIMARY KEY, place INTEGER NOT NULL)`
 
 func openTestDB(t *testing.T) {
     t.Helper()
-    if backend == "sqlite" {
-        var handle, err = sql.Open("sqlite", filepath.Join(t.TempDir(), "addrindex.sqlite"))
-        if err != nil { t.Fatalf("open: %v", err) }
-        if _, err := handle.Exec(ddl); err != nil { t.Fatal(err) }
-        if err := cursors.Init(handle); err != nil { t.Fatalf("cursors: %v", err) }
-        if err := InitSQL(handle); err != nil { t.Fatalf("init: %v", err) }
-        t.Cleanup(func() { handle.Close(); sqldb = nil })
-        return
-    }
-    var d, err = bbolt.Open(filepath.Join(t.TempDir(), "addrindex.db"), 0600, nil)
+    var handle, err = sql.Open("sqlite", filepath.Join(t.TempDir(), "addrindex.sqlite"))
     if err != nil { t.Fatalf("open: %v", err) }
-    if err := Init(d); err != nil { t.Fatalf("init: %v", err) }
-    t.Cleanup(func() { d.Close(); db = nil })
+    if _, err := handle.Exec(ddl); err != nil { t.Fatal(err) }
+    if err := cursors.Init(handle); err != nil { t.Fatalf("cursors: %v", err) }
+    if err := Init(handle); err != nil { t.Fatalf("init: %v", err) }
+    t.Cleanup(func() {
+        handle.Close()
+        db = nil
+        cursors.Init(nil)
+    })
 }
 
 // an address with no touches returns nothing, not an error
-func TestMergeAndLookup(t *testing.T) { both(t, func(t *testing.T) {
+func TestMergeAndLookup(t *testing.T) {
     openTestDB(t)
     var script = []byte("0014deadbeef")
     var prefix = string(Prefix(script))
@@ -75,7 +51,7 @@ func TestMergeAndLookup(t *testing.T) { both(t, func(t *testing.T) {
     if len(empty) != 0 {
         t.Fatalf("expected no touches, got %v", empty)
     }
-}) }
+}
 
 // The cap is now a *read* limit, not a write limit: everything is stored, and
 // only the lookup stops early. This is the visible payoff of the sharded,
@@ -83,7 +59,7 @@ func TestMergeAndLookup(t *testing.T) { both(t, func(t *testing.T) {
 // wrote, because appending rewrote the address's whole value every time.
 //
 // raising the limit must reveal the rest: nothing was ever dropped on disk
-func TestLookupCaps(t *testing.T) { both(t, func(t *testing.T) {
+func TestLookupCaps(t *testing.T) {
     openTestDB(t)
     var script = []byte("hotaddress")
     var prefix = string(Prefix(script))
@@ -106,13 +82,13 @@ func TestLookupCaps(t *testing.T) { both(t, func(t *testing.T) {
     if stillCapped || len(all) != 5 {
         t.Fatalf("full history = %d touches (capped=%v), want all 5 stored", len(all), stillCapped)
     }
-}) }
+}
 
 // Sharding puts every address whose hash starts with the same two bytes in one
 // key, so a lookup must filter by the rest of the prefix. This is the failure
 // mode the layout introduces, so pin it with two scripts that genuinely collide
 // on their shard.
-func TestSharedShardIsolation(t *testing.T) { both(t, func(t *testing.T) {
+func TestSharedShardIsolation(t *testing.T) {
     openTestDB(t)
     var a, b []byte
     for i := 0; i < 1000000 && b == nil; i++ {
@@ -138,11 +114,11 @@ func TestSharedShardIsolation(t *testing.T) { both(t, func(t *testing.T) {
     if len(tb) != 1 || tb[0].Height != 20 || tb[0].TxIndex != 2 {
         t.Fatalf("script B got %v, want only its own touch at height 20", tb)
     }
-}) }
+}
 
 // Touches must come back in chronological order across range boundaries, since
 // each range is a separate key and the reply lists history oldest-first.
-func TestLookupSpansRanges(t *testing.T) { both(t, func(t *testing.T) {
+func TestLookupSpansRanges(t *testing.T) {
     openTestDB(t)
     var script = []byte("spansranges")
     var prefix = string(Prefix(script))
@@ -159,9 +135,9 @@ func TestLookupSpansRanges(t *testing.T) { both(t, func(t *testing.T) {
             t.Fatalf("touch %d height = %d, want %d (order must be chronological)", i, got[i].Height, h)
         }
     }
-}) }
+}
 
-func TestCursor(t *testing.T) { both(t, func(t *testing.T) {
+func TestCursor(t *testing.T) {
     openTestDB(t)
     if _, ok := Cursor(); ok {
         t.Fatal("expected no cursor on a fresh index")
@@ -173,7 +149,7 @@ func TestCursor(t *testing.T) { both(t, func(t *testing.T) {
     if !ok || h != 500 {
         t.Fatalf("cursor = %+v ok=%v, want Height=500", h, ok)
     }
-}) }
+}
 
 // Two addresses whose scripts happen to share an 8-byte SHA-256 prefix must not
 // corrupt each other's history — Prefix truncates, so this is the one place a
@@ -263,7 +239,7 @@ func syntheticBlock(t *testing.T, outScripts []string, spentScripts []string) Bl
 }
 
 // a second pass with nothing new fetches nothing
-func TestCatchUp(t *testing.T) { both(t, func(t *testing.T) {
+func TestCatchUp(t *testing.T) {
     openTestDB(t)
     var saved = chunkSize
     t.Cleanup(func() { chunkSize = saved })
@@ -294,7 +270,7 @@ func TestCatchUp(t *testing.T) { both(t, func(t *testing.T) {
     if len(src.fetched) != 0 {
         t.Fatalf("second catchUp refetched %v, want nothing (already at tip)", src.fetched)
     }
-}) }
+}
 
 // A chunk boundary must flush before the next chunk starts, and a failed fetch
 // must abandon the chunk without advancing the cursor — same reasoning as the
@@ -340,56 +316,24 @@ func TestCatchUpChunksAndRetries(t *testing.T) {
     }
 }
 
-// The one thing the two stores cannot be held to by running the same test twice:
-// that a shard-range means the same key in both. The bbolt key is the 2-byte shard
-// then the 4-byte range, big-endian; the SQLite key is those same six bytes read as
-// one integer, which is what tools/tosqlite packs a migrated key into and what
-// tools/addrindex's SQLite reader unpacks. A drift here would leave a migrated index
-// readable by nobody.
-//
-// and the reader gets the range back out of the low half
-func TestSQLKeyMatchesTheBboltKey(t *testing.T) {
-    var prefix = Prefix([]byte("0014deadbeef"))
-    for _, r := range []uint32{0, 1, 965, 0xffff, 0xffffff} {
-        var k = key(prefix, r)
-        var want = int64(binary.BigEndian.Uint16(k[:shardLen]))<<32 | int64(binary.BigEndian.Uint32(k[shardLen:]))
-        if got := sqlKey(prefix, r); got != want {
-            t.Errorf("range %d: sqlKey = %x, the bbolt key reads as %x", r, got, want)
-        }
-        if got := uint32(sqlKey(prefix, r) & 0xffffffff); got != r {
-            t.Errorf("range %d came back as %d", r, got)
-        }
+// The key is the on-disk format, not a detail a lookup could hide: the 2-byte
+// shard above the 4-byte range, read as one integer — the six bytes the bbolt key
+// held, big-endian. A packing that merge and Lookup changed together would pass
+// every other test here and leave every index already built unreadable.
+func TestKeyLayout(t *testing.T) {
+    var prefix = []byte{0xab, 0xcd, 1, 2, 3, 4, 5, 6}
+    if got := key(prefix, 300); got != 0xabcd0000012c {
+        t.Errorf("key = %x, want abcd0000012c", got)
+    }
+    if got := key(prefix, 0xffffffff); got >= key([]byte{0xab, 0xce, 0, 0, 0, 0, 0, 0}, 0) {
+        t.Errorf("the shard's last range %x does not sort below the next shard", got)
     }
 }
 
-// The same touches through both stores answer the same, which is what makes one
-// index in two shapes rather than two indexes.
-func TestBothStoresAnswerAlike(t *testing.T) {
-    var scripts = [][]byte{[]byte("script-one"), []byte("script-two"), []byte("script-three")}
-    var answers = map[string]map[string][]Touch{}
-    both(t, func(t *testing.T) {
-        openTestDB(t)
-        var touches = map[string][]Touch{}
-        for i, s := range scripts {
-            var p = string(Prefix(s))
-            for r := 0; r < 4; r++ {
-                touches[p] = append(touches[p], Touch{Height: uint32(r*rangeBlocks + 7 + i), TxIndex: uint16(i*3 + r)})
-            }
-        }
-        if err := merge(touches, 4*rangeBlocks); err != nil { t.Fatalf("merge: %v", err) }
-        answers[backend] = map[string][]Touch{}
-        for _, s := range scripts {
-            var got, capped = Lookup(s, 1000)
-            if len(got) != 4 || capped { t.Fatalf("%s: %q gave %v capped=%v", backend, s, got, capped) }
-            answers[backend][string(s)] = got
-        }
-        if h, ok := Cursor(); !ok || h != 4*rangeBlocks {
-            t.Errorf("%s: cursor = %d ok=%v", backend, h, ok)
-        }
-    })
-    for _, s := range scripts {
-        if !reflect.DeepEqual(answers["bbolt"][string(s)], answers["sqlite"][string(s)]) {
-            t.Errorf("%q: bbolt %v, sqlite %v", s, answers["bbolt"][string(s)], answers["sqlite"][string(s)])
-        }
+// Writing to an index nobody opened is an error, never a silent success — that
+// is how a missing Init once went unnoticed through a whole chain backfill.
+func TestMergeWithoutInit(t *testing.T) {
+    if err := merge(map[string][]Touch{"p": {{Height: 1}}}, 1); err == nil {
+        t.Error("merge with no database reported success")
     }
 }

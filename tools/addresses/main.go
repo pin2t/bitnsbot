@@ -1,38 +1,40 @@
 // Command addresses scans the blockchain from genesis to tip, collects every
 // address, looks up its transaction count in the addrindex, and stores the
-// result in a new bbolt bucket "addresses" keyed by address string, with a
-// json-encoded value (extensible for future fields).
+// result in a table named addresses, one row per address with its transaction
+// count. Its place is a row of the cursors table under "addresses", so an
+// interrupted run resumes where it stopped.
 //
 // Usage:
 //
-//	addresses -db=bitnsbot.db -core-url=http://127.0.0.1:8332
+//	addresses -db=bitnsbot.sqlite -core-url=http://127.0.0.1:8332
 package main
 
 import "bytes"
 import "context"
+import "database/sql"
 import "encoding/hex"
 import "encoding/json"
 import "flag"
 import "fmt"
 import "net/http"
 import "os"
-import "strconv"
 import "strings"
 import "sync"
 import "sync/atomic"
 import "time"
-import "go.etcd.io/bbolt"
+import _ "modernc.org/sqlite"
 import "bitnsbot/addrindex"
+import "bitnsbot/cursors"
 import "bitnsbot/logging"
 
-var dbPath = flag.String("db", "bitnsbot.db", "path to the bbolt database")
+var dbPath = flag.String("db", "bitnsbot.sqlite", "path to the SQLite database holding the address index")
 var coreURL = flag.String("core-url", "", "Bitcoin Core JSON-RPC URL")
 var coreUser = flag.String("core-user", "", "Bitcoin Core RPC username")
 var corePass = flag.String("core-pass", "", "Bitcoin Core RPC password")
 var coreCookie = flag.String("core-cookie", "", "path to Bitcoin Core .cookie file")
 
-var addressesBucket = []byte("addresses")
-var addressesCursorBucket = []byte("addresses-cursor")
+// addressesCursor is this scan's name in the cursors table.
+const addressesCursor = "addresses"
 
 type rpcClient struct {
 	url    string
@@ -140,12 +142,6 @@ type spkData struct {
 	Hex     string `json:"hex"`
 }
 
-// AddressInfo is the json-encoded value stored per address. New fields can
-// be added at the end; old decoders will ignore unknown fields.
-type AddressInfo struct {
-	Txs int `json:"transactions"`
-}
-
 type addrEntry struct {
 	addr    string
 	txCount int
@@ -165,7 +161,7 @@ type addrEntry struct {
 // last committed cursor value
 //
 // collector receives (addr, txCount) from workers, deduplicates, and
-// flushes to bbolt in batches of batchSize.
+// flushes to the database in batches of batchSize.
 //
 // advance cursor past every consecutive processed block
 //
@@ -180,23 +176,27 @@ type addrEntry struct {
 // signal collector to flush remaining and exit
 func main() {
 	flag.Parse()
-	var d, err = bbolt.Open(*dbPath, 0600, nil)
+	if _, err := os.Stat(*dbPath); err != nil {
+		logging.Fatal("open database: %v", err)
+	}
+	var d, err = sql.Open("sqlite", "file:"+*dbPath+"?_pragma=busy_timeout(10000)")
 	if err != nil {
 		logging.Fatal("open database: %v", err)
 	}
 	defer d.Close()
+	if err := cursors.Init(d); err != nil {
+		logging.Fatal("init cursors: %v", err)
+	}
 	if err := addrindex.Init(d); err != nil {
 		logging.Fatal("init addrindex: %v", err)
 	}
-	if err := d.Update(func(tx *bbolt.Tx) error {
-		for _, name := range [][]byte{addressesBucket, addressesCursorBucket} {
-			if _, err := tx.CreateBucketIfNotExists(name); err != nil {
-				return err
-			}
+	for _, ddl := range []string{
+		`create table if not exists addresses (addr TEXT PRIMARY KEY, txs INTEGER NOT NULL)`,
+		`create table if not exists cursors (name TEXT PRIMARY KEY, place INTEGER NOT NULL)`,
+	} {
+		if _, err := d.Exec(ddl); err != nil {
+			logging.Fatal("create tables: %v", err)
 		}
-		return nil
-	}); err != nil {
-		logging.Fatal("create buckets: %v", err)
 	}
 	if *coreURL == "" {
 		logging.Fatal("Bitcoin Core RPC (-core-url) is required")
@@ -213,16 +213,8 @@ func main() {
 		logging.Fatal("get tip: %v", tipErr)
 	}
 	var start int64
-	if err := d.View(func(tx *bbolt.Tx) error {
-		if v := tx.Bucket(addressesCursorBucket).Get([]byte("cursor")); v != nil {
-			var e error
-			start, e = strconv.ParseInt(string(v), 10, 64)
-			if e != nil { return e }
-			start++
-		}
-		return nil
-	}); err != nil {
-		logging.Fatal("read cursor: %v", err)
+	if v, ok := cursors.Get(addressesCursor); ok {
+		start = v + 1
 	}
 	var began = time.Now()
 	const numWorkers = 64
@@ -240,14 +232,13 @@ func main() {
 		var totalWritten int64
 		var flush = func() {
 			if len(batch) == 0 { return }
-			if err := d.Update(func(tx *bbolt.Tx) error {
-				var b = tx.Bucket(addressesBucket)
+			if err := func() error {
+				var tx, err = d.Begin()
+				if err != nil { return err }
+				defer tx.Rollback()
 				for _, e := range batch {
-					if b.Get([]byte(e.addr)) != nil { continue }
-					var info = AddressInfo{Txs: e.txCount}
-					var val, err = json.Marshal(info)
-					if err != nil { return err }
-					if err := b.Put([]byte(e.addr), val); err != nil { return err }
+					if _, err := tx.Exec(`insert into addresses (addr, txs) values (?, ?)
+						on conflict(addr) do nothing`, e.addr, e.txCount); err != nil { return err }
 				}
 				processedMu.Lock()
 				for {
@@ -258,9 +249,9 @@ func main() {
 					}
 				}
 				processedMu.Unlock()
-				return tx.Bucket(addressesCursorBucket).Put(
-					[]byte("cursor"), []byte(strconv.FormatInt(cursor, 10)))
-			}); err != nil {
+				if err := cursors.Set(tx, addressesCursor, cursor); err != nil { return err }
+				return tx.Commit()
+			}(); err != nil {
 				fmt.Fprintf(os.Stderr, "\nflush error: %v\n", err)
 			}
 			totalWritten += int64(len(batch))
@@ -283,13 +274,7 @@ func main() {
 		for {
 			select {
 			case <-ticker.C:
-				var c int64
-				d.View(func(tx *bbolt.Tx) error {
-					if v := tx.Bucket(addressesCursorBucket).Get([]byte("cursor")); v != nil {
-						c, _ = strconv.ParseInt(string(v), 10, 64)
-					}
-					return nil
-				});
+				var c, _ = cursors.Get(addressesCursor)
 				var pct float64
 				if tip > 0 {
 					pct = float64(c) / float64(tip) * 100

@@ -17,16 +17,12 @@ import "bitnsbot/rates"
 import "bitnsbot/watches"
 
 // db is the bot's SQLite database, and the handle every package that stores
-// anything is given. One file, one handle, one schema — the one tools/tosqlite
-// writes, which is what makes that tool the upgrade path from the bbolt database
-// this replaced.
+// anything is given. One file, one handle, one schema.
 var db *sql.DB
 
-// schema is **a copy of the one in tools/tosqlite**, which is the source of truth
-// for it: that tool is how a bbolt database becomes one of these, so a column it
-// does not write is a column that arrives empty. The two have to be kept in step
-// by hand — the same arrangement the addrindex format constants are under, and
-// for the same reason: a bot cannot import a tool's package main.
+// schema is the source of truth for the database. The package tests and
+// tools/addrindex carry copies of the tables they use, which have to be kept in
+// step with it by hand, since nothing can import package main.
 //
 // create table if not exists, because unlike the migration this runs on every
 // start and against a database a migration may already have built.
@@ -107,7 +103,7 @@ func openDB(path string) error {
     if err := watches.Init(db); err != nil { return err }
     if err := miners.Init(db); err != nil { return err }
     if err := addrstat.Init(db); err != nil { return err }
-    return addrindex.InitSQL(db)
+    return addrindex.Init(db)
 }
 
 func closeDB() error {

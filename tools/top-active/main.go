@@ -4,11 +4,12 @@
 //
 // Usage:
 //
-//	top-active -db=bitnsbot.db -core-url=http://127.0.0.1:8332 -top=100
+//	top-active -db=bitnsbot.sqlite -core-url=http://127.0.0.1:8332 -top=100
 package main
 
 import "bytes"
 import "context"
+import "database/sql"
 import "encoding/hex"
 import "encoding/json"
 import "flag"
@@ -20,11 +21,11 @@ import "strings"
 import "sync"
 import "sync/atomic"
 import "time"
-import "go.etcd.io/bbolt"
+import _ "modernc.org/sqlite"
 import "bitnsbot/addrindex"
 import "bitnsbot/logging"
 
-var dbPath = flag.String("db", "bitnsbot.db", "path to the bbolt database")
+var dbPath = flag.String("db", "bitnsbot.sqlite", "path to the SQLite database holding the address index")
 var coreURL = flag.String("core-url", "", "Bitcoin Core JSON-RPC URL")
 var coreUser = flag.String("core-user", "", "Bitcoin Core RPC username")
 var corePass = flag.String("core-pass", "", "Bitcoin Core RPC password")
@@ -154,7 +155,10 @@ type addrCount struct {
 // release lock during I/O-bound Lookup
 func main() {
 	flag.Parse()
-	var d, err = bbolt.Open(*dbPath, 0600, nil)
+	if _, err := os.Stat(*dbPath); err != nil {
+		logging.Fatal("open database: %v", err)
+	}
+	var d, err = sql.Open("sqlite", "file:"+*dbPath+"?_pragma=busy_timeout(10000)")
 	if err != nil {
 		logging.Fatal("open database: %v", err)
 	}

@@ -1,9 +1,9 @@
-// Package miners attributes a Bitcoin block to its mining pool, backed by one
-// bbolt bucket keyed by pool name: a record carries that pool's aggregated
-// statistics together with the coinbase addresses and coinbase tags it is
-// recognised by. The address→pool and tag→pool mappings are built from that
-// bucket once at Init and kept in memory, since attribution runs for every block
-// on the chain; the bucket is what survives a restart, so the definitions are not
+// Package miners attributes a Bitcoin block to its mining pool, backed by three
+// tables: miners, a row per pool carrying its aggregated statistics, and
+// mineraddr and minertag, the coinbase addresses and coinbase tags each pool is
+// recognised by. The address→pool and tag→pool mappings are built from those
+// tables at Init and kept in memory, since attribution runs for every block on
+// the chain; the tables are what survive a restart, so the definitions are not
 // re-downloaded on every start. A background goroutine keeps them fresh from
 // mempool's pool definitions.
 package miners

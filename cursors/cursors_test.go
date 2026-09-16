@@ -5,7 +5,7 @@ import "path/filepath"
 import "testing"
 import _ "modernc.org/sqlite"
 
-// The table as openDB creates it, from the schema tools/tosqlite defines.
+// The table as openDB creates it.
 const ddl = `create table cursors (name TEXT PRIMARY KEY, place INTEGER NOT NULL)`
 
 func open(t *testing.T) *sql.DB {

@@ -14,8 +14,8 @@ import "strings"
 import "sync/atomic"
 import "testing"
 import "time"
-import "go.etcd.io/bbolt"
 import "bitnsbot/addrindex"
+import "bitnsbot/cursors"
 
 // The script the fixture's address is paid to. Its bytes are all that matter —
 // the index is keyed by scriptPubKey, and no address format is ever decoded.
@@ -293,25 +293,30 @@ func txDetail(txid string) map[string]interface{} {
     return map[string]interface{}{"txid": txid, "time": 0}
 }
 
-func openIndex(t *testing.T) {
-    var handle, err = bbolt.Open(filepath.Join(t.TempDir(), "ai.db"), 0600, nil)
-    if err != nil { t.Fatalf("open: %v", err) }
-    db = handle
-    t.Cleanup(func() { handle.Close(); db = nil })
-    if err := addrindex.Init(handle); err != nil { t.Fatalf("init: %v", err) }
+// testIndex opens a fresh index through the tool's own openIndex, so the tests
+// run against the tables and pragmas a real run does.
+func testIndex(t *testing.T) {
+    if err := openIndex(filepath.Join(t.TempDir(), "ai.db"), false); err != nil { t.Fatalf("open: %v", err) }
+    t.Cleanup(func() {
+        db.Close()
+        db = nil
+        addrindex.Init(nil)
+        cursors.Init(nil)
+    })
 }
 
 // activeAddresses reads back what actbuild recorded.
 func activeAddresses(t *testing.T) map[string]int {
     var out = map[string]int{}
-    db.View(func(tx *bbolt.Tx) error {
-        var b = tx.Bucket(activeBucket)
-        if b == nil { return nil }
-        return b.ForEach(func(k, v []byte) error {
-            out[string(k)] = int(binary.BigEndian.Uint64(v))
-            return nil
-        })
-    })
+    var rows, err = db.Query("select addr, txs from active")
+    if err != nil { t.Fatalf("read active: %v", err) }
+    defer rows.Close()
+    for rows.Next() {
+        var addr string
+        var n int
+        if err := rows.Scan(&addr, &n); err != nil { t.Fatalf("scan: %v", err) }
+        out[addr] = n
+    }
     return out
 }
 
@@ -332,7 +337,7 @@ func capture(t *testing.T, f func()) string {
 //
 // the funding transaction, then the spend that paid change back
 func TestBuildThenList(t *testing.T) {
-    openIndex(t)
+    testIndex(t)
     var srv = fakeCore(t, 3)
     var opt = &options{url: srv.URL, limit: 1000}
     var built = capture(t, func() { build(opt) })
@@ -363,7 +368,7 @@ func TestBuildThenList(t *testing.T) {
 // A second build with nothing new must not redo work — the cursor is the whole
 // point of sharing the format with the bot.
 func TestBuildResumesFromCursor(t *testing.T) {
-    openIndex(t)
+    testIndex(t)
     var srv = fakeCore(t, 3)
     var opt = &options{url: srv.URL, limit: 1000}
     capture(t, func() { build(opt) })
@@ -376,7 +381,7 @@ func TestBuildResumesFromCursor(t *testing.T) {
 // An address the index has never seen says so rather than printing an empty
 // summary that reads like a real answer.
 func TestListUnknownAddress(t *testing.T) {
-    openIndex(t)
+    testIndex(t)
     var srv = fakeCore(t, 3)
     var out = capture(t, func() { list(&options{url: srv.URL, limit: 1000}, address) })
     if !strings.Contains(out, "No transactions in the index") {
@@ -590,7 +595,7 @@ func TestParseBlockReadsAmounts(t *testing.T) {
 // five: a coinbase paying otherScript in each of the four blocks, plus
 // block 2's transaction paying it as well
 func TestActbuildCountsFromBlocks(t *testing.T) {
-    openIndex(t)
+    testIndex(t)
     var opt = &options{limit: 1000, blocks: chainFiles(t), active: 3}
     var oldMin = activeMin
     activeMin = 3
@@ -610,7 +615,7 @@ func TestActbuildCountsFromBlocks(t *testing.T) {
 
 // actbuild reads the files and nothing else — no index lookups, no node.
 func TestActbuildMakesNoNodeRequests(t *testing.T) {
-    openIndex(t)
+    testIndex(t)
     var opt = &options{limit: 1000, blocks: chainFiles(t), active: 1}
     var oldMin = activeMin
     activeMin = 1
@@ -625,9 +630,20 @@ func TestActbuildMakesNoNodeRequests(t *testing.T) {
     }
 }
 
+// A mistyped path must say so rather than be created: SQLite would otherwise
+// answer list with an empty index, which reads like a build that never ran.
+func TestListNeedsAnExistingDatabase(t *testing.T) {
+    var path = filepath.Join(t.TempDir(), "absent.db")
+    if err := openIndex(path, true); err == nil {
+        db.Close()
+        t.Fatal("a missing database was opened as an empty index")
+    }
+    if _, err := os.Stat(path); err == nil { t.Error("the missing database was created") }
+}
+
 // It does not need the index at all, so an empty one must not stop it.
 func TestActbuildNeedsNoIndex(t *testing.T) {
-    openIndex(t)
+    testIndex(t)
     var opt = &options{limit: 1000, blocks: chainFiles(t), active: 1}
     var oldMin = activeMin
     activeMin = 1

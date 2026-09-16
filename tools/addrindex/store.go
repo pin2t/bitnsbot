@@ -18,11 +18,11 @@ type store struct {
 }
 
 // pragmas prepare the database for this job's shape: a few tens of millions of
-// rows written in bulk, and — unlike tosqlite's one-shot migration — a state
-// that is meant to survive the run, so the journal stays on. WAL with
-// synchronous=NORMAL is what makes a committed height durable without paying an
-// fsync per batch; page_size leads, because it is fixed when the file header is
-// written and a later one is silently ignored.
+// rows written in bulk, and — unlike a one-shot load that can simply be run
+// again — a state that is meant to survive the run, so the journal stays on.
+// WAL with synchronous=NORMAL is what makes a committed height durable without
+// paying an fsync per batch; page_size leads, because it is fixed when the file
+// header is written and a later one is silently ignored.
 var pragmas = []string{
     "PRAGMA page_size=16384",
     "PRAGMA journal_mode=WAL",

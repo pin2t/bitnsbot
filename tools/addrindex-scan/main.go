@@ -3,11 +3,12 @@
 //
 // Usage:
 //
-//	addrindex-scan bc1q... -db=bitnsbot.db -core-url=http://127.0.0.1:8332
+//	addrindex-scan bc1q... -db=bitnsbot.sqlite -core-url=http://127.0.0.1:8332
 package main
 
 import "bytes"
 import "context"
+import "database/sql"
 import "encoding/hex"
 import "encoding/json"
 import "flag"
@@ -16,11 +17,12 @@ import "net/http"
 import "os"
 import "strings"
 import "time"
-import "go.etcd.io/bbolt"
+import _ "modernc.org/sqlite"
 import "bitnsbot/addrindex"
+import "bitnsbot/cursors"
 import "bitnsbot/logging"
 
-var dbPath = flag.String("db", "bitnsbot.db", "path to the bbolt database")
+var dbPath = flag.String("db", "bitnsbot.sqlite", "path to the SQLite database holding the address index")
 var coreURL = flag.String("core-url", "", "Bitcoin Core JSON-RPC URL")
 var coreUser = flag.String("core-user", "", "Bitcoin Core RPC username")
 var corePass = flag.String("core-pass", "", "Bitcoin Core RPC password")
@@ -189,11 +191,17 @@ func main() {
 		os.Exit(1)
 	}
 	var address = flag.Arg(0)
-	var d, err = bbolt.Open(*dbPath, 0600, nil)
+	if _, err := os.Stat(*dbPath); err != nil {
+		logging.Fatal("open database: %v", err)
+	}
+	var d, err = sql.Open("sqlite", "file:"+*dbPath+"?_pragma=busy_timeout(10000)")
 	if err != nil {
 		logging.Fatal("open database: %v", err)
 	}
 	defer d.Close()
+	if err := cursors.Init(d); err != nil {
+		logging.Fatal("init cursors: %v", err)
+	}
 	if err := addrindex.Init(d); err != nil {
 		logging.Fatal("init addrindex: %v", err)
 	}

@@ -177,9 +177,10 @@ var blocksCache = lru.New[string, []byte](blocksCached)
 
 // addrsCache holds the Addresses tab's batches, keyed by URL like the block
 // list's and bounded for the same reason — a reader scrolling accumulates one
-// entry per batch. Nothing invalidates it by event: the buckets behind it are
-// filled by tools/csvimport, which needs bbolt's exclusive lock and so cannot
-// run against a live bot, leaving cacheTTL the only expiry these entries need.
+// entry per batch. Nothing invalidates it by event: a ranking moves only when the
+// statistics collector gathers, and a ten-minute-old ranking of the whole chain
+// is not wrong in any way a reader could tell, leaving cacheTTL the only expiry
+// these entries need.
 var addrsCache = lru.New[string, []byte](addrsCached)
 
 // invalidate drops one card's rendered HTML. Notify calls it *before* announcing
