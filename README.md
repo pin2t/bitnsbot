@@ -39,7 +39,7 @@ Bitcoin blockchain explorer and events notification bot. It can send notificatio
 | `-backup-script` | | Command run after each backup, with the backup path as `$1` and in `$BACKUP_FILE` |
 | `-verbose` | `0` | Log verbosity: `0` = ERR/WARN/status, `1` = +INFO, `2` = +NET/DB |
 | `-log-no-ts` | `false` | Omit the date and time prefix from each log line |
-| `-dbui-listen` | | Ignored, and kept only so a config file that sets it still starts — the database UI speaks bbolt and is now `tools/bboltwui` |
+| `-dbui-listen` | | Ignored, and kept only so a config file that sets it still starts — the database UI speaks bbolt and is now [bboltwui](https://github.com/pin2t/bboltwui) |
 | `-history-file` | | Path to a JSON file containing historical BTC/USD rates (same format as blockchain.info/charts/market-price); backfilled from this file on first run instead of fetching over the network |
 | `-config` | | Path to a properties file (`name=value` lines) with flag values; command-line flags take precedence |
 
@@ -108,7 +108,7 @@ Another option: there are [scripts](scripts) to deploy a bot as a systemd servic
 
 [advertise](tools/advertise) - simple command line tool which sends advertising packets with a specific IP to all nodes in Bitcoin network
 
-[bboltwui](tools/bboltwui) - simple web interface to manage bot database. Embedded into a bot itself 
+[bboltwui](https://github.com/pin2t/bboltwui) - simple web interface to manage a bbolt database, in a repository of its own
                    
 i18n-vet - check translation 
 
