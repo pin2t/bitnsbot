@@ -844,7 +844,7 @@ Verified in a real browser (headless Chrome at 390x760, driven over CDP against 
 
 Measured at 320, 360 and 390px in all three languages with **nothing clipped and nothing overflowing**. The Spanish `Abandonadas` was the one casualty — it ellipsised at 320px — and is `Olvidadas`, the same word the Russian page uses; `.seg button` also carries `min-width: 0`, since a flex item will not otherwise shrink below its longest word.
 
-**The Market card** sits between the Blockchain card and the search field: the current rate under the title, then one narrow column per period — 1d, 1w, 1mo, 3mo, 1y, 5y — showing only the signed percentage, green up and red down. It refreshes on `sse:market` with the same `every 10m` fallback, and `startMarketUpdates` sends that signal on a ticker.
+**The Market card** sits between the Blockchain card and the search field: the current rate under the title, then one narrow column per period — 1 d, 1 w, 1 mo, 3 mo, 1 y, 5 y — showing only the signed percentage, green up and red down. It refreshes on `sse:market` with the same `every 10m` fallback, and `startMarketUpdates` sends that signal on a ticker.
 
 Unlike the other two cards it keeps **no cache**: the change figures are `rates.Last()` and `rates.At()`, plain database reads, so `appSource.Market()` computes them per request and the ticker only has to send the signal.
 

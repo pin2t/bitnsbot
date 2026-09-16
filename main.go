@@ -358,12 +358,12 @@ func (appSource) Market(lang string) app.Market {
         label string
         back  time.Duration
     }{
-        {i18nl(lang).String("1d"), 24 * time.Hour},
-        {i18nl(lang).String("1w"), 7 * 24 * time.Hour},
-        {i18nl(lang).String("1mo"), 30 * 24 * time.Hour},
-        {i18nl(lang).String("3mo"), 90 * 24 * time.Hour},
-        {i18nl(lang).String("1y"), 365 * 24 * time.Hour},
-        {i18nl(lang).String("5y"), 5 * 365 * 24 * time.Hour},
+        {i18nl(lang).String("1 d"), 24 * time.Hour},
+        {i18nl(lang).String("1 w"), 7 * 24 * time.Hour},
+        {i18nl(lang).String("1 mo"), 30 * 24 * time.Hour},
+        {i18nl(lang).String("3 mo"), 90 * 24 * time.Hour},
+        {i18nl(lang).String("1 y"), 365 * 24 * time.Hour},
+        {i18nl(lang).String("5 y"), 5 * 365 * 24 * time.Hour},
     }
     for _, p := range periods {
         var then, have = rates.At(time.Now().Add(-p.back))
