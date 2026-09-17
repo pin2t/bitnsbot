@@ -11,6 +11,7 @@ import "slices"
 import "strconv"
 import "sync"
 import "testing"
+import "time"
 import "database/sql"
 import _ "modernc.org/sqlite"
 import "bitnsbot/addrindex"
@@ -71,7 +72,8 @@ func (c *chain) respond(method string, params []interface{}) (interface{}, error
 }
 
 // open gives the package a fresh database and forgets the count, with the chunk
-// and flush bounds restored when the test ends.
+// and flush bounds restored when the test ends. The pause between chunks is off,
+// since several tests read in chunks of two blocks.
 func open(t *testing.T, c *chain) {
     var handle, err = sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "addrbal.db"))
     if err != nil { t.Fatal(err) }
@@ -86,9 +88,10 @@ func open(t *testing.T, c *chain) {
     count.Store(0)
     loaded.Store(false)
     caughtUp.Store(false)
-    var chunk, keys = chunkSize, flushKeys
+    var chunk, keys, pause = chunkSize, flushKeys, chunkPause
+    chunkPause = 0
     t.Cleanup(func() {
-        chunkSize, flushKeys = chunk, keys
+        chunkSize, flushKeys, chunkPause = chunk, keys, pause
         handle.Close()
     })
     coretest.Start(t, c.respond)
@@ -269,4 +272,24 @@ func TestBuildSignalsTheCount(t *testing.T) {
     caughtUp.Store(false)
     if err := Build(); err != nil { t.Fatal(err) }
     if !sent() { t.Error("no signal when a restarted scan caught up with nothing to read") }
+}
+
+// A catch-up rests after every chunk but the one that reaches the target: four
+// chunks of one block take three pauses, and a pass with one block to read, the
+// way every pass reads once the scan has caught up, takes none.
+func TestBuildRestsBetweenChunks(t *testing.T) {
+    var c = firstChain()
+    open(t, c)
+    chunkSize, chunkPause = 1, 300*time.Millisecond
+    var began = time.Now()
+    if err := Build(); err != nil { t.Fatal(err) }
+    if took := time.Since(began); took < 3*chunkPause {
+        t.Errorf("four chunks took %s, want at least three pauses of %s", took, chunkPause)
+    }
+    c.tip++
+    began = time.Now()
+    if err := Build(); err != nil { t.Fatal(err) }
+    if took := time.Since(began); took >= chunkPause {
+        t.Errorf("a pass reading one block took %s, want no pause after the chunk that reaches the target", took)
+    }
 }

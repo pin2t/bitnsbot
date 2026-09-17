@@ -71,6 +71,12 @@ const confirmations = 6
 var chunkSize = 1000
 var flushKeys = 1_000_000
 
+// chunkPause is how long a catch-up rests after each chunk it merges, so a build
+// that runs for a day does not hold the Pi at full load for all of it. It is not
+// taken after the chunk that reaches the target, so once the scan has caught up a
+// new block never waits on it. A package var so tests do not sit through it.
+var chunkPause = time.Minute
+
 // fetchers is how many blocks are read from the node at once. The merge needs
 // them in height order, since a flush is a cursor, so each height gets a slot and
 // the slots are read back in the order they were queued.
@@ -145,6 +151,7 @@ func Build() error {
         var to = min(from+chunkSize-1, target)
         if err := scan(ctx, from, to); err != nil { return err }
         from = to + 1
+        if from <= target { time.Sleep(chunkPause) }
     }
     if !caughtUp.Swap(true) || from > began { signals.Send(signals.AddrBal) }
     return nil
