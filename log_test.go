@@ -80,3 +80,41 @@ func TestLoggingLevels(t *testing.T) {
         }
     }
 }
+
+// A NET or DB message longer than 150 characters is cut to 150 and "...", a
+// message of exactly 150 is logged whole, and the count is of characters, not
+// bytes — 151 Cyrillic letters are 302 bytes and still cut after the 150th
+// letter. A DB message is also put on one line, since a query is written across
+// several, and collapsed before it is cut.
+func TestLoggingTruncates(t *testing.T) {
+    var buf bytes.Buffer
+    log.SetOutput(&buf)
+    defer log.SetOutput(os.Stderr)
+    log.SetFlags(0)
+    defer log.SetFlags(log.LstdFlags)
+    logging.SetVerbose(2)
+    defer logging.SetVerbose(0)
+    var cases = []struct {
+        level  func(string, ...any)
+        format string
+        args   []any
+        want   string
+    }{
+        {logging.Net, "%s", []any{strings.Repeat("a", 150)}, "[NET] " + strings.Repeat("a", 150)},
+        {logging.Net, "%s", []any{strings.Repeat("a", 151)}, "[NET] " + strings.Repeat("a", 150) + "..."},
+        {logging.Net, "core ← %s %s", []any{"getblock", strings.Repeat("x", 500)}, "[NET] core ← getblock " + strings.Repeat("x", 134) + "..."},
+        {logging.Net, "%s", []any{strings.Repeat("ж", 151)}, "[NET] " + strings.Repeat("ж", 150) + "..."},
+        {logging.Net, "%s", []any{"100%"}, "[NET] 100%"},
+        {logging.Db, "%s", []any{strings.Repeat("a", 150)}, "[DB] " + strings.Repeat("a", 150)},
+        {logging.Db, "%s", []any{strings.Repeat("a", 151)}, "[DB] " + strings.Repeat("a", 150) + "..."},
+        {logging.Db, "%s", []any{"select a,\n        b from t\n    where c = ?"}, "[DB] select a, b from t where c = ?"},
+        {logging.Db, "%s", []any{"insert into t\n" + strings.Repeat("    (?)\n", 40)}, "[DB] insert into t" + strings.Repeat(" (?)", 34) + " ..."},
+    }
+    for _, c := range cases {
+        buf.Reset()
+        c.level(c.format, c.args...)
+        if got := buf.String(); got != c.want+"\n" {
+            t.Errorf("logging %q logged %q, want %q", c.format, got, c.want+"\n")
+        }
+    }
+}

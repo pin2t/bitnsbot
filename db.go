@@ -2,12 +2,13 @@ package main
 
 import "context"
 import "database/sql"
+import "database/sql/driver"
 import "os"
 import "os/exec"
 import "strings"
 import "syscall"
 import "time"
-import _ "modernc.org/sqlite"
+import "modernc.org/sqlite"
 import "bitnsbot/addrindex"
 import "bitnsbot/addrstat"
 import "bitnsbot/cursors"
@@ -88,8 +89,9 @@ func dsn(path string) string {
 // busy_timeout above is what makes them wait for rather than fail on.
 func openDB(path string) error {
     logging.Db("open %s", path)
-    var opened, err = sql.Open("sqlite", dsn(path))
+    var base, err = sqlite.NewConnector(dsn(path))
     if err != nil { return err }
+    var opened = sql.OpenDB(loggedConnector{base})
     opened.SetMaxOpenConns(4)
     opened.SetMaxIdleConns(4)
     if err := opened.Ping(); err != nil { return err }
@@ -104,6 +106,69 @@ func openDB(path string) error {
     if err := miners.Init(db); err != nil { return err }
     if err := addrstat.Init(db); err != nil { return err }
     return addrindex.Init(db)
+}
+
+// loggedConnector opens connections that log every statement they run at DB
+// level. database/sql has no hook for that, so it is done beneath it, which is
+// what modernc.org/sqlite's NewConnector exists for.
+type loggedConnector struct{ driver.Connector }
+
+func (c loggedConnector) Connect(ctx context.Context) (driver.Conn, error) {
+    var conn, err = c.Connector.Connect(ctx)
+    if err != nil { return nil, err }
+    return loggedConn{conn}, nil
+}
+
+// loggedConn delegates every optional interface database/sql looks for on the
+// sqlite connection, because one left out is not an error but a silent
+// fallback: without ExecerContext every Exec would be prepared, run and closed
+// again, and without SessionResetter and Validator a broken connection would go
+// back into the pool.
+type loggedConn struct{ driver.Conn }
+
+func (c loggedConn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
+    logging.Db("%s", query)
+    return c.Conn.(driver.ExecerContext).ExecContext(ctx, query, args)
+}
+
+func (c loggedConn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
+    logging.Db("%s", query)
+    return c.Conn.(driver.QueryerContext).QueryContext(ctx, query, args)
+}
+
+// PrepareContext logs nothing itself: a prepared statement is logged each time
+// it runs, which is what a query is.
+func (c loggedConn) PrepareContext(ctx context.Context, query string) (driver.Stmt, error) {
+    var stmt, err = c.Conn.(driver.ConnPrepareContext).PrepareContext(ctx, query)
+    if err != nil { return nil, err }
+    return loggedStmt{stmt, query}, nil
+}
+
+func (c loggedConn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, error) {
+    return c.Conn.(driver.ConnBeginTx).BeginTx(ctx, opts)
+}
+
+func (c loggedConn) Ping(ctx context.Context) error { return c.Conn.(driver.Pinger).Ping(ctx) }
+
+func (c loggedConn) ResetSession(ctx context.Context) error {
+    return c.Conn.(driver.SessionResetter).ResetSession(ctx)
+}
+
+func (c loggedConn) IsValid() bool { return c.Conn.(driver.Validator).IsValid() }
+
+type loggedStmt struct {
+    driver.Stmt
+    query string
+}
+
+func (s loggedStmt) ExecContext(ctx context.Context, args []driver.NamedValue) (driver.Result, error) {
+    logging.Db("%s", s.query)
+    return s.Stmt.(driver.StmtExecContext).ExecContext(ctx, args)
+}
+
+func (s loggedStmt) QueryContext(ctx context.Context, args []driver.NamedValue) (driver.Rows, error) {
+    logging.Db("%s", s.query)
+    return s.Stmt.(driver.StmtQueryContext).QueryContext(ctx, args)
 }
 
 func closeDB() error {
