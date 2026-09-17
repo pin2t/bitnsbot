@@ -83,7 +83,7 @@ func Build() error {
         if err := merge(touches, to); err != nil { return err }
         var bm = fmt.Sprintf("blocks %d..%d", from, to)
         if from == to { bm = fmt.Sprintf("block %d", from) }
-        logging.Info("addrindex: built %s (tip %d)", bm, tip)
+        logging.Info("addrindex: built from " + bm)
         from = to + 1
     }
     return nil
