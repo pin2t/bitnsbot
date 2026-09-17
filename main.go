@@ -17,6 +17,7 @@ import "syscall"
 import "time"
 import "runtime/debug"
 import "github.com/pin2t/flagex"
+import "bitnsbot/addrbal"
 import "bitnsbot/addrindex"
 import "bitnsbot/addrstat"
 import "bitnsbot/app"
@@ -472,6 +473,7 @@ func main() {
     if core.Enabled() {
         addrindex.StartBackfill()
         addrstat.Start()
+        addrbal.Start()
     }
     if *registerHook {
         if *webhookURL == "" {
@@ -1073,6 +1075,7 @@ func startNetworkStats() {
     if !core.Enabled() { return }
     go func() {
         var wake = signals.Subscribe(signals.Block)
+        var funded = signals.Subscribe(signals.AddrBal)
         refreshNetwork(true)
         var t = time.NewTicker(10 * time.Minute)
         defer t.Stop()
@@ -1081,6 +1084,8 @@ func startNetworkStats() {
             case <-t.C:
                 refreshNetwork(true)
             case <-wake:
+                refreshNetwork(false)
+            case <-funded:
                 refreshNetwork(false)
             }
         }
@@ -1100,9 +1105,9 @@ func startNetworkStats() {
 // A failed peer count must not blank the field or, worse, report 0 active
 // nodes — keep whatever we last knew.
 //
-// A fixed figure: nothing counts distinct addresses yet. The addrindex
-// package records touches per address but keeps no distinct total, so
-// this stands in until it can.
+// Addresses is how many hold a positive balance, which the addrbal scan
+// counts; until it has caught up with the chain the figure is only part of it,
+// so the field says nothing rather than something too small.
 func refreshNetwork(withNodes bool) {
     if !core.Enabled() { return }
     var ctx, cancel = context.WithTimeout(context.Background(), 60*time.Second)
@@ -1134,6 +1139,8 @@ func refreshNetwork(withNodes bool) {
         }
     }
     if nodes == "" { nodes = "—" }
+    var funded = "—"
+    if n, ok := addrbal.Count(); ok { funded = bigCount(n) }
     networkMu.Lock()
     cachedNetwork = app.Network{OK: true,
         Coins:  metric(toBTC(circulatingSupply(info.Blocks)), 1),
@@ -1142,7 +1149,7 @@ func refreshNetwork(withNodes bool) {
         Size:   humSize(info.SizeOnDisk, 0, ""),
         Nodes:  nodes,
         Txs:    txs,
-        Addresses: "1.5 B",
+        Addresses: funded,
     }
     networkMu.Unlock()
     app.Notify("network")
