@@ -244,7 +244,9 @@ func collectBlocks() {
         from = to + 1
     }
     if from-1 > began {
-        logging.Info("blocks: processed %d blocks, up to %d", from-1-began, from-1)
+        var bm = fmt.Sprintf("blocks %d..%d", from - 1, began)
+        if from - 1 == began { bm = fmt.Sprintf("block %d", from - 1) }
+        logging.Info("blocks: collected from " + bm)
     }
 }
 

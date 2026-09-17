@@ -150,7 +150,9 @@ func collect() {
         if from < tip { time.Sleep(cooldownPeriod) }
     }
     if last > began {
-        logging.Info("miners stats: processed %d blocks, up to %d", last-began, last)
+        var bm = fmt.Sprintf("blocks %d..%d", from, last)
+        if last == from { bm = fmt.Sprintf("block %d", from) }
+        logging.Info("miners stats: collected from " + bm)
     }
 }
 

@@ -168,7 +168,7 @@ func Collect() error {
     if curr > began {
         var bm = fmt.Sprintf("blocks %d..%d", began, curr - 1)
         if curr - 1 == began { bm = fmt.Sprintf("block %d", began) }
-        logging.Info("addrstat: collected in %s for %d addresses", bm, Count())
+        logging.Info("addrstat: collected from %s for %d addresses", bm, Count())
         signals.Send(signals.AddrStat)
     }
     return nil
