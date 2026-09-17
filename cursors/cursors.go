@@ -8,6 +8,7 @@
 //	miners     the per-pool statistics collector (miners/stats.go)
 //	addrstat   the per-address statistics collector (addrstat/)
 //	addrindex  the address index's build (addrindex/)
+//	addrbal    the address balances' scan (addrbal/)
 package cursors
 
 import "database/sql"
@@ -22,6 +23,9 @@ const AddrStat = "addrstat"
 // it: both drive the same package against the same table, so either resumes
 // where the other stopped.
 const AddrIndex = "addrindex"
+
+// AddrBal is the address balances' place.
+const AddrBal = "addrbal"
 
 var db *sql.DB
 

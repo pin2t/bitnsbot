@@ -2,7 +2,7 @@
 // do now, rather than at the end of its own interval.
 //
 // Every scan over the chain — the block cache, the address index, the miner
-// statistics, the per-address statistics — catches up on a timer of its own,
+// statistics, the per-address statistics, the address balances — catches up on a timer of its own,
 // which is what makes them survive a restart and a missed notification. That
 // timer is the floor, not the cadence: a block arrives every ten minutes on
 // average and the timers are ten minutes long, so a scan could sit a whole
@@ -18,7 +18,7 @@ package signals
 
 import "sync"
 
-// Block is fired when a block notification arrives from Core over ZMQ. The four
+// Block is fired when a block notification arrives from Core over ZMQ. The five
 // chain scans wait on it alongside their own timers.
 const Block = "block"
 
@@ -26,6 +26,11 @@ const Block = "block"
 // what the three ranked address lists are built from — so they are rebuilt when
 // the figures they rank actually move, not an hour later.
 const AddrStat = "addrstat"
+
+// AddrBal is fired when the address balances have moved or caught up, which is
+// what the Blockchain card's address count reads — so a restart shows the count
+// as soon as the scan has it, not at the next block.
+const AddrBal = "addrbal"
 
 var mu sync.Mutex
 var subs = map[string][]chan struct{}{}

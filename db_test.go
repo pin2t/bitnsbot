@@ -45,6 +45,7 @@ func TestOpenDBTables(t *testing.T) {
         "addrstat",
         "cursors",
         "addrindex",
+        "addrbal",
     }
     var got = map[string]bool{}
     var rows, err = db.Query("select name from sqlite_master where type = 'table'")

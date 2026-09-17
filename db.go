@@ -9,6 +9,7 @@ import "strings"
 import "syscall"
 import "time"
 import "modernc.org/sqlite"
+import "bitnsbot/addrbal"
 import "bitnsbot/addrindex"
 import "bitnsbot/addrstat"
 import "bitnsbot/cursors"
@@ -47,6 +48,7 @@ var schema = []string{
         txs INTEGER NOT NULL, first INTEGER NOT NULL, last INTEGER NOT NULL)`,
     `create table if not exists cursors (name TEXT PRIMARY KEY, place INTEGER NOT NULL)`,
     `create table if not exists addrindex (shard INTEGER PRIMARY KEY, data BLOB NOT NULL)`,
+    `create table if not exists addrbal (shard INTEGER PRIMARY KEY, data BLOB NOT NULL)`,
     `create index if not exists addrstat_balance on addrstat (balance)`,
     `create index if not exists addrstat_txs on addrstat (txs)`,
     `create index if not exists addrstat_last on addrstat (last)`,
@@ -105,6 +107,7 @@ func openDB(path string) error {
     if err := watches.Init(db); err != nil { return err }
     if err := miners.Init(db); err != nil { return err }
     if err := addrstat.Init(db); err != nil { return err }
+    if err := addrbal.Init(db); err != nil { return err }
     return addrindex.Init(db)
 }
 
