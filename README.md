@@ -29,7 +29,7 @@ Bitcoin blockchain explorer and events notification bot. It can send notificatio
 | `-api-base-url` | `http://localhost:8081` | Base URL of the local `telegram-bot-api` server |
 | `-secret-token` | | Optional secret checked against the<br>`X-Telegram-Bot-Api-Secret-Token` header |
 | `-register-webhook` | `true` | Call `setWebhook` on startup |
-| `-db` | `watches.db` | Path to the database |
+| `-db` | `bitnsbot.db` | Path to the database |
 | `-core-url` | | Bitcoin Core JSON-RPC URL<br>e.g. `http://127.0.0.1:8332` (leave empty<br>to skip connecting to the node) |
 | `-core-user` | | Bitcoin Core RPC username (or use `-core-cookie`) |
 | `-core-pass` | | Bitcoin Core RPC password (or use `-core-cookie`) |
