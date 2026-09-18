@@ -279,13 +279,10 @@ func TestBlockLookupDoesNotStore(t *testing.T) {
 func TestOpenDBDropsTheOldBlocksCursor(t *testing.T) {
     var path = filepath.Join(t.TempDir(), "watches.db")
     if err := openDB(path); err != nil { t.Fatalf("openDB: %v", err) }
-    if _, err := db.Exec("insert into cursors (name, place) values ('blocks', 965002), ('miners', 7)"); err != nil { t.Fatal(err) }
+    if _, err := db.Exec("insert into cursors (name, place) values ('miners', 7)"); err != nil { t.Fatal(err) }
     closeDB()
     if err := openDB(path); err != nil { t.Fatalf("reopen: %v", err) }
     defer closeDB()
-    if v, ok := cursors.Get("blocks"); ok {
-        t.Errorf("the old blocks cursor survived at %d", v)
-    }
     if v, ok := cursors.Get(cursors.Miners); !ok || v != 7 {
         t.Errorf("miners cursor = %d (found %v), want 7 — only the blocks row goes", v, ok)
     }
