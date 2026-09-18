@@ -8,6 +8,7 @@ import "flag"
 import "fmt"
 import "html"
 import "net/http"
+import "net/url"
 import "os"
 import "os/signal"
 import "strconv"
@@ -125,14 +126,12 @@ func (appSource) Blocks(lang string, rng app.Range) app.Blocks {
         }
         var bi, ok = scanBlock(rows)
         if !ok { continue }
-        var miner = bi.Miner
-        if miner == "" { miner = i18nl(lang).String("Unknown") }
         out.Rows = append(out.Rows, app.Block{
             Height:     group(bi.Height),
             Num:        bi.Height,
             Size:       humSize(int64(bi.Size), 2, lang),
             Txs:        i18nl(lang).Sprintf("%s txs", group(int64(bi.NumTx))),
-            Miner:      miner,
+            Miner:      minerName(bi.Miner, lang),
             MinerKnown: bi.Miner != "",
         })
     }
@@ -175,6 +174,13 @@ func (appSource) BlockInfo(lang string, height int64) app.Info {
     }
     out.OK = true
     out.Rows = linkFields(blockPairs(bi, lang), []linked{{short(bi.Hash), bi.Hash}})
+    if bi.Miner != "" {
+        for i := range out.Rows {
+            if out.Rows[i].Label != i18nl(lang).String("Miner") { continue }
+            out.Rows[i].Parts = []app.Part{{Text: bi.Miner,
+                Href: "miner?name=" + url.QueryEscape(bi.Miner) + "&down=" + strconv.FormatInt(bi.Height, 10)}}
+        }
+    }
     return out
 }
 

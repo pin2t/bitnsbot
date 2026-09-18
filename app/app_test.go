@@ -184,7 +184,7 @@ func liveBlockInfo() map[int64]Info {
         {Label: "Time", Value: "2 hours ago"},
         {Label: "Size", Value: "1.56 MB"},
         {Label: "Transactions", Value: "4000"},
-        {Label: "Miner", Value: "AntPool"},
+        {Label: "Miner", Value: "AntPool", Parts: []Part{{Text: "AntPool", Href: "miner?name=AntPool&down=963268"}}},
         {Label: "Difficulty", Value: "142.34 T"},
         {Label: "Fees"},
         {Label: "lowest", Value: "141 sats (1.0 sat/vB)"},
@@ -981,6 +981,17 @@ func TestBlockDetailsRender(t *testing.T) {
     }
     if !strings.Contains(head, `class="ghost"`) {
         t.Errorf("the title needs a hidden button opposite Back to stay centred: %s", head)
+    }
+}
+
+// The block details page links its miner to the miner page, the same way the
+// block list does — the URL is carried whole because /search cannot classify a
+// pool name.
+func TestBlockDetailsLinkMiner(t *testing.T) {
+    var h = handler(t, "TESTTOKEN", fakeSource{d: liveBlockInfo()})
+    var body = html.UnescapeString(get(h, "/block?height=963268", freshInitData("TESTTOKEN")).Body.String())
+    if !strings.Contains(body, `hx-get="miner?name=AntPool&down=963268"`) {
+        t.Errorf("the block page's miner does not link to its page:\n%s", body)
     }
 }
 
