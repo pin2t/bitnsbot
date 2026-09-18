@@ -22,27 +22,27 @@ Bitcoin blockchain explorer and events notification bot. It can send notificatio
 
 | Flag | Default | Description |
 |---|---|---|
-| `-bot-token` | *(required)* | Telegram bot token used to authenticate outbound Bot API calls |
+| `-bot-token` | *(required)* | Telegram bot token used to authenticate<br>outbound Bot API calls |
 | `-listen` | `:8080` | Address the webhook server listens on |
 | `-webhook-path` | `/bot` | Path the Bot API server will POST updates to |
-| `-webhook-url` | | URL the Bot API server should send updates to, e.g. `http://localhost:8080/bot` |
+| `-webhook-url` | | URL the Bot API server should send updates to<br>e.g. `http://localhost:8080/bot` |
 | `-api-base-url` | `http://localhost:8081` | Base URL of the local `telegram-bot-api` server |
-| `-secret-token` | | Optional secret checked against the `X-Telegram-Bot-Api-Secret-Token` header |
+| `-secret-token` | | Optional secret checked against the<br>`X-Telegram-Bot-Api-Secret-Token` header |
 | `-register-webhook` | `true` | Call `setWebhook` on startup |
 | `-db` | `watches.db` | Path to the database |
-| `-core-url` | | Bitcoin Core JSON-RPC URL, e.g. `http://127.0.0.1:8332` (leave empty to skip connecting to the node) |
+| `-core-url` | | Bitcoin Core JSON-RPC URL<br>e.g. `http://127.0.0.1:8332` (leave empty<br>to skip connecting to the node) |
 | `-core-user` | | Bitcoin Core RPC username (or use `-core-cookie`) |
 | `-core-pass` | | Bitcoin Core RPC password (or use `-core-cookie`) |
-| `-core-cookie` | | Path to Bitcoin Core's `.cookie` file, an alternative to `-core-user`/`-core-pass` |
-| `-core-zmq` | | Comma-separated ZMQ endpoints publishing `hashblock` and `rawtx`, e.g. `tcp://127.0.0.1:28332,tcp://127.0.0.1:28333` |
-| `-backup` | | Path to copy the database to periodically (empty disables backups) |
+| `-core-cookie` | | Path to Bitcoin Core's `.cookie` file, an alternative to<br>`-core-user`/`-core-pass` |
+| `-core-zmq` | | Comma-separated ZMQ endpoints publishing<br>`hashblock` and `rawtx`,<br>e.g. `tcp://127.0.0.1:28332,tcp://127.0.0.1:28333` |
+| `-backup` | | Path to copy the database to periodically<br>(empty disables backups) |
 | `-backup-interval` | `24h` | How often to back up the database |
-| `-backup-script` | | Command run after each backup, with the backup path as `$1` and in `$BACKUP_FILE` |
-| `-verbose` | `0` | Log verbosity: `0` = ERR/WARN/status, `1` = +INFO, `2` = +NET/DB |
+| `-backup-script` | | Command run after each backup,<br>with the backup path as `$1` and in `$BACKUP_FILE` |
+| `-verbose` | `0` | Log verbosity: `0` = ERR/WARN/status, `1` = +INFO,<br>`2` = +NET/DB |
 | `-log-no-ts` | `false` | Omit the date and time prefix from each log line |
-| `-dbui-listen` | | Ignored, and kept only so a config file that sets it still starts — the database UI speaks bbolt and is now [bboltwui](https://github.com/pin2t/bboltwui) |
-| `-history-file` | | Path to a JSON file containing historical BTC/USD rates (same format as blockchain.info/charts/market-price); backfilled from this file on first run instead of fetching over the network |
-| `-config` | | Path to a properties file (`name=value` lines) with flag values; command-line flags take precedence |
+| `-dbui-listen` | | Ignored, and kept only so a config file<br>that sets it still starts —<br>the database UI speaks bbolt and is now<br>[bboltwui](https://github.com/pin2t/bboltwui) |
+| `-history-file` | | Path to a JSON file containing<br>historical BTC/USD rates |
+| `-config` | | Path to a properties file<br>(`name=value` lines) with flag values;<br>command-line flags take precedence |
 
 #### Configuration file
 
