@@ -291,6 +291,44 @@ func TestOpenDBDropsTheOldBlocksCursor(t *testing.T) {
     }
 }
 
+// An empty miner is the unattributed placeholder, in the reader's language; a
+// real pool name passes through untouched.
+func TestMinerName(t *testing.T) {
+    if got := minerName("", ""); got != "Unknown" {
+        t.Errorf(`minerName("", "") = %q, want the English placeholder`, got)
+    }
+    if got := minerName("", "ru"); got != "неизвестен" {
+        t.Errorf(`minerName("", "ru") = %q, want the Russian placeholder`, got)
+    }
+    if got := minerName("AntPool", "ru"); got != "AntPool" {
+        t.Errorf(`minerName("AntPool", "ru") = %q, want the name unchanged`, got)
+    }
+}
+
+// A database written before unattributed blocks stored an empty miner carries the
+// literal "Unknown"; blockInit normalises it, so the placeholder is applied at
+// render rather than baked into the data.
+func TestOpenDBMigratesUnknownMiner(t *testing.T) {
+    var path = filepath.Join(t.TempDir(), "watches.db")
+    if err := openDB(path); err != nil { t.Fatalf("openDB: %v", err) }
+    if err := flushBlocks([]*blockInfo{
+        {Height: 800001, Hash: "h1", Miner: "Unknown"},
+        {Height: 800002, Hash: "h2", Miner: "AntPool"},
+    }); err != nil {
+        t.Fatalf("store blocks: %v", err)
+    }
+    closeDB()
+    if err := openDB(path); err != nil { t.Fatalf("reopen: %v", err) }
+    defer closeDB()
+    var bi, ok = loadBlock(800001)
+    if !ok || bi.Miner != "" {
+        t.Errorf("legacy Unknown miner = %q, want empty after the migration", bi.Miner)
+    }
+    if bi, ok = loadBlock(800002); !ok || bi.Miner != "AntPool" {
+        t.Errorf("an attributed miner must survive the migration, got %q", bi.Miner)
+    }
+}
+
 // The Mini App's block list windows the blocks bucket by height rather than
 // by an offset, which is what keeps a batch stable while the chain grows at the
 // head. The cursor arithmetic is where that can go wrong, so this drives it

@@ -175,6 +175,56 @@ func TestBlockHashIsLinked(t *testing.T) {
     }
 }
 
+// The block page's miner is tappable too, opening the miner page — which
+// /search cannot classify, so the part carries the URL outright rather than an id.
+func TestBlockMinerIsLinked(t *testing.T) {
+    if err := openDB(filepath.Join(t.TempDir(), "watches.db")); err != nil {
+        t.Fatalf("open db: %v", err)
+    }
+    defer closeDB()
+    var hash = "0000000000000000000209d0dbbd5a37b0e0e0a2f8a1ba36d6f4f0e9c0b1a2f3"
+    if err := flushBlocks([]*blockInfo{{Height: 700001, Hash: hash, Time: 1700000000,
+        Size: 1500000, NumTx: 4000, Miner: "Foundry USA", Difficulty: 9e13,
+        Reward: 312500000, Total: 320000000}}); err != nil {
+        t.Fatalf("store block: %v", err)
+    }
+    var info = appSource{}.BlockInfo("", 700001)
+    if !info.OK { t.Fatal("no block page") }
+    var miner app.Field
+    for _, r := range info.Rows {
+        if r.Label == "Miner" { miner = r; break }
+    }
+    if len(miner.Parts) != 1 {
+        t.Fatalf("miner row parts = %#v, want one link", miner.Parts)
+    }
+    if miner.Parts[0].Text != "Foundry USA" || miner.Parts[0].Id != "" {
+        t.Errorf("miner part = %#v, want the name as one linked piece", miner.Parts[0])
+    }
+    if miner.Parts[0].Href != "miner?name=Foundry+USA&down=700001" {
+        t.Errorf("miner href = %q, want miner?name=Foundry+USA&down=700001", miner.Parts[0].Href)
+    }
+}
+
+// An unattributed block's miner is not a pool, so it must not become a link.
+func TestBlockMinerUnknownNotLinked(t *testing.T) {
+    if err := openDB(filepath.Join(t.TempDir(), "watches.db")); err != nil {
+        t.Fatalf("open db: %v", err)
+    }
+    defer closeDB()
+    if err := flushBlocks([]*blockInfo{{Height: 700001, Hash: "0000000000000000000209d0dbbd5a37b0e0e0a2f8a1ba36d6f4f0e9c0b1a2f3",
+        Time: 1700000000, Size: 1500000, NumTx: 4000, Difficulty: 9e13,
+        Reward: 312500000, Total: 320000000}}); err != nil {
+        t.Fatalf("store block: %v", err)
+    }
+    var info = appSource{}.BlockInfo("", 700001)
+    if !info.OK { t.Fatal("no block page") }
+    for _, r := range info.Rows {
+        if r.Label == "Miner" && r.Parts != nil {
+            t.Errorf("unattributed miner was linked: %#v", r.Parts)
+        }
+    }
+}
+
 // splitLinks is what keeps a line readable while making the ids in it tappable:
 // the text between them survives, in order, and a line with none is left alone.
 //

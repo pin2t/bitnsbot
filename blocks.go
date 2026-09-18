@@ -50,7 +50,7 @@ type blockInfo struct {
 // row it kept in cursors before that is dropped rather than left to mislead.
 func blockInit(handle *sql.DB) error {
     db = handle
-    var _, err = db.Exec("delete from cursors where name = 'blocks'")
+    _, err := db.Exec("update blocks set miner = '' where miner = 'Unknown'")
     return err
 }
 
@@ -152,7 +152,6 @@ func computeBlockInfo(ctx context.Context, hash string) (*blockInfo, error) {
     var script string
     if len(coinbase.Vin) > 0 { script = coinbase.Vin[0].Coinbase }
     var miner = miners.Attribute(addrs, script)
-    if miner == "" { miner = "Unknown" }
     return &blockInfo{
         Height: blk.Height, Hash: blk.Hash, Time: blk.Time, Size: blk.Size,
         NumTx: len(blk.Tx), Miner: miner,
@@ -272,6 +271,11 @@ func flushBlocks(bis []*blockInfo) error {
     return tx.Commit()
 }
 
+func minerName(name, lang string) string {
+    if name == "" { return i18nl(lang).String("Unknown") }
+    return name
+}
+
 // formatBlock renders a cached block record as the /info block reply.
 // blockPairs builds the label/value lines a block is described by. Shared with
 // the Mini App's block details page, so the two cannot drift apart. A pair with
@@ -286,7 +290,7 @@ func blockPairs(bi *blockInfo, lang string) [][2]string {
         {i18nl(lang).String("Time"), when(bi.Time, lang)},
         {i18nl(lang).String("Size"), humSize(int64(bi.Size), 2, lang)},
         {i18nl(lang).String("Transactions"), strconv.Itoa(bi.NumTx)},
-        {i18nl(lang).String("Miner"), bi.Miner},
+        {i18nl(lang).String("Miner"), minerName(bi.Miner, lang)},
         {i18nl(lang).String("Difficulty"), difficulty},
     }
     switch {

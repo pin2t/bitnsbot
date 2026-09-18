@@ -433,9 +433,12 @@ type Field struct {
 // Part is one piece of a row's value. An empty Id is plain text; otherwise the
 // part is tappable and Id is what it opens — handed to /search, which classifies
 // it the way the bot's info() does, so a part needs to carry no kind of its own.
+// Href is the alternative for a link /search cannot classify: a miner name opens
+// the miner page outright, so the part carries the URL rather than an id.
 type Part struct {
     Text string
     Id   string
+    Href string
 }
 
 // Info is a details page — a block, a transaction or an address. Title and Rows
