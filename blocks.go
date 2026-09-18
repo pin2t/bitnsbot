@@ -50,8 +50,8 @@ type blockInfo struct {
 // row it kept in cursors before that is dropped rather than left to mislead.
 func blockInit(handle *sql.DB) error {
     db = handle
-    _, err := db.Exec("update blocks set miner = '' where miner = 'Unknown'")
-    return err
+    db.Exec("update blocks set miner = '' where miner = 'Unknown'")
+    return nil
 }
 
 // The blocks table keeps the fees as `total - reward`, which is what they are —
