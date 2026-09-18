@@ -1157,7 +1157,7 @@ func resolveActiveNodes(ctx context.Context, prev string) string {
         return btcnodesOrScan(ctx, prev)
     }
     btcnodesNext = time.Now().Add(btcnodesTTL)
-    count, err := btcnodesActive(ctx)
+    var count, err = btcnodesActive(ctx)
     if err == nil {
         btcnodesCount, btcnodesSeen = count, time.Now()
         return group(count)
@@ -1172,7 +1172,7 @@ func btcnodesOrScan(ctx context.Context, prev string) string {
     if btcnodesCount > 0 && time.Since(btcnodesSeen) <= btcnodesMaxAge {
         return group(btcnodesCount)
     }
-    addrs, aerr := core.GetNodeAddresses(ctx)
+    var addrs, aerr = core.GetNodeAddresses(ctx)
     if aerr == nil {
         var cutoff = time.Now().Add(-activeNodeWindow).Unix()
         var active int64
