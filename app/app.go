@@ -989,9 +989,15 @@ func Start(addr, token string, src Source) *http.Server {
     }))
     mux.HandleFunc("/tx", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
         var id = strings.TrimSpace(r.URL.Query().Get("id"))
-        if !IsTxID(id) {
+        if len(id) != 64 {
             http.Error(w, "no such transaction", http.StatusBadRequest)
             return
+        }
+        for _, c := range id {
+            if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F') {
+                http.Error(w, "no such transaction", http.StatusBadRequest)
+                return
+            }
         }
         var back, swap = backToList(r)
         details(w, r, blocksSlot, back, swap, "tx", id, func(lang string) Info { return src.TxInfo(lang, id) })
