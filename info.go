@@ -1,5 +1,6 @@
 package main
 
+import "bitnsbot/app"
 import "context"
 import "html"
 import "encoding/hex"
@@ -34,13 +35,15 @@ func info(bot *bot, chat int64, arg string) {
     }
     var ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
     defer cancel()
-    if isTxid(arg) {
+    if len(arg) == 64 {
+        if app.IsTxID(arg) {
+            transaction(ctx, bot, chat, arg)
+            return
+        }
         if header, err := core.GetBlockHeader(ctx, arg); err == nil {
             block(ctx, bot, chat, header.Height)
             return
         }
-        transaction(ctx, bot, chat, arg)
-        return
     }
     if height, err := strconv.ParseInt(arg, 10, 64); err == nil && height >= 0 {
         block(ctx, bot, chat, height)

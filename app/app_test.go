@@ -1082,7 +1082,7 @@ func TestSearchClassifiesQuery(t *testing.T) {
     var h = handler(t, "TESTTOKEN", fakeSource{})
     var cases = []struct{ q, want string }{
         {liveTxid, "tx?id=" + liveTxid + "&from=home"},
-        {strings.Repeat("0", 64), "tx?id=" + strings.Repeat("0", 64) + "&from=home"},
+        {strings.Repeat("0", 64), "block?height=0&from=home"},
         {"963268", "block?height=963268&from=home"},
         {liveAddress, "address?a=" + liveAddress + "&from=home"},
         {"not a block", "address?a=not+a+block&from=home"},
