@@ -2,7 +2,6 @@ package main
 
 import "context"
 import "crypto/subtle"
-import "encoding/hex"
 import "encoding/json"
 import "flag"
 import "fmt"
@@ -643,12 +642,6 @@ func logMessage(msg *Message) {
     logging.Info("message from %s (chat %d): %s", from, msg.Chat.ID, msg.Text)
 }
 
-func isTxid(s string) bool {
-    if len(s) != 64 { return false }
-    var _, err = hex.DecodeString(s)
-    return err == nil
-}
-
 func parseCommand(text string) (command, arg string) {
     var fields = strings.SplitN(strings.TrimSpace(text), " ", 2)
     if !strings.HasPrefix(fields[0], "/") { return "", "" }
@@ -735,7 +728,7 @@ func atWatchLimit(chat int64) (bool, error) {
 // matcher. /watch and the Mini App's bell both go through here, so a watch added
 // either way behaves identically.
 func addWatch(b *bot, chat int64, target, alias string) error {
-    if isTxid(target) {
+    if app.IsTxID(target) {
         txwatches.Add(target, chat, alias)
     } else {
         if err := watches.Add(chat, target, alias); err != nil { return err }
@@ -749,7 +742,7 @@ func addWatch(b *bot, chat int64, target, alias string) error {
 // removeWatch reverses addWatch and reports whether anything was actually being
 // watched, which is what tells a caller "you weren't watching that".
 func removeWatch(chat int64, target string) (bool, error) {
-    if isTxid(target) {
+    if app.IsTxID(target) {
         if txwatches.Remove(target, chat) == 0 { return false, nil }
         logging.Info("removed transaction watch %s for chat %d", target, chat)
         return true, nil
@@ -770,7 +763,7 @@ func removeWatch(chat int64, target string) (bool, error) {
 // announcing the old name until the next restart. Pending confirmations are
 // renamed too, so one already in flight arrives under the new name.
 func setAlias(b *bot, chat int64, target, alias string) (bool, error) {
-    if isTxid(target) { return txwatches.SetAlias(target, chat, alias) > 0, nil }
+    if app.IsTxID(target) { return txwatches.SetAlias(target, chat, alias) > 0, nil }
     var renamed, err = watches.SetAlias(chat, target, alias)
     if err != nil { return false, err }
     if renamed == 0 { return false, nil }
@@ -784,7 +777,7 @@ func setAlias(b *bot, chat int64, target, alias string) (bool, error) {
 // watching reports whether this chat already watches target, which is what the
 // Mini App's bell renders as pushed or unpushed.
 func watching(chat int64, target string) bool {
-    if isTxid(target) {
+    if app.IsTxID(target) {
         for _, e := range txwatches.For(chat) {
             if e.Txid == target { return true }
         }

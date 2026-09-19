@@ -808,15 +808,13 @@ func chatOf(initData string) int64 {
     return u.ID
 }
 
-// isTxid reports the 64-hex shape a txid has. A block hash has exactly the same
-// shape, which only the node can tell apart — main's TxInfo resolves that, the
-// way info() does for the bot.
-func isTxid(s string) bool {
-    if len(s) != 64 { return false }
-    for _, c := range s {
+// 000000 prefix is likely a block hash not transaction id
+func IsTxID(hash string) bool {
+    if len(hash) != 64 { return false }
+    for _, c := range hash {
         if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F') { return false }
     }
-    return true
+    return !strings.HasPrefix(hash, "000000")
 }
 
 // Start serves the Mini App on addr and returns the server so the caller can
@@ -991,7 +989,7 @@ func Start(addr, token string, src Source) *http.Server {
     }))
     mux.HandleFunc("/tx", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
         var id = strings.TrimSpace(r.URL.Query().Get("id"))
-        if !isTxid(id) {
+        if !IsTxID(id) {
             http.Error(w, "no such transaction", http.StatusBadRequest)
             return
         }
@@ -1130,7 +1128,7 @@ func Start(addr, token string, src Source) *http.Server {
         switch {
         case q == "":
             w.WriteHeader(http.StatusNoContent)
-        case isTxid(q):
+        case IsTxID(q):
             http.Redirect(w, r, "tx?id="+url.QueryEscape(q)+"&from="+from, http.StatusSeeOther)
         default:
             if height, err := strconv.ParseInt(q, 10, 64); err == nil && height >= 0 {
