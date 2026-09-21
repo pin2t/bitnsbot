@@ -18,8 +18,6 @@ import "time"
 import "runtime/debug"
 import "github.com/pin2t/flagex"
 import "bitnsbot/addrbal"
-import "bitnsbot/addrindex"
-import "bitnsbot/addrstat"
 import "bitnsbot/app"
 import "bitnsbot/core"
 import "bitnsbot/logging"
@@ -461,10 +459,7 @@ func main() {
     }
     startNotify(bot)
     miners.Start()
-    if core.Enabled() {
-        miners.StartStats()
-    }
-    startBlockCache()
+    startIndexUpdates()
     startMempoolFlow()
     startMempoolSummary()
     startMempoolFees()
@@ -474,11 +469,6 @@ func main() {
         if err := startZMQ(context.Background(), strings.Split(*coreZMQ, ","), bot); err != nil {
             logging.Fatal("subscribe to Bitcoin Core ZMQ: %v", err)
         }
-    }
-    if core.Enabled() {
-        addrindex.StartBackfill()
-        addrstat.Start()
-        addrbal.Start()
     }
     if *registerHook {
         if *webhookURL == "" {

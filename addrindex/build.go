@@ -5,7 +5,6 @@ import "fmt"
 import "time"
 import "bitnsbot/core"
 import "bitnsbot/logging"
-import "bitnsbot/signals"
 
 // Block is what BlockAt reads for one height: when it was mined, and its
 // transactions in block order, each with the outputs it pays and the prevouts
@@ -34,46 +33,32 @@ type Tx struct {
 // package var so tests shrink it.
 var chunkSize int = 1000
 
-// backfillInterval is the longest a pass waits once the index is at the tip. A
-// block notification cuts the wait short (see the signals package), so this is
-// the floor under which nothing is missed rather than the usual cadence.
-var backfillInterval = 2 * time.Minute
-
-// StartBackfill walks the chain from the index's cursor to the tip, in chunks,
-// and keeps polling for new blocks afterward. It is meant to run for as long as
-// the bot does; building genesis-to-tip on a fresh index is a multi-hour, one-
-// time cost paid the same way the miners collector pays its own catch-up.
-func StartBackfill() {
-    go func() {
-        var wake = signals.Subscribe(signals.Block)
-        for {
-            if err := Build(); err != nil {
-                logging.Warn("addrindex: %v", err)
-            }
-            select {
-            case <-time.After(backfillInterval):
-            case <-wake:
-            }
-        }
-    }()
-}
-
-// Build walks the chain from the index's cursor to the tip once and returns.
-// StartBackfill is this on a loop; tools/addrindex calls it directly, so a
-// command-line build and the bot's own backfill advance the same cursor through
-// the same chunking.
+// Build catches the index up to the current tip and returns. tools/addrindex
+// calls it directly, so a command-line build and the bot's own catch-up advance
+// the same cursor through the same chunking; the bot itself goes through Update,
+// whose tip its caller has already fetched.
 func Build() error {
-    var ctx, cancel = context.WithTimeout(context.Background(), 6*time.Hour)
+    var ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
     defer cancel()
     var count, err = core.GetBlockCount(ctx)
     if err != nil { return err }
-    var tip = int(count)
+    return Update(int64(count))
+}
+
+// Update advances the index from its cursor to tip, in chunks, and returns. The
+// bot's one index catch-up goroutine calls it — blocks, miner statistics,
+// addrindex, addrstat, addrbal, in that order — after fetching the tip once, so
+// a genesis-to-tip build on a fresh index is a multi-hour, one-time cost paid
+// the same way every other index pays its own catch-up.
+func Update(tip int64) error {
+    var ctx, cancel = context.WithTimeout(context.Background(), 6*time.Hour)
+    defer cancel()
     var height, ok = Cursor()
     var from int
     if ok { from = height + 1 }
-    for from <= tip {
+    for from <= int(tip) {
         var to = from + chunkSize - 1
-        if to > tip { to = tip }
+        if to > int(tip) { to = int(tip) }
         var touches = map[string][]Touch{}
         for h := from; h <= to; h++ {
             var blk, berr = BlockAt(ctx, h)

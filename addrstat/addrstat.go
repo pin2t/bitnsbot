@@ -6,10 +6,10 @@
 // the busiest holds millions of transactions, where the live path caps at ten
 // thousand and marks the answer with a "+".
 //
-// One bucket, addrstat, keyed by address, holding one JSON record each. A
-// goroutine walks the chain from genesis filling them in, resuming from its
-// place in the shared cursors bucket exactly as the block cache and the miner
-// statistics do.
+// One bucket, addrstat, keyed by address, holding one JSON record each. The
+// bot's one index catch-up goroutine walks the chain from genesis filling them
+// in, resuming from its place in the shared cursors bucket exactly as the block
+// cache and the miner statistics do.
 package addrstat
 
 import "context"
@@ -24,10 +24,6 @@ import "bitnsbot/logging"
 import "bitnsbot/signals"
 
 var db *sql.DB
-
-// interval is the longest the collector waits once it has caught up; a block
-// notification cuts it short. A package var so tests can shrink it.
-var interval = 10 * time.Minute
 
 // chunkSize bounds how many blocks are accumulated in memory before one
 // database flush, the same reasoning as the miners collector: catching up the
@@ -120,35 +116,27 @@ func Count() int {
     return len(watched)
 }
 
-// Start runs the collector: a catch-up to the tip, then again on every block
-// notification and every interval, whichever comes first.
-func Start() {
-    go func() {
-        var wake = signals.Subscribe(signals.Block)
-        for {
-            if err := Collect(); err != nil { logging.Warn("addrstat: %v", err) }
-            select {
-            case <-time.After(interval):
-            case <-wake:
-            }
-        }
-    }()
-}
-
-// Collect walks the chain from the cursor to the tip once and returns. Start is
-// this on a loop; it is exported for the same reason addrindex.Build is, so a
-// caller that wants one pass and an exit code can have one. The blocks are the
-// ones the address index is built from — addrindex.BlockAt, one getblock at
-// verbosity 3 a block, whose prevouts are where a spend's script and amount,
-// and so a transaction's fee, are written down.
+// Collect walks the chain from the cursor to the current tip once and returns.
+// It is exported so a caller that wants one pass can have one — the bot itself
+// goes through Update, whose tip its caller has already fetched.
 //
 // no addresses to gather for
 func Collect() error {
-    if Count() == 0 { return nil }
-    var ctx, cancel = context.WithTimeout(context.Background(), 6*time.Hour)
+    var ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
     defer cancel()
     var tip, err = core.GetBlockCount(ctx)
     if err != nil { return err }
+    return Update(tip)
+}
+
+// Update advances the statistics from the cursor to tip once and returns. The
+// blocks are the ones the address index is built from — addrindex.BlockAt, one
+// getblock at verbosity 3 a block, whose prevouts are where a spend's script and
+// amount, and so a transaction's fee, are written down.
+func Update(tip int64) error {
+    if Count() == 0 { return nil }
+    var ctx, cancel = context.WithTimeout(context.Background(), 6*time.Hour)
+    defer cancel()
     var last, ok = cursors.Get(cursors.AddrStat)
     var curr int64
     if ok { curr = last + 1 }

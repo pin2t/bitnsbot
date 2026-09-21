@@ -82,10 +82,6 @@ var chunkPause = time.Minute
 // the slots are read back in the order they were queued.
 var fetchers = 4
 
-// interval is the longest the scan waits once it has caught up; a block
-// notification cuts it short.
-var interval = 10 * time.Minute
-
 // count is how many addresses hold a balance, as of the cursor. It is loaded from
 // the table on the first pass and moved by each merge after that. caughtUp is
 // whether a pass has reached the tip, so the count is the chain's and not a share
@@ -108,29 +104,25 @@ func Count() (int64, bool) {
     return count.Load(), caughtUp.Load()
 }
 
-// Start runs the scan: a catch-up to the tip, then again on every block
-// notification and every interval, whichever comes first.
-func Start() {
-    go func() {
-        var wake = signals.Subscribe(signals.Block)
-        for {
-            if err := Build(); err != nil { logging.Warn("addrbal: %v", err) }
-            select {
-            case <-time.After(interval):
-            case <-wake:
-            }
-        }
-    }()
+// Build walks the chain from the cursor to the current tip once and returns. It
+// is exported so a caller that wants one pass can have one — the bot itself goes
+// through Update, whose tip its caller has already fetched.
+func Build() error {
+    var ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
+    defer cancel()
+    var tip, err = core.GetBlockCount(ctx)
+    if err != nil { return err }
+    return Update(tip)
 }
 
-// Build walks the chain from the cursor to confirmations below the tip once and
+// Update walks the chain from the cursor to confirmations below tip once and
 // returns. A pass that fails leaves the cursor at its last merge, and the next
 // resumes there. A pass that merged something, or caught up for the first time,
 // fires signals.AddrBal, which is what the Blockchain card refreshes on.
 //
 // The count is loaded from the table the first time, which reads every row: the
 // entries are all there is to count, and a stored total could drift from them.
-func Build() error {
+func Update(tip int64) error {
     if db == nil { return errors.New("addrbal: not initialised (Init was not called)") }
     if !loaded.Load() {
         var n int64
@@ -140,8 +132,6 @@ func Build() error {
     }
     var ctx, cancel = context.WithTimeout(context.Background(), 6*time.Hour)
     defer cancel()
-    var tip, err = core.GetBlockCount(ctx)
-    if err != nil { return err }
     var target = int(tip) - confirmations
     var last, ok = cursors.Get(cursors.AddrBal)
     var from int

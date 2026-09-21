@@ -10,13 +10,8 @@ import "bitnsbot/app"
 import "bitnsbot/core"
 import "bitnsbot/logging"
 import "bitnsbot/miners"
-import "bitnsbot/signals"
 
 var blocksBucket = []byte("blocks")
-
-// blockCacheInterval is how often the collector catches up from the last
-// processed block to the chain tip. A package var so tests can shrink it.
-var blockCacheInterval = 10 * time.Minute
 
 // blocksChunkSize is how many blocks are collected in memory before a single
 // database flush.
@@ -161,27 +156,11 @@ func computeBlockInfo(ctx context.Context, hash string) (*blockInfo, error) {
     }, nil
 }
 
-// startBlockCache runs a goroutine that catches up from the last processed block
-// to the current tip, storing each block's stats in the blocks bucket. It runs
-// on a block notification and every blockCacheInterval, whichever comes first:
-// the notification is the usual case, and the interval is the safety net for one
-// that was missed while the bot was down.
-func startBlockCache() {
-    go func() {
-        var wake = signals.Subscribe(signals.Block)
-        collectBlocks()
-        var t = time.NewTicker(blockCacheInterval)
-        defer t.Stop()
-        for {
-            select {
-            case <-t.C:
-            case <-wake:
-            }
-            collectBlocks()
-        }
-    }()
-}
-
+// updateBlocks catches the block cache up from the last processed block to tip,
+// storing each block's stats in the blocks table. It is the first step of the
+// one index catch-up goroutine (see startIndexUpdates), which hands it the tip
+// it already fetched — it never asks the node for it itself.
+//
 // The place is the highest block stored: flushBlocks commits a chunk in one
 // transaction, so it advances with the batch that reached it. An empty table
 // is NULL, which starts from genesis.
@@ -196,15 +175,8 @@ func startBlockCache() {
 // chunk that *reaches* the tip as well, so every catch-up slept a minute
 // after its last flush: a minute between a block arriving and being
 // cached, now that this is the only path that caches one.
-func collectBlocks() {
-    if !core.Enabled() || db == nil { return }
-    var ctx, cancel = context.WithTimeout(context.Background(), 10*time.Minute)
-    defer cancel()
-    var tip, err = core.GetBlockCount(ctx)
-    if err != nil {
-        logging.Warn("blocks: %v", err)
-        return
-    }
+func updateBlocks(tip int64) {
+    if db == nil { return }
     var last sql.NullInt64
     if err := db.QueryRow("select max(height) from blocks").Scan(&last); err != nil {
         logging.Err("blocks: last height: %v", err)
