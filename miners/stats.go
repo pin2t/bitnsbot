@@ -8,11 +8,10 @@ import "time"
 import "bitnsbot/core"
 import "bitnsbot/logging"
 import "bitnsbot/cursors"
-import "bitnsbot/signals"
 
-// statInterval is how often the collector processes new blocks. A package var so
-// tests can shrink it.
-var statInterval = 10 * time.Minute
+// cooldownPeriod is how long a catch-up rests after each chunk of a long
+// gap, so hours of catch-up do not hold the node at full tilt for all of it. A
+// package var so tests do not sit through it.
 var cooldownPeriod = 1 * time.Minute
 
 // chunkSize bounds how many blocks are aggregated in memory before a database
@@ -79,35 +78,16 @@ type record struct {
     Tags      []string `json:"tags"`
 }
 
-// StartStats runs the by-miner statistics collector: it catches up from the last
-// processed block to the current tip, then again on every block notification and
-// every statInterval, whichever comes first.
-func StartStats() {
-    go func() {
-        var wake = signals.Subscribe(signals.Block)
-        collect()
-        var t = time.NewTicker(statInterval)
-        defer t.Stop()
-        for {
-            select {
-            case <-t.C:
-            case <-wake:
-            }
-            collect()
-        }
-    }()
-}
-
+// Update aggregates every block from the cursor to tip into the per-pool
+// records. The bot's one index catch-up goroutine calls it after fetching the
+// tip once, so the tip parameter is what a block notification's one tip read
+// serves.
+//
 // address list not loaded yet — nothing could be attributed
-func collect() {
+func Update(tip int64) {
     if empty() { return }
     var ctx, cancel = context.WithTimeout(context.Background(), 10*time.Minute)
     defer cancel()
-    var tip, err = core.GetBlockCount(ctx)
-    if err != nil {
-        logging.Warn("miners stats: tip: %v", err)
-        return
-    }
     var last, ok = cursor()
     var from int64
     if !ok {

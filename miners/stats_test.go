@@ -154,8 +154,8 @@ func fixtureDB(t *testing.T) {
 func TestCollectStats(t *testing.T) {
     fixtureDB(t)
     setChunk(t, 1000)
-    node(t, chainFixture())
-    collect()
+    var src = node(t, chainFixture())
+    Update(src.tip)
     var a = statOf(t, "PoolA")
     if a.Blocks != 3 { t.Fatalf("PoolA blocks = %d, want 3", a.Blocks) }
     equalSat(t, "PoolA reward", a.Reward, 3*subsidy+25000000+5000000+30000000)
@@ -177,8 +177,8 @@ func TestCollectStats(t *testing.T) {
 func TestTopConsumption(t *testing.T) {
     fixtureDB(t)
     setChunk(t, 1000)
-    node(t, chainFixture())
-    collect()
+    var src = node(t, chainFixture())
+    Update(src.tip)
     var top = Top(10)
     if len(top) != 2 { t.Fatalf("top = %d entries, want 2", len(top)) }
     if top[0].Name != "PoolA" || top[1].Name != "PoolB" {
@@ -208,7 +208,7 @@ func TestCollectChunks(t *testing.T) {
         if h != 3 { return }
         flushed = statOf(t, "PoolA").Blocks == 1
     }
-    collect()
+    Update(src.tip)
     if !flushed { t.Fatal("first chunk was not flushed before the second was processed") }
     if !reflect.DeepEqual(src.fetched, []int64{1, 2, 3, 4, 5}) {
         t.Fatalf("fetched %v, want 1..5 in order", src.fetched)
@@ -228,12 +228,12 @@ func TestCollectResumes(t *testing.T) {
     fixtureDB(t)
     setChunk(t, 1000)
     var src = node(t, chainFixture())
-    collect()
+    Update(src.tip)
     src.fetched = nil
     src.tip = 7
     src.blocks[6] = mined{addresses: []string{"aB"}, fees: 20000000, difficulty: 1.4e14}
     src.blocks[7] = mined{addresses: []string{"aB"}, fees: 10000000, difficulty: 1.4e14}
-    collect()
+    Update(src.tip)
     if !reflect.DeepEqual(src.fetched, []int64{6, 7}) {
         t.Fatalf("second run fetched %v, want only 6 and 7", src.fetched)
     }
@@ -261,7 +261,7 @@ func TestCollectWaitsForAddresses(t *testing.T) {
     openTestDB(t)
     setChunk(t, 1000)
     var src = node(t, chainFixture())
-    collect()
+    Update(src.tip)
     if len(src.fetched) != 0 { t.Fatalf("fetched %v with no pool addresses loaded", src.fetched) }
     if _, ok := cursor(); ok { t.Fatal("cursor was stored with no pool addresses loaded") }
 }

@@ -176,9 +176,10 @@ func openIndex(path string, existing bool) error {
     return addrindex.Init(db)
 }
 
-// build catches the index up to the tip and exits, where the bot's StartBackfill
-// keeps polling. Both call addrindex.Build, so both chunk and advance the cursor
-// identically and either can resume what the other started.
+// build catches the index up to the tip and exits, where the bot's one index
+// catch-up goroutine keeps polling. Both drive the same addrindex package
+// against the same cursor, so both chunk and advance it identically and either
+// can resume what the other started.
 func build(opt *options) {
     if err := core.Init(opt.url, opt.user, opt.pass, opt.cookie); err != nil { logging.Fatal("RPC client: %v", err) }
     var ctx, cancel = context.WithTimeout(context.Background(), 30*time.Second)

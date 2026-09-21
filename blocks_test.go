@@ -177,10 +177,10 @@ func TestFormatBlock(t *testing.T) {
     }
 }
 
-// A block arriving over ZMQ is cached by the collector, which zmq.go wakes with
-// a signal rather than computing the block itself: it walks from the highest
-// block stored to the tip, so it stores the new block and any the bot was down
-// for, in height order.
+// A block arriving over ZMQ wakes the index catch-up goroutine, which zmq.go
+// signals rather than computing the block itself: the block cache walks from the
+// highest block stored to the tip it was handed, so it stores the new block and
+// any the bot was down for, in height order.
 //
 // one chunk, so the whole 0..100 catch-up is a single pass
 //
@@ -194,8 +194,6 @@ func TestBlockNotification(t *testing.T) {
     var fetched []int64
     var srv = coretest.Server(t, func(method string, params []interface{}) (interface{}, error) {
         switch method {
-        case "getblockcount":
-            return tip, nil
         case "getblockhash":
             fetched = append(fetched, int64(params[0].(float64)))
             return fmt.Sprintf("0000000000000000abc%v", params[0]), nil
@@ -211,7 +209,7 @@ func TestBlockNotification(t *testing.T) {
     var saved = blocksChunkSize
     blocksChunkSize = 1000
     defer func() { blocksChunkSize = saved }()
-    collectBlocks()
+    updateBlocks(int64(tip))
     if _, ok := loadBlock(100); !ok {
         t.Fatal("the tip was not cached by the catch-up a block notification runs")
     }
@@ -222,7 +220,7 @@ func TestBlockNotification(t *testing.T) {
         t.Error("the collector kept a place in cursors; its place is the blocks table")
     }
     tip, fetched = 102, nil
-    collectBlocks()
+    updateBlocks(int64(tip))
     if len(fetched) != 2 || fetched[0] != 101 || fetched[1] != 102 {
         t.Errorf("second pass fetched %v, want [101 102]", fetched)
     }
