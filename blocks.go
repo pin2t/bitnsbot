@@ -92,6 +92,19 @@ func loadBlock(height int64) (*blockInfo, bool) {
     return scanBlock(db.QueryRow("select "+blockColumns+" from blocks where height = ?", height))
 }
 
+// blockByTime is the highest block whose timestamp is at or before t. It is
+// what turns an address's last-activity time into the block the address
+// index scan can start from: every block the address appears in has a
+// timestamp at most its last activity, so nothing of its history sits above
+// that height.
+func blockByTime(t int64) (int64, bool) {
+    if db == nil { return 0, false }
+    var h int64
+    var err = db.QueryRow("select height from blocks where ts <= ? order by height desc limit 1", t).Scan(&h)
+    if err != nil { return 0, false }
+    return h, true
+}
+
 // subsidy returns the block reward in BTC for a height from the halving schedule
 // — 50 BTC, halving every 210000 blocks.
 // circulatingSupply is the total mined at this height, in satoshi, summed one

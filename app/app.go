@@ -584,6 +584,7 @@ type Addrs struct {
 type Tx struct {
     Time    string
     Amount  string
+    USD     string
     Id      string
     Inputs  []Part
     Outputs []Part
