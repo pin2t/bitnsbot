@@ -215,6 +215,24 @@
                 overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .more { padding: 11px 0 3px; text-align: center; font-size: 0.8125rem; color: var(--hint); }
 
+  /* An address page's transaction views, below the fields. The list is its own
+     scroller — the same shape as the block rows — so the sentinel below the
+     cards can append the next batch as the reader reaches it. */
+  .txlist { flex: 1; min-height: 0; overflow-y: auto; margin-top: 12px; }
+  .txcard { background: var(--card); border-radius: 14px; padding: 10px 12px; }
+  .txcard + .txcard { margin-top: 6px; }
+  .txcard .tchead { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+  .txcard .tctime { font-size: 0.875rem; font-weight: 600; }
+  .txcard .tcam { font-size: 0.875rem; font-weight: 600; text-align: right; }
+  .txcard .tcflow { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+                    gap: 8px; margin-top: 6px; align-items: start; }
+  .txcard .tcside { display: flex; flex-direction: column; gap: 2px; min-width: 0;
+                    font-size: 0.8125rem; overflow-wrap: anywhere; }
+  .txcard .tcins { text-align: left; }
+  .txcard .tcout { text-align: right; }
+  .txcard .tcarrow { align-self: center; color: var(--hint); font-size: 1.25rem; line-height: 1; }
+  .txcard .lnk { color: var(--link); cursor: pointer; }
+
   /* The Addresses tab's list picker, at the foot of the panel. min-width: 0 so a
      long translation shrinks its button instead of pushing the row out — a flex
      item will not otherwise go below its longest word. */
@@ -665,6 +683,9 @@
       {{- else}}{{.Value}}{{end}}</span></div>
   {{- end}}
   </div>
+  {{- if .Txs}}
+  {{template "txs" .Txs}}
+  {{- end}}
   {{- if .Chart}}
   {{template "chart" .Chart}}
   {{- end}}
@@ -672,3 +693,42 @@
   <div class="empty">{{if .Rows}}{{(index .Rows 0).Label}}{{else}}sin resultados{{end}}</div>
 {{- end}}
 </div>{{end}}
+
+{{/* An address page's transaction views, newest first. The first batch is
+     part of the details page itself; the sentinel below the cards appends the
+     next batch as the reader scrolls it into view — the same "intersect once"
+     the block and address lists use, and for the same reason: the list is its
+     own scroller. */}}
+{{define "txs"}}<div class="txlist">
+{{- if .Rows}}
+{{template "txrows" .}}
+{{- else}}
+  <div class="empty">aún no hay transacciones</div>
+{{- end}}
+</div>{{end}}
+
+{{define "txrows"}}
+{{- range .Rows}}
+  <div class="txcard">
+    <div class="tchead"><span class="tctime">{{.Time}}</span><span class="tcam">{{.Amount}}</span></div>
+    <div class="tcflow">
+      <div class="tcside tcins">
+      {{- range .Inputs}}
+        {{- if .Id}}<span class="lnk" hx-get="search?q={{.Id}}&from={{$.From}}" hx-target="#{{$.Slot}}" hx-swap="outerHTML">{{.Text}}</span>
+        {{- else}}<span>{{.Text}}</span>{{end}}
+      {{- end}}
+      </div>
+      <span class="tcarrow">→</span>
+      <div class="tcside tcout">
+      {{- range .Outputs}}
+        {{- if .Id}}<span class="lnk" hx-get="search?q={{.Id}}&from={{$.From}}" hx-target="#{{$.Slot}}" hx-swap="outerHTML">{{.Text}}</span>
+        {{- else}}<span>{{.Text}}</span>{{end}}
+      {{- end}}
+      </div>
+    </div>
+  </div>
+{{- end}}
+{{- if .More}}
+  <div class="more" hx-get="moreaddrtxs?a={{.Addr | urlquery}}&from={{.Next}}&origin={{$.From | urlquery}}"
+       hx-trigger="intersect once" hx-swap="outerHTML">cargando…</div>
+{{- end}}{{end}}
