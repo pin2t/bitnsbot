@@ -183,6 +183,12 @@ var blocksCache = lru.New[string, []byte](blocksCached)
 // these entries need.
 var addrsCache = lru.New[string, []byte](addrsCached)
 
+// txsCache holds an address page's transaction batches, keyed by URL like the
+// address list's. Nothing invalidates it by event: a new transaction for an
+// address arrives with a block, and the "blocks" notification already clears
+// this cache along with the details pages; cacheTTL covers the rest.
+var txsCache = lru.New[string, []byte](addrsCached)
+
 // invalidate drops one card's rendered HTML. Notify calls it *before* announcing
 // the event, so a page reacting immediately cannot be handed the very copy it
 // was told to replace.
@@ -198,6 +204,7 @@ func invalidate(event string) {
         for _, lang := range langs { cardsCache.Delete(key(lang, "/"+event)) }
     case "blocks":
         blocksCache.Clear()
+        txsCache.Clear()
         cardsCache.Clear()
     default: return
     }
@@ -210,6 +217,7 @@ func invalidateAll() {
     cardsCache.Clear()
     blocksCache.Clear()
     addrsCache.Clear()
+    txsCache.Clear()
     cacheMu.Unlock()
 }
 
@@ -473,6 +481,10 @@ type Info struct {
     // is filled in by the handler rather than by main's MinerInfo, since which
     // chart a page opens on is the app's choice.
     Chart *Chart
+    // Txs is the transaction list drawn under the rows, newest first — only an
+    // address page sets it. The first batch is part of the page itself; the
+    // sentinel below the views appends the next batches as the reader scrolls.
+    Txs *Txs
 }
 
 // Chart is the bar chart under a miner's details: one bar per day, week or month
@@ -565,6 +577,33 @@ type Addrs struct {
     More bool
 }
 
+// Tx is one transaction view on an address page: when it happened, how much it
+// moved in total, and the addresses on both sides. Inputs and Outputs are
+// Parts, so an address is tappable exactly like a row of the details page; a
+// part with no Id — a non-standard output, say — is plain text.
+type Tx struct {
+    Time    string
+    Amount  string
+    Id      string
+    Inputs  []Part
+    Outputs []Part
+}
+
+// Txs is one batch of an address's transaction views, newest first. Next is the
+// offset the sentinel below the views continues at, and More whether there are
+// older transactions to append. Slot and From are filled in by the handler, the
+// same two values the details page carries, so a tapped address inside a view
+// opens in the right container and Back still returns where the reader started.
+type Txs struct {
+    OK   bool
+    Addr string
+    Rows []Tx
+    Next int
+    More bool
+    Slot string
+    From string
+}
+
 // AddrRange is the window of an address list a request wants.
 type AddrRange struct {
     // Kind is which list: "active", "rich" or "abandoned". Anything else has
@@ -627,6 +666,7 @@ type Source interface {
     BlockInfo(lang string, height int64) Info
     TxInfo(lang, txid string) Info
     AddrInfo(lang, address string) Info
+    AddrTxs(lang, address string, from int) Txs
     MinerInfo(lang, name string) Info
     MinerChart(lang, name, data, period string) Chart
     Watches(chat int64) Watches
@@ -788,6 +828,7 @@ func details(w http.ResponseWriter, r *http.Request, slot, back, swap, kind, id 
     cached(blocksCache, w, r, func(lang string) []byte {
         var info = load(lang)
         info.Slot, info.Back, info.Swap, info.From = slot, back, swap, from
+        if info.Txs != nil { info.Txs.Slot, info.Txs.From = slot, from }
         if info.Kind == "" { info.Kind, info.Id = kind, id }
         if !info.OK || !watchable(info.Kind) { info.Kind, info.Id = "", "" }
         return render(lang, "details", info)
@@ -1053,6 +1094,21 @@ func Start(addr, token string, src Source) *http.Server {
         }
         cached(addrsCache, w, r, func(lang string) []byte {
             return render(lang, "addrrows", src.Addresses(lang, AddrRange{Kind: addrKindOf(r), From: from}))
+        })
+    }))
+    mux.HandleFunc("/moreaddrtxs", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
+        var a = strings.TrimSpace(r.URL.Query().Get("a"))
+        var from, err = strconv.Atoi(r.URL.Query().Get("from"))
+        if a == "" || err != nil || from <= 0 {
+            http.Error(w, "no such transactions", http.StatusBadRequest)
+            return
+        }
+        var to = r.URL.Query().Get("origin")
+        if !isPanel(to) { to = "addresses" }
+        cached(txsCache, w, r, func(lang string) []byte {
+            var txs = src.AddrTxs(lang, a, from)
+            txs.Slot, txs.From = addressSlot, to
+            return render(lang, "txrows", txs)
         })
     }))
     mux.HandleFunc("/watches", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {

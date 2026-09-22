@@ -364,6 +364,139 @@ func addressHistory(ctx context.Context, script []byte) (txs []*core.Transaction
     return txs, !capped && !failed && ctx.Err() == nil
 }
 
+// addrTxBatch is how many transaction views one batch holds: the first batch is
+// part of the address page, and each scroll appends another.
+const addrTxBatch = 5
+
+// addressTxViews resolves one batch of an address's transactions for the app's
+// transaction views, newest first. from is how many views the reader has
+// already been shown, so the batch is the addrTxBatch transactions before that
+// point in history. One touch more than the batch is fetched as a sentinel: if
+// it is there, there is a page after this one. ok is false when the address is
+// not valid or the lookup failed — a different answer from a valid address
+// with no transactions, which is an empty batch.
+func addressTxViews(ctx context.Context, lang, addr string, from int) (views []app.Tx, more, ok bool) {
+    var ai, err = core.ValidateAddress(ctx, addr)
+    if err != nil || !ai.IsValid { return nil, false, false }
+    var script, derr = hex.DecodeString(ai.ScriptPubKey)
+    if derr != nil { return nil, false, false }
+    var touches, _ = addrindex.LookupLast(script, from+addrTxBatch+1)
+    if len(touches) == 0 { return nil, false, true }
+    var window []addrindex.Touch
+    if len(touches) > from+addrTxBatch {
+        more = true
+        window = touches[1 : len(touches)-from]
+    } else {
+        if from >= len(touches) { return nil, false, true }
+        window = touches[:len(touches)-from]
+    }
+    for l, r := 0, len(window)-1; l < r; l, r = l+1, r-1 {
+        window[l], window[r] = window[r], window[l]
+    }
+    for _, tx := range resolveTouches(ctx, window) {
+        views = append(views, txView(tx, lang))
+    }
+    return views, more, true
+}
+
+// resolveTouches turns index touches into their transactions, newest first. The
+// touches are already a small newest-first window, so only those blocks are
+// read — getblock for each height, then getrawtransaction for each txid — the
+// same bounded fan-out the rest of the bot uses.
+func resolveTouches(ctx context.Context, touches []addrindex.Touch) []*core.Transaction {
+    if len(touches) == 0 { return nil }
+    var byHeight = map[uint32][]uint16{}
+    var heights []uint32
+    for _, t := range touches {
+        if _, seen := byHeight[t.Height]; !seen { heights = append(heights, t.Height) }
+        byHeight[t.Height] = append(byHeight[t.Height], t.TxIndex)
+    }
+    var mu sync.Mutex
+    var ids = map[uint32]map[uint16]string{}
+    var order []addrindex.Touch
+    var wg sync.WaitGroup
+    var sem = make(chan struct{}, 16)
+    for _, h := range heights {
+        wg.Add(1)
+        sem <- struct{}{}
+        go func(h uint32) {
+            defer wg.Done()
+            defer func() { <-sem }()
+            var hash, err = core.GetBlockHash(ctx, int64(h))
+            if err != nil { return }
+            var blk, berr = core.GetBlockTxids(ctx, hash)
+            if berr != nil { return }
+            mu.Lock()
+            for _, idx := range byHeight[h] {
+                if int(idx) < len(blk.Tx) {
+                    if ids[h] == nil { ids[h] = map[uint16]string{} }
+                    ids[h][idx] = blk.Tx[idx]
+                }
+            }
+            mu.Unlock()
+        }(h)
+    }
+    wg.Wait()
+    for _, t := range touches {
+        if ids[t.Height][t.TxIndex] != "" { order = append(order, t) }
+    }
+    if len(order) == 0 { return nil }
+    var found = map[string]*core.Transaction{}
+    for _, t := range order {
+        var id = ids[t.Height][t.TxIndex]
+        wg.Add(1)
+        sem <- struct{}{}
+        go func(id string) {
+            defer wg.Done()
+            defer func() { <-sem }()
+            var tx, err = core.GetRawTransaction(ctx, id)
+            if err != nil { return }
+            mu.Lock()
+            found[id] = tx
+            mu.Unlock()
+        }(id)
+    }
+    wg.Wait()
+    var out []*core.Transaction
+    for _, t := range order {
+        if tx := found[ids[t.Height][t.TxIndex]]; tx != nil { out = append(out, tx) }
+    }
+    return out
+}
+
+// txView builds one transaction view: when it happened, the total amount it
+// moved, and the addresses on both sides. The amount switches from sats to BTC
+// at the same threshold the rest of the app uses — 0.05 BTC.
+func txView(tx *core.Transaction, lang string) app.Tx {
+    var total int64
+    for _, v := range tx.Vout { total += toSat(v.Value) }
+    var v = app.Tx{Id: tx.Txid, Time: day(tx.Time, lang), Amount: amountText(total, lang)}
+    if len(tx.Vin) == 0 || tx.Vin[0].Coinbase == "" {
+        for _, in := range tx.Vin {
+            v.Inputs = append(v.Inputs, inputPart(in))
+        }
+    }
+    for _, out := range tx.Vout {
+        v.Outputs = append(v.Outputs, addrPart(out.ScriptPubKey.Address))
+    }
+    return v
+}
+
+// inputPart names one input's address the same way the rest of the bot does; a
+// coinbase has none, and a missing prevout reads as the non-standard
+// placeholder rather than as an address nothing can open.
+func inputPart(in core.Vin) app.Part {
+    if in.PrevOut == nil { return app.Part{Text: "(non-standard)"} }
+    return addrPart(in.PrevOut.ScriptPubKey.Address)
+}
+
+// addrPart is one address on either side of a transaction view: clickable when
+// it is an address, plain text when it is not.
+func addrPart(a string) app.Part {
+    if a == "" || a == "(non-standard)" { return app.Part{Text: "(non-standard)"} }
+    return app.Part{Text: short(a), Id: a}
+}
+
 // addressStats sums an address's on-chain history from its transactions: total
 // received (outputs paying it), total sent (inputs spending from it), fees on its
 // outgoing transactions, and the earliest/latest confirmed transaction times.

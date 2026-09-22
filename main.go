@@ -230,6 +230,24 @@ func (appSource) AddrInfo(lang, addr string) app.Info {
         return out
     }
     out.OK, out.Rows = true, appFields(pairs)
+    var txs = appSource{}.AddrTxs(lang, addr, 0)
+    if txs.OK { out.Txs = &txs }
+    return out
+}
+
+// AddrTxs backs the transaction views under the address page: one batch of
+// newest-first transactions, resolved from the address index the same way the
+// stats are, but windowed so scrolling fetches a few at a time. from is how
+// many views the reader has already been shown.
+func (appSource) AddrTxs(lang, addr string, from int) app.Txs {
+    var out = app.Txs{Addr: addr, Next: from}
+    if !core.Enabled() { return out }
+    var ctx, cancel = context.WithTimeout(context.Background(), 60*time.Second)
+    defer cancel()
+    var views, more, ok = addressTxViews(ctx, lang, addr, from)
+    if !ok { return out }
+    out.OK, out.Rows, out.More = true, views, more
+    out.Next = from + len(views)
     return out
 }
 

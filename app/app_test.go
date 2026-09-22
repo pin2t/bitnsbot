@@ -57,6 +57,8 @@ type fakeSource struct {
     // al is one ranked list per kind, already in the order Source would return
     // it, so the fake only has to page.
     al map[string][]Addr
+    // at is one address's transaction views, newest first, for the same reason.
+    at map[string][]Tx
 }
 
 func (s fakeSource) Fees() Fees       { return s.f }
@@ -136,8 +138,23 @@ func liveWatches() map[int64]Watches {
 }
 
 func (s fakeSource) AddrInfo(lang, addr string) Info {
-    if d, ok := s.a[addr]; ok { return d }
-    return Info{Title: addr}
+    var info Info
+    if d, ok := s.a[addr]; ok { info = d } else { info = Info{Title: addr} }
+    var txs = s.AddrTxs(lang, addr, 0)
+    if txs.OK { info.Txs = &txs }
+    return info
+}
+
+func (s fakeSource) AddrTxs(lang, addr string, from int) Txs {
+    var all = s.at[addr]
+    var out = Txs{Addr: addr, Next: from}
+    if from >= len(all) { return out }
+    var end = from + 5
+    if end > len(all) { end = len(all) }
+    out.Rows = append(out.Rows, all[from:end]...)
+    out.Next, out.More = end, end < len(all)
+    out.OK = len(out.Rows) > 0
+    return out
 }
 
 // liveTx and liveAddr mirror what main builds from txPairs and addrPairs.
@@ -174,6 +191,32 @@ func liveAddr() map[string]Info {
 
 const liveTxid = "32e43e6f2b1c4d5a8f9e0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b870b16"
 const liveAddress = "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh"
+
+// liveAddrTxs is one address's transaction views the way main builds them:
+// newest first, each with its time, total amount and the two clickable sides.
+// Seven views make two pages of the fake's batch of five, so the sentinel's
+// paging contract is what a test drives.
+func liveAddrTxs() map[string][]Tx {
+    var out []Tx
+    for i := 0; i < 7; i++ {
+        var tx = Tx{
+            Time:   "2 days ago",
+            Amount: "9 990 000 sats",
+            Id:     liveTxid,
+            Inputs: []Part{
+                {Text: "1A1zP1...DivfNa", Id: "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"},
+                {Text: "bc1qxy...dayd2g", Id: liveAddress},
+            },
+            Outputs: []Part{
+                {Text: "bc1qxy...dayd2g", Id: liveAddress},
+                {Text: "(non-standard)"},
+            },
+        }
+        if i == 6 { tx.Amount = "1.5 BTC" }
+        out = append(out, tx)
+    }
+    return map[string][]Tx{liveAddress: out}
+}
 
 
 // liveBlockInfo mirrors what main builds from blockPairs: capitalised fields,
@@ -1163,6 +1206,68 @@ func TestAddressDetailsRender(t *testing.T) {
     var head = body[strings.Index(body, `class="head"`):strings.Index(body, `class="fields"`)]
     if !strings.Contains(head, `hx-get="addresses?kind=active&amp;to=addresses"`) {
         t.Errorf("Back should return to the Addresses tab: %s", head)
+    }
+}
+
+// An address page lists its transactions below the fields, newest first: each
+// card carries the date and the total amount on its top row, the input
+// addresses on the left, the output addresses on the right, and an arrow
+// between them. Both sides are tappable, and the first batch arrives as part
+// of the page.
+func TestAddressDetailsShowsTxViews(t *testing.T) {
+    var h = handler(t, "TESTTOKEN", fakeSource{a: liveAddr(), at: liveAddrTxs()})
+    var body = get(h, "/address?a="+liveAddress, freshInitData("TESTTOKEN")).Body.String()
+    if !strings.Contains(body, `<div class="txlist">`) {
+        t.Error("an address page should carry its transaction list")
+    }
+    for _, want := range []string{`<span class="tctime">2 days ago</span>`,
+        `<span class="tcam">9 990 000 sats</span>`, `<span class="tcarrow">→</span>`,
+        `hx-get="search?q=1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa&from=addresses"`,
+        `hx-get="search?q=bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh&from=addresses"`,
+        `<span>(non-standard)</span>`,
+        `hx-get="moreaddrtxs?a=bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh&from=5&origin=addresses"`} {
+        if !strings.Contains(body, want) {
+            t.Errorf("transaction views are missing %q", want)
+        }
+    }
+    if n := strings.Count(body, `class="txcard"`); n != 5 {
+        t.Errorf("first batch = %d cards, want 5", n)
+    }
+    if !strings.Contains(body, `<h1>bc1qxy...dayd2g</h1>`) {
+        t.Error("the address title must still be there")
+    }
+}
+
+// The sentinel below the views appends the next batch as the reader reaches
+// it, and only a positive offset is a valid one — from=0 would append the
+// first batch underneath itself.
+func TestAddressTxViewsInfiniteScroll(t *testing.T) {
+    var h = handler(t, "TESTTOKEN", fakeSource{a: liveAddr(), at: liveAddrTxs()})
+    var data = freshInitData("TESTTOKEN")
+    for _, p := range []string{"/moreaddrtxs?a=" + liveAddress + "&from=0",
+        "/moreaddrtxs?a=" + liveAddress, "/moreaddrtxs?from=5", "/moreaddrtxs?a=&from=5"} {
+        if w := get(h, p, data); w.Code != 400 {
+            t.Errorf("%s = %d, want 400", p, w.Code)
+        }
+    }
+    var body = get(h, "/moreaddrtxs?a="+liveAddress+"&from=5", data).Body.String()
+    if n := strings.Count(body, `class="txcard"`); n != 2 {
+        t.Errorf("second batch = %d cards, want 2", n)
+    }
+    if !strings.Contains(body, `1.5 BTC`) {
+        t.Error("the last of seven views should be in the second batch")
+    }
+    if strings.Contains(body, "moreaddrtxs") {
+        t.Error("nothing after the seventh view, so there should be no sentinel")
+    }
+}
+
+// Transaction batches are per-address data, so they need a signature like the
+// rest of the data endpoints.
+func TestAddressTxViewsNeedInitData(t *testing.T) {
+    var h = handler(t, "TESTTOKEN", fakeSource{at: liveAddrTxs()})
+    if w := get(h, "/moreaddrtxs?a="+liveAddress+"&from=5", ""); w.Code != 401 {
+        t.Errorf("unauthenticated transaction batch = %d, want 401", w.Code)
     }
 }
 
