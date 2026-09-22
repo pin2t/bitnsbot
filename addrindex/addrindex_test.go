@@ -84,10 +84,34 @@ func TestLookupCaps(t *testing.T) {
     }
 }
 
-// Sharding puts every address whose hash starts with the same two bytes in one
-// key, so a lookup must filter by the rest of the prefix. This is the failure
-// mode the layout introduces, so pin it with two scripts that genuinely collide
-// on their shard.
+// LookupLast is the newest-first counterpart of Lookup, and the paging the
+// address page's transaction views rely on: it returns the most recent touches
+// oldest-first among themselves, and capped tells whether older ones remain.
+func TestLookupLast(t *testing.T) {
+    openTestDB(t)
+    var script = []byte("0014lastpages")
+    var prefix = string(Prefix(script))
+    for h := uint32(0); h < 12; h++ {
+        if err := merge(map[string][]Touch{prefix: {{Height: h, TxIndex: 1}}}, int(h)); err != nil {
+            t.Fatalf("merge at height %d: %v", h, err)
+        }
+    }
+    var got, capped = LookupLast(script, 5)
+    if !capped { t.Fatal("five of twelve: older touches remain, so capped should be true") }
+    if len(got) != 5 { t.Fatalf("touches = %d, want 5", len(got)) }
+    for i, want := range []uint32{7, 8, 9, 10, 11} {
+        if got[i].Height != want {
+            t.Fatalf("touches = %v, want heights 7..11", got)
+        }
+    }
+    var all, allCapped = LookupLast(script, 100)
+    if allCapped || len(all) != 12 {
+        t.Fatalf("full history = %d touches (capped=%v), want all 12", len(all), allCapped)
+    }
+    if all[0].Height != 0 || all[11].Height != 11 {
+        t.Fatalf("full history order = %v, want 0..11", all)
+    }
+}
 func TestSharedShardIsolation(t *testing.T) {
     openTestDB(t)
     var a, b []byte

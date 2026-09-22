@@ -52,6 +52,19 @@ func (s *countingSource) AddrInfo(lang, addr string) Info {
     return Info{OK: true, Title: "Address " + addr, Rows: []Field{{Label: "Type", Value: "segwit (bech32)"}}}
 }
 
+func (s *countingSource) AddrTxs(lang, addr string, from int) Txs {
+    s.hit("addrtxs:" + strconv.Itoa(from))
+    var all = liveAddrTxs()[liveAddress]
+    var out = Txs{Addr: addr, Next: from}
+    if from >= len(all) { return out }
+    var end = from + 5
+    if end > len(all) { end = len(all) }
+    out.Rows = append(out.Rows, all[from:end]...)
+    out.Next, out.More = end, end < len(all)
+    out.OK = len(out.Rows) > 0
+    return out
+}
+
 func (s *countingSource) MinerInfo(lang, name string) Info {
     s.hit("minerinfo")
     return Info{OK: true, Title: name, Rows: []Field{{Label: "Blocks mined", Value: "22 blocks"}}}

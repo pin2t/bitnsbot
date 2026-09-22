@@ -196,6 +196,49 @@ func Lookup(script []byte, limit int) (touches []Touch, capped bool) {
     return touches, capped
 }
 
+// LookupLast returns up to n of an address's most recent touches, oldest first
+// among themselves. The shards are scanned backwards — newest ranges first —
+// and the scan stops once n+1 touches are collected, so a very active address
+// does not force reading its whole history. capped is true when there are older
+// touches behind the ones returned.
+func LookupLast(script []byte, n int) (touches []Touch, capped bool) {
+    if db == nil { return nil, false }
+    var prefix = Prefix(script)
+    var remainder = prefix[shardLen:prefixLen]
+    var rows, err = db.Query("select shard, data from addrindex where shard >= ? and shard < ? order by shard desc",
+        key(prefix, 0), key(prefix, 0)+1<<32)
+    if err != nil {
+        logging.Warn("addrindex: lookup last: %v", err)
+        return nil, false
+    }
+    defer rows.Close()
+    for rows.Next() {
+        var k int64
+        var v []byte
+        if err := rows.Scan(&k, &v); err != nil { return touches, capped }
+        var base = uint32(k) * rangeBlocks
+        for i := len(v) - entryLen; i >= 0; i -= entryLen {
+            if !bytes.Equal(v[i:i+remainderLen], remainder) { continue }
+            touches = append(touches, Touch{
+                Height:  base + uint32(binary.BigEndian.Uint16(v[i+remainderLen:])),
+                TxIndex: binary.BigEndian.Uint16(v[i+remainderLen+2:]),
+            })
+            if len(touches) > n {
+                reverseTouches(touches[:n])
+                return touches[:n], true
+            }
+        }
+    }
+    reverseTouches(touches)
+    return touches, false
+}
+
+func reverseTouches(t []Touch) {
+    for l, r := 0, len(t)-1; l < r; l, r = l+1, r-1 {
+        t[l], t[r] = t[r], t[l]
+    }
+}
+
 // Cursor is where the build has got to.
 func Cursor() (h int, ok bool) {
     var v, found = cursors.Get(cursors.AddrIndex)
