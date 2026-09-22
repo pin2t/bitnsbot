@@ -202,6 +202,7 @@ func liveAddrTxs() map[string][]Tx {
         var tx = Tx{
             Time:   "2 days ago",
             Amount: "9 990 000 sats",
+            USD:    "≈ $6,614",
             Id:     liveTxid,
             Inputs: []Part{
                 {Text: "1A1zP1...DivfNa", Id: "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"},
@@ -212,7 +213,7 @@ func liveAddrTxs() map[string][]Tx {
                 {Text: "(non-standard)"},
             },
         }
-        if i == 6 { tx.Amount = "1.5 BTC" }
+        if i == 6 { tx.Amount, tx.USD = "1.5 BTC", "≈ $99,300" }
         out = append(out, tx)
     }
     return map[string][]Tx{liveAddress: out}
@@ -1210,18 +1211,23 @@ func TestAddressDetailsRender(t *testing.T) {
 }
 
 // An address page lists its transactions below the fields, newest first: each
-// card carries the date and the total amount on its top row, the input
-// addresses on the left, the output addresses on the right, and an arrow
-// between them. Both sides are tappable, and the first batch arrives as part
-// of the page.
+// card carries the date and the total amount on its top row with the dollar
+// value under it, the input addresses on the left, the output addresses on the
+// right, and an arrow between them. Both sides are tappable, and the first
+// batch arrives as part of the page. The fields and the list share the page's
+// one scroller.
 func TestAddressDetailsShowsTxViews(t *testing.T) {
     var h = handler(t, "TESTTOKEN", fakeSource{a: liveAddr(), at: liveAddrTxs()})
     var body = get(h, "/address?a="+liveAddress, freshInitData("TESTTOKEN")).Body.String()
+    if !strings.Contains(body, `<div class="scroll">`) {
+        t.Error("an address page should scroll as one, not per section")
+    }
     if !strings.Contains(body, `<div class="txlist">`) {
         t.Error("an address page should carry its transaction list")
     }
     for _, want := range []string{`<span class="tctime">2 days ago</span>`,
-        `<span class="tcam">9 990 000 sats</span>`, `<span class="tcarrow">→</span>`,
+        `<span class="tamt">9 990 000 sats</span>`, `<span class="tusd">≈ $6,614</span>`,
+        `<span class="tcarrow">→</span>`,
         `hx-get="search?q=1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa&from=addresses"`,
         `hx-get="search?q=bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh&from=addresses"`,
         `<span>(non-standard)</span>`,
@@ -1235,6 +1241,23 @@ func TestAddressDetailsShowsTxViews(t *testing.T) {
     }
     if !strings.Contains(body, `<h1>bc1qxy...dayd2g</h1>`) {
         t.Error("the address title must still be there")
+    }
+}
+
+// The fields and the transaction list sit inside the page's single scroller,
+// in that order, so a long list scrolls the whole page rather than its own
+// box.
+func TestAddressPageScrollerHoldsFieldsAndTxs(t *testing.T) {
+    var h = handler(t, "TESTTOKEN", fakeSource{a: liveAddr(), at: liveAddrTxs()})
+    var body = get(h, "/address?a="+liveAddress, freshInitData("TESTTOKEN")).Body.String()
+    var scroll = strings.Index(body, `<div class="scroll">`)
+    var fields = strings.Index(body, `class="fields"`)
+    var txs = strings.Index(body, `class="txlist"`)
+    if scroll < 0 || fields < 0 || txs < 0 {
+        t.Fatal("the page is missing its scroller, fields or transaction list")
+    }
+    if !(scroll < fields && fields < txs) {
+        t.Errorf("fields and transactions should sit inside the page's one scroller: %d, %d, %d", scroll, fields, txs)
     }
 }
 

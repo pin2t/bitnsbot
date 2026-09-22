@@ -13,7 +13,9 @@ import "time"
 import "bitnsbot/addrindex"
 import "bitnsbot/addrstat"
 import "bitnsbot/core"
+import "bitnsbot/cursors"
 import "bitnsbot/logging"
+import "bitnsbot/rates"
 
 var pendingInfoMu sync.Mutex
 var pendingInfoChats = make(map[int64]bool)
@@ -371,32 +373,47 @@ const addrTxBatch = 5
 // addressTxViews resolves one batch of an address's transactions for the app's
 // transaction views, newest first. from is how many views the reader has
 // already been shown, so the batch is the addrTxBatch transactions before that
-// point in history. One touch more than the batch is fetched as a sentinel: if
-// it is there, there is a page after this one. ok is false when the address is
-// not valid or the lookup failed — a different answer from a valid address
-// with no transactions, which is an empty batch.
+// point in history. The scan starts at the block the address last appeared in
+// — its statistics record's last-activity time, turned into a height through
+// the blocks table — rather than at the tip, and reads the index backwards from
+// there. One touch more than the batch is fetched as a sentinel: if it is
+// there, there is a page after this one. ok is false when the address is not
+// valid or the lookup failed — a different answer from a valid address with no
+// transactions, which is an empty batch.
 func addressTxViews(ctx context.Context, lang, addr string, from int) (views []app.Tx, more, ok bool) {
     var ai, err = core.ValidateAddress(ctx, addr)
     if err != nil || !ai.IsValid { return nil, false, false }
     var script, derr = hex.DecodeString(ai.ScriptPubKey)
     if derr != nil { return nil, false, false }
-    var touches, _ = addrindex.LookupLast(script, from+addrTxBatch+1)
+    var touches, _ = addrindex.LookupFrom(script, txStartHeight(addr), from+addrTxBatch+1)
     if len(touches) == 0 { return nil, false, true }
     var window []addrindex.Touch
     if len(touches) > from+addrTxBatch {
         more = true
-        window = touches[1 : len(touches)-from]
+        window = touches[from : from+addrTxBatch]
     } else {
         if from >= len(touches) { return nil, false, true }
-        window = touches[:len(touches)-from]
-    }
-    for l, r := 0, len(window)-1; l < r; l, r = l+1, r-1 {
-        window[l], window[r] = window[r], window[l]
+        window = touches[from:]
     }
     for _, tx := range resolveTouches(ctx, window) {
         views = append(views, txView(tx, lang))
     }
     return views, more, true
+}
+
+// txStartHeight is where the address index scan for an address begins: the
+// block holding its last activity, read from its statistics record. A record
+// is only trusted when the statistics scan has kept up with the index —
+// otherwise the newest indexed touches are not in it yet, and the scan starts
+// from the tip instead.
+func txStartHeight(addr string) uint32 {
+    var s, ok = addrstat.Get(addr)
+    if !ok || s.Last <= 0 { return 0 }
+    var statCursor, statOK = cursors.Get(cursors.AddrStat)
+    var indexCursor, indexOK = addrindex.Cursor()
+    if !statOK || !indexOK || statCursor < int64(indexCursor) { return 0 }
+    if h, ok := blockByTime(s.Last); ok && h > 0 { return uint32(h) }
+    return 0
 }
 
 // resolveTouches turns index touches into their transactions, newest first. The
@@ -466,11 +483,18 @@ func resolveTouches(ctx context.Context, touches []addrindex.Touch) []*core.Tran
 
 // txView builds one transaction view: when it happened, the total amount it
 // moved, and the addresses on both sides. The amount switches from sats to BTC
-// at the same threshold the rest of the app uses — 0.05 BTC.
+// at the same threshold the rest of the app uses — 0.05 BTC — and the dollar
+// value under it is the same historical approximation amountLine prints, at
+// the rate nearest the transaction's own time.
 func txView(tx *core.Transaction, lang string) app.Tx {
     var total int64
     for _, v := range tx.Vout { total += toSat(v.Value) }
     var v = app.Tx{Id: tx.Txid, Time: day(tx.Time, lang), Amount: amountText(total, lang)}
+    var rate float64
+    var rateOK bool
+    if tx.Time > 0 { rate, rateOK = rates.At(time.Unix(tx.Time, 0)) }
+    if !rateOK { rate, rateOK = rates.Last() }
+    if rateOK { v.USD = "≈ " + usd(total, rate) }
     if len(tx.Vin) == 0 || tx.Vin[0].Coinbase == "" {
         for _, in := range tx.Vin {
             v.Inputs = append(v.Inputs, inputPart(in))

@@ -84,10 +84,12 @@ func TestLookupCaps(t *testing.T) {
     }
 }
 
-// LookupLast is the newest-first counterpart of Lookup, and the paging the
+// LookupFrom is the newest-first counterpart of Lookup, and the paging the
 // address page's transaction views rely on: it returns the most recent touches
-// oldest-first among themselves, and capped tells whether older ones remain.
-func TestLookupLast(t *testing.T) {
+// newest first without reversing the whole list, and capped tells whether
+// older ones remain. The height bound is where the scan starts from — the
+// caller's way to skip the ranges above an address's last activity.
+func TestLookupFrom(t *testing.T) {
     openTestDB(t)
     var script = []byte("0014lastpages")
     var prefix = string(Prefix(script))
@@ -96,20 +98,29 @@ func TestLookupLast(t *testing.T) {
             t.Fatalf("merge at height %d: %v", h, err)
         }
     }
-    var got, capped = LookupLast(script, 5)
+    var got, capped = LookupFrom(script, 0, 5)
     if !capped { t.Fatal("five of twelve: older touches remain, so capped should be true") }
     if len(got) != 5 { t.Fatalf("touches = %d, want 5", len(got)) }
-    for i, want := range []uint32{7, 8, 9, 10, 11} {
+    for i, want := range []uint32{11, 10, 9, 8, 7} {
         if got[i].Height != want {
-            t.Fatalf("touches = %v, want heights 7..11", got)
+            t.Fatalf("touches = %v, want heights 11..7 newest first", got)
         }
     }
-    var all, allCapped = LookupLast(script, 100)
+    var bounded, boundedCapped = LookupFrom(script, 8, 5)
+    if !boundedCapped || len(bounded) != 5 {
+        t.Fatalf("history at and below 8 = %d touches (capped=%v), want the newest 5 of 0..8 with more behind", len(bounded), boundedCapped)
+    }
+    for i, want := range []uint32{8, 7, 6, 5, 4} {
+        if bounded[i].Height != want {
+            t.Fatalf("bounded touches = %v, want heights 8..4 newest first", bounded)
+        }
+    }
+    var all, allCapped = LookupFrom(script, 0, 100)
     if allCapped || len(all) != 12 {
         t.Fatalf("full history = %d touches (capped=%v), want all 12", len(all), allCapped)
     }
-    if all[0].Height != 0 || all[11].Height != 11 {
-        t.Fatalf("full history order = %v, want 0..11", all)
+    if all[0].Height != 11 || all[11].Height != 0 {
+        t.Fatalf("full history order = %v, want 11..0", all)
     }
 }
 func TestSharedShardIsolation(t *testing.T) {
