@@ -490,7 +490,7 @@ func resolveTouches(ctx context.Context, touches []addrindex.Touch) []*core.Tran
 func txView(tx *core.Transaction, lang string) app.Tx {
     var total int64
     for _, v := range tx.Vout { total += toSat(v.Value) }
-    var v = app.Tx{Id: tx.Txid, Time: day(tx.Time, lang), Amount: amountText(total, lang)}
+    var v = app.Tx{Id: tx.Txid, Short: short(tx.Txid), Time: day(tx.Time, lang), Amount: amountText(total, lang)}
     var rate float64
     var rateOK bool
     if tx.Time > 0 { rate, rateOK = rates.At(time.Unix(tx.Time, 0)) }
