@@ -583,14 +583,17 @@ type Addrs struct {
 }
 
 // Tx is one transaction view on an address page: when it happened, how much it
-// moved in total, and the addresses on both sides. Inputs and Outputs are
-// Parts, so an address is tappable exactly like a row of the details page; a
-// part with no Id — a non-standard output, say — is plain text.
+// moved in total, and the addresses on both sides. Short is the shortened txid
+// the card's title row shows, a tap on it opens the transaction's own page —
+// the card's two sides are Parts, so an address is tappable exactly like a row
+// of the details page; a part with no Id — a non-standard output, say — is
+// plain text.
 type Tx struct {
     Time    string
     Amount  string
     USD     string
     Id      string
+    Short   string
     Inputs  []Part
     Outputs []Part
 }

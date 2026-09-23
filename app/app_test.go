@@ -212,6 +212,7 @@ func liveAddrTxs() map[string][]Tx {
             Amount: "9 990 000 sats",
             USD:    "≈ $6,614",
             Id:     liveTxid,
+            Short:  "32e43e...870b16",
             Inputs: []Part{
                 {Text: "1A1zP1...DivfNa", Id: "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"},
                 {Text: "bc1qxy...dayd2g", Id: liveAddress},
@@ -1228,11 +1229,11 @@ func TestAddressDetailsRender(t *testing.T) {
 }
 
 // An address page lists its transactions below the fields, newest first: each
-// card carries the date and the total amount on its top row with the dollar
-// value under it, the input addresses on the left, the output addresses on the
-// right, and an arrow between them. Both sides are tappable, and the first
-// batch arrives as part of the page. The fields and the list share the page's
-// one scroller.
+// card carries the date, the tappable short txid and the total amount on its
+// top row with the dollar value under it, the input addresses on the left, the
+// output addresses on the right, and an arrow between them. Both sides are
+// tappable, and the first batch arrives as part of the page. The fields and
+// the list share the page's one scroller.
 func TestAddressDetailsShowsTxViews(t *testing.T) {
     var h = handler(t, "TESTTOKEN", fakeSource{a: liveAddr(), at: liveAddrTxs()})
     var body = get(h, "/address?a="+liveAddress, freshInitData("TESTTOKEN")).Body.String()
@@ -1243,6 +1244,7 @@ func TestAddressDetailsShowsTxViews(t *testing.T) {
         t.Error("an address page should carry its transaction list")
     }
     for _, want := range []string{`<span class="tctime">2 days ago</span>`,
+        `<span class="tcid lnk" hx-get="tx?id=` + liveTxid + `&from=addresses" hx-target="#addrpanel" hx-swap="outerHTML">32e43e...870b16</span>`,
         `<span class="tamt">9 990 000 sats</span>`, `<span class="tusd">≈ $6,614</span>`,
         `<span class="tcarrow">→</span>`,
         `hx-get="search?q=1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa&from=addresses"`,
