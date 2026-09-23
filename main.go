@@ -198,7 +198,7 @@ func (appSource) TxInfo(lang, txid string) app.Info {
     if header, err := core.GetBlockHeader(ctx, txid); err == nil {
         return appSource{}.BlockInfo(lang, header.Height)
     }
-    var pairs, ids, canonical, ok = txPairs(ctx, lang, txid)
+    var pairs, ids, canonical, confirmed, ok = txPairs(ctx, lang, txid)
     if !ok { return out }
     var links []linked
     for _, id := range ids {
@@ -208,7 +208,7 @@ func (appSource) TxInfo(lang, txid string) app.Info {
         }
         links = append(links, linked{short(id), id})
     }
-    return app.Info{OK: true, Title: short(canonical), Rows: linkFields(pairs, links)}
+    return app.Info{OK: true, Title: short(canonical), Confirmed: confirmed, Rows: linkFields(pairs, links)}
 }
 
 // AddrInfo backs the address details page. An input that is not an address at

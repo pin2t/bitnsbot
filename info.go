@@ -55,20 +55,21 @@ func info(bot *bot, chat int64, arg string) {
 }
 
 // txPairs builds the lines a transaction is described by, plus the ids the bot
-// turns into buttons and the node's own spelling of the txid. Shared with the
-// Mini App's transaction page, so the two cannot drift apart.
+// turns into buttons, the node's own spelling of the txid, and whether the
+// transaction is confirmed. Shared with the Mini App's transaction page, so the
+// two cannot drift apart.
 //
 // only the ids the text actually shows get buttons — compactAddrs truncates
 // to shownAddrs with a trailing "...", and a button for something the reader
 // cannot see in the message would be a puzzle rather than a shortcut
-func txPairs(ctx context.Context, lang string, txid string) ([][2]string, []string, string, bool) {
+func txPairs(ctx context.Context, lang string, txid string) ([][2]string, []string, string, bool, bool) {
     var estimates = map[string]string{
         confETAFast:   i18nl(lang).String("~10-20 min"),
         confETAMedium: i18nl(lang).String("~1 hour"),
         confETASlow:   i18nl(lang).String("2+ hours"),
     }
     var tx, err = core.GetRawTransaction(ctx, txid)
-    if err != nil { return nil, nil, "", false }
+    if err != nil { return nil, nil, "", false, false }
     var total int64
     for _, vout := range tx.Vout { total += toSat(vout.Value) }
     var coinbase = len(tx.Vin) > 0 && tx.Vin[0].Coinbase != ""
@@ -116,11 +117,11 @@ func txPairs(ctx context.Context, lang string, txid string) ([][2]string, []stri
     if tx.BlockHash != "" { ids = append(ids, tx.BlockHash) }
     ids = append(ids, firstN(inputs, shownAddrs)...)
     ids = append(ids, firstN(outputAddrs(tx), shownAddrs)...)
-    return pairs, ids, tx.Txid, true
+    return pairs, ids, tx.Txid, tx.Confirmations > 0, true
 }
 
 func transaction(ctx context.Context, bot *bot, chat int64, txid string) {
-    var pairs, ids, canonical, ok = txPairs(ctx, chatLang(chat), txid)
+    var pairs, ids, canonical, _, ok = txPairs(ctx, chatLang(chat), txid)
     if !ok {
         send(bot, chat, i18n(chat).Sprintf("Couldn't find transaction %s", short(txid)), nil)
         return
