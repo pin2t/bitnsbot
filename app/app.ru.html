@@ -212,6 +212,20 @@
                   color: var(--fg); background: var(--card);
                   border: 1px solid var(--line); border-radius: 10px; cursor: pointer; }
 
+  /* The copy icon after a transaction or address title. The generic head-button
+     rule above gives every head button a card background and border; the icon
+     sits inside the title, so it only needs its own hover colour. */
+  .det .head .copybtn { padding: 2px; margin-left: 6px; font-size: 1rem;
+                        vertical-align: middle; color: var(--hint);
+                        background: none; border: 0; border-radius: 6px; cursor: pointer; }
+  .det .head .copybtn svg { display: block; width: 15px; height: 15px; fill: none;
+                            stroke: currentColor; stroke-width: 2;
+                            stroke-linecap: round; stroke-linejoin: round; }
+  .det .head .copybtn .ok { display: none; }
+  .det .head .copybtn.copied { color: #1a9e4b; }
+  .det .head .copybtn.copied .icon { display: none; }
+  .det .head .copybtn.copied .ok { display: block; }
+
   .wsec { font-size: 0.875rem; font-weight: 600; color: var(--hint); margin: 12px 0 6px; }
   .wsec:first-child { margin-top: 0; }
   .blk .alias, .blk .amt { flex: 1; min-width: 0; font-size: 0.8125rem; text-align: right; color: var(--hint);
@@ -416,6 +430,38 @@
   document.body.addEventListener("click", function(e) {
     var b = e.target.closest && e.target.closest(".edit");
     if (b) { openAlias(b.dataset.kind, b.dataset.id, b.dataset.alias, true); }
+  });
+  // The copy icon after a transaction or address title copies the full id.
+  // Bound on the body because the details page arrives by swap, and the icon
+  // flips to a check for a moment so the reader can see the copy landed.
+  function legacyCopy(text) {
+    var ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    var ok = false;
+    try { ok = document.execCommand("copy"); } catch (err) {}
+    document.body.removeChild(ta);
+    return ok;
+  }
+  function copyText(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      return navigator.clipboard.writeText(text).catch(function() {
+        return legacyCopy(text) ? Promise.resolve() : Promise.reject(new Error("copy failed"));
+      });
+    }
+    return legacyCopy(text) ? Promise.resolve() : Promise.reject(new Error("copy failed"));
+  }
+  document.body.addEventListener("click", function(e) {
+    var b = e.target.closest && e.target.closest(".copybtn");
+    if (!b || !b.dataset.copy) { return; }
+    copyText(b.dataset.copy).then(function() {
+      b.classList.add("copied");
+      setTimeout(function() { b.classList.remove("copied"); }, 1200);
+    }, function() {});
   });
   document.body.addEventListener("htmx:afterRequest", function(e) {
     if (e.detail.elt && e.detail.elt.closest && e.detail.elt.closest("#aliasdlg")) { closeAlias(); }
@@ -672,10 +718,10 @@
 {{define "details"}}<div id="{{.Slot}}" class="blocklist det">
   <div class="head">
     <button hx-get="{{.Back}}" hx-target="#{{.Slot}}" hx-swap="{{.Swap}}">&lt; Назад</button>
-    <h1>{{.Title}}</h1>
+    <h1>{{.Title}}{{if .Kind}}<button class="copybtn" type="button" data-copy="{{.Id}}" title="Копировать"><svg class="icon" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg><svg class="ok" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg></button>{{end}}</h1>
     <span class="side">
       <button class="ghost" tabindex="-1" aria-hidden="true">&lt; Назад</button>
-      {{- if .Kind}}
+      {{- if and .Kind (not .Confirmed)}}
       <span id="watchbtn" hx-get="watch?kind={{.Kind}}&id={{.Id}}" hx-trigger="load" hx-swap="outerHTML"></span>
       {{- end}}
     </span>

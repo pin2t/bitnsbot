@@ -158,20 +158,27 @@ func (s fakeSource) AddrTxs(lang, addr string, from int) Txs {
 }
 
 // liveTx and liveAddr mirror what main builds from txPairs and addrPairs.
+// liveTxid is a settled transaction, so its page carries Confirmed and no
+// watch button; livePendingTxid is the mempool case that keeps the button.
 func liveTx() map[string]Info {
-    return map[string]Info{liveTxid: {OK: true, Title: "32e43e...870b16", Rows: []Field{
-        {Label: "Confirmations", Value: "412 (block #963268)", Parts: []Part{
-            {Text: "412 (block "}, {Text: "#963268", Id: "963268"}, {Text: ")"}}},
-        {Label: "Amount", Value: "9 990 000 sats (≈ $6,614)"},
-        {Label: "Fee", Value: "1 410 sats (10.0 sat/vB)"},
-        {Label: "Size", Value: "223 B (141 vB)"},
-        {Label: "Inputs", Value: "bc1qxy...dayd2g", Parts: []Part{
-            {Text: "bc1qxy...dayd2g", Id: liveAddress}}},
-        {Label: "Outputs", Value: "1A1zP1...DivfNa, bc1qxy...dayd2g", Parts: []Part{
-            {Text: "1A1zP1...DivfNa", Id: "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"},
-            {Text: ", "},
-            {Text: "bc1qxy...dayd2g", Id: liveAddress}}},
-    }}}
+    return map[string]Info{
+        liveTxid: {OK: true, Confirmed: true, Title: "32e43e...870b16", Rows: []Field{
+            {Label: "Confirmations", Value: "412 (block #963268)", Parts: []Part{
+                {Text: "412 (block "}, {Text: "#963268", Id: "963268"}, {Text: ")"}}},
+            {Label: "Amount", Value: "9 990 000 sats (≈ $6,614)"},
+            {Label: "Fee", Value: "1 410 sats (10.0 sat/vB)"},
+            {Label: "Size", Value: "223 B (141 vB)"},
+            {Label: "Inputs", Value: "bc1qxy...dayd2g", Parts: []Part{
+                {Text: "bc1qxy...dayd2g", Id: liveAddress}}},
+            {Label: "Outputs", Value: "1A1zP1...DivfNa, bc1qxy...dayd2g", Parts: []Part{
+                {Text: "1A1zP1...DivfNa", Id: "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"},
+                {Text: ", "},
+                {Text: "bc1qxy...dayd2g", Id: liveAddress}}},
+        }},
+        livePendingTxid: {OK: true, Title: "cafeba...febabe", Rows: []Field{
+            {Label: "Confirmations", Value: "none (confirms in ~10-20 min)"},
+        }},
+    }
 }
 
 func liveAddr() map[string]Info {
@@ -190,6 +197,7 @@ func liveAddr() map[string]Info {
 }
 
 const liveTxid = "32e43e6f2b1c4d5a8f9e0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b870b16"
+const livePendingTxid = "cafebabecafebabecafebabecafebabecafebabecafebabecafebabecafebabe"
 const liveAddress = "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh"
 
 // liveAddrTxs is one address's transaction views the way main builds them:
@@ -1153,8 +1161,14 @@ func TestSearchClassifiesQuery(t *testing.T) {
 func TestTxDetailsRender(t *testing.T) {
     var h = handler(t, "TESTTOKEN", fakeSource{b: liveBlocks(), t: liveTx()})
     var body = get(h, "/tx?id="+liveTxid, freshInitData("TESTTOKEN")).Body.String()
-    if !strings.Contains(body, "<h1>32e43e...870b16</h1>") {
-        t.Errorf("missing the short-txid title: %s", body)
+    if !strings.Contains(body, `<h1>32e43e...870b16<button class="copybtn"`) {
+        t.Errorf("missing the short-txid title with its copy icon: %s", body)
+    }
+    if !strings.Contains(body, `data-copy="`+liveTxid+`"`) {
+        t.Errorf("the copy icon must carry the full txid: %s", body)
+    }
+    if strings.Contains(body, "watch?kind=") {
+        t.Errorf("a confirmed transaction has nothing left to watch: %s", body)
     }
     if !strings.Contains(body, `<div id="blocklist" class="blocklist det">`) {
         t.Error("a transaction belongs in the Blocks tab's container")
@@ -1186,8 +1200,11 @@ func TestAddressDetailsRender(t *testing.T) {
     var h = handler(t, "TESTTOKEN", fakeSource{a: liveAddr()})
     var w = get(h, "/address?a="+liveAddress, freshInitData("TESTTOKEN"))
     var body = w.Body.String()
-    if !strings.Contains(body, "<h1>bc1qxy...dayd2g</h1>") {
-        t.Errorf("missing the short-address title: %s", body)
+    if !strings.Contains(body, `<h1>bc1qxy...dayd2g<button class="copybtn"`) {
+        t.Errorf("missing the short-address title with its copy icon: %s", body)
+    }
+    if !strings.Contains(body, `data-copy="`+liveAddress+`"`) {
+        t.Errorf("the copy icon must carry the full address: %s", body)
     }
     if !strings.Contains(body, `<div id="addrpanel" class="blocklist det">`) {
         t.Error("an address belongs in the Addresses tab's container, not the block list")
@@ -1239,7 +1256,7 @@ func TestAddressDetailsShowsTxViews(t *testing.T) {
     if n := strings.Count(body, `class="txcard"`); n != 5 {
         t.Errorf("first batch = %d cards, want 5", n)
     }
-    if !strings.Contains(body, `<h1>bc1qxy...dayd2g</h1>`) {
+    if !strings.Contains(body, `<h1>bc1qxy...dayd2g<button class="copybtn"`) {
         t.Error("the address title must still be there")
     }
 }
@@ -1620,6 +1637,8 @@ func TestMinerNameHandling(t *testing.T) {
 // and loads its own state — the page around it is cached and shared, so the
 // pushed/unpushed state cannot be rendered into it.
 //
+// a confirmed transaction has nothing left to wait for, so the bell is gone
+//
 // the shared, cached page must not carry anyone's watch state
 //
 // a block and a miner have nothing to watch
@@ -1628,7 +1647,7 @@ func TestWatchButtonOnDetailsPages(t *testing.T) {
     var data = freshInitData("TESTTOKEN")
     for _, c := range []struct{ path, want string }{
         {"/address?a=" + liveAddress, `hx-get="watch?kind=address&id=` + liveAddress + `"`},
-        {"/tx?id=" + liveTxid, `hx-get="watch?kind=tx&id=` + liveTxid + `"`},
+        {"/tx?id=" + livePendingTxid, `hx-get="watch?kind=tx&id=` + livePendingTxid + `"`},
     } {
         var body = get(h, c.path, data).Body.String()
         if !strings.Contains(body, c.want) {
@@ -1640,6 +1659,9 @@ func TestWatchButtonOnDetailsPages(t *testing.T) {
         if strings.Contains(body, `class="bell`) {
             t.Errorf("%s rendered the button's state into the cached page", c.path)
         }
+    }
+    if body := get(h, "/tx?id="+liveTxid, data).Body.String(); strings.Contains(body, "watch?kind=") {
+        t.Errorf("a confirmed transaction should have no watch button: %s", body[:min(400, len(body))])
     }
     for _, p := range []string{"/block?height=963268", "/miner?name=AntPool"} {
         if body := get(h, p, data).Body.String(); strings.Contains(body, "watch?kind=") {
@@ -2116,11 +2138,11 @@ func TestLinkedIdsKeepTheOrigin(t *testing.T) {
 }
 
 
-// A block hash has a txid's shape, so it arrives at /tx — and comes back as a
+// a block hash has a txid's shape, so it arrives at /tx — and comes back as a
 // block, which has nothing to watch. The bell follows what the page turned out
 // to be, not what the URL asked for.
 //
-// a real transaction at the same endpoint still has its bell
+// a real, still-unconfirmed transaction at the same endpoint still has its bell
 func TestBlockByHashHasNoWatchButton(t *testing.T) {
     var hash = "0000000000000000000209d0dbbd5a37b0e0e0a2f8a1ba36d6f4f0e9c0b1a2f3"
     var txs = liveTx()
@@ -2139,7 +2161,7 @@ func TestBlockByHashHasNoWatchButton(t *testing.T) {
     if strings.Contains(body, "watch?kind=") {
         t.Errorf("a block page offers to watch something:\n%s", body)
     }
-    if body := get(h, "/tx?id="+liveTxid, data).Body.String(); !strings.Contains(body, `hx-get="watch?kind=tx&id=`+liveTxid+`"`) {
+    if body := get(h, "/tx?id="+livePendingTxid, data).Body.String(); !strings.Contains(body, `hx-get="watch?kind=tx&id=`+livePendingTxid+`"`) {
         t.Errorf("a transaction page lost its watch button:\n%s", body)
     }
 }

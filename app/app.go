@@ -469,6 +469,11 @@ type Info struct {
     // and the page around it is one cached copy shared by all.
     Kind string
     Id   string
+    // Confirmed marks a transaction already in a block. Watching a transaction
+    // means waiting for it to confirm, so a confirmed one has nothing left to
+    // watch for and the watch button stays off its page. Only a transaction
+    // page sets it; an address is always watchable.
+    Confirmed bool
     // Swap is the Back button's hx-swap. It carries a show: modifier when the
     // page was opened from the block list, which is what scrolls the row the
     // reader tapped back into view.

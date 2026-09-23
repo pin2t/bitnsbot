@@ -289,6 +289,9 @@ func TestTxInfoLinksBlockAndAddresses(t *testing.T) {
     coretest.Use(t, srv)
     var info = appSource{}.TxInfo("", txid)
     if !info.OK { t.Fatal("no transaction page") }
+    if !info.Confirmed {
+        t.Error("a transaction with confirmations should report Confirmed")
+    }
     var linked = map[string]string{}
     for _, r := range info.Rows {
         for _, part := range r.Parts {
