@@ -245,19 +245,24 @@
   .txcard .tcam { text-align: right; }
   .txcard .tcam .tamt { font-size: 0.875rem; font-weight: 600; }
   .txcard .tcam .tusd { display: block; font-size: 0.75rem; color: var(--hint); }
-  .txcard .tcflow { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
-                    gap: 8px; margin-top: 6px; align-items: start; }
-  .txcard .tcside { display: flex; flex-direction: column; gap: 2px; min-width: 0;
-                    font-size: 0.8125rem; overflow-wrap: anywhere; }
-  .txcard .tcins { text-align: left; }
-  .txcard .tcout { text-align: right; }
-  .txcard .tcarrow { align-self: center; color: var(--hint); font-size: 1.25rem; line-height: 1; }
+  /* The two-sided flow a transaction card and the transaction details page
+     share: inputs on the left, outputs on the right, an arrow between. The
+     rules are deliberately not scoped to .txcard — the details page draws the
+     same flow under its fields. */
+  .tcflow { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+            gap: 8px; margin-top: 6px; align-items: start; }
+  .tcside { display: flex; flex-direction: column; gap: 2px; min-width: 0;
+            font-size: 0.8125rem; overflow-wrap: anywhere; }
+  .tcins { text-align: left; }
+  .tcout { text-align: right; }
+  .tcarrow { align-self: center; color: var(--hint); font-size: 1.25rem; line-height: 1; }
   .txcard .lnk { color: var(--link); cursor: pointer; }
 
   /* A transaction page's input/output flow, drawn under the fields: the same
      two-sided layout the address page's transaction cards use. */
   .det .flow { margin-top: 12px; background: var(--card); border-radius: 14px; padding: 10px 12px; }
   .det .flow .tcflow { margin-top: 0; }
+  .det .flow .lnk { color: var(--link); cursor: pointer; }
 
   /* The Addresses tab's list picker, at the foot of the panel. min-width: 0 so a
      long translation shrinks its button instead of pushing the row out — a flex

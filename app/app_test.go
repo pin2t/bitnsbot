@@ -1209,6 +1209,26 @@ func TestTxDetailsRender(t *testing.T) {
     }
 }
 
+// The flow rules must not be scoped to .txcard: the transaction details page
+// draws the same two-sided layout under its fields, where the card's header
+// classes never appear. A scoped rule would leave the flow as one plain run
+// of text.
+func TestTxFlowSharesCardLayout(t *testing.T) {
+    var body = get(handler(t, "TESTTOKEN", fakeSource{f: liveFees()}), "/", "").Body.String()
+    for _, want := range []string{
+        `.tcflow { display: grid`,
+        `.tcside { display: flex`,
+        `.tcins { text-align: left; }`,
+        `.tcout { text-align: right; }`,
+        `.tcarrow { align-self: center;`,
+        `.det .flow .lnk { color: var(--link); cursor: pointer; }`,
+    } {
+        if !strings.Contains(body, want) {
+            t.Errorf("the shell page is missing the shared flow rule %q", want)
+        }
+    }
+}
+
 // An address opens on the Addresses tab, titled with the short address and with
 // Back to that tab's own content.
 //
