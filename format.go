@@ -311,6 +311,17 @@ func amountText(sat int64, lang string) string {
     return group(sat) + " " + i18nl(lang).String("sats")
 }
 
+// signedAmountText renders a net amount for an address page's transaction
+// card: the same sats/BTC threshold as amountText, but the sign is always
+// explicit, so a glance shows whether the address gained or lost in the
+// transaction. Zero carries no sign, since neither direction is true.
+func signedAmountText(sat int64, lang string) string {
+    if sat > 0 {
+        return "+" + amountText(sat, lang)
+    }
+    return amountText(sat, lang)
+}
+
 func joinAlign(pairs [][2]string) string {
     var pad int
     for _, p := range pairs { pad = max(pad, utf8.RuneCountInString(p[0]) + 1) }
