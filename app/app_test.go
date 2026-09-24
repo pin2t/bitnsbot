@@ -199,15 +199,15 @@ const livePendingTxid = "cafebabecafebabecafebabecafebabecafebabecafebabecafebab
 const liveAddress = "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh"
 
 // liveAddrTxs is one address's transaction views the way main builds them:
-// newest first, each with its time, total amount and the two clickable sides.
-// Seven views make two pages of the fake's batch of five, so the sentinel's
-// paging contract is what a test drives.
+// newest first, each with its time, the signed net amount for the address and
+// the two clickable sides. Seven views make two pages of the fake's batch of
+// five, so the sentinel's paging contract is what a test drives.
 func liveAddrTxs() map[string][]Tx {
     var out []Tx
     for i := 0; i < 7; i++ {
         var tx = Tx{
             Time:   "2 days ago",
-            Amount: "9 990 000 sats",
+            Amount: "+9 990 000 sats",
             USD:    "≈ $6,614",
             Id:     liveTxid,
             Short:  "32e43e...870b16",
@@ -220,7 +220,7 @@ func liveAddrTxs() map[string][]Tx {
                 {Text: "(non-standard)"},
             },
         }
-        if i == 6 { tx.Amount, tx.USD = "1.5 BTC", "≈ $99,300" }
+        if i == 6 { tx.Amount, tx.USD = "+1.5 BTC", "≈ $99,300" }
         out = append(out, tx)
     }
     return map[string][]Tx{liveAddress: out}
@@ -1266,11 +1266,11 @@ func TestAddressDetailsRender(t *testing.T) {
 }
 
 // An address page lists its transactions below the fields, newest first: each
-// card carries the date, the tappable short txid and the total amount on its
-// top row with the dollar value under it, the input addresses on the left, the
-// output addresses on the right, and an arrow between them. Both sides are
-// tappable, and the first batch arrives as part of the page. The fields and
-// the list share the page's one scroller.
+// card carries the date, the tappable short txid and the signed net amount for
+// the address on its top row with the dollar value under it, the input
+// addresses on the left, the output addresses on the right, and an arrow
+// between them. Both sides are tappable, and the first batch arrives as part
+// of the page. The fields and the list share the page's one scroller.
 func TestAddressDetailsShowsTxViews(t *testing.T) {
     var h = handler(t, "TESTTOKEN", fakeSource{a: liveAddr(), at: liveAddrTxs()})
     var body = get(h, "/address?a="+liveAddress, freshInitData("TESTTOKEN")).Body.String()
@@ -1282,7 +1282,7 @@ func TestAddressDetailsShowsTxViews(t *testing.T) {
     }
     for _, want := range []string{`<span class="tctime">2 days ago</span>`,
         `<span class="tcid lnk" hx-get="tx?id=` + liveTxid + `&from=addresses" hx-target="#addrpanel" hx-swap="outerHTML">32e43e...870b16</span>`,
-        `<span class="tamt">9 990 000 sats</span>`, `<span class="tusd">≈ $6,614</span>`,
+        `<span class="tamt">&#43;9 990 000 sats</span>`, `<span class="tusd">≈ $6,614</span>`,
         `<span class="tcarrow">→</span>`,
         `hx-get="search?q=1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa&from=addresses"`,
         `hx-get="search?q=bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh&from=addresses"`,
@@ -1333,7 +1333,7 @@ func TestAddressTxViewsInfiniteScroll(t *testing.T) {
     if n := strings.Count(body, `class="txcard"`); n != 2 {
         t.Errorf("second batch = %d cards, want 2", n)
     }
-    if !strings.Contains(body, `1.5 BTC`) {
+    if !strings.Contains(body, `&#43;1.5 BTC`) {
         t.Error("the last of seven views should be in the second batch")
     }
     if strings.Contains(body, "moreaddrtxs") {

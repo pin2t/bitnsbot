@@ -413,7 +413,7 @@ func addressTxViews(ctx context.Context, lang, addr string, from int) (views []a
         window = touches[from:]
     }
     for _, tx := range resolveTouches(ctx, window) {
-        views = append(views, txView(tx, lang))
+        views = append(views, txView(tx, addr, lang))
     }
     return views, more, true
 }
@@ -498,20 +498,30 @@ func resolveTouches(ctx context.Context, touches []addrindex.Touch) []*core.Tran
     return out
 }
 
-// txView builds one transaction view: when it happened, the total amount it
-// moved, and the addresses on both sides. The amount switches from sats to BTC
-// at the same threshold the rest of the app uses — 0.05 BTC — and the dollar
-// value under it is the same historical approximation amountLine prints, at
-// the rate nearest the transaction's own time.
-func txView(tx *core.Transaction, lang string) app.Tx {
-    var total int64
-    for _, v := range tx.Vout { total += toSat(v.Value) }
-    var v = app.Tx{Id: tx.Txid, Short: short(tx.Txid), Time: day(tx.Time, lang), Amount: amountText(total, lang)}
+// txView builds one transaction view for an address page: when it happened,
+// what the address gained or lost in it, and the addresses on both sides. The
+// amount is the net move for this address — the sum of the outputs paying it
+// minus the sum of the inputs it spent — signed so a glance shows the
+// direction, and it switches from sats to BTC at the same threshold the rest
+// of the app uses — 0.05 BTC — with the dollar value under it the same
+// historical approximation amountLine prints, at the rate nearest the
+// transaction's own time.
+func txView(tx *core.Transaction, addr, lang string) app.Tx {
+    var delta int64
+    for _, v := range tx.Vout {
+        if v.ScriptPubKey.Address == addr { delta += toSat(v.Value) }
+    }
+    for _, in := range tx.Vin {
+        if in.PrevOut != nil && in.PrevOut.ScriptPubKey.Address == addr {
+            delta -= toSat(in.PrevOut.Value)
+        }
+    }
+    var v = app.Tx{Id: tx.Txid, Short: short(tx.Txid), Time: day(tx.Time, lang), Amount: signedAmountText(delta, lang)}
     var rate float64
     var rateOK bool
     if tx.Time > 0 { rate, rateOK = rates.At(time.Unix(tx.Time, 0)) }
     if !rateOK { rate, rateOK = rates.Last() }
-    if rateOK { v.USD = "≈ " + usd(total, rate) }
+    if rateOK { v.USD = "≈ " + usd(delta, rate) }
     if len(tx.Vin) == 0 || tx.Vin[0].Coinbase == "" {
         for _, in := range tx.Vin {
             v.Inputs = append(v.Inputs, inputPart(in))

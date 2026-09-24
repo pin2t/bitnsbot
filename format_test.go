@@ -90,6 +90,25 @@ func TestNegativeAmounts(t *testing.T) {
     }
 }
 
+// The address page's transaction card carries the net move for that address,
+// so positive amounts take an explicit plus sign and zero carries none.
+func TestSignedAmountText(t *testing.T) {
+    for _, c := range []struct {
+        sat  int64
+        want string
+    }{
+        {1000, "+1 000 sats"},
+        {-1000, "-1 000 sats"},
+        {0, "0 sats"},
+        {5_000_000, "+0.05 BTC"},
+        {-5_000_000, "-0.05 BTC"},
+    } {
+        if got := signedAmountText(c.sat, ""); got != c.want {
+            t.Errorf("signedAmountText(%d) = %q, want %q", c.sat, got, c.want)
+        }
+    }
+}
+
 // English (nil trans) — returns English month name unchanged.
 //
 // Russian — month translated to genitive form.
