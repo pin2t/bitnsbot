@@ -54,22 +54,36 @@ func info(bot *bot, chat int64, arg string) {
     address(ctx, bot, chat, arg)
 }
 
+// txData is everything one transaction is described by: the lines /info
+// prints, the ids those lines turn into buttons, the node's own spelling of
+// the txid, whether it is confirmed, and the two sides of the app's
+// input/output flow. txPairs fills it; the bot's reply and the Mini App's
+// transaction page read the same values, so the two cannot drift apart.
+type txData struct {
+    pairs     [][2]string
+    ids       []string
+    canonical string
+    confirmed bool
+    inputs    []app.Part
+    outputs   []app.Part
+}
+
 // txPairs builds the lines a transaction is described by, plus the ids the bot
-// turns into buttons, the node's own spelling of the txid, and whether the
-// transaction is confirmed. Shared with the Mini App's transaction page, so the
-// two cannot drift apart.
+// turns into buttons, the node's own spelling of the txid, whether the
+// transaction is confirmed, and the app's input/output flow parts.
 //
 // only the ids the text actually shows get buttons — compactAddrs truncates
 // to shownAddrs with a trailing "...", and a button for something the reader
 // cannot see in the message would be a puzzle rather than a shortcut
-func txPairs(ctx context.Context, lang string, txid string) ([][2]string, []string, string, bool, bool) {
+func txPairs(ctx context.Context, lang string, txid string) (txData, bool) {
+    var out txData
     var estimates = map[string]string{
         confETAFast:   i18nl(lang).String("~10-20 min"),
         confETAMedium: i18nl(lang).String("~1 hour"),
         confETASlow:   i18nl(lang).String("2+ hours"),
     }
     var tx, err = core.GetRawTransaction(ctx, txid)
-    if err != nil { return nil, nil, "", false, false }
+    if err != nil { return out, false }
     var total int64
     for _, vout := range tx.Vout { total += toSat(vout.Value) }
     var coinbase = len(tx.Vin) > 0 && tx.Vin[0].Coinbase != ""
@@ -77,7 +91,7 @@ func txPairs(ctx context.Context, lang string, txid string) ([][2]string, []stri
     var inputs []string
     var feeOK bool
     if !coinbase { fee, inputs, _, feeOK = txInputs(ctx, tx) }
-    var pairs [][2]string
+    var outputs = outputAddrs(tx)
     var at = time.Time{}
     var current = true
     var blockHeight int64
@@ -86,47 +100,49 @@ func txPairs(ctx context.Context, lang string, txid string) ([][2]string, []stri
         if feeOK && tx.Vsize > 0 {
             confText = i18nl(lang).String("none (confirms in") + " " + estimates[confEstimate(float64(fee) / float64(tx.Vsize))] + ")"
         }
-        pairs = append(pairs, [2]string{i18nl(lang).String("Confirmations"), confText})
+        out.pairs = append(out.pairs, [2]string{i18nl(lang).String("Confirmations"), confText})
     } else {
         at, current = time.Unix(tx.Time, 0), false
         if header, err := core.GetBlockHeader(ctx, tx.BlockHash); err == nil {
             blockHeight = header.Height
         }
-        pairs = append(pairs, [2]string{i18nl(lang).String("Confirmations"), i18nl(lang).Sprintf("%d (block #%d)", tx.Confirmations, blockHeight)})
+        out.pairs = append(out.pairs, [2]string{i18nl(lang).String("Confirmations"), i18nl(lang).Sprintf("%d (block #%d)", tx.Confirmations, blockHeight)})
     }
-    pairs = append(pairs, [2]string{i18nl(lang).String("Amount"), amountLine(total, at, current, lang)})
+    out.pairs = append(out.pairs, [2]string{i18nl(lang).String("Amount"), amountLine(total, at, current, lang)})
     if feeOK {
         var feeStr = group(fee) + " " + i18nl(lang).String("sats")
         if tx.Vsize > 0 {
             var feeRate = float64(fee) / float64(tx.Vsize)
             feeStr += " (" + trimNum(feeRate, 1) + i18nl(lang).String(" sat/vB") + ")"
         }
-        pairs = append(pairs, [2]string{i18nl(lang).String("Fee"), feeStr})
+        out.pairs = append(out.pairs, [2]string{i18nl(lang).String("Fee"), feeStr})
     }
     var szMsg = group(int64(tx.Size)) + " " + i18nl(lang).String("B")
     if tx.Vsize > 0 { szMsg += i18nl(lang).Sprintf(" (%s vB)", group(int64(tx.Vsize))) }
-    pairs = append(pairs, [2]string{i18nl(lang).String("Size"), szMsg})
+    out.pairs = append(out.pairs, [2]string{i18nl(lang).String("Size"), szMsg})
     if feeOK {
-        pairs = append(pairs, [2]string{i18nl(lang).String("Inputs"), compactAddrs(inputs)})
+        out.pairs = append(out.pairs, [2]string{i18nl(lang).String("Inputs"), compactAddrs(inputs)})
     }
-    pairs = append(pairs, [2]string{i18nl(lang).String("Outputs"), compactAddrs(outputAddrs(tx))})
-    var ids []string
+    out.pairs = append(out.pairs, [2]string{i18nl(lang).String("Outputs"), compactAddrs(outputs)})
     if blockHeight > 0 {
-        ids = append(ids, strconv.FormatInt(blockHeight, 10))
+        out.ids = append(out.ids, strconv.FormatInt(blockHeight, 10))
     }
-    if tx.BlockHash != "" { ids = append(ids, tx.BlockHash) }
-    ids = append(ids, firstN(inputs, shownAddrs)...)
-    ids = append(ids, firstN(outputAddrs(tx), shownAddrs)...)
-    return pairs, ids, tx.Txid, tx.Confirmations > 0, true
+    if tx.BlockHash != "" { out.ids = append(out.ids, tx.BlockHash) }
+    out.ids = append(out.ids, firstN(inputs, shownAddrs)...)
+    out.ids = append(out.ids, firstN(outputs, shownAddrs)...)
+    for _, a := range inputs { out.inputs = append(out.inputs, addrPart(a)) }
+    for _, a := range outputs { out.outputs = append(out.outputs, addrPart(a)) }
+    out.canonical, out.confirmed = tx.Txid, tx.Confirmations > 0
+    return out, true
 }
 
 func transaction(ctx context.Context, bot *bot, chat int64, txid string) {
-    var pairs, ids, canonical, _, ok = txPairs(ctx, chatLang(chat), txid)
+    var d, ok = txPairs(ctx, chatLang(chat), txid)
     if !ok {
         send(bot, chat, i18n(chat).Sprintf("Couldn't find transaction %s", short(txid)), nil)
         return
     }
-    send(bot, chat, i18n(chat).Sprintf("Transaction <code>%s</code>\n\n<pre>%s</pre>", canonical, joinAlign(pairs)), ids)
+    send(bot, chat, i18n(chat).Sprintf("Transaction <code>%s</code>\n\n<pre>%s</pre>", d.canonical, joinAlign(d.pairs)), d.ids)
 }
 
 // txInputs reports a transaction's fee and the addresses it spends from — in

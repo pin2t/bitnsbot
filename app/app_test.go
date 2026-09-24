@@ -162,19 +162,17 @@ func (s fakeSource) AddrTxs(lang, addr string, from int) Txs {
 // watch button; livePendingTxid is the mempool case that keeps the button.
 func liveTx() map[string]Info {
     return map[string]Info{
-        liveTxid: {OK: true, Confirmed: true, Title: "32e43e...870b16", Rows: []Field{
-            {Label: "Confirmations", Value: "412 (block #963268)", Parts: []Part{
-                {Text: "412 (block "}, {Text: "#963268", Id: "963268"}, {Text: ")"}}},
-            {Label: "Amount", Value: "9 990 000 sats (≈ $6,614)"},
-            {Label: "Fee", Value: "1 410 sats (10.0 sat/vB)"},
-            {Label: "Size", Value: "223 B (141 vB)"},
-            {Label: "Inputs", Value: "bc1qxy...dayd2g", Parts: []Part{
-                {Text: "bc1qxy...dayd2g", Id: liveAddress}}},
-            {Label: "Outputs", Value: "1A1zP1...DivfNa, bc1qxy...dayd2g", Parts: []Part{
-                {Text: "1A1zP1...DivfNa", Id: "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"},
-                {Text: ", "},
-                {Text: "bc1qxy...dayd2g", Id: liveAddress}}},
-        }},
+        liveTxid: {OK: true, Confirmed: true, Title: "32e43e...870b16",
+            Inputs:  []Part{{Text: "bc1qxy...dayd2g", Id: liveAddress}},
+            Outputs: []Part{{Text: "1A1zP1...DivfNa", Id: "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"},
+                {Text: "bc1qxy...dayd2g", Id: liveAddress}},
+            Rows: []Field{
+                {Label: "Confirmations", Value: "412 (block #963268)", Parts: []Part{
+                    {Text: "412 (block "}, {Text: "#963268", Id: "963268"}, {Text: ")"}}},
+                {Label: "Amount", Value: "9 990 000 sats (≈ $6,614)"},
+                {Label: "Fee", Value: "1 410 sats (10.0 sat/vB)"},
+                {Label: "Size", Value: "223 B (141 vB)"},
+            }},
         livePendingTxid: {OK: true, Title: "cafeba...febabe", Rows: []Field{
             {Label: "Confirmations", Value: "none (confirms in ~10-20 min)"},
         }},
@@ -1157,6 +1155,10 @@ func TestSearchClassifiesQuery(t *testing.T) {
 // the confirmations line now carries a tappable block number, so it renders
 // in pieces — the text a reader sees is unchanged, the markup is not
 //
+// the input and output addresses are drawn under the fields as a two-sided
+// flow — inputs left, outputs right, an arrow between — like an address
+// page's transaction cards
+//
 // Back comes from a template *value*, so html/template escapes its "&" —
 // unlike the list's links, where the "&" is literal template text
 func TestTxDetailsRender(t *testing.T) {
@@ -1178,9 +1180,24 @@ func TestTxDetailsRender(t *testing.T) {
         t.Errorf("HX-Retarget = %q, want #blocklist", rt)
     }
     for _, want := range []string{">Confirmations<", ">Amount<", ">Fee<", ">Size<",
-        ">Inputs<", ">Outputs<", "412 (block ", ">#963268<", "9 990 000 sats"} {
+        "412 (block ", ">#963268<", "9 990 000 sats"} {
         if !strings.Contains(body, want) {
             t.Errorf("transaction page is missing %q", want)
+        }
+    }
+    if strings.Contains(body, ">Inputs<") || strings.Contains(body, ">Outputs<") {
+        t.Error("inputs and outputs should be a flow under the fields, not two more rows")
+    }
+    for _, want := range []string{
+        `<div class="flow">`, `<div class="tcflow">`,
+        `<div class="tcside tcins">`, `<div class="tcside tcout">`,
+        `<span class="tcarrow">→</span>`,
+        `hx-get="search?q=bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh&from=blocks"`,
+        `hx-get="search?q=1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa&from=blocks"`,
+        `<span class="lnk" hx-get="search?q=bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh&from=blocks" hx-target="#blocklist" hx-swap="outerHTML">bc1qxy...dayd2g</span>`,
+        `<span class="lnk" hx-get="search?q=1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa&from=blocks" hx-target="#blocklist" hx-swap="outerHTML">1A1zP1...DivfNa</span>`} {
+        if !strings.Contains(body, want) {
+            t.Errorf("transaction page's flow is missing %q", want)
         }
     }
     var head = body[strings.Index(body, `class="head"`):strings.Index(body, `class="fields"`)]
@@ -2107,10 +2124,13 @@ func TestDetailsRowsLinkTheirIds(t *testing.T) {
             t.Errorf("no link for %s in:\n%s", want, body)
         }
     }
-    for _, want := range []string{">412 (block ", ">#963268<", ">1A1zP1...DivfNa<", ">, <"} {
+    for _, want := range []string{">412 (block ", ">#963268<"} {
         if !strings.Contains(body, want) {
             t.Errorf("the line was not kept intact around its ids (%s):\n%s", want, body)
         }
+    }
+    if !strings.Contains(body, `<span class="lnk" hx-get="search?q=1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa&from=blocks" hx-target="#blocklist" hx-swap="outerHTML">1A1zP1...DivfNa</span>`) {
+        t.Errorf("the output address should be its own tappable span in the flow:\n%s", body)
     }
     if !strings.Contains(body, `<span class="val">9 990 000 sats (≈ $6,614)</span>`) {
         t.Errorf("a row with no ids should render plainly:\n%s", body)

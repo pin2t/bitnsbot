@@ -252,8 +252,9 @@ func TestSplitLinks(t *testing.T) {
 }
 
 
-// The transaction page through the real builders: the block it confirmed in and
-// the addresses on either side are tappable, and the text around them survives.
+// The transaction page through the real builders: the block it confirmed in is
+// tappable in the rows, and the addresses on either side are tappable in the
+// input/output flow drawn under them.
 //
 // only the block hash has a header; a txid must not look like a block
 //
@@ -298,7 +299,7 @@ func TestTxInfoLinksBlockAndAddresses(t *testing.T) {
             if part.Id != "" { linked[part.Id] = part.Text }
         }
     }
-    for id, text := range map[string]string{"700001": "#700001", from: short(from), to: short(to)} {
+    for id, text := range map[string]string{"700001": "#700001"} {
         if linked[id] != text {
             t.Errorf("%s is linked as %q, want %q — all links: %v", id, linked[id], text, linked)
         }
@@ -306,7 +307,16 @@ func TestTxInfoLinksBlockAndAddresses(t *testing.T) {
     if _, ok := linked[blockHash]; ok {
         t.Errorf("the block hash was linked though the page never shows it: %v", linked)
     }
+    if len(info.Inputs) != 1 || info.Inputs[0].Id != from || info.Inputs[0].Text != short(from) {
+        t.Errorf("inputs = %#v, want the one spending address %s", info.Inputs, short(from))
+    }
+    if len(info.Outputs) != 1 || info.Outputs[0].Id != to || info.Outputs[0].Text != short(to) {
+        t.Errorf("outputs = %#v, want the one receiving address %s", info.Outputs, short(to))
+    }
     for _, r := range info.Rows {
+        if r.Label == i18nl("").String("Inputs") || r.Label == i18nl("").String("Outputs") {
+            t.Errorf("inputs and outputs should be a flow under the rows, not rows themselves: %#v", r)
+        }
         if r.Parts == nil { continue }
         var joined string
         for _, part := range r.Parts { joined += part.Text }
