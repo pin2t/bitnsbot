@@ -313,6 +313,12 @@ func TestTxInfoLinksBlockAndAddresses(t *testing.T) {
     if len(info.Outputs) != 1 || info.Outputs[0].Id != to || info.Outputs[0].Text != short(to) {
         t.Errorf("outputs = %#v, want the one receiving address %s", info.Outputs, short(to))
     }
+    if info.Inputs[0].Amount != "0.1 BTC" || info.Inputs[0].USD != "" {
+        t.Errorf("input flow amount = %q %q, want 0.1 BTC and no USD without a stored rate", info.Inputs[0].Amount, info.Inputs[0].USD)
+    }
+    if info.Outputs[0].Amount != "0.0999 BTC" || info.Outputs[0].USD != "" {
+        t.Errorf("output flow amount = %q %q, want 0.0999 BTC and no USD without a stored rate", info.Outputs[0].Amount, info.Outputs[0].USD)
+    }
     for _, r := range info.Rows {
         if r.Label == i18nl("").String("Inputs") || r.Label == i18nl("").String("Outputs") {
             t.Errorf("inputs and outputs should be a flow under the rows, not rows themselves: %#v", r)

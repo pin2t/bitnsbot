@@ -232,7 +232,7 @@ func broadcast(txHex string) {
     }
     recordOutpoints(tx.Txid, tx.Vout)
     if full, ferr := core.GetRawTransaction(ctx, tx.Txid); ferr == nil {
-        if _, _, spent, ok := txInputs(ctx, full); ok {
+        if _, _, _, spent, ok := txInputs(ctx, full); ok {
             n.sent = spent
         }
         if entry, eerr := core.GetMempoolEntry(ctx, tx.Txid); eerr == nil && entry.Vsize > 0 {

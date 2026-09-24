@@ -449,6 +449,17 @@ type Part struct {
     Href string
 }
 
+// FlowPart is one address on a side of a transaction's two-sided flow. Amount is
+// the sats/BTC figure shown under the address and USD its dollar estimate, both
+// empty when there is nothing to say — a coinbase input has no spending
+// address, and a flow with no stored rate still shows the amount alone.
+type FlowPart struct {
+    Text   string
+    Id     string
+    Amount string
+    USD    string
+}
+
 // Info is a details page — a block, a transaction or an address. Title and Rows
 // come from main, and are the same lines /info prints. Slot and Back are filled
 // in by the handler: which container the fragment replaces, and where Back
@@ -490,8 +501,8 @@ type Info struct {
     // under the fields: the input addresses on the left, the output addresses
     // on the right and an arrow between them — the same layout an address
     // page's transaction cards use. Only a transaction page sets them.
-    Inputs  []Part
-    Outputs []Part
+    Inputs  []FlowPart
+    Outputs []FlowPart
     // Txs is the transaction list drawn under the rows, newest first — only an
     // address page sets it. The first batch is part of the page itself; the
     // sentinel below the views appends the next batches as the reader scrolls.
@@ -591,8 +602,8 @@ type Addrs struct {
 // Tx is one transaction view on an address page: when it happened, how much it
 // moved in total, and the addresses on both sides. Short is the shortened txid
 // the card's title row shows, a tap on it opens the transaction's own page —
-// the card's two sides are Parts, so an address is tappable exactly like a row
-// of the details page; a part with no Id — a non-standard output, say — is
+// the card's two sides are FlowParts, so an address is tappable exactly like a
+// row of the details page; a part with no Id — a non-standard output, say — is
 // plain text.
 type Tx struct {
     Time    string
@@ -600,8 +611,8 @@ type Tx struct {
     USD     string
     Id      string
     Short   string
-    Inputs  []Part
-    Outputs []Part
+    Inputs  []FlowPart
+    Outputs []FlowPart
 }
 
 // Txs is one batch of an address's transaction views, newest first. Next is the

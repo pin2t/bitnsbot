@@ -34,7 +34,7 @@ func TestCoreGetRawTransactionPrevouts(t *testing.T) {
     if tx.Vin[0].PrevOut == nil {
         t.Fatal("expected an inline prevout at verbosity 2")
     }
-    var fee, addrs, spent, ok = txInputs(context.Background(), tx)
+    var fee, addrs, sats, spent, ok = txInputs(context.Background(), tx)
     if !ok {
         t.Fatal("txInputs failed on a transaction carrying its own prevouts")
     }
@@ -43,6 +43,9 @@ func TestCoreGetRawTransactionPrevouts(t *testing.T) {
     }
     if len(addrs) != 1 || addrs[0] != "bc1qsender" {
         t.Fatalf("input addresses = %v, want [bc1qsender]", addrs)
+    }
+    if len(sats) != 1 || sats[0] != 150000000 {
+        t.Fatalf("input amounts = %v, want [150000000]", sats)
     }
     if spent["bc1qsender"] != 150000000 {
         t.Fatalf("spent = %v, want 150000000 sats from bc1qsender", spent)
