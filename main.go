@@ -189,6 +189,10 @@ func (appSource) BlockInfo(lang string, height int64) app.Info {
 // the same ids the bot gives buttons for, which is already only what the
 // text shows: the block it confirmed in, and the addresses on either side
 //
+// the app draws the input and output addresses as a two-sided flow under the
+// fields rather than as two more rows, so those lines are dropped here — the
+// bot's reply keeps them
+//
 // a block is named by height there, as "#963268"
 func (appSource) TxInfo(lang, txid string) app.Info {
     var out = app.Info{Title: short(txid)}
@@ -208,9 +212,6 @@ func (appSource) TxInfo(lang, txid string) app.Info {
         }
         links = append(links, linked{short(id), id})
     }
-    // The app draws the input and output addresses as a two-sided flow under
-    // the fields rather than as two more rows, so those lines are dropped
-    // here — the bot's reply keeps them.
     var rows [][2]string
     for _, p := range d.pairs {
         if p[0] == i18nl(lang).String("Inputs") || p[0] == i18nl(lang).String("Outputs") { continue }
