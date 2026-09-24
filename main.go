@@ -189,6 +189,10 @@ func (appSource) BlockInfo(lang string, height int64) app.Info {
 // the same ids the bot gives buttons for, which is already only what the
 // text shows: the block it confirmed in, and the addresses on either side
 //
+// the app draws the input and output addresses as a two-sided flow under the
+// fields rather than as two more rows, so those lines are dropped here — the
+// bot's reply keeps them
+//
 // a block is named by height there, as "#963268"
 func (appSource) TxInfo(lang, txid string) app.Info {
     var out = app.Info{Title: short(txid)}
@@ -198,17 +202,23 @@ func (appSource) TxInfo(lang, txid string) app.Info {
     if header, err := core.GetBlockHeader(ctx, txid); err == nil {
         return appSource{}.BlockInfo(lang, header.Height)
     }
-    var pairs, ids, canonical, confirmed, ok = txPairs(ctx, lang, txid)
+    var d, ok = txPairs(ctx, lang, txid)
     if !ok { return out }
     var links []linked
-    for _, id := range ids {
+    for _, id := range d.ids {
         if _, err := strconv.ParseInt(id, 10, 64); err == nil {
             links = append(links, linked{"#" + id, id})
             continue
         }
         links = append(links, linked{short(id), id})
     }
-    return app.Info{OK: true, Title: short(canonical), Confirmed: confirmed, Rows: linkFields(pairs, links)}
+    var rows [][2]string
+    for _, p := range d.pairs {
+        if p[0] == i18nl(lang).String("Inputs") || p[0] == i18nl(lang).String("Outputs") { continue }
+        rows = append(rows, p)
+    }
+    return app.Info{OK: true, Title: short(d.canonical), Confirmed: d.confirmed,
+        Rows: linkFields(rows, links), Inputs: d.inputs, Outputs: d.outputs}
 }
 
 // AddrInfo backs the address details page. An input that is not an address at

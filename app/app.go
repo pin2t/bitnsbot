@@ -486,6 +486,12 @@ type Info struct {
     // is filled in by the handler rather than by main's MinerInfo, since which
     // chart a page opens on is the app's choice.
     Chart *Chart
+    // Inputs and Outputs are the two sides of a transaction page's flow, drawn
+    // under the fields: the input addresses on the left, the output addresses
+    // on the right and an arrow between them — the same layout an address
+    // page's transaction cards use. Only a transaction page sets them.
+    Inputs  []Part
+    Outputs []Part
     // Txs is the transaction list drawn under the rows, newest first — only an
     // address page sets it. The first batch is part of the page itself; the
     // sentinel below the views appends the next batches as the reader scrolls.

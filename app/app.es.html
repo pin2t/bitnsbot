@@ -254,6 +254,11 @@
   .txcard .tcarrow { align-self: center; color: var(--hint); font-size: 1.25rem; line-height: 1; }
   .txcard .lnk { color: var(--link); cursor: pointer; }
 
+  /* A transaction page's input/output flow, drawn under the fields: the same
+     two-sided layout the address page's transaction cards use. */
+  .det .flow { margin-top: 12px; background: var(--card); border-radius: 14px; padding: 10px 12px; }
+  .det .flow .tcflow { margin-top: 0; }
+
   /* The Addresses tab's list picker, at the foot of the panel. min-width: 0 so a
      long translation shrinks its button instead of pushing the row out — a flex
      item will not otherwise go below its longest word. */
@@ -737,6 +742,25 @@
       {{- else}}{{.Value}}{{end}}</span></div>
   {{- end}}
   </div>
+  {{- if or .Inputs .Outputs}}
+  <div class="flow">
+    <div class="tcflow">
+      <div class="tcside tcins">
+      {{- range .Inputs}}
+        {{- if .Id}}<span class="lnk" hx-get="search?q={{.Id}}&from={{$.From}}" hx-target="#{{$.Slot}}" hx-swap="outerHTML">{{.Text}}</span>
+        {{- else}}<span>{{.Text}}</span>{{end}}
+      {{- end}}
+      </div>
+      <span class="tcarrow">→</span>
+      <div class="tcside tcout">
+      {{- range .Outputs}}
+        {{- if .Id}}<span class="lnk" hx-get="search?q={{.Id}}&from={{$.From}}" hx-target="#{{$.Slot}}" hx-swap="outerHTML">{{.Text}}</span>
+        {{- else}}<span>{{.Text}}</span>{{end}}
+      {{- end}}
+      </div>
+    </div>
+  </div>
+  {{- end}}
   {{- if .Txs}}
   {{template "txs" .Txs}}
   {{- end}}
