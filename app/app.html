@@ -256,6 +256,9 @@
   .tcins { text-align: left; }
   .tcout { text-align: right; }
   .tcarrow { align-self: center; color: var(--hint); font-size: 1.25rem; line-height: 1; }
+  .tcentry { display: flex; flex-direction: column; gap: 1px; }
+  .tcamt { font-size: 0.75rem; }
+  .tcusd { font-size: 0.75rem; color: var(--hint); }
   .txcard .lnk { color: var(--link); cursor: pointer; }
 
   /* A transaction page's input/output flow, drawn under the fields: the same
@@ -752,15 +755,23 @@
     <div class="tcflow">
       <div class="tcside tcins">
       {{- range .Inputs}}
+        <span class="tcentry">
         {{- if .Id}}<span class="lnk" hx-get="search?q={{.Id}}&from={{$.From}}" hx-target="#{{$.Slot}}" hx-swap="outerHTML">{{.Text}}</span>
         {{- else}}<span>{{.Text}}</span>{{end}}
+        {{- if .Amount}}<span class="tcamt">{{.Amount}}</span>{{end}}
+        {{- if .USD}}<span class="tcusd">{{.USD}}</span>{{end}}
+        </span>
       {{- end}}
       </div>
       <span class="tcarrow">→</span>
       <div class="tcside tcout">
       {{- range .Outputs}}
+        <span class="tcentry">
         {{- if .Id}}<span class="lnk" hx-get="search?q={{.Id}}&from={{$.From}}" hx-target="#{{$.Slot}}" hx-swap="outerHTML">{{.Text}}</span>
         {{- else}}<span>{{.Text}}</span>{{end}}
+        {{- if .Amount}}<span class="tcamt">{{.Amount}}</span>{{end}}
+        {{- if .USD}}<span class="tcusd">{{.USD}}</span>{{end}}
+        </span>
       {{- end}}
       </div>
     </div>
@@ -797,15 +808,23 @@
     <div class="tcflow">
       <div class="tcside tcins">
       {{- range .Inputs}}
+        <span class="tcentry">
         {{- if .Id}}<span class="lnk" hx-get="search?q={{.Id}}&from={{$.From}}" hx-target="#{{$.Slot}}" hx-swap="outerHTML">{{.Text}}</span>
         {{- else}}<span>{{.Text}}</span>{{end}}
+        {{- if .Amount}}<span class="tcamt">{{.Amount}}</span>{{end}}
+        {{- if .USD}}<span class="tcusd">{{.USD}}</span>{{end}}
+        </span>
       {{- end}}
       </div>
       <span class="tcarrow">→</span>
       <div class="tcside tcout">
       {{- range .Outputs}}
+        <span class="tcentry">
         {{- if .Id}}<span class="lnk" hx-get="search?q={{.Id}}&from={{$.From}}" hx-target="#{{$.Slot}}" hx-swap="outerHTML">{{.Text}}</span>
         {{- else}}<span>{{.Text}}</span>{{end}}
+        {{- if .Amount}}<span class="tcamt">{{.Amount}}</span>{{end}}
+        {{- if .USD}}<span class="tcusd">{{.USD}}</span>{{end}}
+        </span>
       {{- end}}
       </div>
     </div>

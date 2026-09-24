@@ -69,6 +69,26 @@ func TestAmountLineFallback(t *testing.T) {
     }
 }
 
+// flowAmounts renders one side of a transaction flow: the sats/BTC figure with
+// a USD estimate under it, and the figure alone when no rate is stored.
+func TestFlowAmounts(t *testing.T) {
+    if err := openDB(filepath.Join(t.TempDir(), "watches.db")); err != nil {
+        t.Fatalf("openDB: %v", err)
+    }
+    defer closeDB()
+    if err := rates.Init(db); err != nil {
+        t.Fatalf("rates.Init: %v", err)
+    }
+    var amount, usdText = flowAmounts(150000000, 60000, true, "")
+    if amount != "1.5 BTC" || usdText != "≈ $90,000" {
+        t.Fatalf("flowAmounts = %q %q, want 1.5 BTC and ≈ $90,000", amount, usdText)
+    }
+    amount, usdText = flowAmounts(9990000, 0, false, "")
+    if amount != "0.0999 BTC" || usdText != "" {
+        t.Fatalf("flowAmounts without a rate = %q %q, want the amount alone", amount, usdText)
+    }
+}
+
 // A watched address that spends reports a negative net move, the only place these
 // formatters see a negative — and both used to mangle it ("- 100 010 000",
 // "$-29450.00") because they split the sign off the digits.

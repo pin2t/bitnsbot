@@ -64,8 +64,8 @@ type txData struct {
     ids       []string
     canonical string
     confirmed bool
-    inputs    []app.Part
-    outputs   []app.Part
+    inputs    []app.FlowPart
+    outputs   []app.FlowPart
 }
 
 // txPairs builds the lines a transaction is described by, plus the ids the bot
@@ -89,8 +89,9 @@ func txPairs(ctx context.Context, lang string, txid string) (txData, bool) {
     var coinbase = len(tx.Vin) > 0 && tx.Vin[0].Coinbase != ""
     var fee int64
     var inputs []string
+    var inSats []int64
     var feeOK bool
-    if !coinbase { fee, inputs, _, feeOK = txInputs(ctx, tx) }
+    if !coinbase { fee, inputs, inSats, _, feeOK = txInputs(ctx, tx) }
     var outputs = outputAddrs(tx)
     var at = time.Time{}
     var current = true
@@ -108,6 +109,7 @@ func txPairs(ctx context.Context, lang string, txid string) (txData, bool) {
         }
         out.pairs = append(out.pairs, [2]string{i18nl(lang).String("Confirmations"), i18nl(lang).Sprintf("%d (block #%d)", tx.Confirmations, blockHeight)})
     }
+    var rate, rateOK = usdRate(at, current)
     out.pairs = append(out.pairs, [2]string{i18nl(lang).String("Amount"), amountLine(total, at, current, lang)})
     if feeOK {
         var feeStr = group(fee) + " " + i18nl(lang).String("sats")
@@ -130,8 +132,16 @@ func txPairs(ctx context.Context, lang string, txid string) (txData, bool) {
     if tx.BlockHash != "" { out.ids = append(out.ids, tx.BlockHash) }
     out.ids = append(out.ids, firstN(inputs, shownAddrs)...)
     out.ids = append(out.ids, firstN(outputs, shownAddrs)...)
-    for _, a := range inputs { out.inputs = append(out.inputs, addrPart(a)) }
-    for _, a := range outputs { out.outputs = append(out.outputs, addrPart(a)) }
+    for i, a := range inputs {
+        var p = addrPart(a)
+        p.Amount, p.USD = flowAmounts(inSats[i], rate, rateOK, lang)
+        out.inputs = append(out.inputs, p)
+    }
+    for _, v := range tx.Vout {
+        var p = addrPart(addressOf(v))
+        p.Amount, p.USD = flowAmounts(toSat(v.Value), rate, rateOK, lang)
+        out.outputs = append(out.outputs, p)
+    }
     out.canonical, out.confirmed = tx.Txid, tx.Confirmations > 0
     return out, true
 }
@@ -145,9 +155,10 @@ func transaction(ctx context.Context, bot *bot, chat int64, txid string) {
     send(bot, chat, i18n(chat).Sprintf("Transaction <code>%s</code>\n\n<pre>%s</pre>", d.canonical, joinAlign(d.pairs)), d.ids)
 }
 
-// txInputs reports a transaction's fee and the addresses it spends from — in
-// input order as addrs (for the /info listing) and summed per address as spent
-// (which is how the watch notifier learns an address is *sending*, the
+// txInputs reports a transaction's fee, the addresses it spends from and the
+// amount of each input — addresses and amounts in input order (the addresses for
+// the /info listing and the app's flow), and the amounts also summed per address
+// as spent (which is how the watch notifier learns an address is *sending*, the
 // counterpart to the receiving addresses it reads straight off the outputs).
 //
 // Core hands the prevouts over inline at getrawtransaction verbosity 2, so a
@@ -157,20 +168,22 @@ func transaction(ctx context.Context, bot *bot, chat int64, txid string) {
 // prevout there and each input's previous transaction still has to be fetched.
 // A fetch failure yields ok=false, so the reply degrades to "unavailable"
 // rather than showing a wrong fee.
-func txInputs(ctx context.Context, tx *core.Transaction) (fee int64, addrs []string, spent map[string]int64, ok bool) {
+func txInputs(ctx context.Context, tx *core.Transaction) (fee int64, addrs []string, sats []int64, spent map[string]int64, ok bool) {
     spent = make(map[string]int64)
     var inSum int64
     var complete = true
     for _, vin := range tx.Vin {
         if vin.PrevOut == nil { complete = false; break }
-        inSum += toSat(vin.PrevOut.Value)
+        var v = toSat(vin.PrevOut.Value)
+        inSum += v
         var a = addressOfScript(vin.PrevOut.ScriptPubKey)
         addrs = append(addrs, a)
-        spent[a] += toSat(vin.PrevOut.Value)
+        sats = append(sats, v)
+        spent[a] += v
     }
     if complete {
-        if tx.Fee > 0 { return toSat(tx.Fee), addrs, spent, true }
-        return inputsMinusOutputs(inSum, tx), addrs, spent, true
+        if tx.Fee > 0 { return toSat(tx.Fee), addrs, sats, spent, true }
+        return inputsMinusOutputs(inSum, tx), addrs, sats, spent, true
     }
     return fetchInputs(ctx, tx)
 }
@@ -178,7 +191,7 @@ func txInputs(ctx context.Context, tx *core.Transaction) (fee int64, addrs []str
 // fetchInputs is the mempool path: without undo data Core cannot supply prevouts,
 // so they are fetched concurrently (bounded, the same pattern the btcd client
 // used) and the fee derived from inputs − outputs.
-func fetchInputs(ctx context.Context, tx *core.Transaction) (fee int64, addrs []string, spent map[string]int64, ok bool) {
+func fetchInputs(ctx context.Context, tx *core.Transaction) (fee int64, addrs []string, sats []int64, spent map[string]int64, ok bool) {
     var ids = map[string]bool{}
     for _, in := range tx.Vin {
         ids[in.Txid] = true
@@ -206,21 +219,23 @@ func fetchInputs(ctx context.Context, tx *core.Transaction) (fee int64, addrs []
     }
     wg.Wait()
     if fetchErr != nil {
-        return 0, nil, nil, false
+        return 0, nil, nil, nil, false
     }
     var inSum int64
     spent = make(map[string]int64)
     for _, vin := range tx.Vin {
         var p = prevouts[vin.Txid]
         if p == nil || int(vin.Vout) >= len(p.Vout) {
-            return 0, nil, nil, false
+            return 0, nil, nil, nil, false
         }
-        inSum += toSat(p.Vout[vin.Vout].Value)
+        var v = toSat(p.Vout[vin.Vout].Value)
+        inSum += v
         var a = addressOf(p.Vout[vin.Vout])
         addrs = append(addrs, a)
-        spent[a] += toSat(p.Vout[vin.Vout].Value)
+        sats = append(sats, v)
+        spent[a] += v
     }
-    return inputsMinusOutputs(inSum, tx), addrs, spent, true
+    return inputsMinusOutputs(inSum, tx), addrs, sats, spent, true
 }
 
 func inputsMinusOutputs(inSum int64, tx *core.Transaction) int64 {
@@ -524,11 +539,17 @@ func txView(tx *core.Transaction, addr, lang string) app.Tx {
     if rateOK { v.USD = "≈ " + usd(delta, rate) }
     if len(tx.Vin) == 0 || tx.Vin[0].Coinbase == "" {
         for _, in := range tx.Vin {
-            v.Inputs = append(v.Inputs, inputPart(in))
+            var p = inputPart(in)
+            if in.PrevOut != nil {
+                p.Amount, p.USD = flowAmounts(toSat(in.PrevOut.Value), rate, rateOK, lang)
+            }
+            v.Inputs = append(v.Inputs, p)
         }
     }
     for _, out := range tx.Vout {
-        v.Outputs = append(v.Outputs, addrPart(out.ScriptPubKey.Address))
+        var p = addrPart(out.ScriptPubKey.Address)
+        p.Amount, p.USD = flowAmounts(toSat(out.Value), rate, rateOK, lang)
+        v.Outputs = append(v.Outputs, p)
     }
     return v
 }
@@ -536,16 +557,35 @@ func txView(tx *core.Transaction, addr, lang string) app.Tx {
 // inputPart names one input's address the same way the rest of the bot does; a
 // coinbase has none, and a missing prevout reads as the non-standard
 // placeholder rather than as an address nothing can open.
-func inputPart(in core.Vin) app.Part {
-    if in.PrevOut == nil { return app.Part{Text: "(non-standard)"} }
+func inputPart(in core.Vin) app.FlowPart {
+    if in.PrevOut == nil { return app.FlowPart{Text: "(non-standard)"} }
     return addrPart(in.PrevOut.ScriptPubKey.Address)
 }
 
-// addrPart is one address on either side of a transaction view: clickable when
+// addrPart is one address on either side of a transaction flow: clickable when
 // it is an address, plain text when it is not.
-func addrPart(a string) app.Part {
-    if a == "" || a == "(non-standard)" { return app.Part{Text: "(non-standard)"} }
-    return app.Part{Text: short(a), Id: a}
+func addrPart(a string) app.FlowPart {
+    if a == "" || a == "(non-standard)" { return app.FlowPart{Text: "(non-standard)"} }
+    return app.FlowPart{Text: short(a), Id: a}
+}
+
+// usdRate is the rate a transaction flow's USD estimates use: the rate nearest
+// a confirmed transaction's time, or the latest stored rate for a mempool one,
+// which has no confirmed time to look a historical rate up at.
+func usdRate(at time.Time, current bool) (float64, bool) {
+    if current { return rates.Last() }
+    var rate, ok = rates.At(at)
+    if !ok { return rates.Last() }
+    return rate, true
+}
+
+// flowAmounts formats the amount one side of a transaction flow moved and its
+// USD estimate: amountText's sats/BTC figure, and the dollar value under it when
+// a rate is known. The rate is computed once per transaction, so every address
+// of one flow reads the same price.
+func flowAmounts(sat int64, rate float64, rateOK bool, lang string) (string, string) {
+    if !rateOK { return amountText(sat, lang), "" }
+    return amountText(sat, lang), "≈ " + usd(sat, rate)
 }
 
 // addressStats sums an address's on-chain history from its transactions: total
