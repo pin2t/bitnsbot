@@ -69,9 +69,9 @@ func TestAmountLineFallback(t *testing.T) {
     }
 }
 
-// flowAmounts renders one side of a transaction flow: the sats/BTC figure with
-// a USD estimate under it, and the figure alone when no rate is stored.
-func TestFlowAmounts(t *testing.T) {
+// flowAmount renders one side of a transaction flow: the sats/BTC figure with
+// the USD estimate in-line, and the figure alone when no rate is stored.
+func TestFlowAmount(t *testing.T) {
     if err := openDB(filepath.Join(t.TempDir(), "watches.db")); err != nil {
         t.Fatalf("openDB: %v", err)
     }
@@ -79,13 +79,11 @@ func TestFlowAmounts(t *testing.T) {
     if err := rates.Init(db); err != nil {
         t.Fatalf("rates.Init: %v", err)
     }
-    var amount, usdText = flowAmounts(150000000, 60000, true, "")
-    if amount != "1.5 BTC" || usdText != "≈ $90,000" {
-        t.Fatalf("flowAmounts = %q %q, want 1.5 BTC and ≈ $90,000", amount, usdText)
+    if got := flowAmount(150000000, 60000, true, ""); got != "1.5 BTC (≈ $90,000)" {
+        t.Fatalf("flowAmount = %q, want 1.5 BTC (≈ $90,000)", got)
     }
-    amount, usdText = flowAmounts(9990000, 0, false, "")
-    if amount != "0.0999 BTC" || usdText != "" {
-        t.Fatalf("flowAmounts without a rate = %q %q, want the amount alone", amount, usdText)
+    if got := flowAmount(9990000, 0, false, ""); got != "0.0999 BTC" {
+        t.Fatalf("flowAmount without a rate = %q, want the amount alone", got)
     }
 }
 

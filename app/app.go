@@ -449,15 +449,13 @@ type Part struct {
     Href string
 }
 
-// FlowPart is one address on a side of a transaction's two-sided flow. Amount is
-// the sats/BTC figure shown under the address and USD its dollar estimate, both
-// empty when there is nothing to say — a coinbase input has no spending
-// address, and a flow with no stored rate still shows the amount alone.
+// FlowPart is one address on a side of a transaction's two-sided flow. Amount
+// is the sats/BTC line shown under the address, with its dollar estimate
+// in-line when a rate is known; empty when there is nothing to say.
 type FlowPart struct {
     Text   string
     Id     string
     Amount string
-    USD    string
 }
 
 // Info is a details page — a block, a transaction or an address. Title and Rows
@@ -604,7 +602,8 @@ type Addrs struct {
 // the card's title row shows, a tap on it opens the transaction's own page —
 // the card's two sides are FlowParts, so an address is tappable exactly like a
 // row of the details page; a part with no Id — a non-standard output, say — is
-// plain text.
+// plain text. The card's flow shows the addresses alone: the per-address
+// amount lines belong to the transaction details page.
 type Tx struct {
     Time    string
     Amount  string
