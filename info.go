@@ -134,12 +134,12 @@ func txPairs(ctx context.Context, lang string, txid string) (txData, bool) {
     out.ids = append(out.ids, firstN(outputs, shownAddrs)...)
     for i, a := range inputs {
         var p = addrPart(a)
-        p.Amount, p.USD = flowAmounts(inSats[i], rate, rateOK, lang)
+        p.Amount = flowAmount(inSats[i], rate, rateOK, lang)
         out.inputs = append(out.inputs, p)
     }
     for _, v := range tx.Vout {
         var p = addrPart(addressOf(v))
-        p.Amount, p.USD = flowAmounts(toSat(v.Value), rate, rateOK, lang)
+        p.Amount = flowAmount(toSat(v.Value), rate, rateOK, lang)
         out.outputs = append(out.outputs, p)
     }
     out.canonical, out.confirmed = tx.Txid, tx.Confirmations > 0
@@ -573,13 +573,13 @@ func usdRate(at time.Time, current bool) (float64, bool) {
     return rate, true
 }
 
-// flowAmounts formats the amount one side of a transaction flow moved and its
-// USD estimate: amountText's sats/BTC figure, and the dollar value under it when
-// a rate is known. The rate is computed once per transaction, so every address
-// of one flow reads the same price.
-func flowAmounts(sat int64, rate float64, rateOK bool, lang string) (string, string) {
-    if !rateOK { return amountText(sat, lang), "" }
-    return amountText(sat, lang), "≈ " + usd(sat, rate)
+// flowAmount formats the amount one side of a transaction flow moved: amountText's
+// sats/BTC figure with the dollar value in-line when a rate is known, the way
+// amountLine prints the bot's own Amount row. The rate is computed once per
+// transaction, so every address of one flow reads the same price.
+func flowAmount(sat int64, rate float64, rateOK bool, lang string) string {
+    if !rateOK { return amountText(sat, lang) }
+    return amountText(sat, lang) + " (≈ " + usd(sat, rate) + ")"
 }
 
 // addressStats sums an address's on-chain history from its transactions: total

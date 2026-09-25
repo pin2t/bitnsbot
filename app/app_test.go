@@ -163,9 +163,9 @@ func (s fakeSource) AddrTxs(lang, addr string, from int) Txs {
 func liveTx() map[string]Info {
     return map[string]Info{
         liveTxid: {OK: true, Confirmed: true, Title: "32e43e...870b16",
-            Inputs:  []FlowPart{{Text: "bc1qxy...dayd2g", Id: liveAddress, Amount: "0.1 BTC", USD: "≈ $6,614"}},
+            Inputs:  []FlowPart{{Text: "bc1qxy...dayd2g", Id: liveAddress, Amount: "0.1 BTC (≈ $6,614)"}},
             Outputs: []FlowPart{{Text: "1A1zP1...DivfNa", Id: "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa",
-                Amount: "0.0999 BTC", USD: "≈ $6,608"},
+                Amount: "0.0999 BTC (≈ $6,608)"},
                 {Text: "bc1qxy...dayd2g", Id: liveAddress}},
             Rows: []Field{
                 {Label: "Confirmations", Value: "412 (block #963268)", Parts: []Part{
@@ -1198,10 +1198,8 @@ func TestTxDetailsRender(t *testing.T) {
         `<span class="lnk" hx-get="search?q=bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh&from=blocks" hx-target="#blocklist" hx-swap="outerHTML">bc1qxy...dayd2g</span>`,
         `<span class="lnk" hx-get="search?q=1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa&from=blocks" hx-target="#blocklist" hx-swap="outerHTML">1A1zP1...DivfNa</span>`,
         `<span class="tcentry">`,
-        `<span class="tcamt">0.1 BTC</span>`,
-        `<span class="tcusd">≈ $6,614</span>`,
-        `<span class="tcamt">0.0999 BTC</span>`,
-        `<span class="tcusd">≈ $6,608</span>`} {
+        `<span class="tcamt">0.1 BTC (≈ $6,614)</span>`,
+        `<span class="tcamt">0.0999 BTC (≈ $6,608)</span>`} {
         if !strings.Contains(body, want) {
             t.Errorf("transaction page's flow is missing %q", want)
         }
@@ -1229,7 +1227,6 @@ func TestTxFlowSharesCardLayout(t *testing.T) {
         `.tcarrow { align-self: center;`,
         `.tcentry { display: flex; flex-direction: column; gap: 1px; }`,
         `.tcamt { font-size: 0.75rem; }`,
-        `.tcusd { font-size: 0.75rem; color: var(--hint); }`,
         `.det .flow .lnk { color: var(--link); cursor: pointer; }`,
     } {
         if !strings.Contains(body, want) {
