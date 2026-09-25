@@ -230,6 +230,13 @@
   .wsec:first-child { margin-top: 0; }
   .blk .alias, .blk .amt { flex: 1; min-width: 0; font-size: 0.8125rem; text-align: right; color: var(--hint);
                 overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* The mempool page's live list: the same cards as the block list, the
+     amount after the id and the arrival time on the right. */
+  .blk .mpamt { font-size: 0.8125rem; white-space: nowrap; }
+  .blk .ago { flex: 1; min-width: 0; font-size: 0.8125rem; text-align: right; color: var(--hint);
+              overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mplist .blk ~ .mpwait { display: none; }
+  .fees .note .lnk { color: var(--link); cursor: pointer; }
   .more { padding: 11px 0 3px; text-align: center; font-size: 0.8125rem; color: var(--hint); }
 
   /* An address page's transaction views, below the fields, inside the page's
@@ -481,6 +488,30 @@
     if (e.detail.elt && e.detail.elt.closest && e.detail.elt.closest("#aliasdlg")) { closeAlias(); }
   });
 
+  // The mempool list is prepended to every couple of seconds, so it is trimmed
+  // here to the hundred rows the server keeps (mempoolKept in main), and its
+  // arrival times are kept fresh from each row's data-ts — rendered once by the
+  // server, they would otherwise read "just now" for ever. Seconds matter on a
+  // list this live, which the server's own relative() does not count in.
+  var mpKept = 100;
+  function mpRefresh() {
+    var list = document.getElementById("mplist");
+    if (!list) { return; }
+    var rows = list.querySelectorAll(".blk");
+    for (var i = mpKept; i < rows.length; i++) { rows[i].remove(); }
+    if (!(window.Intl && Intl.RelativeTimeFormat)) { return; }
+    var fmt = new Intl.RelativeTimeFormat(list.dataset.lang || undefined, { style: "short", numeric: "always" });
+    var now = Date.now() / 1000;
+    list.querySelectorAll(".ago[data-ts]").forEach(function(a) {
+      var s = Math.max(0, Math.round(now - Number(a.dataset.ts)));
+      a.textContent = s < 60 ? fmt.format(-s, "second")
+                    : s < 3600 ? fmt.format(-Math.floor(s / 60), "minute")
+                    : fmt.format(-Math.floor(s / 3600), "hour");
+    });
+  }
+  document.body.addEventListener("htmx:afterSwap", mpRefresh);
+  setInterval(mpRefresh, 1000);
+
   // A miner chart's headline shows the period's figure until a bar is pointed at
   // or tapped, and then that bar's. A tap holds it — there is no hover on a phone —
   // and tapping the same bar again lets it go. Every listener sits on the body,
@@ -526,7 +557,7 @@
   <div class="tier"><div class="label">1 hora</div><div class="rate">{{.Hour.Rate}} <span class="unit">sat/vB</span></div><div class="usd">{{.Hour.USD}}</div></div>
   <div class="tier"><div class="label">2+ horas</div><div class="rate">{{.Slow.Rate}} <span class="unit">sat/vB</span></div><div class="usd">{{.Slow.USD}}</div></div>
 </div>
-<p class="note">proyectado con {{.TxCount}} transacciones del mempool</p>
+<p class="note">proyectado con <span class="lnk" hx-get="mempool?from=home" hx-target="#blocklist" hx-swap="outerHTML">{{.TxCount}}</span> transacciones del mempool</p>
 {{- else}}
 <p class="note">comisiones no disponibles</p>
 {{- end}}{{end}}
@@ -823,3 +854,54 @@
   <div class="more" hx-get="moreaddrtxs?a={{.Addr | urlquery}}&from={{.Next}}&origin={{$.From | urlquery}}"
        hx-trigger="intersect once" hx-swap="outerHTML">cargando…</div>
 {{- end}}{{end}}
+
+{{/* The mempool page: the fields /mempool prints, and under them the live list
+     of arrivals, newest first. It is never cached — see uncached in app.go. */}}
+{{define "mempool"}}<div id="blocklist" class="blocklist det">
+  <div class="head">
+    <button hx-get="{{.Back}}" hx-target="#blocklist" hx-swap="outerHTML">&lt; Atrás</button>
+    <h1>Mempool</h1>
+    <span class="side">
+      <button class="ghost" tabindex="-1" aria-hidden="true">&lt; Atrás</button>
+    </span>
+  </div>
+{{- if .OK}}
+  <div class="scroll">
+  <div class="fields">
+  {{- range .Rows}}
+    <div class="f"><span class="lbl">{{.Label}}</span><span class="val">{{.Value}}</span></div>
+  {{- end}}
+  </div>
+  <div id="mplist" class="txlist mplist" data-lang="{{.Lang}}">
+  {{- template "mprows" .}}
+    <div class="empty mpwait">esperando transacciones…</div>
+  </div>
+  </div>
+{{- else}}
+  <div class="empty">{{if .Rows}}{{(index .Rows 0).Label}}{{else}}sin resultados{{end}}</div>
+{{- end}}
+</div>{{end}}
+
+{{/* The sentinel above the rows, which a throttled mempool event replaces with
+     itself and the arrivals since — the block list's blocktop, keyed by the
+     server's sequence number rather than a height. */}}
+{{define "mptop"}}
+    <div class="new" hx-get="newmempool?after={{.Top}}"
+         hx-trigger="sse:mempool, every 30s" hx-swap="outerHTML"></div>{{end}}
+
+{{define "mprows"}}{{template "mptop" .}}
+  {{- range .Txs}}
+    <div class="blk" id="mp{{.Id}}">
+      <span class="h lnk" hx-get="tx?id={{.Id}}&from=mempool"
+            hx-target="#blocklist" hx-swap="outerHTML">{{.Short}}</span>
+      <span class="mpamt">{{.Amount}}</span>
+      <span class="ago" data-ts="{{.At}}">{{.Ago}}</span>
+    </div>
+  {{- end}}{{end}}
+
+{{/* What the sentinel is replaced with: the new rows, and a delete for each
+     listed transaction a block has mined since. */}}
+{{define "newmempool"}}{{template "mprows" .}}
+  {{- range .Gone}}
+    <div id="mp{{.}}" hx-swap-oob="delete"></div>
+  {{- end}}{{end}}

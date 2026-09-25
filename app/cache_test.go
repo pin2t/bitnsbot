@@ -81,6 +81,11 @@ func (s *countingSource) SetWatch(chat int64, kind, id string, on bool) (bool, e
 
 func (s *countingSource) SetAlias(chat int64, kind, id, alias string) (bool, error) { return true, nil }
 
+func (s *countingSource) Mempool(lang string, after int64) Mempool {
+    s.hit("mempool")
+    return liveMempool(after)
+}
+
 func (s *countingSource) Watches(chat int64) Watches {
     s.hit("watches")
     return Watches{OK: true}
