@@ -539,17 +539,11 @@ func txView(tx *core.Transaction, addr, lang string) app.Tx {
     if rateOK { v.USD = "≈ " + usd(delta, rate) }
     if len(tx.Vin) == 0 || tx.Vin[0].Coinbase == "" {
         for _, in := range tx.Vin {
-            var p = inputPart(in)
-            if in.PrevOut != nil {
-                p.Amount, p.USD = flowAmounts(toSat(in.PrevOut.Value), rate, rateOK, lang)
-            }
-            v.Inputs = append(v.Inputs, p)
+            v.Inputs = append(v.Inputs, inputPart(in))
         }
     }
     for _, out := range tx.Vout {
-        var p = addrPart(out.ScriptPubKey.Address)
-        p.Amount, p.USD = flowAmounts(toSat(out.Value), rate, rateOK, lang)
-        v.Outputs = append(v.Outputs, p)
+        v.Outputs = append(v.Outputs, addrPart(out.ScriptPubKey.Address))
     }
     return v
 }

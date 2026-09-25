@@ -1301,6 +1301,9 @@ func TestAddressDetailsShowsTxViews(t *testing.T) {
             t.Errorf("transaction views are missing %q", want)
         }
     }
+    if strings.Contains(body, "tcentry") || strings.Contains(body, "tcamt") || strings.Contains(body, "tcusd") {
+        t.Error("a transaction card shows only addresses in its flow; the per-address amount lines belong to the transaction details page")
+    }
     if n := strings.Count(body, `class="txcard"`); n != 5 {
         t.Errorf("first batch = %d cards, want 5", n)
     }

@@ -604,7 +604,8 @@ type Addrs struct {
 // the card's title row shows, a tap on it opens the transaction's own page —
 // the card's two sides are FlowParts, so an address is tappable exactly like a
 // row of the details page; a part with no Id — a non-standard output, say — is
-// plain text.
+// plain text. The card's flow shows the addresses alone: the per-address
+// amount lines belong to the transaction details page.
 type Tx struct {
     Time    string
     Amount  string
