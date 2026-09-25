@@ -286,7 +286,7 @@ func startZMQ(ctx context.Context, endpoints []string, b *bot) error {
             switch string(msg.Frames[0]) {
             case "hashblock":
                 var hash = hex.EncodeToString(msg.Frames[1])
-                logging.Info("zmq: hashblock: %s", hash)
+                logging.Info("zmq: new block hash %s", hash)
                 go processConfirms(b, hash)
                 signals.Send(signals.Block)
             case "rawtx":
@@ -295,7 +295,6 @@ func startZMQ(ctx context.Context, endpoints []string, b *bot) error {
                     logging.Warn("zmq: could not parse a %d-byte transaction", len(msg.Frames[1]))
                     continue
                 }
-                logging.Info("zmq: rawtx: %s", hex.EncodeToString(msg.Frames[1][:20]))
                 recordMempoolTx(msg.Frames[1], tx)
                 if !anyWatched() || !matches(tx) { continue }
                 go broadcast(hex.EncodeToString(msg.Frames[1]))

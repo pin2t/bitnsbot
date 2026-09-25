@@ -382,11 +382,9 @@ func events(w http.ResponseWriter, r *http.Request, closing <-chan struct{}) {
         case <-closing:            return
         case name := <-ch:
             fmt.Fprintf(w, "event: %s\ndata: 1\n\n", name)
-            logging.Info("mini app: event %s to %s", name, r.RemoteAddr)
             if rc.Flush() != nil { return }
         case <-t.C:
             fmt.Fprint(w, ": keepalive\n\n")
-            logging.Info("mini app: keepalive")
             if rc.Flush() != nil { return }
         }
     }
