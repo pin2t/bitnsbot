@@ -270,6 +270,41 @@ var keepAlive = 30 * time.Second
 var subsMu sync.Mutex
 var subs = map[chan string]struct{}{}
 
+// throttled are the events Notify holds to at most one per interval. The
+// mempool list changes several times a second on mainnet, and each event makes
+// every open page fetch; one every two seconds keeps the list live without
+// that.
+var throttled = map[string]time.Duration{"mempool": 2 * time.Second}
+
+var throttleMu sync.Mutex
+var throttleLast = map[string]time.Time{}
+var throttlePending = map[string]bool{}
+
+// throttle reports whether event may go out now. When it may not, it arranges
+// for one to go out when the interval is up — a change that arrived inside the
+// interval is announced late rather than lost — and every call until then folds
+// into that one.
+func throttle(event string) bool {
+    var every, ok = throttled[event]
+    if !ok { return true }
+    throttleMu.Lock()
+    defer throttleMu.Unlock()
+    if throttlePending[event] { return false }
+    var wait = every - time.Since(throttleLast[event])
+    if wait <= 0 {
+        throttleLast[event] = time.Now()
+        return true
+    }
+    throttlePending[event] = true
+    time.AfterFunc(wait, func() {
+        throttleMu.Lock()
+        throttlePending[event], throttleLast[event] = false, time.Now()
+        throttleMu.Unlock()
+        announce(event)
+    })
+    return false
+}
+
 // Notify tells every connected page that a card's data changed. main calls it
 // when a cache is actually refreshed, so the page updates when the numbers move
 // rather than on a timer that mostly re-fetches the same values.
@@ -279,7 +314,13 @@ var subs = map[chan string]struct{}{}
 //
 // Sends are non-blocking: a slow or dead client must not stall the caller, which
 // is a background refresh goroutine.
+//
+// An event in throttled goes out at most once per its interval.
 func Notify(event string) {
+    if throttle(event) { announce(event) }
+}
+
+func announce(event string) {
     invalidate(event)
     subsMu.Lock()
     defer subsMu.Unlock()
@@ -537,6 +578,34 @@ type Bar struct {
     Label  string
     Tick   string
 }
+// MempoolTx is one row of the live mempool list: the transaction, what its
+// outputs pay in total, and when it arrived — At as a unix time the page keeps
+// the relative time fresh from, Ago that time as the server first renders it.
+type MempoolTx struct {
+    Id     string
+    Short  string
+    Amount string
+    At     int64
+    Ago    string
+}
+
+// Mempool is the mempool page, or what an open one prepends. Rows are the
+// fields /mempool prints, set only on the whole page. Txs are arrivals newest
+// first, and Gone the listed ones a block has mined since, whose rows the page
+// drops. Top is the sequence number the sentinel above the list asks for
+// anything newer than; More says the page must replace its list rather than
+// prepend to it. Lang and Back are filled in by the handler.
+type Mempool struct {
+    OK   bool
+    Rows []Field
+    Txs  []MempoolTx
+    Gone []string
+    Top  int64
+    More bool
+    Lang string
+    Back string
+}
+
 // Blocks is one batch of the recent-block list, newest first. Top and Next are
 // the heights the two sentinels ask about, so the template does no arithmetic.
 type Blocks struct {
@@ -694,6 +763,7 @@ type Source interface {
     AddrTxs(lang, address string, from int) Txs
     MinerInfo(lang, name string) Info
     MinerChart(lang, name, data, period string) Chart
+    Mempool(lang string, after int64) Mempool
     Watches(chat int64) Watches
     Watching(chat int64, kind, id string) bool
     SetWatch(chat int64, kind, id string, on bool) (bool, error)
@@ -974,6 +1044,13 @@ func IsTxID(hash string) bool {
 // an id tapped inside a details page passes that page's own origin, so
 // Back still returns where the reader started.
 //
+// The mempool page lives in the Blocks tab's container like the other details
+// pages, and is opened from Home, so Back returns there. It and what its
+// sentinel prepends are rendered on every request: the list moves every few
+// seconds. A prepend that overflowed what main keeps replaces the list whole.
+//
+// A transaction opened from the mempool list goes Back to the list.
+//
 // Shutdown calls this before it starts waiting, so the streams end and the
 // connections go idle instead of holding it open until the deadline.
 func Start(addr, token string, src Source) *http.Server {
@@ -1066,7 +1143,35 @@ func Start(addr, token string, src Source) *http.Server {
             }
         }
         var back, swap = backToList(r)
+        if r.URL.Query().Get("from") == "mempool" { back, swap = "mempool", "outerHTML" }
         details(w, r, blocksSlot, back, swap, "tx", id, func(lang string) Info { return src.TxInfo(lang, id) })
+    }))
+    mux.HandleFunc("/mempool", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
+        var started = time.Now().UnixNano()
+        var lang = language(r)
+        var to = r.URL.Query().Get("from")
+        if !isPanel(to) { to = "home" }
+        var mp = src.Mempool(lang, -1)
+        mp.Lang, mp.Back = lang, "blocks?to="+to
+        w.Header().Set("HX-Retarget", "#"+blocksSlot)
+        w.Header().Set("HX-Trigger", showtab(tabOf(blocksSlot)))
+        uncached(w, r, started, lang, "mempool", mp)
+    }))
+    mux.HandleFunc("/newmempool", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
+        var started = time.Now().UnixNano()
+        var after, err = strconv.ParseInt(r.URL.Query().Get("after"), 10, 64)
+        if err != nil || after < 0 {
+            http.Error(w, "no such transaction", http.StatusBadRequest)
+            return
+        }
+        var lang = language(r)
+        var mp = src.Mempool(lang, after)
+        mp.Lang = lang
+        if mp.More {
+            w.Header().Set("HX-Retarget", "#mplist")
+            w.Header().Set("HX-Reswap", "innerHTML")
+        }
+        uncached(w, r, started, lang, "newmempool", mp)
     }))
     mux.HandleFunc("/miner", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
         var name = strings.TrimSpace(r.URL.Query().Get("name"))
@@ -1234,6 +1339,20 @@ func Start(addr, token string, src Source) *http.Server {
         }
     }()
     return srv
+}
+
+// uncached renders a page that must not be served from memory — the mempool
+// changes every few seconds, faster than any entry here would live.
+func uncached(w http.ResponseWriter, r *http.Request, started int64, lang, name string, data any) {
+    var b = render(lang, name, data)
+    if b == nil {
+        http.Error(w, "internal server error", http.StatusInternalServerError)
+        return
+    }
+    w.Header().Set("Content-Type", "text/html; charset=utf-8")
+    w.Header().Set("Content-Language", lang)
+    w.Write(b)
+    logging.Info("mini app: %s %s [%s] [%.2f ms]", r.Method, r.RequestURI, lang, float64(time.Now().UnixNano() - started) / 1e6)
 }
 
 // isValid verifies the signed payload Telegram hands the Mini App's

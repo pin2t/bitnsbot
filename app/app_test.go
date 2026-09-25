@@ -59,7 +59,11 @@ type fakeSource struct {
     al map[string][]Addr
     // at is one address's transaction views, newest first, for the same reason.
     at map[string][]Tx
+    // mp is the mempool page by the after it answers: -1 for the whole page.
+    mp map[int64]Mempool
 }
+
+func (s fakeSource) Mempool(lang string, after int64) Mempool { return s.mp[after] }
 
 func (s fakeSource) Fees() Fees       { return s.f }
 func (s fakeSource) Network() Network { return s.n }

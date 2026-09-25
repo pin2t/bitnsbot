@@ -1,6 +1,7 @@
 package main
 
 import "context"
+import "crypto/sha256"
 import "encoding/binary"
 import "encoding/hex"
 import "fmt"
@@ -101,17 +102,25 @@ func recordOutpoints(txid string, vouts []core.Vout) {
 }
 
 // parsedTx is the little that matching needs from a serialized transaction: the
-// outpoints it spends and the scripts it pays.
+// outpoints it spends and the scripts it pays — plus what the Mini App's live
+// mempool list shows of it: the total its outputs pay, whether it is a
+// coinbase, and where the outputs end, which txid needs to find the
+// non-witness serialization.
 type parsedTx struct {
     inputs        []outpoint
     outputScripts []string
+    amount        int64
+    coinbase      bool
+    segwit        bool
+    outputsEnd    int
 }
 
 // parseTx walks a serialized transaction far enough to read its inputs and
-// outputs, skipping the witness and locktime it has no use for. It deliberately
-// does not compute the txid (that needs a double SHA-256 over the non-witness
-// serialization); the txid is filled in by the caller from the ZMQ topic or the
-// RPC path, and is only used to key the outpoints this transaction creates.
+// outputs, skipping the witness and locktime it has no use for. It does not
+// compute the txid — matching never needs it, and txid is what does that for
+// the one caller that does.
+//
+// A coinbase is its one input spending the null outpoint.
 //
 // version
 //
@@ -125,12 +134,13 @@ func parseTx(raw []byte) (*parsedTx, bool) {
     r.skip(4)
     var count, ok = r.varInt()
     if !ok { return nil, false }
-    if count == 0 {
+    var segwit = count == 0
+    if segwit {
         r.skip(1)
         count, ok = r.varInt()
         if !ok { return nil, false }
     }
-    var tx = &parsedTx{}
+    var tx = &parsedTx{segwit: segwit}
     for i := uint64(0); i < count; i++ {
         var hash, hashOK = r.bytes(32)
         var index, indexOK = r.uint32()
@@ -141,10 +151,13 @@ func parseTx(raw []byte) (*parsedTx, bool) {
         r.skip(4)
         tx.inputs = append(tx.inputs, outpoint{reverseHex(hash), index})
     }
+    tx.coinbase = len(tx.inputs) == 1 && tx.inputs[0].vout == 0xffffffff && strings.Trim(tx.inputs[0].txid, "0") == ""
     var outCount, outOK = r.varInt()
     if !outOK { return nil, false }
     for i := uint64(0); i < outCount; i++ {
-        r.skip(8)
+        var value, valueOK = r.bytes(8)
+        if !valueOK { return nil, false }
+        tx.amount += int64(binary.LittleEndian.Uint64(value))
         var scriptLen, lenOK = r.varInt()
         if !lenOK { return nil, false }
         var script, scriptOK = r.bytes(int(scriptLen))
@@ -152,7 +165,27 @@ func parseTx(raw []byte) (*parsedTx, bool) {
         tx.outputScripts = append(tx.outputScripts, hex.EncodeToString(script))
     }
     if r.bad { return nil, false }
+    tx.outputsEnd = r.pos
     return tx, true
+}
+
+// txid is the double SHA-256 of a transaction's non-witness serialization,
+// printed the way Bitcoin displays a hash. A segwit transaction drops the
+// two-byte marker and flag and everything between its outputs and the
+// four-byte locktime at the end. "" when raw stops before the locktime, which
+// parseTx itself tolerates.
+func txid(raw []byte, tx *parsedTx) string {
+    if len(raw) < tx.outputsEnd+4 { return "" }
+    var h = sha256.New()
+    if tx.segwit {
+        h.Write(raw[:4])
+        h.Write(raw[6:tx.outputsEnd])
+        h.Write(raw[len(raw)-4:])
+    } else {
+        h.Write(raw[:tx.outputsEnd+4])
+    }
+    var second = sha256.Sum256(h.Sum(nil))
+    return reverseHex(second[:])
 }
 
 // reverseHex renders a 32-byte hash the way Bitcoin displays it: serialized
@@ -211,7 +244,10 @@ func (r *reader) varInt() (uint64, bool) {
     }
 }
 
-// startZMQ subscribes to Core's block and mempool notifications. Losing messages
+// startZMQ subscribes to Core's block and mempool notifications. Every rawtx is
+// parsed, watched or not, because the Mini App's live mempool list shows each
+// one; a transaction that does not parse is skipped rather than ending the
+// loop, which would silently stop every notification after it. Losing messages
 // while the bot is down is accepted: the block cache backfills on startup and
 // pending confirmation watches were never persisted anyway.
 //
@@ -253,13 +289,13 @@ func startZMQ(ctx context.Context, endpoints []string, b *bot) error {
                 go processConfirms(b, hash)
                 signals.Send(signals.Block)
             case "rawtx":
-                if !anyWatched() { continue }
                 var tx, ok = parseTx(msg.Frames[1])
                 if !ok {
                     logging.Warn("zmq: could not parse a %d-byte transaction", len(msg.Frames[1]))
-                    return
+                    continue
                 }
-                if !matches(tx) { continue }
+                recordMempoolTx(msg.Frames[1], tx)
+                if !anyWatched() || !matches(tx) { continue }
                 go broadcast(hex.EncodeToString(msg.Frames[1]))
             }
         }
