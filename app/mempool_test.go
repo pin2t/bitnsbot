@@ -11,10 +11,12 @@ const mpTx2 = "bb000000000000000000000000000000000000000000000000000000000000b2"
 const mpTx3 = "cc000000000000000000000000000000000000000000000000000000000000c3"
 
 // liveMempool is the page with two arrivals, and what an open page at sequence
-// 7 prepends: one more arrival, and one of the listed two mined since.
+// 7 prepends: one more arrival, one of the listed two mined since, and the
+// fields as they stand now.
 func liveMempool(after int64) Mempool {
     if after >= 0 {
         return Mempool{OK: true, Top: 9, Gone: []string{mpTx1},
+            Rows: []Field{{Label: "Transactions", Value: "36 553"}, {Label: "Flow rate", Value: "4.3 tx/sec"}},
             Txs: []MempoolTx{{Id: mpTx3, Short: "cc0000...0000c3", Amount: "7 000 sats", At: 1700000009, Ago: "just now"}}}
     }
     return Mempool{OK: true, Top: 7,
@@ -81,8 +83,10 @@ func TestMempoolPage(t *testing.T) {
     }
 }
 
-// A prepend carries the new rows under a fresh sentinel, and deletes the rows
-// of the transactions mined since.
+// A prepend carries the new rows under a fresh sentinel, deletes the rows of
+// the transactions mined since, and swaps the fields in over the page's own —
+// which the page therefore has to carry under the same id. A prepend with no
+// fields leaves the page's alone.
 func TestNewMempoolPrepends(t *testing.T) {
     var h = handler(t, "TESTTOKEN", mempoolSource())
     var w = get(h, "/newmempool?after=7", freshInitData("TESTTOKEN"))
@@ -91,10 +95,23 @@ func TestNewMempoolPrepends(t *testing.T) {
     }
     var body = w.Body.String()
     for _, want := range []string{`hx-get="newmempool?after=9"`, `id="mp` + mpTx3 + `"`,
-        `<div id="mp` + mpTx1 + `" hx-swap-oob="delete"></div>`} {
+        `<div id="mp` + mpTx1 + `" hx-swap-oob="delete"></div>`,
+        `<div id="mpfields" class="fields" hx-swap-oob="true">`,
+        `<span class="lbl">Transactions</span><span class="val">36 553</span>`,
+        `<span class="lbl">Flow rate</span><span class="val">4.3 tx/sec</span>`} {
         if !strings.Contains(body, want) {
             t.Errorf("prepend is missing %q in %s", want, body)
         }
+    }
+    if page := get(h, "/mempool", freshInitData("TESTTOKEN")).Body.String(); !strings.Contains(page, `<div id="mpfields" class="fields">`) {
+        t.Errorf("the page's fields carry no id to swap over: %s", page)
+    }
+    var bare = mempoolSource()
+    var prepend = liveMempool(7)
+    prepend.Rows = nil
+    bare.mp[7] = prepend
+    if got := get(handler(t, "TESTTOKEN", bare), "/newmempool?after=7", freshInitData("TESTTOKEN")).Body.String(); strings.Contains(got, "mpfields") {
+        t.Errorf("a prepend with no fields swaps them: %s", got)
     }
     if strings.Contains(body, `<h1>`) || strings.Contains(body, mpTx2) {
         t.Errorf("prepend carries more than what is new: %s", body)
