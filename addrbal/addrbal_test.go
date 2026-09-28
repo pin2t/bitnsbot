@@ -15,6 +15,7 @@ import "time"
 import "database/sql"
 import _ "modernc.org/sqlite"
 import "bitnsbot/addrindex"
+import "bitnsbot/core"
 import "bitnsbot/core/coretest"
 import "bitnsbot/cursors"
 import "bitnsbot/signals"
@@ -29,7 +30,7 @@ var scriptPK = append(append([]byte{33}, pubkey...), 0xac)
 var scriptPKH = append([]byte{0x76, 0xa9, 20}, append(addrindex.Hash160(pubkey), 0x88, 0xac)...)
 var opReturn = []byte{0x6a, 0x04, 0xde, 0xad, 0xbe, 0xef}
 
-func pay(script []byte, sat int64) addrindex.Payment { return addrindex.Payment{Script: script, Sat: sat} }
+func pay(script []byte, sat int64) core.Payment { return core.Payment{Script: script, Sat: sat} }
 
 // chain is a node holding blocks, served over RPC the way a real one serves them.
 // A height with no block is an empty one, every getblock is recorded in fetched,
@@ -38,7 +39,7 @@ func pay(script []byte, sat int64) addrindex.Payment { return addrindex.Payment{
 type chain struct {
     mu      sync.Mutex
     tip     int
-    blocks  map[int][]addrindex.Tx
+    blocks  map[int][]core.Tx
     fetched []int
     fail    int
 }
@@ -55,7 +56,7 @@ func (c *chain) respond(method string, params []interface{}) (interface{}, error
         c.fetched = append(c.fetched, height)
         c.mu.Unlock()
         if height == c.fail { return nil, errors.New("node is busy") }
-        var amount = func(p addrindex.Payment) map[string]interface{} {
+        var amount = func(p core.Payment) map[string]interface{} {
             return map[string]interface{}{"value": float64(p.Sat) / 1e8, "scriptPubKey": map[string]string{"hex": hex.EncodeToString(p.Script)}}
         }
         var txs = []interface{}{}
@@ -122,14 +123,14 @@ func place(t *testing.T) int64 {
 // coinbase paid directly. Five blocks mined on top are inside the confirmations
 // the scan leaves alone, and the sixth is not.
 func firstChain() *chain {
-    return &chain{tip: 3 + confirmations, fail: -1, blocks: map[int][]addrindex.Tx{
-        0: {{Outputs: []addrindex.Payment{pay(scriptA, 50_0000_0000)}}},
-        1: {{Outputs: []addrindex.Payment{pay(scriptB, 50_0000_0000)}},
-            {Spent: []addrindex.Payment{pay(scriptA, 50_0000_0000)},
-                Outputs: []addrindex.Payment{pay(scriptC, 30_0000_0000), pay(scriptA, 19_9999_0000), pay(opReturn, 1000)}}},
-        2: {{Outputs: []addrindex.Payment{pay(scriptPK, 50_0000_0000)}}},
-        3: {{Spent: []addrindex.Payment{pay(scriptB, 50_0000_0000)}, Outputs: []addrindex.Payment{pay(scriptPKH, 49_9999_0000)}}},
-        4: {{Outputs: []addrindex.Payment{pay(scriptB, 1)}}},
+    return &chain{tip: 3 + confirmations, fail: -1, blocks: map[int][]core.Tx{
+        0: {{Outputs: []core.Payment{pay(scriptA, 50_0000_0000)}}},
+        1: {{Outputs: []core.Payment{pay(scriptB, 50_0000_0000)}},
+            {Spent: []core.Payment{pay(scriptA, 50_0000_0000)},
+                Outputs: []core.Payment{pay(scriptC, 30_0000_0000), pay(scriptA, 19_9999_0000), pay(opReturn, 1000)}}},
+        2: {{Outputs: []core.Payment{pay(scriptPK, 50_0000_0000)}}},
+        3: {{Spent: []core.Payment{pay(scriptB, 50_0000_0000)}, Outputs: []core.Payment{pay(scriptPKH, 49_9999_0000)}}},
+        4: {{Outputs: []core.Payment{pay(scriptB, 1)}}},
     }}
 }
 
@@ -177,8 +178,8 @@ func TestBuildFlushesAndResumes(t *testing.T) {
     }
     c.tip += 2
     c.fetched = nil
-    c.blocks[5] = []addrindex.Tx{{Spent: []addrindex.Payment{pay(scriptC, 30_0000_0000), pay(scriptA, 19_9999_0000), pay(scriptB, 1)},
-        Outputs: []addrindex.Payment{pay(scriptPKH, 49_9998_0000)}}}
+    c.blocks[5] = []core.Tx{{Spent: []core.Payment{pay(scriptC, 30_0000_0000), pay(scriptA, 19_9999_0000), pay(scriptB, 1)},
+        Outputs: []core.Payment{pay(scriptPKH, 49_9998_0000)}}}
     if err := Build(); err != nil { t.Fatal(err) }
     if slices.Sort(c.fetched); !slices.Equal(c.fetched, []int{4, 5}) {
         t.Errorf("second pass fetched %v, want [4 5]", c.fetched)

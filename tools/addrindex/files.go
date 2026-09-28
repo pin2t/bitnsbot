@@ -7,7 +7,7 @@ import "io"
 import "os"
 import "path/filepath"
 import "sort"
-import "bitnsbot/addrindex"
+import "bitnsbot/core"
 
 // magic is what precedes every block in a blk file — mainnet's network magic,
 // which is also how the reader tells a real record from the zero padding Core
@@ -114,15 +114,15 @@ func (b *blockReader) next() ([]byte, error) {
 //
 // It lives here rather than in the addrindex package because these files are the
 // one place a block is binary. Everything else reads blocks over RPC, already
-// decoded into an addrindex.Block.
+// decoded into an core.Block.
 //
 // block header
-func parseBlockOutputs(raw []byte) ([][]addrindex.Payment, bool) {
+func parseBlockOutputs(raw []byte) ([][]core.Payment, bool) {
     var r = &reader{buf: raw}
     r.skip(80)
     var txCount, ok = r.varInt()
     if !ok { return nil, false }
-    var result = make([][]addrindex.Payment, txCount)
+    var result = make([][]core.Payment, txCount)
     for i := uint64(0); i < txCount; i++ {
         var scripts, txOK = skipTxKeepOutputs(r)
         if !txOK { return nil, false }
@@ -141,7 +141,7 @@ func parseBlockOutputs(raw []byte) ([][]addrindex.Payment, bool) {
 // sequence
 //
 // locktime
-func skipTxKeepOutputs(r *reader) ([]addrindex.Payment, bool) {
+func skipTxKeepOutputs(r *reader) ([]core.Payment, bool) {
     r.skip(4)
     var inCount, ok = r.varInt()
     if !ok { return nil, false }
@@ -161,7 +161,7 @@ func skipTxKeepOutputs(r *reader) ([]addrindex.Payment, bool) {
     }
     var outCount, outOK = r.varInt()
     if !outOK { return nil, false }
-    var scripts = make([]addrindex.Payment, 0, outCount)
+    var scripts = make([]core.Payment, 0, outCount)
     for i := uint64(0); i < outCount; i++ {
         var sat, satOK = r.value()
         if !satOK { return nil, false }
@@ -169,7 +169,7 @@ func skipTxKeepOutputs(r *reader) ([]addrindex.Payment, bool) {
         if !lenOK { return nil, false }
         var script, scriptOK = r.bytes(int(scriptLen))
         if !scriptOK { return nil, false }
-        scripts = append(scripts, addrindex.Payment{Script: script, Sat: sat})
+        scripts = append(scripts, core.Payment{Script: script, Sat: sat})
     }
     if segwit {
         for i := uint64(0); i < inCount; i++ {

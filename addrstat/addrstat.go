@@ -130,7 +130,7 @@ func Collect() error {
 }
 
 // Update advances the statistics from the cursor to tip once and returns. The
-// blocks are the ones the address index is built from — addrindex.BlockAt, one
+// blocks are the ones the address index is built from — core.BlockAt, one
 // getblock at verbosity 3 a block, whose prevouts are where a spend's script and
 // amount, and so a transaction's fee, are written down.
 func Update(tip int64) error {
@@ -146,7 +146,7 @@ func Update(tip int64) error {
         if to > tip { to = tip }
         var deltas = map[string]*Stat{}
         for h := curr; h <= to; h++ {
-            var blk, berr = addrindex.BlockAt(ctx, int(h))
+            var blk, berr = core.BlockAt(ctx, int(h))
             if berr != nil { return berr }
             apply(deltas, blk)
         }
@@ -172,7 +172,7 @@ func Update(tip int64) error {
 // and this is what the live path already does.
 //
 // a coinbase spends nothing and pays no fee
-func apply(deltas map[string]*Stat, blk addrindex.Block) {
+func apply(deltas map[string]*Stat, blk core.Block) {
     watchedMu.RLock()
     defer watchedMu.RUnlock()
     for _, tx := range blk.Txs {

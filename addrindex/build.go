@@ -6,26 +6,6 @@ import "time"
 import "bitnsbot/core"
 import "bitnsbot/logging"
 
-// Block is what BlockAt reads for one height: when it was mined, and its
-// transactions in block order, each with the outputs it pays and the prevouts
-// its inputs spend. That is everything a touch needs — which scripts a
-// transaction pays, and which it spends from — without a single txid: a touch is
-// keyed by (height, tx index in block), not by txid — see addrindex.go. The
-// position in Txs is that index.
-type Block struct {
-    Hash string
-    Time int64
-    Txs  []Tx
-}
-
-// Tx is one transaction's two sides. A coinbase spends nothing, so its Spent is
-// empty rather than the transaction being left out, which is what keeps a
-// transaction's position in the block its index.
-type Tx struct {
-    Outputs []Payment
-    Spent   []Payment
-}
-
 // chunkSize bounds how many blocks are merged into the index per
 // transaction, the same reasoning as the miners collector: catching up hundreds
 // of thousands of blocks must not build one giant transaction, and a crash
@@ -61,7 +41,7 @@ func Update(tip int64) error {
         if to > int(tip) { to = int(tip) }
         var touches = map[string][]Touch{}
         for h := from; h <= to; h++ {
-            var blk, berr = BlockAt(ctx, h)
+            var blk, berr = core.BlockAt(ctx, h)
             if berr != nil { return berr }
             indexBlock(touches, uint32(h), blk)
         }
@@ -74,25 +54,16 @@ func Update(tip int64) error {
     return nil
 }
 
-// Payment is a scriptPubKey and the satoshi paid to it — one output of a
-// transaction, or one prevout an input spends. The index needs only the script;
-// a balance needs the amount too, so both are kept and each caller takes what it
-// uses.
-type Payment struct {
-    Script []byte
-    Sat    int64
-}
-
 // indexBlock extracts every touch in one block into the running chunk map: every
 // output's script is a funding touch, every spent prevout's script a spending
 // touch. Both are gathered per transaction and deduplicated there, so a
 // transaction touching the same address more than once — two outputs to one
 // address, or an address appearing in both an input and an output of the same
 // transaction — is recorded once.
-func indexBlock(touches map[string][]Touch, height uint32, blk Block) {
+func indexBlock(touches map[string][]Touch, height uint32, blk core.Block) {
     for txIndex, tx := range blk.Txs {
         var seen = map[string]bool{}
-        for _, side := range [][]Payment{tx.Outputs, tx.Spent} {
+        for _, side := range [][]core.Payment{tx.Outputs, tx.Spent} {
             for _, o := range side {
                 if p := string(Prefix(o.Script)); len(o.Script) > 0 && !seen[p] {
                     seen[p] = true
@@ -113,14 +84,14 @@ func indexBlock(touches map[string][]Touch, height uint32, blk Block) {
 // paid twice is paid twice, and a caller summing into its own table wants both.
 // Nor is an amount ever dropped, so a block's changes sum to the subsidy its
 // miner claimed. tools/addrindex's richbuild is the caller.
-func Balances(blk Block) []Payment {
+func Balances(blk core.Block) []core.Payment {
     var n int
     for _, tx := range blk.Txs { n += len(tx.Outputs) + len(tx.Spent) }
-    var out = make([]Payment, 0, n)
+    var out = make([]core.Payment, 0, n)
     for _, tx := range blk.Txs { out = append(out, tx.Outputs...) }
     for _, tx := range blk.Txs {
         for _, o := range tx.Spent {
-            out = append(out, Payment{Script: o.Script, Sat: -o.Sat})
+            out = append(out, core.Payment{Script: o.Script, Sat: -o.Sat})
         }
     }
     return out

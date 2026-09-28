@@ -3,6 +3,7 @@ package addrindex
 import "encoding/hex"
 import "reflect"
 import "testing"
+import "bitnsbot/core"
 
 // Real blocks from a Bitcoin Core v31.1.0 regtest node, as the per-transaction
 // output and spent-prevout scripts Core itself reported via getblock verbosity 3.
@@ -33,9 +34,9 @@ func blockCases() []blockCase {
 // two outputs to one script, and the same script spent from in the same
 // transaction, are one touch.
 func TestIndexBlockDedups(t *testing.T) {
-    var blk = Block{Txs: []Tx{{
-        Outputs: []Payment{{Script: []byte("scriptA")}, {Script: []byte("scriptA")}, {Script: []byte("scriptB")}},
-        Spent:   []Payment{{Script: []byte("scriptA")}},
+    var blk = core.Block{Txs: []core.Tx{{
+        Outputs: []core.Payment{{Script: []byte("scriptA")}, {Script: []byte("scriptA")}, {Script: []byte("scriptB")}},
+        Spent:   []core.Payment{{Script: []byte("scriptA")}},
     }}}
     var touches = map[string][]Touch{}
     indexBlock(touches, 42, blk)
@@ -69,20 +70,20 @@ func TestIndexBlockRealChain(t *testing.T) {
 }
 
 // testBlock is a fixture as a Block, built from the scripts the node reported.
-func testBlock(t *testing.T, name string) Block {
-    var payments = func(scripts []string) []Payment {
-        var out []Payment
-        for _, script := range scripts { out = append(out, Payment{Script: mustHex(t, script)}) }
+func testBlock(t *testing.T, name string) core.Block {
+    var payments = func(scripts []string) []core.Payment {
+        var out []core.Payment
+        for _, script := range scripts { out = append(out, core.Payment{Script: mustHex(t, script)}) }
         return out
     }
     for _, c := range blockCases() {
         if c.name != name { continue }
-        var blk = Block{Hash: name}
+        var blk = core.Block{Hash: name}
         for i := range c.outputs {
-            blk.Txs = append(blk.Txs, Tx{Outputs: payments(c.outputs[i]), Spent: payments(c.spent[i])})
+            blk.Txs = append(blk.Txs, core.Tx{Outputs: payments(c.outputs[i]), Spent: payments(c.spent[i])})
         }
         return blk
     }
     t.Fatalf("no fixture named %s", name)
-    return Block{}
+    return core.Block{}
 }

@@ -43,15 +43,15 @@ func Init(url, user, pass, cookie string) error {
         url: url, user: user, pass: pass, cookie: cookie,
         client: &http.Client{
             Transport: &http.Transport{
-                MaxIdleConns:        50,
+                MaxIdleConns:        20,
                 MaxIdleConnsPerHost: 10,
-                MaxConnsPerHost:     20,
+                MaxConnsPerHost:     10,
                 IdleConnTimeout:     60 * time.Second,
                 DisableKeepAlives:   false,
             },
         },
         blockTxidsCache:   lru.New[string, *BlockTxids](100),
-        blockVerboseCache: lru.New[string, *VerboseBlock](100),
+        blockVerboseCache: lru.New[string, *VerboseBlock](20),
     }
     if err := c.refreshAuth(); err != nil { return err }
     current.Store(c)
