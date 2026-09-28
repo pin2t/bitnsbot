@@ -867,10 +867,7 @@
   </div>
 {{- if .OK}}
   <div class="scroll">
-  <div class="fields">
-  {{- range .Rows}}
-    <div class="f"><span class="lbl">{{.Label}}</span><span class="val">{{.Value}}</span></div>
-  {{- end}}
+  <div id="mpfields" class="fields">{{template "mpfields" .Rows}}
   </div>
   <div id="mplist" class="txlist mplist" data-lang="{{.Lang}}">
   {{- template "mprows" .}}
@@ -899,9 +896,19 @@
     </div>
   {{- end}}{{end}}
 
-{{/* What the sentinel is replaced with: the new rows, and a delete for each
-     listed transaction a block has mined since. */}}
+{{define "mpfields"}}
+  {{- range .}}
+    <div class="f"><span class="lbl">{{.Label}}</span><span class="val">{{.Value}}</span></div>
+  {{- end}}{{end}}
+
+{{/* What the sentinel is replaced with: the new rows, a delete for each listed
+     transaction a block has mined since, and the fields as they stand now,
+     swapped in over the page's own so its counts move with its list. */}}
 {{define "newmempool"}}{{template "mprows" .}}
   {{- range .Gone}}
     <div id="mp{{.}}" hx-swap-oob="delete"></div>
+  {{- end}}
+  {{- if .Rows}}
+    <div id="mpfields" class="fields" hx-swap-oob="true">{{template "mpfields" .Rows}}
+    </div>
   {{- end}}{{end}}

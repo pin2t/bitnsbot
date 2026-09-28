@@ -488,7 +488,7 @@ func main() {
     startNotify(bot)
     miners.Start()
     startIndexUpdates()
-    startMempoolFlow()
+    startMempoolStats()
     startMempoolSummary()
     startMempoolFees()
     startNetworkStats()
@@ -956,24 +956,11 @@ func fees(bot *bot, chat int64) {
     send(bot, chat, msg + "\n\n<pre>" + strings.Join(lines, "\n") + "</pre>", nil)
 }
 
-// flowInterval is how often startMempoolFlow polls the mempool tx count. A
-// package var so tests can shrink it.
-var flowInterval = 10 * time.Second
-
-// The mempool flow rate — transactions per second flowing into the mempool, as
-// Δcount over the poll interval — and how much that rate changed since the last
-// poll. In-memory only (guarded by flowMu); never persisted.
-var flowMu sync.Mutex
-var flowRate float64    // current tx/sec
-var flowRateOK bool     // a rate has been computed (≥ 2 samples)
-var flowChange float64  // Δ rate since the previous rate
-var flowChangeOK bool   // a change has been computed (≥ 2 rates)
-var flowPrevCount int64
-var flowHaveCount bool
-
 // mempool summary values — total output amount and total fees across the whole
 // mempool, recomputed every 10 minutes in the background and printed by /mempool
-// with a tilde prefix to mark them as cached, not fresh.
+// with a tilde prefix to mark them as cached, not fresh. Between recomputes the
+// amount moves with every rawtx frame (recordMempoolTx); the fees do not, a raw
+// transaction not saying what it pays.
 var summaryMu sync.Mutex
 var summaryAmount int64
 var summaryFee int64
@@ -987,57 +974,11 @@ var cachedFees recommendedFees
 var cachedFeesOK bool
 var cachedFeesCount int // number of mempool entries the fees were projected from
 
-// updateFlow folds one mempool tx-count sample into the flow-rate state: the rate
-// is Δcount over flowInterval, and the change is Δrate (flowRate still holds the
-// previous rate when this runs). The first sample only sets the baseline. A
-// non-increase (count ≤ prev — most likely a just-mined block clearing the
-// mempool, which would skew the inflow measurement) keeps the last rate/change,
-// but still re-baselines the count so the next increase spans one clean interval.
-func updateFlow(count int64) {
-    flowMu.Lock()
-    defer flowMu.Unlock()
-    if !flowHaveCount {
-        flowPrevCount, flowHaveCount = count, true
-        return
-    }
-    var delta = count - flowPrevCount
-    flowPrevCount = count
-    if delta <= 0 { return }
-    var rate = float64(delta) / flowInterval.Seconds()
-    if flowRateOK {
-        flowChange, flowChangeOK = rate-flowRate, true
-    }
-    flowRate, flowRateOK = rate, true
-}
-
-// startMempoolFlow polls getmempoolinfo every flowInterval and feeds the tx count
-// to updateFlow, so /mempool can show a live flow rate. The goroutine isn't
-// stopped on shutdown — like the rates updater, the process exits right after.
-func startMempoolFlow() {
-    if !core.Enabled() { return }
-    go func() {
-        var sample = func() {
-            var ctx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
-            var info, err = core.GetMempoolInfo(ctx)
-            cancel()
-            if err != nil {
-                logging.Warn("mempool flow: %v", err)
-                return
-            }
-            updateFlow(info.Size)
-        }
-        sample()
-        var t = time.NewTicker(flowInterval)
-        defer t.Stop()
-        for range t.C {
-            sample()
-        }
-    }()
-}
-
 // startMempoolSummary recomputes the mempool totals (output amount + fees) every
 // 10 minutes in the background and stores them so /mempool can reply instantly
-// with a ~-prefixed cached value instead of summing on every request.
+// with a ~-prefixed cached value instead of summing on every request. Each
+// recompute replaces the amount the rawtx frames have moved, and tells open
+// mempool pages.
 func startMempoolSummary() {
     if !core.Enabled() { return }
     go func() {
@@ -1048,6 +989,7 @@ func startMempoolSummary() {
             summaryMu.Lock()
             summaryAmount, summaryFee, summaryOK = amount, fee, ok
             summaryMu.Unlock()
+            app.Notify("mempool")
         }
         calc()
         var t = time.NewTicker(10 * time.Minute)
@@ -1317,9 +1259,7 @@ func mempoolCmd(bot *bot, chat int64) {
         {i18n(chat).String("Size"),         humSize(info.Bytes, 2, chatLang(chat))},
         {i18n(chat).String("Transactions"), group(int64(info.Size))},
     }
-    flowMu.Lock()
-    var rate, rateOK, change, changeOK = flowRate, flowRateOK, flowChange, flowChangeOK
-    flowMu.Unlock()
+    var rate, rateOK, change, changeOK = mempoolFlow(time.Now())
     if rateOK {
         var fr = i18n(chat).Sprintf("%.1f tx/sec", rate)
         if changeOK {

@@ -3,6 +3,7 @@ package main
 import "context"
 import "encoding/json"
 import "fmt"
+import "math"
 import "net/http"
 import "net/http/httptest"
 import "path/filepath"
@@ -505,68 +506,53 @@ func TestMempoolFlow(t *testing.T) {
     }
 }
 
-// known divisor
-//
-// skip totals — this test is about the flow line
-//
-// baseline — no rate yet
-//
-// rate (1025-1000)/10 = 2.5, no change yet
-//
-// rate (1055-1025)/10 = 3.0, change 3.0-2.5 = 0.5
-//
-// count DROPPED (likely a mined block) → rate/change unchanged, baseline re-set
-//
-// increase from the re-set baseline: (950-900)/10 = 5.0, change 5.0-3.0 = 2.0
+// The flow rate is counted from the arrivals the rawtx frames record: those of
+// the last window per second, against the window before. It is not shown until
+// a whole window has been watched, nor its change until two have; arrivals older
+// than two windows count for nothing, and a rate falls to zero once they stop.
+// An arrival forgets the ones past two windows.
 //
 // and it renders in the /mempool reply
 func TestMempoolFlowRate(t *testing.T) {
-    var savedInterval, savedLimit = flowInterval, mempoolSummaryLimit
-    flowInterval = 10 * time.Second
-    mempoolSummaryLimit = 1
-    flowMu.Lock()
-    flowHaveCount, flowRateOK, flowChangeOK = false, false, false
-    flowMu.Unlock()
-    defer func() {
-        flowInterval, mempoolSummaryLimit = savedInterval, savedLimit
-        flowMu.Lock()
-        flowHaveCount, flowRateOK, flowChangeOK = false, false, false
-        flowMu.Unlock()
-    }()
-    updateFlow(1000)
-    flowMu.Lock()
-    var ok1 = flowRateOK
-    flowMu.Unlock()
-    if ok1 {
-        t.Fatal("expected no rate after one sample")
+    resetMempool()
+    t.Cleanup(resetMempool)
+    var now = time.Now()
+    var seed = func(n int, age time.Duration) {
+        for i := 0; i < n; i++ { mempoolArrivals = append(mempoolArrivals, now.Add(-age)) }
     }
-    updateFlow(1025)
-    flowMu.Lock()
-    var r2, cok2 = flowRate, flowChangeOK
-    flowMu.Unlock()
-    if r2 != 2.5 || cok2 {
-        t.Fatalf("after two samples: rate=%v changeOK=%v (want 2.5, false)", r2, cok2)
+    mempoolMu.Lock()
+    flowSince = now.Add(-30 * time.Second)
+    seed(40, 20*time.Second)
+    mempoolMu.Unlock()
+    if _, rateOK, _, _ := mempoolFlow(now); rateOK {
+        t.Fatal("a rate after half a window")
     }
-    updateFlow(1055)
-    flowMu.Lock()
-    var r3, ch3, cok3 = flowRate, flowChange, flowChangeOK
-    flowMu.Unlock()
-    if r3 != 3.0 || !cok3 || ch3 != 0.5 {
-        t.Fatalf("after three samples: rate=%v change=%v (want 3.0, 0.5)", r3, ch3)
+    mempoolMu.Lock()
+    flowSince, mempoolArrivals = now.Add(-3*time.Minute), nil
+    seed(500, 150*time.Second)
+    seed(120, 90*time.Second)
+    seed(150, 10*time.Second)
+    mempoolMu.Unlock()
+    var rate, rateOK, change, changeOK = mempoolFlow(now)
+    if !rateOK || !changeOK || rate != 2.5 || math.Abs(change-0.5) > 1e-9 {
+        t.Fatalf("rate=%v (%v) change=%v (%v), want 2.5 and +0.5", rate, rateOK, change, changeOK)
     }
-    updateFlow(900)
-    flowMu.Lock()
-    var rDrop, chDrop = flowRate, flowChange
-    flowMu.Unlock()
-    if rDrop != 3.0 || chDrop != 0.5 {
-        t.Fatalf("after a decrease: rate=%v change=%v (want unchanged 3.0, 0.5)", rDrop, chDrop)
+    mempoolMu.Lock()
+    flowSince = now.Add(-90 * time.Second)
+    mempoolMu.Unlock()
+    if _, rateOK, _, changeOK = mempoolFlow(now); !rateOK || changeOK {
+        t.Errorf("after a window and a half: rateOK=%v changeOK=%v, want true, false", rateOK, changeOK)
     }
-    updateFlow(950)
-    flowMu.Lock()
-    var rUp, chUp = flowRate, flowChange
-    flowMu.Unlock()
-    if rUp != 5.0 || chUp != 2.0 {
-        t.Fatalf("after re-increase: rate=%v change=%v (want 5.0, 2.0)", rUp, chUp)
+    if rate, _, _, _ = mempoolFlow(now.Add(3 * time.Minute)); rate != 0 {
+        t.Errorf("rate %v once arrivals stopped, want 0", rate)
+    }
+    record(t, legacyTx(1, 1000))
+    mempoolMu.Lock()
+    var kept = len(mempoolArrivals)
+    flowSince = now.Add(-3 * time.Minute)
+    mempoolMu.Unlock()
+    if kept != 271 {
+        t.Errorf("%d arrivals kept, want the 270 inside two windows and the new one", kept)
     }
     var sent []string
     var tg = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -588,7 +574,7 @@ func TestMempoolFlowRate(t *testing.T) {
     defer srv.Close()
     coretest.Use(t, srv)
     update(b, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/mempool"}})
-    if len(sent) != 1 || !strings.Contains(sent[0], "Flow rate:") || !strings.Contains(sent[0], "5.0 tx/sec (+2.0)") {
+    if len(sent) != 1 || !strings.Contains(sent[0], "Flow rate:") || !strings.Contains(sent[0], "2.5 tx/sec (+0.5)") {
         t.Fatalf("expected flow rate line in reply: %#v", sent)
     }
 }
