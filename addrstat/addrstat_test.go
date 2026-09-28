@@ -9,6 +9,7 @@ import "testing"
 import "database/sql"
 import _ "modernc.org/sqlite"
 import "bitnsbot/addrindex"
+import "bitnsbot/core"
 import "bitnsbot/core/coretest"
 import "bitnsbot/cursors"
 import "bitnsbot/signals"
@@ -25,17 +26,17 @@ var addrC = addrindex.Address(scriptC)
 
 // tx is one transaction's two sides: what it pays, and what it spends.
 type tx struct {
-    outs  []addrindex.Payment
-    spent []addrindex.Payment
+    outs  []core.Payment
+    spent []core.Payment
 }
 
-func pay(script []byte, sat int64) addrindex.Payment { return addrindex.Payment{Script: script, Sat: sat} }
+func pay(script []byte, sat int64) core.Payment { return core.Payment{Script: script, Sat: sat} }
 
 // blockOf is a block mined at when, holding txs in order.
-func blockOf(when int64, txs ...tx) addrindex.Block {
-    var blk = addrindex.Block{Hash: "fixture", Time: when}
+func blockOf(when int64, txs ...tx) core.Block {
+    var blk = core.Block{Hash: "fixture", Time: when}
     for _, t := range txs {
-        blk.Txs = append(blk.Txs, addrindex.Tx{Outputs: t.outs, Spent: t.spent})
+        blk.Txs = append(blk.Txs, core.Tx{Outputs: t.outs, Spent: t.spent})
     }
     return blk
 }
@@ -44,7 +45,7 @@ func blockOf(when int64, txs ...tx) addrindex.Block {
 // a real one. Every getblock is recorded in fetched.
 type chain struct {
     tip     int
-    blocks  map[int]addrindex.Block
+    blocks  map[int]core.Block
     fetched []int
 }
 
@@ -66,7 +67,7 @@ func (c *chain) respond(method string, params []interface{}) (interface{}, error
     case "getblock":
         var height, _ = strconv.Atoi(params[0].(string))
         c.fetched = append(c.fetched, height)
-        var amount = func(p addrindex.Payment) map[string]interface{} {
+        var amount = func(p core.Payment) map[string]interface{} {
             return map[string]interface{}{"value": float64(p.Sat) / 1e8, "scriptPubKey": map[string]string{"hex": hex.EncodeToString(p.Script)}}
         }
         var txs = []interface{}{}
@@ -138,12 +139,12 @@ func statOf(t *testing.T, addr string) Stat {
 // gathering for a set rather than for the chain
 func TestCollectGathersStatistics(t *testing.T) {
     open(t, addrA, addrB)
-    serve(t, &chain{tip: 2, blocks: map[int]addrindex.Block{
-        0: blockOf(1000, tx{outs: []addrindex.Payment{pay(scriptA, 5000)}}),
-        1: blockOf(2000, tx{outs: []addrindex.Payment{pay(scriptA, 3000), pay(scriptC, 100)}}),
+    serve(t, &chain{tip: 2, blocks: map[int]core.Block{
+        0: blockOf(1000, tx{outs: []core.Payment{pay(scriptA, 5000)}}),
+        1: blockOf(2000, tx{outs: []core.Payment{pay(scriptA, 3000), pay(scriptC, 100)}}),
         2: blockOf(3000,
-            tx{outs: []addrindex.Payment{pay(scriptC, 50)}},
-            tx{outs: []addrindex.Payment{pay(scriptB, 7000)}, spent: []addrindex.Payment{pay(scriptA, 5000), pay(scriptA, 3000)}}),
+            tx{outs: []core.Payment{pay(scriptC, 50)}},
+            tx{outs: []core.Payment{pay(scriptB, 7000)}, spent: []core.Payment{pay(scriptA, 5000), pay(scriptA, 3000)}}),
     }})
     if err := Collect(); err != nil { t.Fatalf("Collect: %v", err) }
     var a = statOf(t, addrA)
@@ -170,10 +171,10 @@ func TestCollectGathersStatistics(t *testing.T) {
 // for it, not two.
 func TestTransactionCountedOncePerAddress(t *testing.T) {
     open(t, addrA)
-    serve(t, &chain{tip: 0, blocks: map[int]addrindex.Block{
+    serve(t, &chain{tip: 0, blocks: map[int]core.Block{
         0: blockOf(1000, tx{
-            outs:  []addrindex.Payment{pay(scriptA, 400), pay(scriptA, 100)},
-            spent: []addrindex.Payment{pay(scriptA, 900)},
+            outs:  []core.Payment{pay(scriptA, 400), pay(scriptA, 100)},
+            spent: []core.Payment{pay(scriptA, 900)},
         }),
     }})
     if err := Collect(); err != nil { t.Fatalf("Collect: %v", err) }
@@ -187,9 +188,9 @@ func TestTransactionCountedOncePerAddress(t *testing.T) {
 // adds to what is stored rather than counting a block twice.
 func TestCollectResumes(t *testing.T) {
     open(t, addrA)
-    var src = serve(t, &chain{tip: 0, blocks: map[int]addrindex.Block{
-        0: blockOf(1000, tx{outs: []addrindex.Payment{pay(scriptA, 500)}}),
-        1: blockOf(2000, tx{outs: []addrindex.Payment{pay(scriptA, 700)}}),
+    var src = serve(t, &chain{tip: 0, blocks: map[int]core.Block{
+        0: blockOf(1000, tx{outs: []core.Payment{pay(scriptA, 500)}}),
+        1: blockOf(2000, tx{outs: []core.Payment{pay(scriptA, 700)}}),
     }})
     if err := Collect(); err != nil { t.Fatalf("Collect: %v", err) }
     src.tip, src.fetched = 1, nil
@@ -212,8 +213,8 @@ func TestCollectSignalsWhenItHasCaughtUp(t *testing.T) {
     open(t, addrA)
     signals.Reset()
     var wake = signals.Subscribe(signals.AddrStat)
-    serve(t, &chain{tip: 0, blocks: map[int]addrindex.Block{
-        0: blockOf(1000, tx{outs: []addrindex.Payment{pay(scriptA, 500)}}),
+    serve(t, &chain{tip: 0, blocks: map[int]core.Block{
+        0: blockOf(1000, tx{outs: []core.Payment{pay(scriptA, 500)}}),
     }})
     if err := Collect(); err != nil { t.Fatalf("Collect: %v", err) }
     select {
@@ -235,8 +236,8 @@ func TestCollectSignalsWhenItHasCaughtUp(t *testing.T) {
 func TestGetWaitsForSomethingToReport(t *testing.T) {
     open(t, addrA)
     if _, ok := Get(addrA); ok { t.Fatal("answered from an empty record") }
-    serve(t, &chain{tip: 0, blocks: map[int]addrindex.Block{
-        0: blockOf(1000, tx{outs: []addrindex.Payment{pay(scriptA, 500)}}),
+    serve(t, &chain{tip: 0, blocks: map[int]core.Block{
+        0: blockOf(1000, tx{outs: []core.Payment{pay(scriptA, 500)}}),
     }})
     if err := Collect(); err != nil { t.Fatalf("Collect: %v", err) }
     var s, ok = Get(addrA)
@@ -250,8 +251,8 @@ func TestGetWaitsForSomethingToReport(t *testing.T) {
 // history means clearing the cursor by hand; nothing here does it.
 func TestAnAddedRecordJoinsTheSet(t *testing.T) {
     var handle = open(t, addrA)
-    serve(t, &chain{tip: 0, blocks: map[int]addrindex.Block{
-        0: blockOf(1000, tx{outs: []addrindex.Payment{pay(scriptA, 500)}}),
+    serve(t, &chain{tip: 0, blocks: map[int]core.Block{
+        0: blockOf(1000, tx{outs: []core.Payment{pay(scriptA, 500)}}),
     }})
     if err := Collect(); err != nil { t.Fatalf("Collect: %v", err) }
     add(t, handle, addrB)
@@ -264,8 +265,8 @@ func TestAnAddedRecordJoinsTheSet(t *testing.T) {
 // Init is run on every start, so one must leave the scan's place alone.
 func TestRepeatedInitKeepsTheCursor(t *testing.T) {
     var handle = open(t, addrA)
-    serve(t, &chain{tip: 0, blocks: map[int]addrindex.Block{
-        0: blockOf(1000, tx{outs: []addrindex.Payment{pay(scriptA, 500)}}),
+    serve(t, &chain{tip: 0, blocks: map[int]core.Block{
+        0: blockOf(1000, tx{outs: []core.Payment{pay(scriptA, 500)}}),
     }})
     if err := Collect(); err != nil { t.Fatalf("Collect: %v", err) }
     for i := 0; i < 3; i++ {

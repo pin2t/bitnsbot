@@ -182,7 +182,7 @@ func scan(ctx context.Context, from, to int) error {
             sem <- struct{}{}
             go func() {
                 defer func() { <-sem }()
-                var blk, err = addrindex.BlockAt(sctx, h)
+                var blk, err = core.BlockAt(sctx, h)
                 slot <- fetched{moves: moves(blk), err: err}
             }()
         }
@@ -215,7 +215,7 @@ func scan(ctx context.Context, from, to int) error {
 // scripts: what addrindex.Balances says, keyed by address hash. A zero amount
 // moves nothing and is left out. It runs on the fetching goroutine, so the
 // hashing is spread over the fetchers too.
-func moves(blk addrindex.Block) []move {
+func moves(blk core.Block) []move {
     var out []move
     for _, p := range addrindex.Balances(blk) {
         var key, ok = addrindex.Key(p.Script)

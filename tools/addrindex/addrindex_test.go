@@ -15,6 +15,7 @@ import "sync/atomic"
 import "testing"
 import "time"
 import "bitnsbot/addrindex"
+import "bitnsbot/core"
 import "bitnsbot/cursors"
 
 // The script the fixture's address is paid to. Its bytes are all that matter —
@@ -62,7 +63,7 @@ var opReturnScript = mustHex("6a0b68656c6c6f20776f726c64")
 // empty scriptSig
 //
 // locktime
-func serialTx(inputs int, pays []addrindex.Payment) []byte {
+func serialTx(inputs int, pays []core.Payment) []byte {
     var out []byte
     out = append(out, 1, 0, 0, 0)
     out = append(out, varint(inputs)...)
@@ -106,19 +107,19 @@ func serialBlock(height int, txs [][]byte) []byte {
 // The amounts are the ones the fake node reports for the same transactions, so
 // the balance richbuild sums out of the blocks and the history list resolves out
 // of the node agree with each other: 20000 in, 20000 spent, 10000 back.
-func chainBlocks() []addrindex.Block {
-    var coinbase = addrindex.Tx{Outputs: []addrindex.Payment{{Script: otherScript, Sat: coinbaseSat}}}
-    var block = func(height int, txs ...addrindex.Tx) addrindex.Block {
-        return addrindex.Block{Hash: hashOfHeight(height), Time: blockTime(height), Txs: txs}
+func chainBlocks() []core.Block {
+    var coinbase = core.Tx{Outputs: []core.Payment{{Script: otherScript, Sat: coinbaseSat}}}
+    var block = func(height int, txs ...core.Tx) core.Block {
+        return core.Block{Hash: hashOfHeight(height), Time: blockTime(height), Txs: txs}
     }
-    return []addrindex.Block{
+    return []core.Block{
         block(0, coinbase),
-        block(1, coinbase, addrindex.Tx{
-            Outputs: []addrindex.Payment{{Script: payScript, Sat: 20000}},
-            Spent:   []addrindex.Payment{{Script: otherScript, Sat: coinbaseSat}}}),
-        block(2, coinbase, addrindex.Tx{
-            Outputs: []addrindex.Payment{{Script: otherScript, Sat: 10000}, {Script: payScript, Sat: 10000}, {Script: opReturnScript, Sat: 500}},
-            Spent:   []addrindex.Payment{{Script: payScript, Sat: 20000}}}),
+        block(1, coinbase, core.Tx{
+            Outputs: []core.Payment{{Script: payScript, Sat: 20000}},
+            Spent:   []core.Payment{{Script: otherScript, Sat: coinbaseSat}}}),
+        block(2, coinbase, core.Tx{
+            Outputs: []core.Payment{{Script: otherScript, Sat: 10000}, {Script: payScript, Sat: 10000}, {Script: opReturnScript, Sat: 500}},
+            Spent:   []core.Payment{{Script: payScript, Sat: 20000}}}),
         block(3, coinbase),
     }
 }
@@ -139,7 +140,7 @@ func serialChain() [][]byte {
 // inputs — a coinbase's input with no prevout, every other with one.
 func verboseBlock(height int) map[string]interface{} {
     var b = chainBlocks()[height]
-    var amount = func(p addrindex.Payment) map[string]interface{} {
+    var amount = func(p core.Payment) map[string]interface{} {
         return map[string]interface{}{"value": float64(p.Sat) / 1e8, "scriptPubKey": map[string]string{"hex": hex.EncodeToString(p.Script)}}
     }
     var txs []interface{}
@@ -547,7 +548,7 @@ func TestParseBlock(t *testing.T) {
     }
 }
 
-func hexLists(scripts [][]addrindex.Payment) [][]string {
+func hexLists(scripts [][]core.Payment) [][]string {
     var out = make([][]string, len(scripts))
     for i, list := range scripts {
         out[i] = make([]string, len(list))
@@ -565,7 +566,7 @@ func hexLists(scripts [][]addrindex.Payment) [][]string {
 // once and pays an OP_RETURN. The addrindex package holds its RPC decoding to
 // these same outputs.
 func TestParseBlockReadsAmounts(t *testing.T) {
-    for height, want := range map[int][][]addrindex.Payment{
+    for height, want := range map[int][][]core.Payment{
         0: {{{Script: mustHex("4104678afdb0fe5548271967f1a67130b7105cd6a828e03909a67962e0ea1f61deb649f6bc3f4cef38c4f35504e51ec112de5c384df7ba0b8d578a4c702b6bf11d5fac"), Sat: 5000000000}}},
         113: {{
             {Script: mustHex("a914009a5f4eca9506b9fe82ae824a2d2187d9fc96a187"), Sat: 5000009300},

@@ -9,6 +9,7 @@ import "strconv"
 import "testing"
 import "database/sql"
 import _ "modernc.org/sqlite"
+import "bitnsbot/core"
 import "bitnsbot/core/coretest"
 import "bitnsbot/cursors"
 
@@ -210,12 +211,12 @@ func TestDistinctScriptsDistinctKeys(t *testing.T) {
     }
 }
 
-// chain is a node holding blocks, which BlockAt reads over RPC the way it reads a
+// chain is a node holding blocks, which core.BlockAt reads over RPC the way it reads a
 // real one. Every getblock is recorded in fetched, and a height in err answers
 // with the node's error instead.
 type chain struct {
     tip     int
-    blocks  map[int]Block
+    blocks  map[int]core.Block
     fetched []int
     err     map[int]bool
 }
@@ -239,7 +240,7 @@ func (c *chain) respond(method string, params []interface{}) (interface{}, error
         var height, _ = strconv.Atoi(params[0].(string))
         c.fetched = append(c.fetched, height)
         if c.err[height] { return nil, errors.New("fetch failed") }
-        var amount = func(p Payment) map[string]interface{} {
+        var amount = func(p core.Payment) map[string]interface{} {
             return map[string]interface{}{"value": float64(p.Sat) / 1e8, "scriptPubKey": map[string]string{"hex": hex.EncodeToString(p.Script)}}
         }
         var txs = []interface{}{}
@@ -258,19 +259,19 @@ func (c *chain) respond(method string, params []interface{}) (interface{}, error
 // A tiny synthetic chain: height 0 pays scriptA, height 1 spends it (pays
 // scriptB), height 2 is unrelated. Each block is one transaction, built from the
 // scripts as hex.
-func syntheticBlock(t *testing.T, outScripts []string, spentScripts []string) Block {
-    var tx Tx
+func syntheticBlock(t *testing.T, outScripts []string, spentScripts []string) core.Block {
+    var tx core.Tx
     for _, side := range []struct {
         scripts []string
-        into    *[]Payment
+        into    *[]core.Payment
     }{{outScripts, &tx.Outputs}, {spentScripts, &tx.Spent}} {
         for _, s := range side.scripts {
             var raw, err = hex.DecodeString(s)
             if err != nil { t.Fatalf("bad script hex: %v", err) }
-            *side.into = append(*side.into, Payment{Script: raw})
+            *side.into = append(*side.into, core.Payment{Script: raw})
         }
     }
-    return Block{Hash: "synthetic", Txs: []Tx{tx}}
+    return core.Block{Hash: "synthetic", Txs: []core.Tx{tx}}
 }
 
 // a second pass with nothing new fetches nothing
@@ -280,7 +281,7 @@ func TestCatchUp(t *testing.T) {
     t.Cleanup(func() { chunkSize = saved })
     chunkSize = 1000
     var scriptA, scriptB = "0014aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "0014bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-    var src = serve(t, &chain{tip: 2, blocks: map[int]Block{
+    var src = serve(t, &chain{tip: 2, blocks: map[int]core.Block{
         0: syntheticBlock(t, []string{scriptA}, nil),
         1: syntheticBlock(t, []string{scriptB}, []string{scriptA}),
         2: syntheticBlock(t, nil, nil),
@@ -321,7 +322,7 @@ func TestCatchUpChunksAndRetries(t *testing.T) {
     t.Cleanup(func() { chunkSize = savedChunk })
     chunkSize = 2
     var script = "0014cccccccccccccccccccccccccccccccccccccccc"
-    var blocks = map[int]Block{}
+    var blocks = map[int]core.Block{}
     for h := 0; h < 5; h++ {
         blocks[h] = syntheticBlock(t, []string{script}, nil)
     }

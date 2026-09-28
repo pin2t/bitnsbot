@@ -159,7 +159,7 @@ func flush(sh *shards, buf map[string]int64) error {
 //
 // Only mainnet has them, which is why the chain the node reports is checked
 // first: on regtest or testnet these heights are ordinary blocks.
-func voided(chain string, height int, blk addrindex.Block) []addrindex.Payment {
+func voided(chain string, height int, blk core.Block) []core.Payment {
     if chain != "main" { return nil }
     if height != 0 && height != 91722 && height != 91812 { return nil }
     if len(blk.Txs) == 0 { return nil }
@@ -169,7 +169,7 @@ func voided(chain string, height int, blk addrindex.Block) []addrindex.Payment {
 // fetched is one block, or the error that stopped it.
 type fetched struct {
     height int
-    blk    addrindex.Block
+    blk    core.Block
     err    error
 }
 
@@ -219,8 +219,8 @@ func stream(ctx context.Context, from, to, workers int) <-chan fetched {
 // again from the last stored height. Only the last error is reported, since a
 // height that fails three times is failing for one reason. Its warning names no
 // command, since ababuild reads the chain through this too.
-func fetchBlock(ctx context.Context, height int) (addrindex.Block, error) {
-    var blk addrindex.Block
+func fetchBlock(ctx context.Context, height int) (core.Block, error) {
+    var blk core.Block
     var err error
     for attempt := 0; attempt < fetchAttempts; attempt++ {
         if attempt > 0 {
@@ -231,7 +231,7 @@ func fetchBlock(ctx context.Context, height int) (addrindex.Block, error) {
                 return blk, ctx.Err()
             }
         }
-        blk, err = addrindex.BlockAt(ctx, height)
+        blk, err = core.BlockAt(ctx, height)
         if err == nil || ctx.Err() != nil { return blk, err }
     }
     return blk, err

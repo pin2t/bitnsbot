@@ -82,7 +82,7 @@ func supported(lang string) bool {
 
 // langOf pulls language_code out of an initData payload — "ru", or "pt-br" for a
 // regional variant, of which only the base is ours to match. Meaningful only on
-// a payload isValid has accepted, since the field is part of what Telegram signs.
+// a payload requireInitData has accepted, since the field is part of what Telegram signs.
 func langOf(initData string) string {
     var v, err = url.ParseQuery(initData)
     if err != nil { return "" }
@@ -929,7 +929,7 @@ func details(w http.ResponseWriter, r *http.Request, slot, back, swap, kind, id 
 }
 
 // chatOf pulls the user id out of an initData payload. It is only meaningful on
-// a payload isValid has already accepted — the id is part of what Telegram
+// a payload requireInitData has already accepted — the id is part of what Telegram
 // signs — and for the private chat a Mini App is opened from it is also the chat
 // id the bot files watches under.
 func chatOf(initData string) int64 {
@@ -1353,42 +1353,40 @@ func uncached(w http.ResponseWriter, r *http.Request, started int64, lang, name 
     logging.Info("mini app: %s %s [%s] [%.2f ms]", r.Method, r.RequestURI, lang, float64(time.Now().UnixNano() - started) / 1e6)
 }
 
-// isValid verifies the signed payload Telegram hands the Mini App's
-// webview, and is the only thing standing between this server and anyone who
-// knows the URL. The scheme: the secret is HMAC-SHA256 of the bot token keyed by
-// the literal "WebAppData", and the signature covers every field except `hash`,
-// sorted by key and joined with newlines.
+// requireInitData rejects anything without a currently-valid signature on the
+// payload Telegram hands the Mini App's webview, and is the only thing standing
+// between this server and anyone who knows the URL. The shell page at / is
+// deliberately not behind this: it carries no data, and the webview must load it
+// before any script can read initData at all.
+//
+// The scheme: the secret is HMAC-SHA256 of the bot token keyed by the literal
+// "WebAppData", and the signature covers every field except `hash`, sorted by
+// key and joined with newlines. The secret depends on the token alone, so it is
+// computed once, when the handler is built.
 //
 // Note this is NOT the Login Widget scheme, which keys the secret as
 // SHA256(token) — the two look interchangeable and are not.
-func isValid(initData, token string) bool {
-    var v, err = url.ParseQuery(initData)
-    if err != nil { return false }
-    var want = v.Get("hash")
-    if want == "" { return false }
-    v.Del("hash")
-    var keys = make([]string, 0, len(v))
-    for k := range v { keys = append(keys, k) }
-    sort.Strings(keys)
-    var pairs = make([]string, 0, len(keys))
-    for _, k := range keys { pairs = append(pairs, k+"="+v.Get(k)) }
+//
+// A signature is otherwise valid forever, so auth_date must be within
+// initDataTTL.
+func requireInitData(token string, h http.HandlerFunc) http.HandlerFunc {
     var mac = hmac.New(sha256.New, []byte("WebAppData"))
     mac.Write([]byte(token))
     var secret = mac.Sum(nil)
-    mac = hmac.New(sha256.New, secret)
-    mac.Write([]byte(strings.Join(pairs, "\n")))
-    if !hmac.Equal([]byte(hex.EncodeToString(mac.Sum(nil))), []byte(want)) { return false }
-    var ts, terr = strconv.ParseInt(v.Get("auth_date"), 10, 64)
-    if terr != nil || time.Since(time.Unix(ts, 0)) > initDataTTL { return false }
-    return true
-}
-
-// requireInitData rejects anything without a currently-valid signature. The
-// shell page at / is deliberately not behind this: it carries no data, and the
-// webview must load it before any script can read initData at all.
-func requireInitData(token string, h http.HandlerFunc) http.HandlerFunc {
     return func(w http.ResponseWriter, r *http.Request) {
-        if !isValid(r.Header.Get("X-Telegram-Init-Data"), token) {
+        var v, err = url.ParseQuery(r.Header.Get("X-Telegram-Init-Data"))
+        var want = v.Get("hash")
+        v.Del("hash")
+        var keys = make([]string, 0, len(v))
+        for k := range v { keys = append(keys, k) }
+        sort.Strings(keys)
+        var pairs = make([]string, 0, len(keys))
+        for _, k := range keys { pairs = append(pairs, k+"="+v.Get(k)) }
+        var sig = hmac.New(sha256.New, secret)
+        sig.Write([]byte(strings.Join(pairs, "\n")))
+        var signed = err == nil && want != "" && hmac.Equal([]byte(hex.EncodeToString(sig.Sum(nil))), []byte(want))
+        var ts, terr = strconv.ParseInt(v.Get("auth_date"), 10, 64)
+        if !signed || terr != nil || time.Since(time.Unix(ts, 0)) > initDataTTL {
             logging.Info("mini app: rejected %s without valid initData", r.URL.Path)
             http.Error(w, "open this from Telegram", http.StatusUnauthorized)
             return

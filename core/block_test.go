@@ -1,12 +1,14 @@
-package addrindex
+package core_test
 
 import "context"
+import "encoding/hex"
 import "encoding/json"
 import "fmt"
 import "os"
 import "path/filepath"
 import "reflect"
 import "testing"
+import "bitnsbot/core"
 import "bitnsbot/core/coretest"
 
 // Two real blocks from a Bitcoin Core v31.1.0 regtest node, as getblock
@@ -21,7 +23,7 @@ import "bitnsbot/core/coretest"
 // block 113. tools/addrindex holds its block-file parser to those same outputs,
 // reading the serialized blocks themselves.
 func TestRPCReadsTheBlock(t *testing.T) {
-    var outputs = map[int][][]Payment{
+    var outputs = map[int][][]core.Payment{
         0: {{{Script: mustHex(t, "4104678afdb0fe5548271967f1a67130b7105cd6a828e03909a67962e0ea1f61deb649f6bc3f4cef38c4f35504e51ec112de5c384df7ba0b8d578a4c702b6bf11d5fac"), Sat: 5000000000}}},
         113: {{
             {Script: mustHex(t, "a914009a5f4eca9506b9fe82ae824a2d2187d9fc96a187"), Sat: 5000009300},
@@ -33,13 +35,13 @@ func TestRPCReadsTheBlock(t *testing.T) {
         }},
     }
     var times = map[int]int64{0: 1296688602, 113: 1789369304}
-    var spent113 = [][]Payment{{}, {
+    var spent113 = [][]core.Payment{{}, {
         {Script: mustHex(t, "76a9141a70d5f0332bf1cb792ed5786c510180283bf6f688ac"), Sat: 150000000},
         {Script: mustHex(t, "a914adb959cea47dbab9e9986f08b816fa5f0c41843487"), Sat: 225000000},
         {Script: mustHex(t, "001479f17b60a5a1826c50a49d6ebd0bb55b99afc637"), Sat: 680000000},
         {Script: mustHex(t, "5120e6e2debb61c212ca7f3efdd85be34fae01c922172718f6a573687d295cb3bcc0"), Sat: 310000000},
     }}
-    for height, wantSpent := range map[int][][]Payment{0: {{}}, 113: spent113} {
+    for height, wantSpent := range map[int][][]core.Payment{0: {{}}, 113: spent113} {
         var blk, err = blockFrom(t, string(fixture(t, fmt.Sprintf("block%d.json", height))), height)
         if err != nil { t.Fatalf("block %d: %v", height, err) }
         if blk.Time != times[height] {
@@ -89,7 +91,7 @@ func TestRPCRefusesAMalformedScript(t *testing.T) {
 // blockFrom reads height through BlockAt from a node that knows one block,
 // whatever height is asked for, and answers getblock at verbosity 3 with the JSON
 // verbose.
-func blockFrom(t *testing.T, verbose string, height int) (Block, error) {
+func blockFrom(t *testing.T, verbose string, height int) (core.Block, error) {
     coretest.Start(t, func(method string, params []interface{}) (interface{}, error) {
         switch {
         case method == "getblockhash":
@@ -99,12 +101,19 @@ func blockFrom(t *testing.T, verbose string, height int) (Block, error) {
         }
         return nil, fmt.Errorf("unexpected call %s %v", method, params)
     })
-    return BlockAt(context.Background(), height)
+    return core.BlockAt(context.Background(), height)
 }
 
 func fixture(t *testing.T, name string) []byte {
     t.Helper()
     var b, err = os.ReadFile(filepath.Join("testdata", name))
     if err != nil { t.Fatalf("fixture: %v", err) }
+    return b
+}
+
+func mustHex(t *testing.T, s string) []byte {
+    t.Helper()
+    var b, err = hex.DecodeString(s)
+    if err != nil { t.Fatalf("hex %s: %v", s, err) }
     return b
 }

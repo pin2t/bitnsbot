@@ -866,11 +866,12 @@ func TestFeesRejectsStaleInitData(t *testing.T) {
         "auth_date": strconv.FormatInt(time.Now().Add(-48*time.Hour).Unix(), 10),
         "user":      `{"id":42}`,
     })
-    if isValid(old, "TESTTOKEN") {
-        t.Fatal("a 48h-old payload was accepted; auth_date is not being checked")
+    var h = handler(t, "TESTTOKEN", fakeSource{f: liveFees()})
+    if w := get(h, "/fees", old); w.Code != 401 {
+        t.Fatalf("a 48h-old payload was accepted with %d; auth_date is not being checked", w.Code)
     }
-    if !isValid(freshInitData("TESTTOKEN"), "TESTTOKEN") {
-        t.Fatal("a fresh payload was rejected")
+    if w := get(h, "/fees", freshInitData("TESTTOKEN")); w.Code != 200 {
+        t.Fatalf("a fresh payload was rejected with %d", w.Code)
     }
 }
 

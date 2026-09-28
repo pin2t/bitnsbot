@@ -1,11 +1,39 @@
-package addrindex
+package core
 
 import "context"
 import "encoding/hex"
 import "fmt"
 import "math"
 import "time"
-import "bitnsbot/core"
+
+// Block is what BlockAt reads for one height: when it was mined, and its
+// transactions in block order, each with the outputs it pays and the prevouts
+// its inputs spend. That is everything a touch needs — which scripts a
+// transaction pays, and which it spends from — without a single txid: a touch is
+// keyed by (height, tx index in block), not by txid — see package addrindex. The
+// position in Txs is that index.
+type Block struct {
+    Hash string
+    Time int64
+    Txs  []Tx
+}
+
+// Tx is one transaction's two sides. A coinbase spends nothing, so its Spent is
+// empty rather than the transaction being left out, which is what keeps a
+// transaction's position in the block its index.
+type Tx struct {
+    Outputs []Payment
+    Spent   []Payment
+}
+
+// Payment is a scriptPubKey and the satoshi paid to it — one output of a
+// transaction, or one prevout an input spends. The index needs only the script;
+// a balance needs the amount too, so both are kept and each caller takes what it
+// uses.
+type Payment struct {
+    Script []byte
+    Sat    int64
+}
 
 // blockTimeout bounds one block's two calls. Nothing else does — the core
 // client sets no timeout of its own and a build runs under a context hours long
@@ -39,9 +67,8 @@ type output struct {
 // every field of it; a full-chain pass is correspondingly slower than one over
 // the binary REST endpoints this replaced.
 //
-// It lives here rather than in core because this is how the index is built: the
-// bot and tools/addrindex both drive the backfill, and addrstat and the tool's
-// rankings read the same blocks.
+// Every chain scan reads its blocks through this: the address index's build in
+// the bot and in tools/addrindex, addrstat, addrbal, and the tool's rankings.
 //
 // Core reports an amount as a BTC number, and a float's nearest value to one
 // is often a hair under it — 0.29 BTC is 28999999.999999996 satoshi — so the
@@ -51,7 +78,7 @@ type output struct {
 func BlockAt(ctx context.Context, height int) (Block, error) {
     var bctx, cancel = context.WithTimeout(ctx, blockTimeout)
     defer cancel()
-    var hash, err = core.GetBlockHash(bctx, int64(height))
+    var hash, err = GetBlockHash(bctx, int64(height))
     if err != nil { return Block{}, err }
     var reply struct {
         Time int64 `json:"time"`
@@ -62,7 +89,7 @@ func BlockAt(ctx context.Context, height int) (Block, error) {
             Vout []output `json:"vout"`
         } `json:"tx"`
     }
-    if err := core.Call(bctx, "getblock", []interface{}{hash, 3}, &reply); err != nil { return Block{}, err }
+    if err := Call(bctx, "getblock", []interface{}{hash, 3}, &reply); err != nil { return Block{}, err }
     var payment = func(o output) (Payment, error) {
         var script, err = hex.DecodeString(o.ScriptPubKey.Hex)
         if err != nil { return Payment{}, fmt.Errorf("block %s: malformed script %q", hash, o.ScriptPubKey.Hex) }
