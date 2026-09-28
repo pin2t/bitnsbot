@@ -127,9 +127,7 @@ func humSize(s int64, decimals int, lang string) string {
 // latest rate: as BTC once it reaches 0.05 BTC ("0.5 BTC"), otherwise in sats
 // ("100 000 sats"), so large and small amounts each read naturally.
 func compactBTC(sat int64, lang string) string {
-    if sat >= notifyBTCThreshold {
-        return btcAmount(sat)
-    }
+    if sat >= BTCThreshold { return btcAmount(sat) }
     return amountLine(sat, time.Time{}, true, lang)
 }
 
@@ -297,15 +295,15 @@ func change(now, then float64) string {
     return sign + price(delta) + pct
 }
 
-// notifyBTCThreshold is where a notification headline switches from sats to
+// BTCThreshold is where a notification headline switches from sats to
 // BTC. From five million sats up the sats figure stops being readable at a
 // glance — "5 000 000 sats" versus "0.05 BTC", which is the same amount.
-const notifyBTCThreshold = 5_000_000
+const BTCThreshold = 5_000_000
 
 // amountText renders an amount for a notification headline: sats up to
-// notifyBTCThreshold, BTC above it, trailing zeros trimmed either way.
+// BTCThreshold, BTC above it, trailing zeros trimmed either way.
 func amountText(sat int64, lang string) string {
-    if sat >= notifyBTCThreshold || sat <= -notifyBTCThreshold {
+    if sat >= BTCThreshold || sat <= -BTCThreshold {
         return trimNum(toBTC(sat), 8) + " BTC"
     }
     return group(sat) + " " + i18nl(lang).String("sats")

@@ -319,7 +319,7 @@ func update() {
         logging.Err("store rate: %v", err)
         return
     }
-    logging.Info("rates: updated $%.2f (avg of %s)", avg, strings.Join(names, ", "))
+    logging.Info("rates: $%.2f (avg of %s)", avg, strings.Join(names, ", "))
     updateMarket()
 }
 
@@ -334,7 +334,7 @@ func updateMarket() {
         logging.Err("rates: market: %v", err)
         return
     }
-    logging.Info("rates: updated market cap $%.0f, 24h volume $%.0f", m.MarketCap, m.Volume24h)
+    logging.Info("rates: market cap $%.0f, 24h volume $%.0f", m.MarketCap, m.Volume24h)
 }
 
 // Start backfills the historical daily rates once, fetches an initial current
