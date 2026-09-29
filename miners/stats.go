@@ -130,8 +130,8 @@ func Update(tip int64) {
         if from < tip { time.Sleep(cooldownPeriod) }
     }
     if last > began {
-        var bm = fmt.Sprintf("blocks %d..%d", from, last)
-        if last == from { bm = fmt.Sprintf("block %d", from) }
+        var bm = fmt.Sprintf("blocks %d..%d", began + 1, last)
+        if last == from { bm = fmt.Sprintf("block %d", began + 1) }
         logging.Info("miners stats: collected from " + bm)
     }
 }
