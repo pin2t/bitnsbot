@@ -838,7 +838,7 @@ func addrKindOf(r *http.Request) string {
     case "active", "rich", "abandoned":
         return k
     }
-    return "active"
+    return "rich"
 }
 
 // chartDataOf and chartPeriodOf are the two selections a miner chart is drawn
@@ -1059,7 +1059,7 @@ func Start(addr, token string, src Source) *http.Server {
             return
         }
         cached(cardsCache, w, r, func(lang string) []byte {
-            return render(lang, "app", page{Fees: src.Fees(), Network: src.Network(), Market: src.Market(lang), Blocks: src.Blocks(lang, Range{}), Addrs: src.Addresses(lang, AddrRange{Kind: "active"})})
+            return render(lang, "app", page{Fees: src.Fees(), Network: src.Network(), Market: src.Market(lang), Blocks: src.Blocks(lang, Range{}), Addrs: src.Addresses(lang, AddrRange{Kind: "rich"})})
         })
     })
     mux.HandleFunc("/htmx.min.js", func(w http.ResponseWriter, r *http.Request) {

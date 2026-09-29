@@ -668,10 +668,10 @@
      it belongs to in step with no state kept in the page. */}}
 {{define "addrtabs"}}
   <div class="seg">
-    <button class="{{if eq .Kind "active"}}on{{end}}" hx-get="addresses?kind=active"
-            hx-target="#addrpanel" hx-swap="outerHTML">Активные</button>
     <button class="{{if eq .Kind "rich"}}on{{end}}" hx-get="addresses?kind=rich"
             hx-target="#addrpanel" hx-swap="outerHTML">Богатые</button>
+    <button class="{{if eq .Kind "active"}}on{{end}}" hx-get="addresses?kind=active"
+            hx-target="#addrpanel" hx-swap="outerHTML">Активные</button>
     <button class="{{if eq .Kind "abandoned"}}on{{end}}" hx-get="addresses?kind=abandoned"
             hx-target="#addrpanel" hx-swap="outerHTML">Забытые</button>
   </div>{{end}}
