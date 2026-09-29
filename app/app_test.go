@@ -1271,7 +1271,7 @@ func TestAddressDetailsRender(t *testing.T) {
         }
     }
     var head = body[strings.Index(body, `class="head"`):strings.Index(body, `class="fields"`)]
-    if !strings.Contains(head, `hx-get="addresses?kind=active&amp;to=addresses"`) {
+    if !strings.Contains(head, `hx-get="addresses?kind=rich&amp;to=addresses"`) {
         t.Errorf("Back should return to the Addresses tab: %s", head)
     }
 }
@@ -1552,8 +1552,8 @@ func TestBackReturnsToOrigin(t *testing.T) {
         {"block from list", "/block?height=963268&down=963257", "blocks?down=963257&amp;to=blocks", "blocks"},
         {"tx from search", "/tx?id=" + liveTxid + "&from=home", "blocks?to=home", "home"},
         {"tx from watches", "/tx?id=" + liveTxid + "&from=watches", "blocks?to=watches", "watches"},
-        {"address from search", "/address?a=" + liveAddress + "&from=home", "addresses?kind=active&amp;to=home", "home"},
-        {"address from watches", "/address?a=" + liveAddress + "&from=watches", "addresses?kind=active&amp;to=watches", "watches"},
+        {"address from search", "/address?a=" + liveAddress + "&from=home", "addresses?kind=rich&amp;to=home", "home"},
+        {"address from watches", "/address?a=" + liveAddress + "&from=watches", "addresses?kind=rich&amp;to=watches", "watches"},
         {"miner from list", "/miner?name=AntPool&down=963260", "blocks?down=963260&amp;to=blocks", "blocks"},
     }
     for _, c := range cases {
@@ -2222,23 +2222,23 @@ func TestBlockByHashHasNoWatchButton(t *testing.T) {
     }
 }
 
-// The Addresses tab opens on Active: a first batch of rows, the button for that
+// The Addresses tab opens on Rich: a first batch of rows, the button for that
 // list lit, and the sentinel that fetches the next batch below them.
 //
 // and the other two are offered, unlit
-func TestAddressListOpensOnActive(t *testing.T) {
+func TestAddressListOpensOnRich(t *testing.T) {
     var h = handler(t, "TESTTOKEN", fakeSource{al: liveAddrs()})
     var body = get(h, "/addresses", freshInitData("TESTTOKEN")).Body.String()
     if n := strings.Count(body, `class="blk" id="adr`); n != fakeAddrFirst {
         t.Errorf("first batch has %d rows, want %d", n, fakeAddrFirst)
     }
-    if !strings.Contains(body, `hx-get="moreaddrs?kind=active&from=15"`) {
+    if !strings.Contains(body, `hx-get="moreaddrs?kind=rich&from=15"`) {
         t.Errorf("the sentinel should continue at row 15: %s", body)
     }
-    if !strings.Contains(body, `class="on" hx-get="addresses?kind=active"`) {
-        t.Errorf("Active should be the lit button: %s", body)
+    if !strings.Contains(body, `class="on" hx-get="addresses?kind=rich"`) {
+        t.Errorf("Rich should be the lit button: %s", body)
     }
-    for _, kind := range []string{"rich", "abandoned"} {
+    for _, kind := range []string{"active", "abandoned"} {
         if !strings.Contains(body, `class="" hx-get="addresses?kind=`+kind+`"`) {
             t.Errorf("%s should be offered and unlit: %s", kind, body)
         }
@@ -2273,8 +2273,8 @@ func TestAddressListSwitchesKind(t *testing.T) {
 func TestAddressListKindIsValidated(t *testing.T) {
     var h = handler(t, "TESTTOKEN", fakeSource{al: liveAddrs()})
     var body = get(h, `/addresses?kind="},"evil":{"`, freshInitData("TESTTOKEN")).Body.String()
-    if !strings.Contains(body, `class="on" hx-get="addresses?kind=active"`) {
-        t.Errorf("an unknown kind should fall back to Active: %s", body)
+    if !strings.Contains(body, `class="on" hx-get="addresses?kind=rich"`) {
+        t.Errorf("an unknown kind should fall back to Rich: %s", body)
     }
     if strings.Contains(body, "evil") {
         t.Errorf("the raw kind reached the page: %s", body)

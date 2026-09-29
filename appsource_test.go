@@ -414,7 +414,7 @@ func TestAppAddressListsAreRanked(t *testing.T) {
         first string
     }{
         {"active", []string{"bbb", "ccc", "aaa"}, "9 000 txs"},
-        {"rich", []string{"bbb", "aaa", "ccc"}, "25000.00 BTC"},
+        {"rich", []string{"bbb", "aaa", "ccc"}, "25 000.00 BTC"},
         {"abandoned", []string{"bbb", "ccc", "aaa"}, "3 february 2009"},
     }
     for _, c := range cases {

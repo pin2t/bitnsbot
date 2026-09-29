@@ -118,7 +118,8 @@ func (appSource) Addresses(lang string, rng app.AddrRange) app.Addrs {
             value = i18nl(lang).Sprintf("%s txs", group(n))
         case "rich":
             if n >= 1e8 {
-                value = strconv.FormatFloat(toBTC(n), 'f', 2, 64) + " BTC"
+                var cents = (n + 500000) / 1000000
+                value = group(cents/100) + "." + strconv.FormatInt(100+cents%100, 10)[1:] + " BTC"
             } else {
                 value = trimZeros(strconv.FormatFloat(toBTC(n), 'f', 8, 64)) + " BTC"
             }
