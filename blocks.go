@@ -228,8 +228,8 @@ func updateBlocks(tip int64) {
         from = to + 1
     }
     if from-1 > began {
-        var bm = fmt.Sprintf("blocks %d..%d", from - 1, began)
-        if from - 1 == began { bm = fmt.Sprintf("block %d", from - 1) }
+        var bm = fmt.Sprintf("blocks %d..%d", began, from - 1)
+        if from - 1 == began { bm = fmt.Sprintf("block %d", began) }
         logging.Info("blocks: collected from " + bm)
     }
 }
