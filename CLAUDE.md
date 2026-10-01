@@ -1032,7 +1032,7 @@ All three are implemented the same way, short handler names (`info`, `watchCmd`,
 ## Git conventions
 
 - **A commit message is one compact, descriptive sentence on a single line.** No multi-paragraph bodies, no bullet lists, no explanation of why — the diff and this file carry that. "Accept a block hash in /info, not only a block height" is the shape; a summary line followed by three paragraphs of rationale is not.
-- **No `Co-Authored-By` trailer.**
+- **Every commit ends with a `Co-Authored-By` trailer** (`Co-Authored-By: Claude <noreply@anthropic.com>`, naming the model that wrote it), after one blank line. It is the only thing a message carries besides its one sentence.
 
 ## Style conventions specific to this repo
 
