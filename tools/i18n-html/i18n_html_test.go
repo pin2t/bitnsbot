@@ -179,8 +179,8 @@ func TestRunOverADirectory(t *testing.T) {
     write("page.ru.html", translated)
     var want, err = skeleton(filepath.Join(dir, "page.html"))
     if err != nil { t.Fatal(err) }
-    got, err := skeleton(filepath.Join(dir, "page.ru.html"))
-    if err != nil { t.Fatal(err) }
+    var got, gotErr = skeleton(filepath.Join(dir, "page.ru.html"))
+    if gotErr != nil { t.Fatal(gotErr) }
     if d := diff(want, got); d != "" {
         t.Errorf("the pair on disk did not match:\n%s", d)
     }
