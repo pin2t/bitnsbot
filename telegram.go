@@ -70,11 +70,11 @@ func (b *bot) call(ctx context.Context, method string, payload any) (json.RawMes
         logging.Net("telegram → %s %s", method, buf)
     }
     var url = fmt.Sprintf("%s/bot%s/%s", b.baseURL, b.token, method)
-    req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(buf))
-    if err != nil { return nil, err }
+    var req, reqErr = http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(buf))
+    if reqErr != nil { return nil, reqErr }
     req.Header.Set("Content-Type", "application/json")
-    resp, err := b.httpClient.Do(req)
-    if err != nil { return nil, err }
+    var resp, doErr = b.httpClient.Do(req)
+    if doErr != nil { return nil, doErr }
     defer resp.Body.Close()
     var body, readErr = io.ReadAll(resp.Body)
     if readErr != nil { return nil, readErr }

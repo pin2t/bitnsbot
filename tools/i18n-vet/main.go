@@ -56,8 +56,8 @@ func main() {
 			return nil
 		}
 		var fset = token.NewFileSet()
-		f, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
-		if err != nil { return fmt.Errorf("%s: %w", path, err) }
+		var f, parseErr = parser.ParseFile(fset, path, nil, parser.ParseComments)
+		if parseErr != nil { return fmt.Errorf("%s: %w", path, parseErr) }
 		sourceStrings = append(sourceStrings, extractI18nStrings(f)...)
 		return nil
 	})
@@ -66,9 +66,9 @@ func main() {
 		os.Exit(1)
 	}
 	var i18nPath = filepath.Join(dir, "i18n.go")
-	translations, err := parseTranslationSections(i18nPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "parse translations: %v\n", err)
+	var translations, transErr = parseTranslationSections(i18nPath)
+	if transErr != nil {
+		fmt.Fprintf(os.Stderr, "parse translations: %v\n", transErr)
 		os.Exit(1)
 	}
 	var errors int
@@ -110,16 +110,16 @@ func extractI18nStrings(f *ast.File) []string {
 	ast.Inspect(f, func(n ast.Node) bool {
 		var call, ok = n.(*ast.CallExpr)
 		if !ok { return true }
-		sel, ok := call.Fun.(*ast.SelectorExpr)
-		if !ok { return true }
+		var sel, selOK = call.Fun.(*ast.SelectorExpr)
+		if !selOK { return true }
 		if sel.Sel.Name != "Sprintf" && sel.Sel.Name != "String" { return true }
-		call2, ok := sel.X.(*ast.CallExpr)
-		if !ok { return true }
-		ident, ok := call2.Fun.(*ast.Ident)
-		if !ok || (ident.Name != "i18n" && ident.Name != "i18nl") { return true }
+		var call2, innerOK = sel.X.(*ast.CallExpr)
+		if !innerOK { return true }
+		var ident, identOK = call2.Fun.(*ast.Ident)
+		if !identOK || (ident.Name != "i18n" && ident.Name != "i18nl") { return true }
 		if len(call.Args) == 0 { return true }
-		lit, ok := call.Args[0].(*ast.BasicLit)
-		if !ok || lit.Kind != token.STRING { return true }
+		var lit, litOK = call.Args[0].(*ast.BasicLit)
+		if !litOK || lit.Kind != token.STRING { return true }
 		var s, err = stringLiteral(lit.Value)
 		if err != nil { return true }
 		strings = append(strings, s)
@@ -196,8 +196,8 @@ func parseTranslationSections(path string) (map[string]map[string]string, error)
 			if m != nil {
 				var key, err = stringLiteral("\"" + m[1] + "\"")
 				if err != nil { continue }
-				val, err := stringLiteral("\"" + m[2] + "\"")
-				if err != nil { continue }
+				var val, valErr = stringLiteral("\"" + m[2] + "\"")
+				if valErr != nil { continue }
 				currentTrans[key] = val
 			}
 		}
