@@ -103,10 +103,10 @@ func list(opt *options, address string) {
         }
         var received, sent = moved(tx, address)
         var e = entry{at: tx.Time, txid: tx.Txid, received: received, sent: sent}
-        fmt.Printf("%-17s %s   %*s\n", stamp(e.at), shortID(e.txid), width, amount(e.net()))
         totals.add(e)
         if n := len(amount(e.net())); n > width { width = n }
-        entries = append(entries, entry{at: tx.Time, txid: tx.Txid, received: received, sent: sent})
+        fmt.Printf("%-17s %s   %*s\n", stamp(e.at), shortID(e.txid), width, amount(e.net()))
+        entries = append(entries, e)
     }
     fmt.Println(totals)
 }
