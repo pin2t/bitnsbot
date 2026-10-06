@@ -75,7 +75,7 @@ func TestInfoFlow(t *testing.T) {
     }
     var recentTxid = "aaaa47a9143a23e80cc59e81588d21558b394005580b285961957cb3bed5b3e0"
     var recentTime = time.Now().Add(-48 * time.Hour).Unix()
-    var btcdServer = coretest.Server(t, func(method string, params []interface{}) (interface{}, error) {
+    var btcdServer = coretest.Server(t, func(method string, params []any) (any, error) {
         var p = params
         _ = p
         switch method {
@@ -342,7 +342,7 @@ func TestFeesFlow(t *testing.T) {
             "fees": map[string]any{"base": float64(i+1) * 250 / 1e8, "ancestor": float64(i+1) * 250 / 1e8},
         }
     }
-    var btcdServer = coretest.Server(t, func(method string, params []interface{}) (interface{}, error) {
+    var btcdServer = coretest.Server(t, func(method string, params []any) (any, error) {
         switch method {
         case "getrawmempool":
             return mempool, nil
@@ -399,7 +399,7 @@ func TestFeesUnavailable(t *testing.T) {
     }))
     defer server.Close()
     var bot = newBot("TESTTOKEN", server.URL)
-    var btcdServer = coretest.Server(t, func(method string, params []interface{}) (interface{}, error) {
+    var btcdServer = coretest.Server(t, func(method string, params []any) (any, error) {
         return nil, fmt.Errorf("not enough blocks have been observed")
     })
     defer btcdServer.Close()
@@ -458,7 +458,7 @@ func TestMempoolFlow(t *testing.T) {
     if len(sent) != 1 || sent[0] != "Bitcoin node connection is not configured" {
         t.Fatalf("unexpected not-configured reply: %#v", sent)
     }
-    var btcdServer = coretest.Server(t, func(method string, params []interface{}) (interface{}, error) {
+    var btcdServer = coretest.Server(t, func(method string, params []any) (any, error) {
         var p = params
         _ = p
         switch method {
@@ -565,7 +565,7 @@ func TestMempoolFlowRate(t *testing.T) {
     }))
     defer tg.Close()
     var b = newBot("TESTTOKEN", tg.URL)
-    var srv = coretest.Server(t, func(method string, params []interface{}) (interface{}, error) {
+    var srv = coretest.Server(t, func(method string, params []any) (any, error) {
         if method == "getmempoolinfo" {
             return map[string]any{"size": 5000, "bytes": 2000000}, nil
         }

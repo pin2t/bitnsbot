@@ -71,7 +71,7 @@ func TestWatchNotification(t *testing.T) {
     var b = newBot("TESTTOKEN", tg.URL)
     var watchedAddr = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
     var txid = "f21b47a9143a23e80cc59e81588d21558b394005580b285961957cb3bed5b3e0"
-    var srv = coretest.Server(t, func(method string, params []interface{}) (interface{}, error) {
+    var srv = coretest.Server(t, func(method string, params []any) (any, error) {
         switch method {
         case "validateaddress":
             return map[string]any{"isvalid": true, "address": watchedAddr, "scriptPubKey": "76a914aa88ac"}, nil
@@ -332,7 +332,7 @@ func TestTxConfirmation(t *testing.T) {
     defer tg.Close()
     var b = newBot("TESTTOKEN", tg.URL)
     var txid = "f21b47a9143a23e80cc59e81588d21558b394005580b285961957cb3bed5b3e0"
-    var srv = coretest.Server(t, func(method string, params []interface{}) (interface{}, error) {
+    var srv = coretest.Server(t, func(method string, params []any) (any, error) {
         var p = params
         _ = p
         switch method {
@@ -410,7 +410,7 @@ func TestAddrConfirmation(t *testing.T) {
     var b = newBot("TESTTOKEN", tg.URL)
     var addr = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
     var txid = "f21b47a9143a23e80cc59e81588d21558b394005580b285961957cb3bed5b3e0"
-    var srv = coretest.Server(t, func(method string, params []interface{}) (interface{}, error) {
+    var srv = coretest.Server(t, func(method string, params []any) (any, error) {
         if method == "getblock" {
             return map[string]any{"height": 200, "tx": []string{txid}}, nil
         }
@@ -467,7 +467,7 @@ func spendCoreServer(t *testing.T, watchedAddr, txid string, change bool) *httpt
         inValue = 2.5
         outs = append(outs, map[string]any{"value": 1.4999, "n": 1, "scriptPubKey": map[string]any{"address": watchedAddr, "hex": "76a914aa88ac"}})
     }
-    return coretest.Server(t, func(method string, params []interface{}) (interface{}, error) {
+    return coretest.Server(t, func(method string, params []any) (any, error) {
         switch method {
         case "validateaddress":
             return map[string]any{"isvalid": true, "address": watchedAddr, "scriptPubKey": "76a914aa88ac"}, nil
@@ -638,7 +638,7 @@ func TestSpendWithChangeNotification(t *testing.T) {
 func TestSeedOutpoints(t *testing.T) {
     var addr = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
     var script = "76a914aabbccddeeff88ac"
-    var srv = coretest.Server(t, func(method string, params []interface{}) (interface{}, error) {
+    var srv = coretest.Server(t, func(method string, params []any) (any, error) {
         switch method {
         case "validateaddress":
             return map[string]any{"isvalid": true, "address": addr, "scriptPubKey": script}, nil
@@ -743,7 +743,7 @@ func TestConfirmationLinksBlock(t *testing.T) {
     }))
     defer tg.Close()
     var b = newBot("TESTTOKEN", tg.URL)
-    var srv = coretest.Server(t, func(method string, params []interface{}) (interface{}, error) {
+    var srv = coretest.Server(t, func(method string, params []any) (any, error) {
         if method == "getblock" {
             return map[string]any{"height": 959126, "tx": []string{txid}}, nil
         }

@@ -39,7 +39,7 @@ func TestSetAliasRenamesALiveWatch(t *testing.T) {
     var b = newBot("TESTTOKEN", tg.URL)
     var watchedAddr = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
     var txid = "f21b47a9143a23e80cc59e81588d21558b394005580b285961957cb3bed5b3e0"
-    var srv = coretest.Server(t, func(method string, params []interface{}) (interface{}, error) {
+    var srv = coretest.Server(t, func(method string, params []any) (any, error) {
         switch method {
         case "validateaddress":
             return map[string]any{"isvalid": true, "address": watchedAddr, "scriptPubKey": "76a914aa88ac"}, nil

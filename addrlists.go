@@ -55,7 +55,7 @@ const addrsMaxRows = 10000
 // loses some of it rather than being sent a megabyte of rows.
 const addrsRestoreRows = addrsFirstPage + 20 * addrsPage
 
-// Addresses reads one window of one ranked list: an `order by` on the column that
+// appAddresses reads one window of one ranked list: an `order by` on the column that
 // list ranks, `limit`ed to the batch and `offset` by how far down the reader has
 // scrolled. The index on that column is what makes it a walk of the ranking rather
 // than a sort of the table.
@@ -83,7 +83,7 @@ const addrsRestoreRows = addrsFirstPage + 20 * addrsPage
 // has one column for this, and the price belongs on the details
 // page. Under a whole coin the satoshi are kept, or every small
 // balance would render as "0 BTC".
-func (appSource) Addresses(lang string, rng app.AddrRange) app.Addrs {
+func appAddresses(lang string, rng app.AddrRange) app.Addrs {
     var out = app.Addrs{Kind: rng.Kind}
     var list addrList
     for _, l := range addrLists {

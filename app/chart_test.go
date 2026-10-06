@@ -31,7 +31,7 @@ func liveChart(name, data, period string) Chart {
 // the data buttons are on the left and the periods on the right, so the
 // first group is the one naming what is plotted
 func TestMinerPageDrawsTheChart(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{})
+    var h = handler(t, "TESTTOKEN", fakeSource{}.options())
     var body = html.UnescapeString(get(h, "/miner?name=AntPool", freshInitData("TESTTOKEN")).Body.String())
     var at = strings.Index(body, `id="minerchart"`)
     if at < 0 { t.Fatalf("the miner page has no chart: %s", body) }
@@ -60,7 +60,7 @@ func TestMinerPageDrawsTheChart(t *testing.T) {
 // The chart the page ships with is the chart its buttons swap in, byte for byte —
 // the same guard the cards have, since both render one {{define}}.
 func TestMinerChartIsWhatThePageShows(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{})
+    var h = handler(t, "TESTTOKEN", fakeSource{}.options())
     var data = freshInitData("TESTTOKEN")
     var page = get(h, "/miner?name=AntPool", data).Body.String()
     var fragment = strings.TrimSpace(get(h, "/minerchart?name=AntPool&data=blocks&period=month", data).Body.String())
@@ -72,7 +72,7 @@ func TestMinerChartIsWhatThePageShows(t *testing.T) {
 // Each button changes one selection and keeps the other, and the lit ones are
 // what the bars under them are.
 func TestMinerChartSelections(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{})
+    var h = handler(t, "TESTTOKEN", fakeSource{}.options())
     var body = html.UnescapeString(get(h, "/minerchart?name=AntPool&data=consumption&period=year",
         freshInitData("TESTTOKEN")).Body.String())
     for _, want := range []string{
@@ -100,7 +100,7 @@ func TestMinerChartSelections(t *testing.T) {
 // Both selections arrive in a URL a user can edit and go straight back out into
 // the buttons, so an unknown one is what the page opens on, never carried through.
 func TestMinerChartRefusesWhatItDoesNotKnow(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{})
+    var h = handler(t, "TESTTOKEN", fakeSource{}.options())
     var data = freshInitData("TESTTOKEN")
     var body = html.UnescapeString(get(h, `/minerchart?name=AntPool&data="><script>&period=decade`, data).Body.String())
     if strings.Contains(body, "<script>") || strings.Contains(body, "decade") {
@@ -119,7 +119,7 @@ func TestMinerChartRefusesWhatItDoesNotKnow(t *testing.T) {
 
 // Pool names have spaces in them, and every button carries the name.
 func TestMinerChartKeepsANameWithSpaces(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{})
+    var h = handler(t, "TESTTOKEN", fakeSource{}.options())
     var body = get(h, "/minerchart?name=Foundry+USA", freshInitData("TESTTOKEN")).Body.String()
     if n := strings.Count(body, `minerchart?name=Foundry&#43;USA&`); n != 5 {
         t.Errorf("%d of the 5 buttons carry the escaped name: %s", n, body)
@@ -129,7 +129,7 @@ func TestMinerChartKeepsANameWithSpaces(t *testing.T) {
 // The heights are percentages of the scale, a zero bar is drawn with no floor
 // under it, and only the bars with a tick carry one.
 func TestMinerChartBars(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{})
+    var h = handler(t, "TESTTOKEN", fakeSource{}.options())
     var body = get(h, "/minerchart?name=AntPool&period=quarter", freshInitData("TESTTOKEN")).Body.String()
     for _, want := range []string{
         `<i class="nz" style="height: 71.7%"></i>`,
@@ -149,7 +149,7 @@ func TestMinerChartBars(t *testing.T) {
 // A table with no block in the period says so, and keeps its buttons so another
 // period is still one tap away.
 func TestMinerChartWithNothingInThePeriod(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{})
+    var h = handler(t, "TESTTOKEN", fakeSource{}.options())
     var body = get(h, "/minerchart?name=NoBlocksYet&period=year", freshInitData("TESTTOKEN")).Body.String()
     if !strings.Contains(body, "no blocks cached for this period") {
         t.Errorf("an empty period should say so: %s", body)
@@ -165,7 +165,7 @@ func TestMinerChartWithNothingInThePeriod(t *testing.T) {
 // Only a miner page has a chart, and only one that found the pool: a block page
 // has none, and nor does "nothing found".
 func TestOnlyAMinerPageHasAChart(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{d: liveBlockInfo()})
+    var h = handler(t, "TESTTOKEN", fakeSource{d: liveBlockInfo()}.options())
     var data = freshInitData("TESTTOKEN")
     for _, path := range []string{"/block?height=963268", "/miner?name=NoSuchPool"} {
         if body := get(h, path, data).Body.String(); strings.Contains(body, "minerchart") {

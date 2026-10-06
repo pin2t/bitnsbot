@@ -491,7 +491,7 @@ func i18nl(lang string) trans {
 
 // Sprintf works like fmt.Sprintf but translates the format string first. If no
 // translation exists, it falls back to the original format string.
-func (t trans) Sprintf(format string, a ...interface{}) string {
+func (t trans) Sprintf(format string, a ...any) string {
 	if t != nil {
 		if translated, ok := t[format]; ok {
 			return fmt.Sprintf(translated, a...)

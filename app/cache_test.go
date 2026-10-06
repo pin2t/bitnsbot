@@ -7,7 +7,7 @@ import "testing"
 import "time"
 
 // countingSource records how often each card's data was asked for, which is what
-// a cache hit is measured by: the fragment still renders, but Source is not
+// a cache hit is measured by: the fragment still renders, but Options are not
 // touched.
 type countingSource struct {
     mu    sync.Mutex
@@ -109,6 +109,27 @@ func (s *countingSource) Blocks(lang string, rng Range) Blocks {
     return b
 }
 
+func (s *countingSource) options() Options {
+    return Options{
+        Fees:       s.Fees,
+        Network:    s.Network,
+        Market:     s.Market,
+        Blocks:     s.Blocks,
+        Addresses:  s.Addresses,
+        BlockInfo:  s.BlockInfo,
+        TxInfo:     s.TxInfo,
+        AddrInfo:   s.AddrInfo,
+        AddrTxs:    s.AddrTxs,
+        MinerInfo:  s.MinerInfo,
+        MinerChart: s.MinerChart,
+        Mempool:    s.Mempool,
+        Watches:    s.Watches,
+        Watching:   s.Watching,
+        SetWatch:   s.SetWatch,
+        SetAlias:   s.SetAlias,
+    }
+}
+
 // rangeKey names a window the way the tests count them: one key per distinct
 // request, so a cache hit shows up as a call that did not happen.
 func rangeKey(rng Range) string {
@@ -121,10 +142,10 @@ func rangeKey(rng Range) string {
 }
 
 // A second request for an unchanged card is served from memory: the fragment is
-// identical and Source was not consulted again.
+// identical and Options were not consulted again.
 func TestCardsServedFromCache(t *testing.T) {
     var src = newCounting()
-    var h = handler(t, "TESTTOKEN", src)
+    var h = handler(t, "TESTTOKEN", src.options())
     var data = freshInitData("TESTTOKEN")
     for _, c := range []struct{ path, name string }{
         {"/fees", "fees"}, {"/network", "network"}, {"/market", "market"}} {
@@ -134,7 +155,7 @@ func TestCardsServedFromCache(t *testing.T) {
             t.Errorf("%s changed between requests:\n%q\n%q", c.path, first, second)
         }
         if n := src.count(c.name); n != 1 {
-            t.Errorf("%s asked Source %d times for two requests, want 1", c.path, n)
+            t.Errorf("%s asked Options %d times for two requests, want 1", c.path, n)
         }
         if !strings.Contains(first, "<h2>") {
             t.Errorf("%s rendered nothing useful: %q", c.path, first)
@@ -146,7 +167,7 @@ func TestCardsServedFromCache(t *testing.T) {
 // only that card's.
 func TestNotifyClearsOneCard(t *testing.T) {
     var src = newCounting()
-    var h = handler(t, "TESTTOKEN", src)
+    var h = handler(t, "TESTTOKEN", src.options())
     var data = freshInitData("TESTTOKEN")
     var paths = []string{"/fees", "/network", "/market", "/blocks"}
     for _, p := range paths { get(h, p, data) }
@@ -158,10 +179,10 @@ func TestNotifyClearsOneCard(t *testing.T) {
 }
 
 // The shell page is cached like the cards it embeds, so repeat visits do not
-// re-render the whole template or re-read every Source.
+// re-render the whole template or re-read every Options function.
 func TestPageServedFromCache(t *testing.T) {
     var src = newCounting()
-    var h = handler(t, "TESTTOKEN", src)
+    var h = handler(t, "TESTTOKEN", src.options())
     var first = get(h, "/", "").Body.String()
     var second = get(h, "/", "").Body.String()
     if first != second {
@@ -172,7 +193,7 @@ func TestPageServedFromCache(t *testing.T) {
     }
     for _, name := range []string{"fees", "network", "market", "blockstop"} {
         if n := src.count(name); n != 1 {
-            t.Errorf("%s asked Source %d times for two page loads, want 1", name, n)
+            t.Errorf("%s asked Options %d times for two page loads, want 1", name, n)
         }
     }
 }
@@ -184,7 +205,7 @@ func TestPageServedFromCache(t *testing.T) {
 func TestAnyNotifyClearsPage(t *testing.T) {
     for _, event := range []string{"fees", "network", "market", "blocks"} {
         var src = newCounting()
-        var h = handler(t, "TESTTOKEN", src)
+        var h = handler(t, "TESTTOKEN", src.options())
         get(h, "/", "")
         Notify(event)
         get(h, "/", "")
@@ -193,7 +214,7 @@ func TestAnyNotifyClearsPage(t *testing.T) {
         }
     }
     var src = newCounting()
-    var h = handler(t, "TESTTOKEN", src)
+    var h = handler(t, "TESTTOKEN", src.options())
     get(h, "/", "")
     Notify("something-else")
     get(h, "/", "")
@@ -206,7 +227,7 @@ func TestAnyNotifyClearsPage(t *testing.T) {
 // showing: every batch below it shifts by one when a block arrives.
 func TestNotifyBlocksClearsEveryPage(t *testing.T) {
     var src = newCounting()
-    var h = handler(t, "TESTTOKEN", src)
+    var h = handler(t, "TESTTOKEN", src.options())
     var data = freshInitData("TESTTOKEN")
     get(h, "/blocks", data)
     get(h, "/moreblocks?before=963257", data)
@@ -224,7 +245,7 @@ func TestNotifyBlocksClearsEveryPage(t *testing.T) {
 // restored by Back serves its own HTML and not a neighbour's.
 func TestBlocksCachedPerPage(t *testing.T) {
     var src = newCounting()
-    var h = handler(t, "TESTTOKEN", src)
+    var h = handler(t, "TESTTOKEN", src.options())
     var data = freshInitData("TESTTOKEN")
     var first = get(h, "/blocks", data).Body.String()
     get(h, "/moreblocks?before=963257", data)
@@ -251,7 +272,7 @@ func TestBlocksCachedPerPage(t *testing.T) {
 // the most recent batch is still held
 func TestBlocksCacheEvictsOldestPage(t *testing.T) {
     var src = newCounting()
-    var h = handler(t, "TESTTOKEN", src)
+    var h = handler(t, "TESTTOKEN", src.options())
     var data = freshInitData("TESTTOKEN")
     get(h, "/blocks", data)
     for i := 0; i < blocksCached; i++ {
@@ -278,7 +299,7 @@ func TestCacheExpires(t *testing.T) {
     cacheTTL = 20 * time.Millisecond
     defer func() { cacheTTL = old }()
     var src = newCounting()
-    var h = handler(t, "TESTTOKEN", src)
+    var h = handler(t, "TESTTOKEN", src.options())
     var data = freshInitData("TESTTOKEN")
     var paths = []string{"/network", "/market", "/blocks"}
     for _, p := range paths { get(h, p, data) }
@@ -290,7 +311,7 @@ func TestCacheExpires(t *testing.T) {
         }
     }
     var psrc = newCounting()
-    var ph = handler(t, "TESTTOKEN", psrc)
+    var ph = handler(t, "TESTTOKEN", psrc.options())
     get(ph, "/", "")
     time.Sleep(40 * time.Millisecond)
     get(ph, "/", "")
@@ -303,7 +324,7 @@ func TestCacheExpires(t *testing.T) {
 // served as the other — / must come back as a whole document and /fees as a bare
 // card.
 func TestPageAndFragmentCachesAreSeparate(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", newCounting())
+    var h = handler(t, "TESTTOKEN", newCounting().options())
     var frag = get(h, "/fees", freshInitData("TESTTOKEN")).Body.String()
     var body = get(h, "/", "").Body.String()
     if strings.Contains(frag, "<html>") {
@@ -318,7 +339,7 @@ func TestPageAndFragmentCachesAreSeparate(t *testing.T) {
 // safe under cacheMu. Run under -race, this is what pins that.
 func TestCacheConcurrentRequests(t *testing.T) {
     var src = newCounting()
-    var h = handler(t, "TESTTOKEN", src)
+    var h = handler(t, "TESTTOKEN", src.options())
     var data = freshInitData("TESTTOKEN")
     var wg sync.WaitGroup
     for i := 0; i < 20; i++ {
@@ -341,7 +362,7 @@ func TestCacheConcurrentRequests(t *testing.T) {
 // is read out of the blocks table, which is what the block moved.
 func TestMinerChartCachedUntilABlock(t *testing.T) {
     var src = newCounting()
-    var h = handler(t, "TESTTOKEN", src)
+    var h = handler(t, "TESTTOKEN", src.options())
     var data = freshInitData("TESTTOKEN")
     get(h, "/minerchart?name=AntPool&data=blocks&period=month", data)
     get(h, "/minerchart?name=AntPool&data=consumption&period=year", data)

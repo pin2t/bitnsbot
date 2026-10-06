@@ -72,7 +72,7 @@ func TestAppAddressPageUsesStatistics(t *testing.T) {
     var addr = "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"
     seedAddrStat(t, addr, addrstat.Stat{Type: "segwit", Balance: 100000000, Recv: 100000000, Txs: 7})
     core.Reset()
-    var info = appSource{}.AddrInfo("", addr)
+    var info = appAddrInfo("", addr)
     if !info.OK { t.Fatal("the app got nothing for a gathered address") }
     var labels []string
     for _, f := range info.Rows { labels = append(labels, f.Label+"="+f.Value) }

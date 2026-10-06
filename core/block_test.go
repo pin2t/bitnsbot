@@ -92,7 +92,7 @@ func TestRPCRefusesAMalformedScript(t *testing.T) {
 // whatever height is asked for, and answers getblock at verbosity 3 with the JSON
 // verbose.
 func blockFrom(t *testing.T, verbose string, height int) (core.Block, error) {
-    coretest.Start(t, func(method string, params []interface{}) (interface{}, error) {
+    coretest.Start(t, func(method string, params []any) (any, error) {
         switch {
         case method == "getblockhash":
             return "fixture", nil

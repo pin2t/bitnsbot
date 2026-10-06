@@ -79,7 +79,7 @@ type abaRow struct {
 type abaState struct {
     store   *abaStore
     tx      *sql.Tx
-    pending []interface{}
+    pending []any
     rows    int
     since   int
 }

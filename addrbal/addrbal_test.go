@@ -44,7 +44,7 @@ type chain struct {
     fail    int
 }
 
-func (c *chain) respond(method string, params []interface{}) (interface{}, error) {
+func (c *chain) respond(method string, params []any) (any, error) {
     switch method {
     case "getblockcount":
         return c.tip, nil
@@ -56,18 +56,18 @@ func (c *chain) respond(method string, params []interface{}) (interface{}, error
         c.fetched = append(c.fetched, height)
         c.mu.Unlock()
         if height == c.fail { return nil, errors.New("node is busy") }
-        var amount = func(p core.Payment) map[string]interface{} {
-            return map[string]interface{}{"value": float64(p.Sat) / 1e8, "scriptPubKey": map[string]string{"hex": hex.EncodeToString(p.Script)}}
+        var amount = func(p core.Payment) map[string]any {
+            return map[string]any{"value": float64(p.Sat) / 1e8, "scriptPubKey": map[string]string{"hex": hex.EncodeToString(p.Script)}}
         }
-        var txs = []interface{}{}
+        var txs = []any{}
         for _, tx := range c.blocks[height] {
-            var vin = []interface{}{}
-            var vout = []interface{}{}
-            for _, p := range tx.Spent { vin = append(vin, map[string]interface{}{"prevout": amount(p)}) }
+            var vin = []any{}
+            var vout = []any{}
+            for _, p := range tx.Spent { vin = append(vin, map[string]any{"prevout": amount(p)}) }
             for _, p := range tx.Outputs { vout = append(vout, amount(p)) }
-            txs = append(txs, map[string]interface{}{"vin": vin, "vout": vout})
+            txs = append(txs, map[string]any{"vin": vin, "vout": vout})
         }
-        return map[string]interface{}{"time": 1231006505 + height, "tx": txs}, nil
+        return map[string]any{"time": 1231006505 + height, "tx": txs}, nil
     }
     return nil, fmt.Errorf("unexpected method %s", method)
 }

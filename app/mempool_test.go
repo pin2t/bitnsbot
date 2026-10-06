@@ -34,7 +34,7 @@ func mempoolSource() fakeSource {
 
 // The mempool count on the fee card is what opens the page, in every language.
 func TestFeesCardLinksToMempool(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", mempoolSource())
+    var h = handler(t, "TESTTOKEN", mempoolSource().options())
     for _, lang := range langs {
         var r = httptest.NewRequest("GET", "/fees", nil)
         r.Header.Set("X-Telegram-Init-Data", freshInitData("TESTTOKEN"))
@@ -48,7 +48,7 @@ func TestFeesCardLinksToMempool(t *testing.T) {
 }
 
 func TestMempoolPage(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", mempoolSource())
+    var h = handler(t, "TESTTOKEN", mempoolSource().options())
     var w = get(h, "/mempool?from=home", freshInitData("TESTTOKEN"))
     if w.Code != 200 {
         t.Fatalf("GET /mempool = %d, want 200", w.Code)
@@ -88,7 +88,7 @@ func TestMempoolPage(t *testing.T) {
 // which the page therefore has to carry under the same id. A prepend with no
 // fields leaves the page's alone.
 func TestNewMempoolPrepends(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", mempoolSource())
+    var h = handler(t, "TESTTOKEN", mempoolSource().options())
     var w = get(h, "/newmempool?after=7", freshInitData("TESTTOKEN"))
     if w.Code != 200 {
         t.Fatalf("GET /newmempool = %d, want 200", w.Code)
@@ -110,7 +110,7 @@ func TestNewMempoolPrepends(t *testing.T) {
     var prepend = liveMempool(7)
     prepend.Rows = nil
     bare.mp[7] = prepend
-    if got := get(handler(t, "TESTTOKEN", bare), "/newmempool?after=7", freshInitData("TESTTOKEN")).Body.String(); strings.Contains(got, "mpfields") {
+    if got := get(handler(t, "TESTTOKEN", bare.options()), "/newmempool?after=7", freshInitData("TESTTOKEN")).Body.String(); strings.Contains(got, "mpfields") {
         t.Errorf("a prepend with no fields swaps them: %s", got)
     }
     if strings.Contains(body, `<h1>`) || strings.Contains(body, mpTx2) {
@@ -132,7 +132,7 @@ func TestNewMempoolOverflowReplacesTheList(t *testing.T) {
     var whole = liveMempool(-1)
     whole.More = true
     src.mp[3] = whole
-    var w = get(handler(t, "TESTTOKEN", src), "/newmempool?after=3", freshInitData("TESTTOKEN"))
+    var w = get(handler(t, "TESTTOKEN", src.options()), "/newmempool?after=3", freshInitData("TESTTOKEN"))
     if got := w.Header().Get("HX-Retarget"); got != "#mplist" {
         t.Errorf("HX-Retarget = %q, want #mplist", got)
     }
@@ -148,19 +148,19 @@ func TestNewMempoolOverflowReplacesTheList(t *testing.T) {
 // minutes old.
 func TestMempoolIsNotCached(t *testing.T) {
     var src = newCounting()
-    var h = handler(t, "TESTTOKEN", src)
+    var h = handler(t, "TESTTOKEN", src.options())
     get(h, "/mempool", freshInitData("TESTTOKEN"))
     get(h, "/mempool", freshInitData("TESTTOKEN"))
     get(h, "/newmempool?after=7", freshInitData("TESTTOKEN"))
     get(h, "/newmempool?after=7", freshInitData("TESTTOKEN"))
     if n := src.count("mempool"); n != 4 {
-        t.Errorf("Source.Mempool called %d times for four requests, want 4", n)
+        t.Errorf("Options.Mempool called %d times for four requests, want 4", n)
     }
 }
 
 // A transaction opened from the list goes Back to the list.
 func TestTxFromMempoolGoesBackToIt(t *testing.T) {
-    var w = get(handler(t, "TESTTOKEN", mempoolSource()), "/tx?id="+mpTx2+"&from=mempool", freshInitData("TESTTOKEN"))
+    var w = get(handler(t, "TESTTOKEN", mempoolSource().options()), "/tx?id="+mpTx2+"&from=mempool", freshInitData("TESTTOKEN"))
     if !strings.Contains(w.Body.String(), `<button hx-get="mempool" hx-target="#blocklist" hx-swap="outerHTML">`) {
         t.Errorf("Back does not return to the mempool: %s", w.Body.String())
     }
@@ -175,7 +175,7 @@ func TestNotifyThrottlesMempool(t *testing.T) {
     throttleMu.Lock()
     throttleLast, throttlePending = map[string]time.Time{}, map[string]bool{}
     throttleMu.Unlock()
-    var h = handler(t, "TESTTOKEN", fakeSource{})
+    var h = handler(t, "TESTTOKEN", fakeSource{}.options())
     var r = httptest.NewRequest("GET", "/events", nil)
     var ctx, cancel = context.WithCancel(r.Context())
     r = r.WithContext(ctx)

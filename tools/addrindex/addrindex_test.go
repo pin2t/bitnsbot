@@ -138,20 +138,20 @@ func serialChain() [][]byte {
 // verboseBlock is what getblock at verbosity 3 reports for a fixture block,
 // reduced to what the build reads: the time, and each transaction's outputs and
 // inputs — a coinbase's input with no prevout, every other with one.
-func verboseBlock(height int) map[string]interface{} {
+func verboseBlock(height int) map[string]any {
     var b = chainBlocks()[height]
-    var amount = func(p core.Payment) map[string]interface{} {
-        return map[string]interface{}{"value": float64(p.Sat) / 1e8, "scriptPubKey": map[string]string{"hex": hex.EncodeToString(p.Script)}}
+    var amount = func(p core.Payment) map[string]any {
+        return map[string]any{"value": float64(p.Sat) / 1e8, "scriptPubKey": map[string]string{"hex": hex.EncodeToString(p.Script)}}
     }
-    var txs []interface{}
+    var txs []any
     for i, tx := range b.Txs {
-        var vin, vout []interface{}
-        if i == 0 { vin = append(vin, map[string]interface{}{"coinbase": "00"}) }
-        for _, p := range tx.Spent { vin = append(vin, map[string]interface{}{"prevout": amount(p)}) }
+        var vin, vout []any
+        if i == 0 { vin = append(vin, map[string]any{"coinbase": "00"}) }
+        for _, p := range tx.Spent { vin = append(vin, map[string]any{"prevout": amount(p)}) }
         for _, p := range tx.Outputs { vout = append(vout, amount(p)) }
-        txs = append(txs, map[string]interface{}{"vin": vin, "vout": vout})
+        txs = append(txs, map[string]any{"vin": vin, "vout": vout})
     }
-    return map[string]interface{}{"hash": b.Hash, "time": b.Time, "tx": txs}
+    return map[string]any{"hash": b.Hash, "time": b.Time, "tx": txs}
 }
 
 // txidAt is the id the fake node reports for a given (height, position).
@@ -197,14 +197,14 @@ func heightOfHash(hash string) int {
 // left untyped on purpose: a single call carries a string one and a batch
 // carries numbers, and decoding into an int would fail on the former.
 type rpcCall struct {
-    ID     interface{}   `json:"id"`
+    ID     any   `json:"id"`
     Method string        `json:"method"`
-    Params []interface{} `json:"params"`
+    Params []any `json:"params"`
 }
 
 // batchID is the numeric id a batch entry carries, which is what the reply must
 // be matched back by.
-func batchID(v interface{}) int {
+func batchID(v any) int {
     if n, ok := v.(float64); ok { return int(n) }
     return -1
 }
@@ -228,9 +228,9 @@ func rpcReply(t *testing.T, w http.ResponseWriter, r *http.Request, tip int) {
             t.Errorf("decode batch: %v", err)
             return
         }
-        var out []map[string]interface{}
+        var out []map[string]any
         for _, req := range reqs {
-            out = append(out, map[string]interface{}{"id": batchID(req.ID), "result": answer(t, req, tip)})
+            out = append(out, map[string]any{"id": batchID(req.ID), "result": answer(t, req, tip)})
         }
         json.NewEncoder(w).Encode(out)
         return
@@ -240,23 +240,23 @@ func rpcReply(t *testing.T, w http.ResponseWriter, r *http.Request, tip int) {
         t.Errorf("decode rpc: %v", err)
         return
     }
-    json.NewEncoder(w).Encode(map[string]interface{}{"result": answer(t, req, tip)})
+    json.NewEncoder(w).Encode(map[string]any{"result": answer(t, req, tip)})
 }
 
-func answer(t *testing.T, req rpcCall, tip int) interface{} {
-    var out interface{}
-    var reply = func(v interface{}) { out = v }
+func answer(t *testing.T, req rpcCall, tip int) any {
+    var out any
+    var reply = func(v any) { out = v }
     switch req.Method {
     case "getblockcount":
         reply(tip)
     case "getblockchaininfo":
-        reply(map[string]interface{}{"blocks": tip, "chain": fakeChain})
+        reply(map[string]any{"blocks": tip, "chain": fakeChain})
     case "getchaintxstats":
         var txs int
         for _, b := range chainBlocks()[:tip+1] { txs += len(b.Txs) }
-        reply(map[string]interface{}{"txcount": txs})
+        reply(map[string]any{"txcount": txs})
     case "validateaddress":
-        reply(map[string]interface{}{"isvalid": true, "scriptPubKey": hex.EncodeToString(payScript)})
+        reply(map[string]any{"isvalid": true, "scriptPubKey": hex.EncodeToString(payScript)})
     case "getblockhash":
         reply(hashOfHeight(int(req.Params[0].(float64))))
     case "getblock":
@@ -266,7 +266,7 @@ func answer(t *testing.T, req rpcCall, tip int) interface{} {
             break
         }
         var ids = []string{txidAt(height, 0), txidAt(height, 1)}
-        reply(map[string]interface{}{"tx": ids})
+        reply(map[string]any{"tx": ids})
     case "getrawtransaction":
         reply(txDetail(req.Params[0].(string)))
     default:
@@ -277,21 +277,21 @@ func answer(t *testing.T, req rpcCall, tip int) interface{} {
 
 // txDetail: block 1's transaction pays the address 20000 sat; block 2's spends
 // that and pays 10000 back as change, so the net is -10000.
-func txDetail(txid string) map[string]interface{} {
-    var vout = func(addr string, btc float64) map[string]interface{} {
-        return map[string]interface{}{"value": btc, "scriptPubKey": map[string]string{"address": addr}}
+func txDetail(txid string) map[string]any {
+    var vout = func(addr string, btc float64) map[string]any {
+        return map[string]any{"value": btc, "scriptPubKey": map[string]string{"address": addr}}
     }
     switch txid {
     case txidAt(1, 1):
-        return map[string]interface{}{"txid": txid, "time": 1634850000,
-            "vin":  []interface{}{map[string]interface{}{"prevout": vout("someone-else", 0.0003)}},
-            "vout": []interface{}{vout(address, 0.0002)}}
+        return map[string]any{"txid": txid, "time": 1634850000,
+            "vin":  []any{map[string]any{"prevout": vout("someone-else", 0.0003)}},
+            "vout": []any{vout(address, 0.0002)}}
     case txidAt(2, 1):
-        return map[string]interface{}{"txid": txid, "time": 1667300400,
-            "vin":  []interface{}{map[string]interface{}{"prevout": vout(address, 0.0002)}},
-            "vout": []interface{}{vout("someone-else", 0.0001), vout(address, 0.0001)}}
+        return map[string]any{"txid": txid, "time": 1667300400,
+            "vin":  []any{map[string]any{"prevout": vout(address, 0.0002)}},
+            "vout": []any{vout("someone-else", 0.0001), vout(address, 0.0001)}}
     }
-    return map[string]interface{}{"txid": txid, "time": 0}
+    return map[string]any{"txid": txid, "time": 0}
 }
 
 // testIndex opens a fresh index through the tool's own openIndex, so the tests

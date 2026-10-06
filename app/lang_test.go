@@ -49,7 +49,7 @@ func TestEveryLanguageHasAPage(t *testing.T) {
 //
 // a language we do have, behind one we do not
 func TestAcceptLanguagePicksThePage(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{f: liveFees()})
+    var h = handler(t, "TESTTOKEN", fakeSource{f: liveFees()}.options())
     for _, c := range []struct{ accept, want, marker string }{
         {"ru-RU,ru;q=0.9,en;q=0.8", "ru", "Комиссии сети"},
         {"es-ES,es;q=0.9", "es", "Comisiones de red"},
@@ -73,7 +73,7 @@ func TestAcceptLanguagePicksThePage(t *testing.T) {
 //
 // a malformed q keeps the default of 1.0 rather than sinking the language
 func TestAcceptLanguageHonoursQuality(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{f: liveFees()})
+    var h = handler(t, "TESTTOKEN", fakeSource{f: liveFees()}.options())
     if got := getLang(h, "/", "", "en;q=0.1,ru;q=0.9").Header().Get("Content-Language"); got != "ru" {
         t.Errorf("q-values ignored: got %q, want ru", got)
     }
@@ -93,7 +93,7 @@ func TestAcceptLanguageHonoursQuality(t *testing.T) {
 //
 // with nothing left to fall back to, English
 func TestInitDataLanguageWins(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{f: liveFees()})
+    var h = handler(t, "TESTTOKEN", fakeSource{f: liveFees()}.options())
     var w = getLang(h, "/fees", initDataLang("TESTTOKEN", "ru"), "en-US,en;q=0.9")
     if got := w.Header().Get("Content-Language"); got != "ru" {
         t.Errorf("Content-Language = %q, want ru — the signed user setting wins", got)
@@ -120,7 +120,7 @@ func TestInitDataLanguageWins(t *testing.T) {
 //
 // and back again, to catch a key that collapses the other way
 func TestCacheIsPerLanguage(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{f: liveFees(), n: liveNetwork(), m: liveMarket(), b: liveBlocks()})
+    var h = handler(t, "TESTTOKEN", fakeSource{f: liveFees(), n: liveNetwork(), m: liveMarket(), b: liveBlocks()}.options())
     for _, path := range []string{"/", "/fees", "/network", "/market", "/blocks"} {
         var data = ""
         if path != "/" { data = freshInitData("TESTTOKEN") }
@@ -140,7 +140,7 @@ func TestCacheIsPerLanguage(t *testing.T) {
 // missed keep the stale copy until the TTL runs out.
 func TestNotifyClearsEveryLanguage(t *testing.T) {
     var src = newCounting()
-    var h = handler(t, "TESTTOKEN", src)
+    var h = handler(t, "TESTTOKEN", src.options())
     var data = freshInitData("TESTTOKEN")
     for _, lang := range langs { getLang(h, "/fees", data, lang) }
     Notify("fees")
@@ -156,7 +156,7 @@ func TestNotifyClearsEveryLanguage(t *testing.T) {
 //
 // the cards and the tab bar are all present, whatever the words are
 func TestTranslatedPagesRenderCompletely(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{f: liveFees(), n: liveNetwork(), m: liveMarket(), b: liveBlocks()})
+    var h = handler(t, "TESTTOKEN", fakeSource{f: liveFees(), n: liveNetwork(), m: liveMarket(), b: liveBlocks()}.options())
     for _, lang := range langs {
         var body = getLang(h, "/", "", lang).Body.String()
         if !strings.HasSuffix(strings.TrimSpace(body), "</html>") {
@@ -171,9 +171,9 @@ func TestTranslatedPagesRenderCompletely(t *testing.T) {
     }
 }
 
-// langSpy records the language each Source call was made in. The details rows,
+// langSpy records the language each Options call was made in. The details rows,
 // a block row's miner and a market period are main's words rather than the
-// page's, so the reader's language has to reach Source — which is invisible in
+// page's, so the reader's language has to reach Options — which is invisible in
 // the response when the fake has nothing translated to render.
 type langSpy struct {
     fakeSource
@@ -220,12 +220,25 @@ func (s langSpy) MinerChart(lang, name, data, period string) Chart {
     return s.fakeSource.MinerChart(lang, name, data, period)
 }
 
+func (s langSpy) options() Options {
+    var opt = s.fakeSource.options()
+    opt.Market = s.Market
+    opt.Blocks = s.Blocks
+    opt.Addresses = s.Addresses
+    opt.BlockInfo = s.BlockInfo
+    opt.TxInfo = s.TxInfo
+    opt.AddrInfo = s.AddrInfo
+    opt.MinerInfo = s.MinerInfo
+    opt.MinerChart = s.MinerChart
+    return opt
+}
+
 // and an English reader is asked in English, not in whoever came first
 func TestSourceIsAskedInTheReadersLanguage(t *testing.T) {
     var seen []string
     var h = handler(t, "TESTTOKEN", langSpy{fakeSource{f: liveFees(), n: liveNetwork(),
         m: liveMarket(), b: liveBlocks(), d: liveBlockInfo(), t: liveTx(), a: liveAddr(),
-        al: liveAddrs()}, &seen})
+        al: liveAddrs()}, &seen}.options())
     var ru = initDataLang("TESTTOKEN", "ru")
     for _, path := range []string{"/", "/market", "/blocks", "/addresses", "/block?height=963268",
         "/tx?id=" + liveTxid, "/address?a=" + liveAddress, "/miner?name=AntPool", "/minerchart?name=AntPool"} {
@@ -239,12 +252,12 @@ func TestSourceIsAskedInTheReadersLanguage(t *testing.T) {
             if got == want { found = true }
         }
         if !found {
-            t.Errorf("Source was never asked %q; it saw %v", want, seen)
+            t.Errorf("Options were never asked %q; it saw %v", want, seen)
         }
     }
     seen = nil
     getLang(h, "/market", freshInitData("TESTTOKEN"), "en")
     if len(seen) != 1 || seen[0] != "market:en" {
-        t.Errorf("English reader asked Source %v, want [market:en]", seen)
+        t.Errorf("English reader asked Options %v, want [market:en]", seen)
     }
 }

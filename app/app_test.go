@@ -44,7 +44,8 @@ func freshInitData(token string) string {
     })
 }
 
-// fakeSource stands in for main's caches.
+// fakeSource stands in for main's caches. Its methods are handed to Start as
+// the Options functions.
 type fakeSource struct {
     f Fees
     n Network
@@ -54,13 +55,34 @@ type fakeSource struct {
     t map[string]Info
     a map[string]Info
     w map[int64]Watches
-    // al is one ranked list per kind, already in the order Source would return
+    // al is one ranked list per kind, already in the order Options.Addresses would return
     // it, so the fake only has to page.
     al map[string][]Addr
     // at is one address's transaction views, newest first, for the same reason.
     at map[string][]Tx
     // mp is the mempool page by the after it answers: -1 for the whole page.
     mp map[int64]Mempool
+}
+
+func (s fakeSource) options() Options {
+    return Options{
+        Fees:       s.Fees,
+        Network:    s.Network,
+        Market:     s.Market,
+        Blocks:     s.Blocks,
+        Addresses:  s.Addresses,
+        BlockInfo:  s.BlockInfo,
+        TxInfo:     s.TxInfo,
+        AddrInfo:   s.AddrInfo,
+        AddrTxs:    s.AddrTxs,
+        MinerInfo:  s.MinerInfo,
+        MinerChart: s.MinerChart,
+        Mempool:    s.Mempool,
+        Watches:    s.Watches,
+        Watching:   s.Watching,
+        SetWatch:   s.SetWatch,
+        SetAlias:   s.SetAlias,
+    }
 }
 
 func (s fakeSource) Mempool(lang string, after int64) Mempool { return s.mp[after] }
@@ -116,7 +138,7 @@ func (s fakeSource) SetWatch(chat int64, kind, id string, on bool) (bool, error)
 }
 
 // aliases is what SetAlias recorded, so a test can prove the alias reached the
-// Source and under which id.
+// Options function and under which id.
 var aliases = map[int64]map[string]string{}
 
 func (s fakeSource) SetAlias(chat int64, kind, id, alias string) (bool, error) {
@@ -369,11 +391,11 @@ func liveNetwork() Network {
 //
 // The rendered-card caches are package state shared across tests, so each
 // test starts from empty rather than seeing the previous one's fixture.
-func handler(t *testing.T, token string, src Source) http.Handler {
+func handler(t *testing.T, token string, opt Options) http.Handler {
     invalidateAll()
     watched = map[int64]map[string]bool{}
     aliases = map[int64]map[string]string{}
-    var srv = Start("127.0.0.1:0", token, src)
+    var srv = Start("127.0.0.1:0", token, opt)
     t.Cleanup(func() { srv.Close() })
     return srv.Handler
 }
@@ -384,6 +406,12 @@ type failingSource struct{ fakeSource }
 
 func (failingSource) SetWatch(chat int64, kind, id string, on bool) (bool, error) {
     return false, errFailed
+}
+
+func (s failingSource) options() Options {
+    var opt = s.fakeSource.options()
+    opt.SetWatch = s.SetWatch
+    return opt
 }
 
 var errFailed = fmt.Errorf("store unavailable")
@@ -412,7 +440,7 @@ func liveFees() Fees {
 }
 
 func TestServesPage(t *testing.T) {
-    var w = get(handler(t, "TESTTOKEN", fakeSource{f: liveFees()}), "/", "")
+    var w = get(handler(t, "TESTTOKEN", fakeSource{f: liveFees()}.options()), "/", "")
     if w.Code != 200 {
         t.Fatalf("GET / = %d, want 200", w.Code)
     }
@@ -431,7 +459,7 @@ func TestServesPage(t *testing.T) {
 // scoped to the fees card: the Watches panel legitimately ships a
 // placeholder, since its content is per-user and cannot be in a shared page
 func TestPageRendersFeesInline(t *testing.T) {
-    var body = get(handler(t, "TESTTOKEN", fakeSource{f: liveFees()}), "/", "").Body.String()
+    var body = get(handler(t, "TESTTOKEN", fakeSource{f: liveFees()}.options()), "/", "").Body.String()
     for _, want := range []string{"<h2>Network fees</h2>", ">Fastest<", ">~ 1 hour<", ">2+ hours<",
         ">12 <", ">4 <", ">1 <", "36 552"} {
         if !strings.Contains(body, want) {
@@ -446,7 +474,7 @@ func TestPageRendersFeesInline(t *testing.T) {
 
 // A cold cache is reported in the page itself, not left blank until a fetch.
 func TestPageRendersColdCacheInline(t *testing.T) {
-    var body = get(handler(t, "TESTTOKEN", fakeSource{f: Fees{OK: false}}), "/", "").Body.String()
+    var body = get(handler(t, "TESTTOKEN", fakeSource{f: Fees{OK: false}}.options()), "/", "").Body.String()
     if !strings.Contains(body, "fees unavailable") {
         t.Error("cold cache should render \"fees unavailable\" into the page")
     }
@@ -458,7 +486,7 @@ func TestPageRendersColdCacheInline(t *testing.T) {
 // The network card carries the four fields, rendered into the page rather than
 // fetched, and sits between the fees card and the search field.
 func TestPageRendersNetworkInline(t *testing.T) {
-    var body = get(handler(t, "TESTTOKEN", fakeSource{f: liveFees(), n: liveNetwork()}), "/", "").Body.String()
+    var body = get(handler(t, "TESTTOKEN", fakeSource{f: liveFees(), n: liveNetwork()}.options()), "/", "").Body.String()
     for _, want := range []string{"<h2>Blockchain</h2>", ">Coins<", ">Blocks<", ">Size<",
         ">Active nodes<", ">Transactions<", ">Active addresses<",
         "20.1 M", "/ 21 M", "963 166", "869 GB", "31 751", "1.4 B", "1.5 B"} {
@@ -481,7 +509,7 @@ func TestPageRendersNetworkInline(t *testing.T) {
 // it, the response is a silently truncated page rather than an error. Assert the
 // page is whole.
 func TestPageRendersToCompletion(t *testing.T) {
-    var body = get(handler(t, "TESTTOKEN", fakeSource{f: liveFees(), n: liveNetwork()}), "/", "").Body.String()
+    var body = get(handler(t, "TESTTOKEN", fakeSource{f: liveFees(), n: liveNetwork()}.options()), "/", "").Body.String()
     if !strings.HasSuffix(strings.TrimSpace(body), "</html>") {
         t.Fatalf("page is truncated — a template action probably failed mid-render; tail: %q",
             body[max(0, len(body)-120):])
@@ -495,7 +523,7 @@ func TestPageRendersToCompletion(t *testing.T) {
 
 // A cold cache says so rather than rendering an empty card or zeroed counts.
 func TestNetworkColdCache(t *testing.T) {
-    var body = get(handler(t, "TESTTOKEN", fakeSource{f: liveFees()}), "/", "").Body.String()
+    var body = get(handler(t, "TESTTOKEN", fakeSource{f: liveFees()}.options()), "/", "").Body.String()
     if !strings.Contains(body, "network stats unavailable") {
         t.Error("a cold network cache should say so in the page")
     }
@@ -506,7 +534,7 @@ func TestNetworkColdCache(t *testing.T) {
 
 // /network is data, so it needs a signature like /fees does.
 func TestNetworkNeedsInitData(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{n: liveNetwork()})
+    var h = handler(t, "TESTTOKEN", fakeSource{n: liveNetwork()}.options())
     if w := get(h, "/network", ""); w.Code != 401 {
         t.Errorf("unauthenticated /network = %d, want 401", w.Code)
     }
@@ -520,7 +548,7 @@ func TestNetworkNeedsInitData(t *testing.T) {
 // the page, and sits between the Blockchain card and the search field.
 func TestPageRendersMarketInline(t *testing.T) {
     var src = fakeSource{f: liveFees(), n: liveNetwork(), m: liveMarket()}
-    var body = html.UnescapeString(get(handler(t, "TESTTOKEN", src), "/", "").Body.String())
+    var body = html.UnescapeString(get(handler(t, "TESTTOKEN", src.options()), "/", "").Body.String())
     for _, want := range []string{"<h2>Market</h2>", "$66,202.00",
         ">1 d<", ">1 w<", ">1 mo<", ">3 mo<", ">1 y<", ">5 y<",
         "+2.5%", "-3.1%", "+512.9%"} {
@@ -547,7 +575,7 @@ func TestMarketColoursDirection(t *testing.T) {
         {Label: "1 w", Pct: "-3.1%"},
         {Label: "5 y", Pct: "—", Neutral: true},
     }}}
-    var body = html.UnescapeString(get(handler(t, "TESTTOKEN", src), "/", "").Body.String())
+    var body = html.UnescapeString(get(handler(t, "TESTTOKEN", src.options()), "/", "").Body.String())
     for _, want := range []string{`class="pct up">+2.5%`, `class="pct down">-3.1%`, `class="pct flat">—`} {
         if !strings.Contains(body, want) {
             t.Errorf("missing %q — direction must drive the colour", want)
@@ -557,11 +585,11 @@ func TestMarketColoursDirection(t *testing.T) {
 
 // The card updates on its own event, with the same slow poll as a fallback.
 func TestMarketRefreshesOnSSE(t *testing.T) {
-    var body = get(handler(t, "TESTTOKEN", fakeSource{m: liveMarket()}), "/", "").Body.String()
+    var body = get(handler(t, "TESTTOKEN", fakeSource{m: liveMarket()}.options()), "/", "").Body.String()
     if !strings.Contains(body, `hx-trigger="sse:market, every 10m"`) {
         t.Error(`the market card must refresh on sse:market with a 10m fallback`)
     }
-    var h = handler(t, "TESTTOKEN", fakeSource{m: liveMarket()})
+    var h = handler(t, "TESTTOKEN", fakeSource{m: liveMarket()}.options())
     if w := get(h, "/market", ""); w.Code != 401 {
         t.Errorf("unauthenticated /market = %d, want 401", w.Code)
     }
@@ -573,7 +601,7 @@ func TestMarketRefreshesOnSSE(t *testing.T) {
 
 // A cold rate history says so rather than rendering an empty card.
 func TestMarketColdCache(t *testing.T) {
-    var body = get(handler(t, "TESTTOKEN", fakeSource{f: liveFees()}), "/", "").Body.String()
+    var body = get(handler(t, "TESTTOKEN", fakeSource{f: liveFees()}.options()), "/", "").Body.String()
     if !strings.Contains(body, "market data unavailable") {
         t.Error("with no rates the card should say so")
     }
@@ -585,7 +613,7 @@ func TestMarketColdCache(t *testing.T) {
 // descending: the newest height must appear before the one below it
 func TestBlocksListRenders(t *testing.T) {
     var src = fakeSource{f: liveFees(), b: liveBlocks()}
-    var body = get(handler(t, "TESTTOKEN", src), "/", "").Body.String()
+    var body = get(handler(t, "TESTTOKEN", src.options()), "/", "").Body.String()
     if n := strings.Count(body, `class="blk"`); n != 12 {
         t.Errorf("rendered %d block rows, want 12", n)
     }
@@ -611,7 +639,7 @@ func TestBlocksListRenders(t *testing.T) {
 // an unattributed miner is not a link, since there is no pool to open.
 func TestBlockRowLinks(t *testing.T) {
     var src = fakeSource{f: liveFees(), b: liveBlocks()}
-    var body = get(handler(t, "TESTTOKEN", src), "/", "").Body.String()
+    var body = get(handler(t, "TESTTOKEN", src.options()), "/", "").Body.String()
     if n := strings.Count(body, `class="h lnk"`); n != 12 {
         t.Errorf("%d heights are links, want all 12", n)
     }
@@ -634,7 +662,7 @@ func TestBlockRowLinks(t *testing.T) {
 //
 // the fixture ends there, so nothing more is offered
 func TestBlocksInfiniteScroll(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{b: liveBlocks()})
+    var h = handler(t, "TESTTOKEN", fakeSource{b: liveBlocks()}.options())
     var data = freshInitData("TESTTOKEN")
     var first = get(h, "/blocks", data).Body.String()
     if !strings.Contains(first, "963268") || strings.Contains(first, "963256") {
@@ -661,7 +689,7 @@ func TestBlocksInfiniteScroll(t *testing.T) {
 // The heights come from a URL a user can edit, so nonsense must land on the
 // newest blocks or be refused rather than erroring or panicking.
 func TestBlocksBadHeightsAreSafe(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{b: liveBlocks()})
+    var h = handler(t, "TESTTOKEN", fakeSource{b: liveBlocks()}.options())
     var data = freshInitData("TESTTOKEN")
     for _, q := range []string{"", "?down=", "?down=abc", "?down=-3", "?down=0"} {
         var w = get(h, "/blocks"+q, data)
@@ -685,7 +713,7 @@ func TestBlocksBadHeightsAreSafe(t *testing.T) {
 //
 // the sentinel comes first, or the next block would land below these two
 func TestNewBlocksPrepend(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{b: liveBlocks()})
+    var h = handler(t, "TESTTOKEN", fakeSource{b: liveBlocks()}.options())
     var data = freshInitData("TESTTOKEN")
     var list = get(h, "/blocks", data).Body.String()
     if !strings.Contains(list, `hx-get="newblocks?after=963268"`) {
@@ -716,7 +744,7 @@ func TestNewBlocksPrepend(t *testing.T) {
 // Nothing new is a legitimate answer — the sentinel just goes back to waiting on
 // the same height.
 func TestNewBlocksWithNothingNew(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{b: liveBlocks()})
+    var h = handler(t, "TESTTOKEN", fakeSource{b: liveBlocks()}.options())
     var got = get(h, "/newblocks?after=963268", freshInitData("TESTTOKEN")).Body.String()
     if strings.Contains(got, `class="blk"`) {
         t.Errorf("nothing was mined, so nothing should be prepended: %s", got)
@@ -729,7 +757,7 @@ func TestNewBlocksWithNothingNew(t *testing.T) {
 // More new blocks than one batch holds would leave a gap between them and the
 // rows on screen, so the whole list is replaced instead.
 func TestNewBlocksOverflowReplacesTheList(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{b: liveBlocks()})
+    var h = handler(t, "TESTTOKEN", fakeSource{b: liveBlocks()}.options())
     var w = get(h, "/newblocks?after=963250", freshInitData("TESTTOKEN"))
     if rt := w.Header().Get("HX-Retarget"); rt != "#blocklist" {
         t.Errorf("HX-Retarget = %q, want #blocklist — a partial prepend would leave a hole", rt)
@@ -745,7 +773,7 @@ func TestNewBlocksOverflowReplacesTheList(t *testing.T) {
 
 // /blocks is data, so it needs a signature like the cards do.
 func TestBlocksNeedsInitData(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{b: liveBlocks()})
+    var h = handler(t, "TESTTOKEN", fakeSource{b: liveBlocks()}.options())
     for _, p := range []string{"/blocks", "/moreblocks?before=963257", "/newblocks?after=963268"} {
         if w := get(h, p, ""); w.Code != 401 {
             t.Errorf("unauthenticated %s = %d, want 401", p, w.Code)
@@ -756,7 +784,7 @@ func TestBlocksNeedsInitData(t *testing.T) {
 // An empty cache says so — and keeps watching, since there is no row for the
 // sentinel to sit above until the first block is cached.
 func TestBlocksEmptyCache(t *testing.T) {
-    var body = get(handler(t, "TESTTOKEN", fakeSource{f: liveFees()}), "/", "").Body.String()
+    var body = get(handler(t, "TESTTOKEN", fakeSource{f: liveFees()}.options()), "/", "").Body.String()
     if !strings.Contains(body, "no blocks cached yet") {
         t.Error("with no cached blocks the tab should say so")
     }
@@ -769,7 +797,7 @@ func TestBlocksEmptyCache(t *testing.T) {
 // The template block the page renders and the one the refresh returns must be
 // the same block, or the card would change shape when it updates.
 func TestInlineAndRefreshMatch(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{f: liveFees(), n: liveNetwork(), m: liveMarket()})
+    var h = handler(t, "TESTTOKEN", fakeSource{f: liveFees(), n: liveNetwork(), m: liveMarket()}.options())
     var page = get(h, "/", "").Body.String()
     for _, path := range []string{"/fees", "/network", "/market"} {
         var fragment = strings.TrimSpace(get(h, path, freshInitData("TESTTOKEN")).Body.String())
@@ -791,7 +819,7 @@ func TestInlineAndRefreshMatch(t *testing.T) {
 // The fallback exists because a proxy that buffers the stream would
 // otherwise leave the cards frozen with no sign anything is wrong.
 func TestFeesTriggerIsNotRacy(t *testing.T) {
-    var body = get(handler(t, "TESTTOKEN", fakeSource{}), "/", "").Body.String()
+    var body = get(handler(t, "TESTTOKEN", fakeSource{}.options()), "/", "").Body.String()
     if !strings.Contains(body, `hx-trigger="sse:fees, every 10m"`) {
         t.Error(`the fees card must refresh on sse:fees, with a slow poll as a fallback`)
     }
@@ -817,14 +845,14 @@ func TestFeesTriggerIsNotRacy(t *testing.T) {
 // HTMX is served from the binary, not a CDN, so the page stays self-contained
 // apart from Telegram's own SDK.
 func TestServesHtmx(t *testing.T) {
-    var w = get(handler(t, "TESTTOKEN", fakeSource{}), "/htmx.min.js", "")
+    var w = get(handler(t, "TESTTOKEN", fakeSource{}.options()), "/htmx.min.js", "")
     if w.Code != 200 {
         t.Fatalf("GET /htmx.min.js = %d, want 200", w.Code)
     }
 }
 
 func TestRejectsOtherPaths(t *testing.T) {
-    var w = get(handler(t, "TESTTOKEN", fakeSource{}), "/nope", "")
+    var w = get(handler(t, "TESTTOKEN", fakeSource{}.options()), "/nope", "")
     if w.Code != 404 {
         t.Fatalf("GET /nope = %d, want 404", w.Code)
     }
@@ -832,7 +860,7 @@ func TestRejectsOtherPaths(t *testing.T) {
 
 // The whole point of the validation: without a valid signature there is no data.
 func TestFeesNeedsInitData(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{f: liveFees()})
+    var h = handler(t, "TESTTOKEN", fakeSource{f: liveFees()}.options())
     var cases = []struct {
         name string
         data string
@@ -853,7 +881,7 @@ func TestFeesNeedsInitData(t *testing.T) {
 func TestFeesRejectsTamperedField(t *testing.T) {
     var v, _ = url.ParseQuery(freshInitData("TESTTOKEN"))
     v.Set("user", `{"id":999,"first_name":"Mallory"}`)
-    var w = get(handler(t, "TESTTOKEN", fakeSource{f: liveFees()}), "/fees", v.Encode())
+    var w = get(handler(t, "TESTTOKEN", fakeSource{f: liveFees()}.options()), "/fees", v.Encode())
     if w.Code != 401 {
         t.Fatalf("tampered user field accepted with %d, want 401", w.Code)
     }
@@ -866,7 +894,7 @@ func TestFeesRejectsStaleInitData(t *testing.T) {
         "auth_date": strconv.FormatInt(time.Now().Add(-48*time.Hour).Unix(), 10),
         "user":      `{"id":42}`,
     })
-    var h = handler(t, "TESTTOKEN", fakeSource{f: liveFees()})
+    var h = handler(t, "TESTTOKEN", fakeSource{f: liveFees()}.options())
     if w := get(h, "/fees", old); w.Code != 401 {
         t.Fatalf("a 48h-old payload was accepted with %d; auth_date is not being checked", w.Code)
     }
@@ -878,7 +906,7 @@ func TestFeesRejectsStaleInitData(t *testing.T) {
 // With a valid signature the fragment is HTML for HTMX to swap in — not JSON —
 // carrying the same three tiers /fees prints.
 func TestFeesRendersHTML(t *testing.T) {
-    var w = get(handler(t, "TESTTOKEN", fakeSource{f: liveFees()}), "/fees", freshInitData("TESTTOKEN"))
+    var w = get(handler(t, "TESTTOKEN", fakeSource{f: liveFees()}.options()), "/fees", freshInitData("TESTTOKEN"))
     if w.Code != 200 {
         t.Fatalf("GET /fees = %d, want 200", w.Code)
     }
@@ -896,7 +924,7 @@ func TestFeesRendersHTML(t *testing.T) {
 
 // A cold cache says so rather than rendering zeros as if they were estimates.
 func TestFeesColdCache(t *testing.T) {
-    var w = get(handler(t, "TESTTOKEN", fakeSource{f: Fees{OK: false}}), "/fees", freshInitData("TESTTOKEN"))
+    var w = get(handler(t, "TESTTOKEN", fakeSource{f: Fees{OK: false}}.options()), "/fees", freshInitData("TESTTOKEN"))
     if !strings.Contains(w.Body.String(), "fees unavailable") {
         t.Fatalf("cold cache rendered %q", w.Body.String())
     }
@@ -908,7 +936,7 @@ func TestFeesColdCache(t *testing.T) {
 //
 // let the handler subscribe before notifying
 func TestEventStreamCarriesNoData(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{f: liveFees(), n: liveNetwork()})
+    var h = handler(t, "TESTTOKEN", fakeSource{f: liveFees(), n: liveNetwork()}.options())
     var r = httptest.NewRequest("GET", "/events", nil)
     var ctx, cancel = context.WithCancel(r.Context())
     r = r.WithContext(ctx)
@@ -945,7 +973,7 @@ func TestEventStreamCarriesNoData(t *testing.T) {
 // load would leak a channel for the life of the process.
 func TestEventStreamUnsubscribesOnDisconnect(t *testing.T) {
     var before = subscribes()
-    var h = handler(t, "TESTTOKEN", fakeSource{})
+    var h = handler(t, "TESTTOKEN", fakeSource{}.options())
     var r = httptest.NewRequest("GET", "/events", nil)
     var ctx, cancel = context.WithCancel(r.Context())
     r = r.WithContext(ctx)
@@ -986,7 +1014,7 @@ func TestNotifyDoesNotBlockOnSlowClient(t *testing.T) {
 // container so the Blocks tab stays selected — and carrying its own height,
 // which is the mark Back restores the list to.
 func TestBlockHeightLinksToDetails(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{b: liveBlocks(), d: liveBlockInfo()})
+    var h = handler(t, "TESTTOKEN", fakeSource{b: liveBlocks(), d: liveBlockInfo()}.options())
     var list = get(h, "/blocks", freshInitData("TESTTOKEN")).Body.String()
     if !strings.Contains(list, `hx-get="block?height=963268&down=963268"`) {
         t.Error("the height does not link to its details page, carrying where the reader was")
@@ -1009,7 +1037,7 @@ func TestBlockHeightLinksToDetails(t *testing.T) {
 // Back sits to the left of the title, which is centred between two equal
 // sides rather than filling the space the button leaves
 func TestBlockDetailsRender(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{b: liveBlocks(), d: liveBlockInfo()})
+    var h = handler(t, "TESTTOKEN", fakeSource{b: liveBlocks(), d: liveBlockInfo()}.options())
     var body = html.UnescapeString(get(h, "/block?height=963268&down=963257", freshInitData("TESTTOKEN")).Body.String())
     if !strings.Contains(body, "<h1>Block 963 268</h1>") {
         t.Errorf("missing the title: %s", body)
@@ -1045,7 +1073,7 @@ func TestBlockDetailsRender(t *testing.T) {
 // block list does — the URL is carried whole because /search cannot classify a
 // pool name.
 func TestBlockDetailsLinkMiner(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{d: liveBlockInfo()})
+    var h = handler(t, "TESTTOKEN", fakeSource{d: liveBlockInfo()}.options())
     var body = html.UnescapeString(get(h, "/block?height=963268", freshInitData("TESTTOKEN")).Body.String())
     if !strings.Contains(body, `hx-get="miner?name=AntPool&down=963268"`) {
         t.Errorf("the block page's miner does not link to its page:\n%s", body)
@@ -1055,7 +1083,7 @@ func TestBlockDetailsLinkMiner(t *testing.T) {
 // A pair with no value is a heading for the lines under it, not a field with a
 // blank value — that is how blockPairs builds "Fees" and "Tx sizes".
 func TestBlockDetailsMarksHeadings(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{d: liveBlockInfo()})
+    var h = handler(t, "TESTTOKEN", fakeSource{d: liveBlockInfo()}.options())
     var body = get(h, "/block?height=963268", freshInitData("TESTTOKEN")).Body.String()
     if n := strings.Count(body, `class="f hd"`); n != 2 {
         t.Errorf("%d headings, want 2 (Fees and Tx sizes)", n)
@@ -1071,7 +1099,7 @@ func TestBlockDetailsMarksHeadings(t *testing.T) {
 // A height the node has no block for says so rather than rendering an empty
 // field list, and still titles itself with what was asked for.
 func TestBlockDetailsNotFound(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{d: liveBlockInfo()})
+    var h = handler(t, "TESTTOKEN", fakeSource{d: liveBlockInfo()}.options())
     var body = get(h, "/block?height=99999999", freshInitData("TESTTOKEN")).Body.String()
     if !strings.Contains(body, "nothing found") {
         t.Errorf("an unknown height should say so: %s", body)
@@ -1086,7 +1114,7 @@ func TestBlockDetailsNotFound(t *testing.T) {
 
 // The height comes from a URL a user can edit.
 func TestBlockDetailsRejectsBadHeight(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{d: liveBlockInfo()})
+    var h = handler(t, "TESTTOKEN", fakeSource{d: liveBlockInfo()}.options())
     for _, q := range []string{"", "?height=", "?height=abc", "?height=-4"} {
         if w := get(h, "/block"+q, freshInitData("TESTTOKEN")); w.Code != 400 {
             t.Errorf("/block%s = %d, want 400", q, w.Code)
@@ -1097,7 +1125,7 @@ func TestBlockDetailsRejectsBadHeight(t *testing.T) {
 // Searching a block height from Home opens its details, and HX-Trigger is what
 // moves the reader to the Blocks tab — the fragment lands in that panel.
 func TestSearchOpensBlock(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{b: liveBlocks(), d: liveBlockInfo()})
+    var h = handler(t, "TESTTOKEN", fakeSource{b: liveBlocks(), d: liveBlockInfo()}.options())
     var w = get(h, "/search?q=963268", freshInitData("TESTTOKEN"))
     if w.Code != http.StatusSeeOther {
         t.Fatalf("/search = %d, want a redirect to the block page", w.Code)
@@ -1112,7 +1140,7 @@ func TestSearchOpensBlock(t *testing.T) {
 
 // Whitespace around a pasted height must not defeat the lookup.
 func TestSearchTrimsQuery(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{d: liveBlockInfo()})
+    var h = handler(t, "TESTTOKEN", fakeSource{d: liveBlockInfo()}.options())
     var w = get(h, "/search?q=%20963268%20", freshInitData("TESTTOKEN"))
     if w.Header().Get("Location") != "/block?height=963268&from=home" {
         t.Errorf("a padded height did not resolve: %d %q", w.Code, w.Header().Get("Location"))
@@ -1122,7 +1150,7 @@ func TestSearchTrimsQuery(t *testing.T) {
 // Only block heights are understood so far. Anything else answers 204, which
 // HTMX does not swap, so the page is left alone rather than being wiped.
 func TestSearchIgnoresEmptyQuery(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{d: liveBlockInfo()})
+    var h = handler(t, "TESTTOKEN", fakeSource{d: liveBlockInfo()}.options())
     var w = get(h, "/search?q=", freshInitData("TESTTOKEN"))
     if w.Code != http.StatusNoContent {
         t.Errorf("an empty search = %d, want 204 so HTMX leaves the page alone", w.Code)
@@ -1136,7 +1164,7 @@ func TestSearchIgnoresEmptyQuery(t *testing.T) {
 // first, because a string of 64 digits is also a valid height, then a height,
 // then an address as the catch-all.
 func TestSearchClassifiesQuery(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{})
+    var h = handler(t, "TESTTOKEN", fakeSource{}.options())
     var cases = []struct{ q, want string }{
         {liveTxid, "tx?id=" + liveTxid + "&from=home"},
         {strings.Repeat("0", 64), "block?height=0&from=home"},
@@ -1168,7 +1196,7 @@ func TestSearchClassifiesQuery(t *testing.T) {
 // Back comes from a template *value*, so html/template escapes its "&" —
 // unlike the list's links, where the "&" is literal template text
 func TestTxDetailsRender(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{b: liveBlocks(), t: liveTx()})
+    var h = handler(t, "TESTTOKEN", fakeSource{b: liveBlocks(), t: liveTx()}.options())
     var body = get(h, "/tx?id="+liveTxid, freshInitData("TESTTOKEN")).Body.String()
     if !strings.Contains(body, `<h1>32e43e...870b16<button class="copybtn"`) {
         t.Errorf("missing the short-txid title with its copy icon: %s", body)
@@ -1223,7 +1251,7 @@ func TestTxDetailsRender(t *testing.T) {
 // classes never appear. A scoped rule would leave the flow as one plain run
 // of text.
 func TestTxFlowSharesCardLayout(t *testing.T) {
-    var body = get(handler(t, "TESTTOKEN", fakeSource{f: liveFees()}), "/", "").Body.String()
+    var body = get(handler(t, "TESTTOKEN", fakeSource{f: liveFees()}.options()), "/", "").Body.String()
     for _, want := range []string{
         `.tcflow { display: grid`,
         `.tcside { display: flex`,
@@ -1246,7 +1274,7 @@ func TestTxFlowSharesCardLayout(t *testing.T) {
 // the one search field names #blocklist as its target, so the response has
 // to correct it or an address page replaces the block list
 func TestAddressDetailsRender(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{a: liveAddr()})
+    var h = handler(t, "TESTTOKEN", fakeSource{a: liveAddr()}.options())
     var w = get(h, "/address?a="+liveAddress, freshInitData("TESTTOKEN"))
     var body = w.Body.String()
     if !strings.Contains(body, `<h1>bc1qxy...dayd2g<button class="copybtn"`) {
@@ -1283,7 +1311,7 @@ func TestAddressDetailsRender(t *testing.T) {
 // between them. Both sides are tappable, and the first batch arrives as part
 // of the page. The fields and the list share the page's one scroller.
 func TestAddressDetailsShowsTxViews(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{a: liveAddr(), at: liveAddrTxs()})
+    var h = handler(t, "TESTTOKEN", fakeSource{a: liveAddr(), at: liveAddrTxs()}.options())
     var body = get(h, "/address?a="+liveAddress, freshInitData("TESTTOKEN")).Body.String()
     if !strings.Contains(body, `<div class="scroll">`) {
         t.Error("an address page should scroll as one, not per section")
@@ -1318,7 +1346,7 @@ func TestAddressDetailsShowsTxViews(t *testing.T) {
 // in that order, so a long list scrolls the whole page rather than its own
 // box.
 func TestAddressPageScrollerHoldsFieldsAndTxs(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{a: liveAddr(), at: liveAddrTxs()})
+    var h = handler(t, "TESTTOKEN", fakeSource{a: liveAddr(), at: liveAddrTxs()}.options())
     var body = get(h, "/address?a="+liveAddress, freshInitData("TESTTOKEN")).Body.String()
     var scroll = strings.Index(body, `<div class="scroll">`)
     var fields = strings.Index(body, `class="fields"`)
@@ -1335,7 +1363,7 @@ func TestAddressPageScrollerHoldsFieldsAndTxs(t *testing.T) {
 // it, and only a positive offset is a valid one — from=0 would append the
 // first batch underneath itself.
 func TestAddressTxViewsInfiniteScroll(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{a: liveAddr(), at: liveAddrTxs()})
+    var h = handler(t, "TESTTOKEN", fakeSource{a: liveAddr(), at: liveAddrTxs()}.options())
     var data = freshInitData("TESTTOKEN")
     for _, p := range []string{"/moreaddrtxs?a=" + liveAddress + "&from=0",
         "/moreaddrtxs?a=" + liveAddress, "/moreaddrtxs?from=5", "/moreaddrtxs?a=&from=5"} {
@@ -1358,7 +1386,7 @@ func TestAddressTxViewsInfiniteScroll(t *testing.T) {
 // Transaction batches are per-address data, so they need a signature like the
 // rest of the data endpoints.
 func TestAddressTxViewsNeedInitData(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{at: liveAddrTxs()})
+    var h = handler(t, "TESTTOKEN", fakeSource{at: liveAddrTxs()}.options())
     if w := get(h, "/moreaddrtxs?a="+liveAddress+"&from=5", ""); w.Code != 401 {
         t.Errorf("unauthenticated transaction batch = %d, want 401", w.Code)
     }
@@ -1366,7 +1394,7 @@ func TestAddressTxViewsNeedInitData(t *testing.T) {
 
 // Back from an address restores the tab's own content in the same slot.
 func TestAddressesBackTarget(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{al: liveAddrs()})
+    var h = handler(t, "TESTTOKEN", fakeSource{al: liveAddrs()}.options())
     var w = get(h, "/addresses", freshInitData("TESTTOKEN"))
     if w.Code != 200 {
         t.Fatalf("GET /addresses = %d, want 200", w.Code)
@@ -1383,7 +1411,7 @@ func TestAddressesBackTarget(t *testing.T) {
 // empty history as fact.
 func TestAddressDetailsRejectsNonAddress(t *testing.T) {
     var h = handler(t, "TESTTOKEN", fakeSource{a: map[string]Info{
-        "nonsense": {Title: "nonsense", Rows: []Field{{Label: "this does not look like a Bitcoin address"}}}}})
+        "nonsense": {Title: "nonsense", Rows: []Field{{Label: "this does not look like a Bitcoin address"}}}}}.options())
     var body = get(h, "/address?a=nonsense", freshInitData("TESTTOKEN")).Body.String()
     if !strings.Contains(body, "this does not look like a Bitcoin address") {
         t.Errorf("a non-address should say so: %s", body)
@@ -1395,7 +1423,7 @@ func TestAddressDetailsRejectsNonAddress(t *testing.T) {
 
 // Both new ids come from URLs a user can edit.
 func TestDetailsRejectBadIds(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{})
+    var h = handler(t, "TESTTOKEN", fakeSource{}.options())
     for _, p := range []string{"/tx", "/tx?id=", "/tx?id=abc", "/tx?id=" + strings.Repeat("z", 64), "/address", "/address?a="} {
         if w := get(h, p, freshInitData("TESTTOKEN")); w.Code != 400 {
             t.Errorf("%s = %d, want 400", p, w.Code)
@@ -1405,7 +1433,7 @@ func TestDetailsRejectBadIds(t *testing.T) {
 
 // Both are data endpoints, so both need a signature.
 func TestBlockAndSearchNeedInitData(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{b: liveBlocks(), d: liveBlockInfo()})
+    var h = handler(t, "TESTTOKEN", fakeSource{b: liveBlocks(), d: liveBlockInfo()}.options())
     for _, p := range []string{"/block?height=963268", "/search?q=963268"} {
         if w := get(h, p, ""); w.Code != 401 {
             t.Errorf("unauthenticated %s = %d, want 401", p, w.Code)
@@ -1416,7 +1444,7 @@ func TestBlockAndSearchNeedInitData(t *testing.T) {
 // The search field must actually be wired, and send its value under a name the
 // server reads.
 func TestSearchFieldIsWired(t *testing.T) {
-    var body = get(handler(t, "TESTTOKEN", fakeSource{}), "/", "").Body.String()
+    var body = get(handler(t, "TESTTOKEN", fakeSource{}.options()), "/", "").Body.String()
     for _, want := range []string{`name="q"`, `hx-get="search"`,
         `hx-trigger="keyup[key=='Enter']"`, `hx-target="#blocklist"`} {
         if !strings.Contains(body, want) {
@@ -1435,7 +1463,7 @@ func TestSearchFieldIsWired(t *testing.T) {
 // from=watches is what sends Back to the watch list rather than to the
 // Addresses placeholder or the block list
 func TestWatchesListsBoth(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{w: liveWatches()})
+    var h = handler(t, "TESTTOKEN", fakeSource{w: liveWatches()}.options())
     var body = get(h, "/watches", freshInitData("TESTTOKEN")).Body.String()
     for _, want := range []string{">Addresses<", ">Transactions<",
         ">bc1qxy...hx0wlh<", ">32e43e...870b16<", ">John<"} {
@@ -1456,7 +1484,7 @@ func TestWatchesListsBoth(t *testing.T) {
 //
 // and back again, in case the first response was cached under the URL
 func TestWatchesAreNotSharedBetweenUsers(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{w: liveWatches()})
+    var h = handler(t, "TESTTOKEN", fakeSource{w: liveWatches()}.options())
     var mine = signInitData("TESTTOKEN", map[string]string{
         "auth_date": strconv.FormatInt(time.Now().Unix(), 10),
         "user":      `{"id":42,"first_name":"Pin"}`})
@@ -1490,11 +1518,11 @@ func TestChatOfReadsSignedUser(t *testing.T) {
 
 // Watching nothing is a different answer from the lookup failing.
 func TestWatchesEmptyAndFailed(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{w: map[int64]Watches{42: {OK: true}}})
+    var h = handler(t, "TESTTOKEN", fakeSource{w: map[int64]Watches{42: {OK: true}}}.options())
     if body := get(h, "/watches", freshInitData("TESTTOKEN")).Body.String(); !strings.Contains(body, "not watching anything yet") {
         t.Errorf("an empty list should say so: %s", body)
     }
-    var broken = handler(t, "TESTTOKEN", fakeSource{w: map[int64]Watches{42: {OK: false}}})
+    var broken = handler(t, "TESTTOKEN", fakeSource{w: map[int64]Watches{42: {OK: false}}}.options())
     if body := get(broken, "/watches", freshInitData("TESTTOKEN")).Body.String(); !strings.Contains(body, "watches unavailable") {
         t.Errorf("a failed lookup should say so, not claim an empty list: %s", body)
     }
@@ -1503,7 +1531,7 @@ func TestWatchesEmptyAndFailed(t *testing.T) {
 // The list is per-user, so it must need a signature and must never be rendered
 // into the shell page, which is one cached copy served to every visitor.
 func TestWatchesNeverInThePage(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{f: liveFees(), w: liveWatches()})
+    var h = handler(t, "TESTTOKEN", fakeSource{f: liveFees(), w: liveWatches()}.options())
     if w := get(h, "/watches", ""); w.Code != 401 {
         t.Errorf("unauthenticated /watches = %d, want 401", w.Code)
     }
@@ -1521,7 +1549,7 @@ func TestWatchesNeverInThePage(t *testing.T) {
 // The container in the page and the one the fragment returns must ask for the
 // same thing, or the tab would stop refreshing after its first swap.
 func TestWatchPanelWiringMatches(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{w: liveWatches()})
+    var h = handler(t, "TESTTOKEN", fakeSource{w: liveWatches()}.options())
     var page = get(h, "/", "").Body.String()
     var frag = get(h, "/watches", freshInitData("TESTTOKEN")).Body.String()
     for _, want := range []string{`hx-get="watches"`, `hx-trigger="watchtab from:body"`, `hx-swap="outerHTML"`} {
@@ -1545,7 +1573,7 @@ func TestWatchPanelWiringMatches(t *testing.T) {
 // one opened from the block list stays on Blocks.
 func TestBackReturnsToOrigin(t *testing.T) {
     var h = handler(t, "TESTTOKEN", fakeSource{b: liveBlocks(), d: liveBlockInfo(),
-        t: liveTx(), a: liveAddr()})
+        t: liveTx(), a: liveAddr()}.options())
     var data = freshInitData("TESTTOKEN")
     var cases = []struct{ name, path, wantBack, wantTo string }{
         {"block from search", "/block?height=963268&from=home", "blocks?to=home", "home"},
@@ -1568,7 +1596,7 @@ func TestBackReturnsToOrigin(t *testing.T) {
 // Following Back must actually land on that tab, which is the restoring
 // endpoint's job — it carries the reader on with HX-Trigger.
 func TestBackEndpointsSwitchTab(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{b: liveBlocks()})
+    var h = handler(t, "TESTTOKEN", fakeSource{b: liveBlocks()}.options())
     var data = freshInitData("TESTTOKEN")
     for _, c := range []struct{ path, want string }{
         {"/blocks?to=home", `{"showtab":"home"}`},
@@ -1587,7 +1615,7 @@ func TestBackEndpointsSwitchTab(t *testing.T) {
 // carry no tab of their own. None of that may move a reader off whatever tab
 // they are on, so these stay silent unless Back explicitly asked for a switch.
 func TestBlockListDoesNotHijackTheTab(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{b: liveBlocks()})
+    var h = handler(t, "TESTTOKEN", fakeSource{b: liveBlocks()}.options())
     var data = freshInitData("TESTTOKEN")
     for _, p := range []string{"/blocks", "/blocks?down=963257",
         "/moreblocks?before=963257", "/newblocks?after=963266"} {
@@ -1600,7 +1628,7 @@ func TestBlockListDoesNotHijackTheTab(t *testing.T) {
 // The origin arrives in a URL a user can edit and is interpolated into a JSON
 // header, so only known panel names may pass.
 func TestOriginIsValidated(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{b: liveBlocks(), d: liveBlockInfo()})
+    var h = handler(t, "TESTTOKEN", fakeSource{b: liveBlocks(), d: liveBlockInfo()}.options())
     var data = freshInitData("TESTTOKEN")
     var body = get(h, `/block?height=963268&from="},"x":{"`, data).Body.String()
     if !strings.Contains(body, `hx-get="blocks?to=blocks"`) {
@@ -1619,7 +1647,7 @@ func TestOriginIsValidated(t *testing.T) {
 //
 // an unattributed miner is still plain text: there is no pool to open
 func TestMinerLinkAndPage(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{b: liveBlocks()})
+    var h = handler(t, "TESTTOKEN", fakeSource{b: liveBlocks()}.options())
     var data = freshInitData("TESTTOKEN")
     var list = get(h, "/blocks", data).Body.String()
     if !strings.Contains(list, `hx-get="miner?name=AntPool&down=963268"`) {
@@ -1639,7 +1667,7 @@ func TestMinerLinkAndPage(t *testing.T) {
 // The miner page: the name as the title, Back on its left, and the same figures
 // /miners prints.
 func TestMinerDetailsRender(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{b: liveBlocks()})
+    var h = handler(t, "TESTTOKEN", fakeSource{b: liveBlocks()}.options())
     var body = get(h, "/miner?name=AntPool", freshInitData("TESTTOKEN")).Body.String()
     if !strings.Contains(body, "<h1>AntPool</h1>") {
         t.Errorf("missing the miner name as the title: %s", body)
@@ -1661,7 +1689,7 @@ func TestMinerDetailsRender(t *testing.T) {
 
 // A pool with no statistics yet says so rather than showing zeros as fact.
 func TestMinerDetailsUnknown(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{})
+    var h = handler(t, "TESTTOKEN", fakeSource{}.options())
     var body = get(h, "/miner?name=NoSuchPool", freshInitData("TESTTOKEN")).Body.String()
     if !strings.Contains(body, "nothing found") {
         t.Errorf("an untracked pool should say so: %s", body)
@@ -1673,7 +1701,7 @@ func TestMinerDetailsUnknown(t *testing.T) {
 
 // The name comes from a URL a user can edit, and pool names have spaces in them.
 func TestMinerNameHandling(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{})
+    var h = handler(t, "TESTTOKEN", fakeSource{}.options())
     var data = freshInitData("TESTTOKEN")
     for _, p := range []string{"/miner", "/miner?name="} {
         if w := get(h, p, data); w.Code != 400 {
@@ -1696,7 +1724,7 @@ func TestMinerNameHandling(t *testing.T) {
 //
 // a block and a miner have nothing to watch
 func TestWatchButtonOnDetailsPages(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{t: liveTx(), a: liveAddr(), b: liveBlocks(), d: liveBlockInfo()})
+    var h = handler(t, "TESTTOKEN", fakeSource{t: liveTx(), a: liveAddr(), b: liveBlocks(), d: liveBlockInfo()}.options())
     var data = freshInitData("TESTTOKEN")
     for _, c := range []struct{ path, want string }{
         {"/address?a=" + liveAddress, `hx-get="watch?kind=address&id=` + liveAddress + `"`},
@@ -1731,7 +1759,7 @@ func TestWatchButtonOnDetailsPages(t *testing.T) {
 //
 // and tapping again removes it
 func TestWatchButtonTogglesAndReflectsState(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{a: liveAddr()})
+    var h = handler(t, "TESTTOKEN", fakeSource{a: liveAddr()}.options())
     var data = freshInitData("TESTTOKEN")
     var url = "/watch?kind=address&id=" + liveAddress
     var off = get(h, url, data).Body.String()
@@ -1763,7 +1791,7 @@ func TestWatchButtonTogglesAndReflectsState(t *testing.T) {
 // Whether a reader watches something is per-user, so the button must never be
 // cached: two users looking at the same page see their own state.
 func TestWatchButtonIsPerUser(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{a: liveAddr()})
+    var h = handler(t, "TESTTOKEN", fakeSource{a: liveAddr()}.options())
     var mine = freshInitData("TESTTOKEN")
     var theirs = signInitData("TESTTOKEN", map[string]string{
         "auth_date": strconv.FormatInt(time.Now().Unix(), 10),
@@ -1781,7 +1809,7 @@ func TestWatchButtonIsPerUser(t *testing.T) {
 // The button is data, so it needs a signature, and its parameters come from a
 // URL a user can edit.
 func TestWatchButtonGuards(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{a: liveAddr()})
+    var h = handler(t, "TESTTOKEN", fakeSource{a: liveAddr()}.options())
     var data = freshInitData("TESTTOKEN")
     if w := get(h, "/watch?kind=address&id="+liveAddress, ""); w.Code != 401 {
         t.Errorf("unauthenticated /watch = %d, want 401", w.Code)
@@ -1798,7 +1826,7 @@ func TestWatchButtonGuards(t *testing.T) {
 // — by a body class set once at load, since details pages arrive later by swap
 // and any script inside them would not re-run.
 func TestWatchButtonHiddenOutsideTelegram(t *testing.T) {
-    var body = get(handler(t, "TESTTOKEN", fakeSource{f: liveFees()}), "/", "").Body.String()
+    var body = get(handler(t, "TESTTOKEN", fakeSource{f: liveFees()}.options()), "/", "").Body.String()
     if !strings.Contains(body, `classList.add("tg")`) {
         t.Error("nothing marks the page as running inside Telegram")
     }
@@ -1813,7 +1841,7 @@ func TestWatchButtonHiddenOutsideTelegram(t *testing.T) {
 // A failed set must not leave the button claiming a state the store does not
 // have.
 func TestWatchButtonReportsFailure(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", failingSource{})
+    var h = handler(t, "TESTTOKEN", failingSource{}.options())
     var body = post(h, "/watch?kind=address&id="+liveAddress+"&on=1", freshInitData("TESTTOKEN")).Body.String()
     if !strings.Contains(body, "bell err") {
         t.Errorf("a failed watch should show as failed: %s", body)
@@ -1831,7 +1859,7 @@ func TestWatchButtonReportsFailure(t *testing.T) {
 // The root's own is the exception: it is the base the rest are fractions of,
 // so it cannot be relative to itself.
 func TestFontSizesAreRelative(t *testing.T) {
-    var body = get(handler(t, "TESTTOKEN", fakeSource{f: liveFees()}), "/", "").Body.String()
+    var body = get(handler(t, "TESTTOKEN", fakeSource{f: liveFees()}.options()), "/", "").Body.String()
     if n := strings.Count(body, "font-size: "); n == 0 {
         t.Fatal("no font sizes in the page at all")
     }
@@ -1858,7 +1886,7 @@ func TestFontSizesAreRelative(t *testing.T) {
 //
 // It must be set before the body renders, or every size jumps once it lands.
 func TestPhoneBaseFontSize(t *testing.T) {
-    var body = get(handler(t, "TESTTOKEN", fakeSource{f: liveFees()}), "/", "").Body.String()
+    var body = get(handler(t, "TESTTOKEN", fakeSource{f: liveFees()}.options()), "/", "").Body.String()
     if !strings.Contains(body, "@media (max-width: 480px)") {
         t.Error("no phone-sized breakpoint, so the base size never changes")
     }
@@ -1888,7 +1916,7 @@ func TestPhoneBaseFontSize(t *testing.T) {
 //
 // Set before the body renders, like the phone class, or the size jumps.
 func TestWindowsBaseFontSize(t *testing.T) {
-    var body = get(handler(t, "TESTTOKEN", fakeSource{f: liveFees()}), "/", "").Body.String()
+    var body = get(handler(t, "TESTTOKEN", fakeSource{f: liveFees()}.options()), "/", "").Body.String()
     var i = strings.Index(body, "@media (max-width: 480px)")
     if i < 0 { t.Fatal("no phone-sized breakpoint") }
     var block = body[i : i+min(500, len(body)-i)]
@@ -1920,7 +1948,7 @@ func TestWindowsBaseFontSize(t *testing.T) {
 // six columns of percentages already measure their cells, so they yield to
 // the width once it runs out
 func TestFontSizeGuards(t *testing.T) {
-    var body = get(handler(t, "TESTTOKEN", fakeSource{f: liveFees()}), "/", "").Body.String()
+    var body = get(handler(t, "TESTTOKEN", fakeSource{f: liveFees()}.options()), "/", "").Body.String()
     if !strings.Contains(body, "font-size: max(1.0625rem, 16px)") {
         t.Error("the search field has no 16px floor; a small font setting would make iOS zoom")
     }
@@ -1966,7 +1994,7 @@ func TestShutdownDoesNotWaitForEventStreams(t *testing.T) {
     var addr = probe.Addr().String()
     probe.Close()
     invalidateAll()
-    var srv = Start(addr, "TESTTOKEN", fakeSource{f: liveFees()})
+    var srv = Start(addr, "TESTTOKEN", fakeSource{f: liveFees()}.options())
     t.Cleanup(func() { srv.Close() })
     var before = subscribes()
     var resp *http.Response
@@ -2015,7 +2043,7 @@ func postForm(h http.Handler, path, initData string, form url.Values) *httptest.
 //
 // and the watch list has changed, so it re-fetches itself
 func TestWatchAsksForAnAlias(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{a: liveAddr()})
+    var h = handler(t, "TESTTOKEN", fakeSource{a: liveAddr()}.options())
     var data = freshInitData("TESTTOKEN")
     var link = "/watch?kind=address&id=" + liveAddress
     var on = post(h, link+"&on=1", data).Header().Get("HX-Trigger")
@@ -2044,7 +2072,7 @@ func TestWatchAsksForAnAlias(t *testing.T) {
 
 // The dialog names the watch the bell just filed.
 func TestSetAlias(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{a: liveAddr()})
+    var h = handler(t, "TESTTOKEN", fakeSource{a: liveAddr()}.options())
     var data = freshInitData("TESTTOKEN")
     var res = postForm(h, "/alias", data, url.Values{
         "kind": {"address"}, "id": {liveAddress}, "alias": {"John"}})
@@ -2062,7 +2090,7 @@ func TestSetAlias(t *testing.T) {
 // Save on an empty field is how a reader dismisses the dialog, so it must leave
 // the watch alone rather than clearing the name it already has.
 func TestEmptyAliasChangesNothing(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{a: liveAddr()})
+    var h = handler(t, "TESTTOKEN", fakeSource{a: liveAddr()}.options())
     var data = freshInitData("TESTTOKEN")
     var res = postForm(h, "/alias", data, url.Values{
         "kind": {"address"}, "id": {liveAddress}, "alias": {"   "}})
@@ -2080,7 +2108,7 @@ func TestEmptyAliasChangesNothing(t *testing.T) {
 // A label is all an alias is, and this endpoint is reachable without the page,
 // so an enormous one is cut rather than stored whole.
 func TestLongAliasIsCut(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{a: liveAddr()})
+    var h = handler(t, "TESTTOKEN", fakeSource{a: liveAddr()}.options())
     postForm(h, "/alias", freshInitData("TESTTOKEN"), url.Values{
         "kind": {"address"}, "id": {liveAddress}, "alias": {strings.Repeat("é", 500)}})
     if got := len([]rune(aliases[42][liveAddress])); got != aliasMax {
@@ -2090,7 +2118,7 @@ func TestLongAliasIsCut(t *testing.T) {
 
 // An alias is per-user, like everything else on the Watches tab.
 func TestAliasNeedsInitData(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{a: liveAddr()})
+    var h = handler(t, "TESTTOKEN", fakeSource{a: liveAddr()}.options())
     var res = postForm(h, "/alias", "", url.Values{
         "kind": {"address"}, "id": {liveAddress}, "alias": {"John"}})
     if res.Code != http.StatusUnauthorized {
@@ -2104,7 +2132,7 @@ func TestAliasNeedsInitData(t *testing.T) {
 // The dialog's Delete button posts from inside the form, so the id it removes
 // arrives as a form value rather than in the URL.
 func TestDeleteFromTheAliasDialog(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{a: liveAddr()})
+    var h = handler(t, "TESTTOKEN", fakeSource{a: liveAddr()}.options())
     var data = freshInitData("TESTTOKEN")
     post(h, "/watch?kind=address&id="+liveAddress+"&on=1", data)
     if !watched[42][liveAddress] {
@@ -2125,7 +2153,7 @@ func TestDeleteFromTheAliasDialog(t *testing.T) {
 // Every row carries what the edit dialog needs, since the dialog itself is in
 // the shared page and knows nothing until a row tells it.
 func TestWatchRowsCarryAnEditIcon(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{w: liveWatches()})
+    var h = handler(t, "TESTTOKEN", fakeSource{w: liveWatches()}.options())
     var body = get(h, "/watches", freshInitData("TESTTOKEN")).Body.String()
     for _, want := range []string{
         `class="edit" data-kind="address" data-id="` + liveAddress + `" data-alias="John"`,
@@ -2146,7 +2174,7 @@ func TestWatchRowsCarryAnEditIcon(t *testing.T) {
 //
 // a row with no id in it renders as it always did
 func TestDetailsRowsLinkTheirIds(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{t: liveTx(), a: liveAddr(), d: liveBlockInfo()})
+    var h = handler(t, "TESTTOKEN", fakeSource{t: liveTx(), a: liveAddr(), d: liveBlockInfo()}.options())
     var data = freshInitData("TESTTOKEN")
     var body = get(h, "/tx?id="+liveTxid, data).Body.String()
     for _, want := range []string{
@@ -2178,7 +2206,7 @@ func TestDetailsRowsLinkTheirIds(t *testing.T) {
 //
 // an origin that is not a panel falls back to Home, since it reaches a URL
 func TestLinkedIdsKeepTheOrigin(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{t: liveTx(), a: liveAddr()})
+    var h = handler(t, "TESTTOKEN", fakeSource{t: liveTx(), a: liveAddr()}.options())
     var data = freshInitData("TESTTOKEN")
     var body = get(h, "/tx?id="+liveTxid+"&from=home", data).Body.String()
     if !strings.Contains(body, "&from=home") {
@@ -2205,7 +2233,7 @@ func TestBlockByHashHasNoWatchButton(t *testing.T) {
     txs[hash] = Info{OK: true, Kind: "block", Title: "Block 963 268",
         Rows: []Field{{Label: "Hash", Value: "000000...b1a2f3"}}}
     var src = fakeSource{t: txs, a: liveAddr()}
-    var h = handler(t, "TESTTOKEN", src)
+    var h = handler(t, "TESTTOKEN", src.options())
     var data = freshInitData("TESTTOKEN")
     var body = get(h, "/tx?id="+hash, data).Body.String()
     if !strings.Contains(body, "<h1>Block 963 268</h1>") {
@@ -2227,7 +2255,7 @@ func TestBlockByHashHasNoWatchButton(t *testing.T) {
 //
 // and the other two are offered, unlit
 func TestAddressListOpensOnRich(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{al: liveAddrs()})
+    var h = handler(t, "TESTTOKEN", fakeSource{al: liveAddrs()}.options())
     var body = get(h, "/addresses", freshInitData("TESTTOKEN")).Body.String()
     if n := strings.Count(body, `class="blk" id="adr`); n != fakeAddrFirst {
         t.Errorf("first batch has %d rows, want %d", n, fakeAddrFirst)
@@ -2248,7 +2276,7 @@ func TestAddressListOpensOnRich(t *testing.T) {
 // Each button re-renders the whole panel, which is what keeps the lit button and
 // the rows under it in step without the page tracking which list it is showing.
 func TestAddressListSwitchesKind(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{al: liveAddrs()})
+    var h = handler(t, "TESTTOKEN", fakeSource{al: liveAddrs()}.options())
     var data = freshInitData("TESTTOKEN")
     for _, kind := range []string{"rich", "abandoned"} {
         var w = get(h, "/addresses?kind="+kind, data)
@@ -2271,7 +2299,7 @@ func TestAddressListSwitchesKind(t *testing.T) {
 // A kind arrives in a URL a user can edit and goes straight back out into the
 // links the batch renders, so an unknown one becomes the list the tab opens on.
 func TestAddressListKindIsValidated(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{al: liveAddrs()})
+    var h = handler(t, "TESTTOKEN", fakeSource{al: liveAddrs()}.options())
     var body = get(h, `/addresses?kind="},"evil":{"`, freshInitData("TESTTOKEN")).Body.String()
     if !strings.Contains(body, `class="on" hx-get="addresses?kind=rich"`) {
         t.Errorf("an unknown kind should fall back to Rich: %s", body)
@@ -2284,7 +2312,7 @@ func TestAddressListKindIsValidated(t *testing.T) {
 // The scroll sentinel appends rows alone — no panel, no buttons — and hands the
 // next offset to a fresh sentinel below them.
 func TestAddressListAppends(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{al: liveAddrs()})
+    var h = handler(t, "TESTTOKEN", fakeSource{al: liveAddrs()}.options())
     var body = get(h, "/moreaddrs?kind=rich&from=15", freshInitData("TESTTOKEN")).Body.String()
     if n := strings.Count(body, `class="blk" id="adr`); n != fakeAddrPage {
         t.Errorf("a scroll batch has %d rows, want %d", n, fakeAddrPage)
@@ -2303,7 +2331,7 @@ func TestAddressListAppends(t *testing.T) {
 // The end of the list simply has no sentinel, so the scroll stops rather than
 // asking forever.
 func TestAddressListEnds(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{al: liveAddrs()})
+    var h = handler(t, "TESTTOKEN", fakeSource{al: liveAddrs()}.options())
     var body = get(h, "/moreaddrs?kind=active&from=35", freshInitData("TESTTOKEN")).Body.String()
     if strings.Contains(body, "moreaddrs") {
         t.Errorf("the last batch should carry no sentinel: %s", body)
@@ -2316,7 +2344,7 @@ func TestAddressListEnds(t *testing.T) {
 // from=0 would append the first batch underneath itself, so it is refused rather
 // than read as the top of the list.
 func TestAddressListRejectsBadOffset(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{al: liveAddrs()})
+    var h = handler(t, "TESTTOKEN", fakeSource{al: liveAddrs()}.options())
     for _, p := range []string{"/moreaddrs?kind=active&from=0", "/moreaddrs?kind=active",
         "/moreaddrs?kind=active&from=-3", "/moreaddrs?kind=active&from=x"} {
         if code := get(h, p, freshInitData("TESTTOKEN")).Code; code != 400 {
@@ -2329,7 +2357,7 @@ func TestAddressListRejectsBadOffset(t *testing.T) {
 // so unlike the block list there is no sentinel on top and nothing waits on an
 // event.
 func TestAddressListDoesNotWaitForEvents(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{al: liveAddrs()})
+    var h = handler(t, "TESTTOKEN", fakeSource{al: liveAddrs()}.options())
     var data = freshInitData("TESTTOKEN")
     for _, p := range []string{"/addresses", "/addresses?kind=rich", "/moreaddrs?kind=active&from=15"} {
         var body = get(h, p, data).Body.String()
@@ -2342,7 +2370,7 @@ func TestAddressListDoesNotWaitForEvents(t *testing.T) {
 // A row opens the address page, and Back returns to the list it was opened from
 // — that list, at that row.
 func TestAddressRowLinksBackToItsList(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{al: liveAddrs(), a: liveAddr()})
+    var h = handler(t, "TESTTOKEN", fakeSource{al: liveAddrs(), a: liveAddr()}.options())
     var data = freshInitData("TESTTOKEN")
     var list = get(h, "/addresses?kind=abandoned", data).Body.String()
     if !strings.Contains(list, `hx-get="address?a=bc1qa`) {
@@ -2364,7 +2392,7 @@ func TestAddressRowLinksBackToItsList(t *testing.T) {
 // Row 0 is the top of the list and an ordinary answer, so it must not be read as
 // "Back did not ask" the way a zero block height is.
 func TestAddressListRestoresRowZero(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{al: liveAddrs(), a: liveAddr()})
+    var h = handler(t, "TESTTOKEN", fakeSource{al: liveAddrs(), a: liveAddr()}.options())
     var page = get(h, "/address?a="+liveAddress+"&kind=rich&down=0", freshInitData("TESTTOKEN")).Body.String()
     var head = page[strings.Index(page, `class="head"`):strings.Index(page, `class="fields"`)]
     if !strings.Contains(head, `hx-swap="outerHTML show:#adr0:top"`) {
@@ -2375,7 +2403,7 @@ func TestAddressListRestoresRowZero(t *testing.T) {
 // A restored list is as deep as the reader had scrolled, so the row Back returns
 // to is actually in it.
 func TestAddressListRestoresDepth(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{al: liveAddrs()})
+    var h = handler(t, "TESTTOKEN", fakeSource{al: liveAddrs()}.options())
     var body = get(h, "/addresses?kind=rich&down=22", freshInitData("TESTTOKEN")).Body.String()
     if !strings.Contains(body, `id="adr22"`) {
         t.Errorf("the restored list should reach row 22: %s", body)
@@ -2388,7 +2416,7 @@ func TestAddressListRestoresDepth(t *testing.T) {
 // The tab is rendered into the page, so opening it costs no round trip — and the
 // copy in the page must be the very fragment the endpoint serves.
 func TestAddressListIsInThePage(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{al: liveAddrs()})
+    var h = handler(t, "TESTTOKEN", fakeSource{al: liveAddrs()}.options())
     var page = get(h, "/", "").Body.String()
     var fragment = strings.TrimSpace(get(h, "/addresses", freshInitData("TESTTOKEN")).Body.String())
     if !strings.Contains(page, fragment) {
@@ -2399,7 +2427,7 @@ func TestAddressListIsInThePage(t *testing.T) {
 // An empty bucket says so and still offers the other two lists, rather than
 // rendering a panel with no way out of it.
 func TestAddressListEmpty(t *testing.T) {
-    var h = handler(t, "TESTTOKEN", fakeSource{})
+    var h = handler(t, "TESTTOKEN", fakeSource{}.options())
     var body = get(h, "/addresses?kind=rich", freshInitData("TESTTOKEN")).Body.String()
     if strings.Contains(body, `class="blk"`) {
         t.Errorf("an empty list should have no rows: %s", body)

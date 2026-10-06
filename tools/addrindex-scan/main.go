@@ -50,9 +50,9 @@ func newRPCClient(url, user, pass, cookieFile string) (*rpcClient, error) {
 	return c, nil
 }
 
-func (c *rpcClient) call(ctx context.Context, method string, params []interface{}, result interface{}) error {
-	if params == nil { params = []interface{}{} }
-	var body, err = json.Marshal(map[string]interface{}{
+func (c *rpcClient) call(ctx context.Context, method string, params []any, result any) error {
+	if params == nil { params = []any{} }
+	var body, err = json.Marshal(map[string]any{
 		"jsonrpc": "1.0", "id": "addrindex-scan", "method": method, "params": params,
 	})
 	if err != nil { return err }
@@ -85,7 +85,7 @@ func (c *rpcClient) validateAddress(ctx context.Context, addr string) (string, e
 		IsValid      bool   `json:"isvalid"`
 		ScriptPubKey string `json:"scriptPubKey"`
 	}
-	if err := c.call(ctx, "validateaddress", []interface{}{addr}, &info); err != nil {
+	if err := c.call(ctx, "validateaddress", []any{addr}, &info); err != nil {
 		return "", err
 	}
 	if !info.IsValid {
@@ -96,7 +96,7 @@ func (c *rpcClient) validateAddress(ctx context.Context, addr string) (string, e
 
 func (c *rpcClient) getBlockHash(ctx context.Context, height int64) (string, error) {
 	var hash string
-	var err = c.call(ctx, "getblockhash", []interface{}{height}, &hash)
+	var err = c.call(ctx, "getblockhash", []any{height}, &hash)
 	return hash, err
 }
 
@@ -104,7 +104,7 @@ func (c *rpcClient) getBlockTxids(ctx context.Context, hash string) ([]string, e
 	var blk struct {
 		Tx []string `json:"tx"`
 	}
-	if err := c.call(ctx, "getblock", []interface{}{hash, 1}, &blk); err != nil {
+	if err := c.call(ctx, "getblock", []any{hash, 1}, &blk); err != nil {
 		return nil, err
 	}
 	return blk.Tx, nil
@@ -149,7 +149,7 @@ func (c *rpcClient) getTransaction(ctx context.Context, txid string) (*txDetail,
 			} `json:"scriptPubKey"`
 		} `json:"vout"`
 	}
-	if err := c.call(ctx, "getrawtransaction", []interface{}{txid, 2}, &raw); err != nil {
+	if err := c.call(ctx, "getrawtransaction", []any{txid, 2}, &raw); err != nil {
 		return nil, err
 	}
 	var tx = &txDetail{Txid: raw.Txid, Time: raw.Time, Fee: raw.Fee}

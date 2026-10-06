@@ -100,7 +100,7 @@ func (e *Error) Error() string { return fmt.Sprintf("%s (code %d)", e.Message, e
 // JSON-RPC 1.0 with positional params and reports method errors in the body
 // (with HTTP 500), so a non-200 status is not on its own a failure — the body is
 // decoded either way.
-func Call(ctx context.Context, method string, params []interface{}, result interface{}) error {
+func Call(ctx context.Context, method string, params []any, result any) error {
     var c = current.Load()
     if c == nil { return errUnconfigured }
     return c.call(ctx, method, params, result)
@@ -111,9 +111,9 @@ func Call(ctx context.Context, method string, params []interface{}, result inter
 //
 // the node restarted and rotated its cookie: pick up the new one so the
 // next call succeeds rather than failing forever
-func (c *conn) call(ctx context.Context, method string, params []interface{}, result interface{}) error {
-    if params == nil { params = []interface{}{} }
-    var body, err = json.Marshal(map[string]interface{}{
+func (c *conn) call(ctx context.Context, method string, params []any, result any) error {
+    if params == nil { params = []any{} }
+    var body, err = json.Marshal(map[string]any{
         "jsonrpc": "1.0", "id": "bitnsbot", "method": method, "params": params,
     })
     if err != nil { return err }
@@ -152,7 +152,7 @@ func GetBlockCount(ctx context.Context) (int64, error) {
 
 func GetBlockHash(ctx context.Context, height int64) (string, error) {
     var hash string
-    var err = Call(ctx, "getblockhash", []interface{}{height}, &hash)
+    var err = Call(ctx, "getblockhash", []any{height}, &hash)
     return hash, err
 }
 
@@ -165,7 +165,7 @@ type BlockHeader struct {
 // node has no block for — which is what lets /info tell a block hash from a txid.
 func GetBlockHeader(ctx context.Context, hash string) (*BlockHeader, error) {
     var header BlockHeader
-    var err = Call(ctx, "getblockheader", []interface{}{hash, true}, &header)
+    var err = Call(ctx, "getblockheader", []any{hash, true}, &header)
     if err != nil { return nil, err }
     return &header, nil
 }
@@ -219,14 +219,14 @@ type Transaction struct {
 // the mempool, exactly as btcd needed it.
 func GetRawTransaction(ctx context.Context, txid string) (*Transaction, error) {
     var tx Transaction
-    var err = Call(ctx, "getrawtransaction", []interface{}{txid, 2}, &tx)
+    var err = Call(ctx, "getrawtransaction", []any{txid, 2}, &tx)
     if err != nil { return nil, err }
     return &tx, nil
 }
 
 func DecodeRawTransaction(ctx context.Context, txHex string) (*Transaction, error) {
     var tx Transaction
-    var err = Call(ctx, "decoderawtransaction", []interface{}{txHex}, &tx)
+    var err = Call(ctx, "decoderawtransaction", []any{txHex}, &tx)
     if err != nil { return nil, err }
     return &tx, nil
 }
@@ -249,7 +249,7 @@ func GetBlockTxids(ctx context.Context, hash string) (*BlockTxids, error) {
     }
     c.mu.Unlock()
     var blk BlockTxids
-    var err = c.call(ctx, "getblock", []interface{}{hash, 1}, &blk)
+    var err = c.call(ctx, "getblock", []any{hash, 1}, &blk)
     if err != nil { return nil, err }
     c.mu.Lock()
     c.blockTxidsCache.Put(hash, &blk)
@@ -280,7 +280,7 @@ func GetBlockVerbose(ctx context.Context, hash string) (*VerboseBlock, error) {
     }
     c.mu.Unlock()
     var blk VerboseBlock
-    var err = c.call(ctx, "getblock", []interface{}{hash, 2}, &blk)
+    var err = c.call(ctx, "getblock", []any{hash, 2}, &blk)
     if err != nil { return nil, err }
     c.mu.Lock()
     c.blockVerboseCache.Put(hash, &blk)
@@ -301,7 +301,7 @@ type AddressInfo struct {
 // address format in the bot.
 func ValidateAddress(ctx context.Context, address string) (*AddressInfo, error) {
     var info AddressInfo
-    var err = Call(ctx, "validateaddress", []interface{}{address}, &info)
+    var err = Call(ctx, "validateaddress", []any{address}, &info)
     if err != nil { return nil, err }
     return &info, nil
 }
@@ -351,7 +351,7 @@ type NodeAddress struct {
 // belongs in a background refresh, never in a request path.
 func GetNodeAddresses(ctx context.Context) ([]NodeAddress, error) {
     var addrs []NodeAddress
-    var err = Call(ctx, "getnodeaddresses", []interface{}{0}, &addrs)
+    var err = Call(ctx, "getnodeaddresses", []any{0}, &addrs)
     if err != nil { return nil, err }
     return addrs, nil
 }
@@ -383,14 +383,14 @@ type MempoolEntry struct {
 // getrawtransaction can't compute one without undo data.
 func GetMempoolEntry(ctx context.Context, txid string) (*MempoolEntry, error) {
     var entry MempoolEntry
-    var err = Call(ctx, "getmempoolentry", []interface{}{txid}, &entry)
+    var err = Call(ctx, "getmempoolentry", []any{txid}, &entry)
     if err != nil { return nil, err }
     return &entry, nil
 }
 
 func RawMempoolVerbose(ctx context.Context) (map[string]MempoolEntry, error) {
     var mp map[string]MempoolEntry
-    var err = Call(ctx, "getrawmempool", []interface{}{true}, &mp)
+    var err = Call(ctx, "getrawmempool", []any{true}, &mp)
     if err != nil { return nil, err }
     return mp, nil
 }
@@ -417,7 +417,7 @@ func ScanTxOutSet(ctx context.Context, addresses []string) (*ScanResult, error) 
         descriptors = append(descriptors, "addr("+a+")")
     }
     var result ScanResult
-    var err = Call(ctx, "scantxoutset", []interface{}{"start", descriptors}, &result)
+    var err = Call(ctx, "scantxoutset", []any{"start", descriptors}, &result)
     if err != nil { return nil, err }
     return &result, nil
 }
@@ -427,7 +427,7 @@ func ScanTxOutSet(ctx context.Context, addresses []string) (*ScanResult, error) 
 // the node without polling.
 func WaitForBlock(ctx context.Context, timeout time.Duration) (*BlockHeader, error) {
     var header BlockHeader
-    var err = Call(ctx, "waitfornewblock", []interface{}{timeout.Milliseconds()}, &header)
+    var err = Call(ctx, "waitfornewblock", []any{timeout.Milliseconds()}, &header)
     if err != nil { return nil, err }
     return &header, nil
 }

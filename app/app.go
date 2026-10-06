@@ -5,8 +5,7 @@
 // URL.
 //
 // It cannot reach package main's fee cache or formatters, so the chain data it
-// needs arrives through the small Source interface, implemented in main — the
-// same seam the miners package uses for its own collector.
+// needs arrives through the Options functions main passes to Start.
 package app
 
 import "embed"
@@ -222,7 +221,7 @@ func invalidateAll() {
 }
 
 // serve writes a cached render, producing it only on a miss. data is called
-// outside cacheMu because it reaches into main's Source, which holds locks of
+// outside cacheMu because it reaches into main's Options functions, which holds locks of
 // its own; two concurrent misses simply render the same bytes twice, which is
 // cheaper than serialising every request behind one mutex.
 func cached(c *lru.Cache[string, []byte], w http.ResponseWriter, r *http.Request, render func(string) []byte) {
@@ -510,7 +509,7 @@ type Info struct {
     Back  string
     // Kind and Id name what the watch button acts on — "address" or "tx" and
     // the full id. Empty on a page with nothing to watch, which is what a block
-    // or a miner page leaves them. A Source may set Kind itself when the page it
+    // or a miner page leaves them. An Options function may set Kind itself when the page it
     // returns is not what the URL asked for: a 64-hex id arrives at /tx, and one
     // the node has a block header for comes back as that block. The button
     // itself is loaded separately: whether *this* reader watches it is per-user,
@@ -730,7 +729,7 @@ type Watch struct {
     Alias string
 }
 
-// Watches is one user's watch list. Alone among the Source calls this one is
+// Watches is one user's watch list. Alone among the Options functions this one is
 // per-user, which is why it is never cached and never rendered into the shell
 // page — both of those are shared by every visitor. OK is false when the lookup
 // failed, which is a different answer from watching nothing.
@@ -740,32 +739,33 @@ type Watches struct {
     Txs       []Watch
 }
 
-// Source supplies the chain data the app renders. main implements it; the app
-// package stays unaware of the fee cache, Bitcoin Core and the price feeds.
+// Options supplies the chain data the app renders, one function per kind of
+// data. main passes them; the app package stays unaware of the fee cache,
+// Bitcoin Core and the price feeds.
 //
-// Everything a call renders text into takes the reader's language, because the
-// words are main's rather than the page's: the details rows are the very lines
-// the bot prints, and a block row's "Unknown" miner or a period's "1w" is a
-// string main chose. The calls that carry no words of their own — the fee tiers
-// and the chain figures are numbers, a watch list is ids — take none, and their
-// labels come from the translated page around them.
-type Source interface {
-    Fees() Fees
-    Network() Network
-    Market(lang string) Market
-    Blocks(lang string, rng Range) Blocks
-    Addresses(lang string, rng AddrRange) Addrs
-    BlockInfo(lang string, height int64) Info
-    TxInfo(lang, txid string) Info
-    AddrInfo(lang, address string) Info
-    AddrTxs(lang, address string, from int) Txs
-    MinerInfo(lang, name string) Info
-    MinerChart(lang, name, data, period string) Chart
-    Mempool(lang string, after int64) Mempool
-    Watches(chat int64) Watches
-    Watching(chat int64, kind, id string) bool
-    SetWatch(chat int64, kind, id string, on bool) (bool, error)
-    SetAlias(chat int64, kind, id, alias string) (bool, error)
+// Everything a function renders text into takes the reader's language, because
+// the words are main's rather than the page's: the details rows are the very
+// lines the bot prints, and a block row's "Unknown" miner or a period's "1w" is a
+// string main chose. The functions that carry no words of their own — the fee
+// tiers and the chain figures are numbers, a watch list is ids — take none, and
+// their labels come from the translated page around them.
+type Options struct {
+    Fees       func() Fees
+    Network    func() Network
+    Market     func(lang string) Market
+    Blocks     func(lang string, rng Range) Blocks
+    Addresses  func(lang string, rng AddrRange) Addrs
+    BlockInfo  func(lang string, height int64) Info
+    TxInfo     func(lang, txid string) Info
+    AddrInfo   func(lang, address string) Info
+    AddrTxs    func(lang, address string, from int) Txs
+    MinerInfo  func(lang, name string) Info
+    MinerChart func(lang, name, data, period string) Chart
+    Mempool    func(lang string, after int64) Mempool
+    Watches    func(chat int64) Watches
+    Watching   func(chat int64, kind, id string) bool
+    SetWatch   func(chat int64, kind, id string, on bool) (bool, error)
+    SetAlias   func(chat int64, kind, id, alias string) (bool, error)
 }
 
 // aliasMax bounds the name a watch can be given from the app, in runes: it is a
@@ -1051,7 +1051,7 @@ func IsTxID(hash string) bool {
 //
 // Shutdown calls this before it starts waiting, so the streams end and the
 // connections go idle instead of holding it open until the deadline.
-func Start(addr, token string, src Source) *http.Server {
+func Start(addr, token string, opt Options) *http.Server {
     var mux = http.NewServeMux()
     mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
         if r.URL.Path != "/" {
@@ -1059,7 +1059,7 @@ func Start(addr, token string, src Source) *http.Server {
             return
         }
         cached(cardsCache, w, r, func(lang string) []byte {
-            return render(lang, "app", page{Fees: src.Fees(), Network: src.Network(), Market: src.Market(lang), Blocks: src.Blocks(lang, Range{}), Addrs: src.Addresses(lang, AddrRange{Kind: "rich"})})
+            return render(lang, "app", page{Fees: opt.Fees(), Network: opt.Network(), Market: opt.Market(lang), Blocks: opt.Blocks(lang, Range{}), Addrs: opt.Addresses(lang, AddrRange{Kind: "rich"})})
         })
     })
     mux.HandleFunc("/htmx.min.js", func(w http.ResponseWriter, r *http.Request) {
@@ -1077,17 +1077,17 @@ func Start(addr, token string, src Source) *http.Server {
         events(w, r, closing)
     })
     mux.HandleFunc("/fees", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
-        cached(cardsCache, w, r, func(lang string) []byte { return render(lang, "fees", src.Fees()) })
+        cached(cardsCache, w, r, func(lang string) []byte { return render(lang, "fees", opt.Fees()) })
     }))
     mux.HandleFunc("/network", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
-        cached(cardsCache, w, r, func(lang string) []byte { return render(lang, "network", src.Network()) })
+        cached(cardsCache, w, r, func(lang string) []byte { return render(lang, "network", opt.Network()) })
     }))
     mux.HandleFunc("/market", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
-        cached(cardsCache, w, r, func(lang string) []byte { return render(lang, "market", src.Market(lang)) })
+        cached(cardsCache, w, r, func(lang string) []byte { return render(lang, "market", opt.Market(lang)) })
     }))
     mux.HandleFunc("/blocks", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
         if to := r.URL.Query().Get("to"); isPanel(to) { w.Header().Set("HX-Trigger", showtab(to)) }
-        cached(blocksCache, w, r, func(lang string) []byte { return render(lang, "blocks", src.Blocks(lang, Range{Down: heightOf(r, "down")})) })
+        cached(blocksCache, w, r, func(lang string) []byte { return render(lang, "blocks", opt.Blocks(lang, Range{Down: heightOf(r, "down")})) })
     }))
     mux.HandleFunc("/moreblocks", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
         var before = heightOf(r, "before")
@@ -1095,7 +1095,7 @@ func Start(addr, token string, src Source) *http.Server {
             http.Error(w, "no such block", http.StatusBadRequest)
             return
         }
-        cached(blocksCache, w, r, func(lang string) []byte { return render(lang, "blockrows", src.Blocks(lang, Range{Before: before})) })
+        cached(blocksCache, w, r, func(lang string) []byte { return render(lang, "blockrows", opt.Blocks(lang, Range{Before: before})) })
     }))
     mux.HandleFunc("/newblocks", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
         var started = time.Now().UnixNano()
@@ -1105,9 +1105,9 @@ func Start(addr, token string, src Source) *http.Server {
             return
         }
         var lang = language(r)
-        var blocks, name = src.Blocks(lang, Range{After: after}), "newblocks"
+        var blocks, name = opt.Blocks(lang, Range{After: after}), "newblocks"
         if blocks.More {
-            blocks, name = src.Blocks(lang, Range{}), "blocks"
+            blocks, name = opt.Blocks(lang, Range{}), "blocks"
             w.Header().Set("HX-Retarget", "#"+blocksSlot)
         }
         var b = render(lang, name, blocks)
@@ -1126,7 +1126,7 @@ func Start(addr, token string, src Source) *http.Server {
             return
         }
         var back, swap = backToList(r)
-        details(w, r, blocksSlot, back, swap, "", "", func(lang string) Info { return src.BlockInfo(lang, height) })
+        details(w, r, blocksSlot, back, swap, "", "", func(lang string) Info { return opt.BlockInfo(lang, height) })
     }))
     mux.HandleFunc("/tx", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
         var id = strings.TrimSpace(r.URL.Query().Get("id"))
@@ -1142,14 +1142,14 @@ func Start(addr, token string, src Source) *http.Server {
         }
         var back, swap = backToList(r)
         if r.URL.Query().Get("from") == "mempool" { back, swap = "mempool", "outerHTML" }
-        details(w, r, blocksSlot, back, swap, "tx", id, func(lang string) Info { return src.TxInfo(lang, id) })
+        details(w, r, blocksSlot, back, swap, "tx", id, func(lang string) Info { return opt.TxInfo(lang, id) })
     }))
     mux.HandleFunc("/mempool", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
         var started = time.Now().UnixNano()
         var lang = language(r)
         var to = r.URL.Query().Get("from")
         if !isPanel(to) { to = "home" }
-        var mp = src.Mempool(lang, -1)
+        var mp = opt.Mempool(lang, -1)
         mp.Lang, mp.Back = lang, "blocks?to="+to
         w.Header().Set("HX-Retarget", "#"+blocksSlot)
         w.Header().Set("HX-Trigger", showtab(tabOf(blocksSlot)))
@@ -1163,7 +1163,7 @@ func Start(addr, token string, src Source) *http.Server {
             return
         }
         var lang = language(r)
-        var mp = src.Mempool(lang, after)
+        var mp = opt.Mempool(lang, after)
         mp.Lang = lang
         if mp.More {
             w.Header().Set("HX-Retarget", "#mplist")
@@ -1179,9 +1179,9 @@ func Start(addr, token string, src Source) *http.Server {
         }
         var back, swap = backToList(r)
         details(w, r, blocksSlot, back, swap, "", "", func(lang string) Info {
-            var info = src.MinerInfo(lang, name)
+            var info = opt.MinerInfo(lang, name)
             if info.OK {
-                var chart = src.MinerChart(lang, name, "blocks", "month")
+                var chart = opt.MinerChart(lang, name, "blocks", "month")
                 info.Chart = &chart
             }
             return info
@@ -1194,7 +1194,7 @@ func Start(addr, token string, src Source) *http.Server {
             return
         }
         var data, period = chartDataOf(r), chartPeriodOf(r)
-        cached(blocksCache, w, r, func(lang string) []byte { return render(lang, "chart", src.MinerChart(lang, name, data, period)) })
+        cached(blocksCache, w, r, func(lang string) []byte { return render(lang, "chart", opt.MinerChart(lang, name, data, period)) })
     }))
     mux.HandleFunc("/address", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
         var a = strings.TrimSpace(r.URL.Query().Get("a"))
@@ -1203,7 +1203,7 @@ func Start(addr, token string, src Source) *http.Server {
             return
         }
         var back, swap = backToAddrList(r)
-        details(w, r, addressSlot, back, swap, "address", a, func(lang string) Info { return src.AddrInfo(lang, a) })
+        details(w, r, addressSlot, back, swap, "address", a, func(lang string) Info { return opt.AddrInfo(lang, a) })
     }))
     mux.HandleFunc("/addresses", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
         var to = r.URL.Query().Get("to")
@@ -1212,7 +1212,7 @@ func Start(addr, token string, src Source) *http.Server {
         rng.Down, rng.Restore = addrDownOf(r)
         w.Header().Set("HX-Retarget", "#"+addressSlot)
         w.Header().Set("HX-Trigger", showtab(to))
-        cached(addrsCache, w, r, func(lang string) []byte { return render(lang, "addresses", src.Addresses(lang, rng)) })
+        cached(addrsCache, w, r, func(lang string) []byte { return render(lang, "addresses", opt.Addresses(lang, rng)) })
     }))
     mux.HandleFunc("/moreaddrs", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
         var from, err = strconv.Atoi(r.URL.Query().Get("from"))
@@ -1221,7 +1221,7 @@ func Start(addr, token string, src Source) *http.Server {
             return
         }
         cached(addrsCache, w, r, func(lang string) []byte {
-            return render(lang, "addrrows", src.Addresses(lang, AddrRange{Kind: addrKindOf(r), From: from}))
+            return render(lang, "addrrows", opt.Addresses(lang, AddrRange{Kind: addrKindOf(r), From: from}))
         })
     }))
     mux.HandleFunc("/moreaddrtxs", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
@@ -1234,14 +1234,14 @@ func Start(addr, token string, src Source) *http.Server {
         var to = r.URL.Query().Get("origin")
         if !isPanel(to) { to = "addresses" }
         cached(txsCache, w, r, func(lang string) []byte {
-            var txs = src.AddrTxs(lang, a, from)
+            var txs = opt.AddrTxs(lang, a, from)
             txs.Slot, txs.From = addressSlot, to
             return render(lang, "txrows", txs)
         })
     }))
     mux.HandleFunc("/watches", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
         var started = time.Now().UnixNano()
-        var b = render(language(r), "watches", src.Watches(chatOf(r.Header.Get("X-Telegram-Init-Data"))))
+        var b = render(language(r), "watches", opt.Watches(chatOf(r.Header.Get("X-Telegram-Init-Data"))))
         if b == nil {
             http.Error(w, "internal server error", http.StatusInternalServerError)
             return
@@ -1263,7 +1263,7 @@ func Start(addr, token string, src Source) *http.Server {
         var chat = chatOf(r.Header.Get("X-Telegram-Init-Data"))
         var btn = watchButton{Kind: kind, Id: id}
         if r.Method == http.MethodPost {
-            var on, serr = src.SetWatch(chat, kind, id, r.URL.Query().Get("on") == "1")
+            var on, serr = opt.SetWatch(chat, kind, id, r.URL.Query().Get("on") == "1")
             if serr != nil {
                 logging.Err("mini app: set watch %s: %v", id, serr)
                 btn.Error = true
@@ -1273,7 +1273,7 @@ func Start(addr, token string, src Source) *http.Server {
             if on && !btn.Error { events["askalias"] = map[string]string{"kind": kind, "id": id} }
             w.Header().Set("HX-Trigger", trigger(events))
         } else {
-            btn.On = src.Watching(chat, kind, id)
+            btn.On = opt.Watching(chat, kind, id)
         }
         var b = render(language(r), "watchbtn", btn)
         if b == nil {
@@ -1302,7 +1302,7 @@ func Start(addr, token string, src Source) *http.Server {
             w.WriteHeader(http.StatusNoContent)
             return
         }
-        if _, err := src.SetAlias(chatOf(r.Header.Get("X-Telegram-Init-Data")), kind, id, alias); err != nil {
+        if _, err := opt.SetAlias(chatOf(r.Header.Get("X-Telegram-Init-Data")), kind, id, alias); err != nil {
             logging.Err("mini app: set alias %s: %v", id, err)
             http.Error(w, "internal server error", http.StatusInternalServerError)
             return

@@ -13,7 +13,7 @@ import "bitnsbot/txwatches"
 import "bitnsbot/watches"
 
 // The Mini App's Watches tab is the only per-user thing the app serves, and this
-// is the line that scopes it. The app package's tests run against a fake Source,
+// is the line that scopes it. The app package's tests run against a fake Options,
 // so without this one nothing would catch the filter being dropped.
 //
 // the short form is what the row shows, the full id is what its link carries
@@ -29,7 +29,7 @@ func TestAppWatchesAreScopedToTheChat(t *testing.T) {
     if err := watches.Add(99, "bc1qtheirs", ""); err != nil { t.Fatalf("add: %v", err) }
     txwatches.Add(strings.Repeat("a", 64), 42, "mine")
     txwatches.Add(strings.Repeat("b", 64), 99, "theirs")
-    var mine = appSource{}.Watches(42)
+    var mine = appWatches(42)
     if !mine.OK { t.Fatal("lookup failed") }
     if len(mine.Addresses) != 1 || mine.Addresses[0].Id != "bc1qmine" {
         t.Errorf("addresses = %+v; want only this chat's", mine.Addresses)
@@ -43,11 +43,11 @@ func TestAppWatchesAreScopedToTheChat(t *testing.T) {
     if mine.Txs[0].Short != short(strings.Repeat("a", 64)) {
         t.Errorf("Short = %q, want the shortened id", mine.Txs[0].Short)
     }
-    var theirs = appSource{}.Watches(99)
+    var theirs = appWatches(99)
     if len(theirs.Addresses) != 1 || theirs.Addresses[0].Id != "bc1qtheirs" {
         t.Errorf("the other chat got %+v", theirs.Addresses)
     }
-    var none = appSource{}.Watches(7)
+    var none = appWatches(7)
     if len(none.Addresses) != 0 || len(none.Txs) != 0 {
         t.Errorf("an unrelated chat was served %+v / %+v", none.Addresses, none.Txs)
     }
@@ -60,7 +60,7 @@ func TestAppWatchesAreScopedToTheChat(t *testing.T) {
 // own lines, and the reader's language reaches them as an argument rather than
 // through a chat — a page opened from the webview has no chat behind it. Only
 // main can catch a regression here: the app package's tests run against a fake
-// Source, which has no words of its own to translate.
+// Options, which has no words of its own to translate.
 //
 // the values are translated too, not only the labels: a size carries its
 // unit and an unknown fee distribution says so in words
@@ -89,11 +89,11 @@ func TestAppSectionsAreTranslated(t *testing.T) {
         for _, r := range i.Rows { out = append(out, r.Label+"="+r.Value) }
         return strings.Join(out, "\n")
     }
-    var en = appSource{}.BlockInfo("", 700001)
+    var en = appBlockInfo("", 700001)
     if en.Title != "Block 700 001" || !strings.Contains(labels(en), "Hash=") {
         t.Errorf("English block page:\n%s\n%s", en.Title, labels(en))
     }
-    var ru = appSource{}.BlockInfo("ru", 700001)
+    var ru = appBlockInfo("ru", 700001)
     if ru.Title != "Блок 700 001" {
         t.Errorf("block title = %q, want it translated", ru.Title)
     }
@@ -110,7 +110,7 @@ func TestAppSectionsAreTranslated(t *testing.T) {
     if strings.Contains(labels(ru), "Hash=") {
         t.Errorf("an English label survived translation:\n%s", labels(ru))
     }
-    var list = appSource{}.Blocks("ru", app.Range{})
+    var list = appBlocks("ru", app.Range{})
     if len(list.Rows) != 2 { t.Fatalf("block list has %d rows, want 2", len(list.Rows)) }
     if list.Rows[0].Miner != "неизвестен" || list.Rows[0].MinerKnown {
         t.Errorf("unattributed miner = %q, want it translated", list.Rows[0].Miner)
@@ -118,7 +118,7 @@ func TestAppSectionsAreTranslated(t *testing.T) {
     if list.Rows[0].Txs != "2 100 тр." {
         t.Errorf("transaction count = %q, want it translated", list.Rows[0].Txs)
     }
-    if got := (appSource{}).Blocks("", app.Range{}).Rows[0].Txs; got != "2 100 txs" {
+    if got := appBlocks("", app.Range{}).Rows[0].Txs; got != "2 100 txs" {
         t.Errorf("English transaction count = %q", got)
     }
     if _, err := db.Exec(`insert into miners (name, blocks, reward, fees, totalWork, lastWork)
@@ -129,16 +129,16 @@ func TestAppSectionsAreTranslated(t *testing.T) {
     if merr != nil { t.Fatal(merr) }
     if err := cursors.Set(mtx, cursors.Miners, 9); err != nil { t.Fatal(err) }
     if err := mtx.Commit(); err != nil { t.Fatal(err) }
-    var miner = appSource{}.MinerInfo("ru", "AntPool")
+    var miner = appMinerInfo("ru", "AntPool")
     if !miner.OK || !strings.Contains(labels(miner), "Блоков добыто=6 блоков") {
         t.Errorf("miner page:\n%s", labels(miner))
     }
     rates.Add(65000)
-    var market = appSource{}.Market("ru")
+    var market = appMarket("ru")
     if len(market.Changes) == 0 || market.Changes[0].Label != "1 д" {
         t.Errorf("market periods = %+v, want them translated", market.Changes)
     }
-    if got := (appSource{}).Market("").Changes[0].Label; got != "1 d" {
+    if got := appMarket("").Changes[0].Label; got != "1 d" {
         t.Errorf("English market period = %q", got)
     }
 }
@@ -159,7 +159,7 @@ func TestBlockHashIsLinked(t *testing.T) {
         Reward: 312500000, Total: 320000000}}); err != nil {
         t.Fatalf("store block: %v", err)
     }
-    var info = appSource{}.BlockInfo("", 700001)
+    var info = appBlockInfo("", 700001)
     if !info.OK || len(info.Rows) == 0 { t.Fatal("no block page") }
     var row = info.Rows[0]
     if row.Value != short(hash) {
@@ -188,7 +188,7 @@ func TestBlockMinerIsLinked(t *testing.T) {
         Reward: 312500000, Total: 320000000}}); err != nil {
         t.Fatalf("store block: %v", err)
     }
-    var info = appSource{}.BlockInfo("", 700001)
+    var info = appBlockInfo("", 700001)
     if !info.OK { t.Fatal("no block page") }
     var miner app.Field
     for _, r := range info.Rows {
@@ -216,7 +216,7 @@ func TestBlockMinerUnknownNotLinked(t *testing.T) {
         Reward: 312500000, Total: 320000000}}); err != nil {
         t.Fatalf("store block: %v", err)
     }
-    var info = appSource{}.BlockInfo("", 700001)
+    var info = appBlockInfo("", 700001)
     if !info.OK { t.Fatal("no block page") }
     for _, r := range info.Rows {
         if r.Label == "Miner" && r.Parts != nil {
@@ -267,7 +267,7 @@ func TestTxInfoLinksBlockAndAddresses(t *testing.T) {
     var blockHash = "0000000000000000000209d0dbbd5a37b0e0e0a2f8a1ba36d6f4f0e9c0b1a2f3"
     var from = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
     var to = "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh"
-    var srv = coretest.Server(t, func(method string, params []interface{}) (interface{}, error) {
+    var srv = coretest.Server(t, func(method string, params []any) (any, error) {
         switch method {
         case "getblockheader":
             if id, _ := params[0].(string); id == blockHash {
@@ -288,7 +288,7 @@ func TestTxInfoLinksBlockAndAddresses(t *testing.T) {
     })
     defer srv.Close()
     coretest.Use(t, srv)
-    var info = appSource{}.TxInfo("", txid)
+    var info = appTxInfo("", txid)
     if !info.OK { t.Fatal("no transaction page") }
     if !info.Confirmed {
         t.Error("a transaction with confirmations should report Confirmed")
@@ -346,7 +346,7 @@ func TestTxInfoOnABlockHashIsABlockPage(t *testing.T) {
         Size: 1500000, NumTx: 4000, Miner: "AntPool", Reward: 312500000, Total: 320000000}}); err != nil {
         t.Fatal(err)
     }
-    var srv = coretest.Server(t, func(method string, params []interface{}) (interface{}, error) {
+    var srv = coretest.Server(t, func(method string, params []any) (any, error) {
         if method == "getblockheader" {
             if id, _ := params[0].(string); id == hash { return map[string]any{"height": 700001}, nil }
         }
@@ -354,14 +354,14 @@ func TestTxInfoOnABlockHashIsABlockPage(t *testing.T) {
     })
     defer srv.Close()
     coretest.Use(t, srv)
-    var info = appSource{}.TxInfo("", hash)
+    var info = appTxInfo("", hash)
     if !info.OK || info.Title != "Block 700 001" {
         t.Fatalf("a block hash should open the block page, got %#v", info.Title)
     }
     if info.Kind != "block" {
         t.Errorf("Kind = %q, want block — this is what keeps the watch button off it", info.Kind)
     }
-    if got := (appSource{}).BlockInfo("", 700001); got.Kind != "block" {
+    if got := appBlockInfo("", 700001); got.Kind != "block" {
         t.Errorf("BlockInfo Kind = %q, want block", got.Kind)
     }
 }
@@ -418,7 +418,7 @@ func TestAppAddressListsAreRanked(t *testing.T) {
         {"abandoned", []string{"bbb", "ccc", "aaa"}, "3 february 2009"},
     }
     for _, c := range cases {
-        var got = appSource{}.Addresses("", app.AddrRange{Kind: c.kind})
+        var got = appAddresses("", app.AddrRange{Kind: c.kind})
         if !got.OK || len(got.Rows) != len(c.order) {
             t.Fatalf("%s: got %d rows, want %d (%+v)", c.kind, len(got.Rows), len(c.order), got)
         }
@@ -437,7 +437,7 @@ func TestAppAddressListsAreRanked(t *testing.T) {
             t.Errorf("%s: a list shorter than a batch has nothing more to fetch", c.kind)
         }
     }
-    var rich = appSource{}.Addresses("", app.AddrRange{Kind: "rich"})
+    var rich = appAddresses("", app.AddrRange{Kind: "rich"})
     if rich.Rows[2].Value != "0.0999 BTC" {
         t.Errorf("small balance reads %q, want 0.0999 BTC", rich.Rows[2].Value)
     }
@@ -465,7 +465,7 @@ func TestAppAddressListPages(t *testing.T) {
     var seen []string
     var from, batches int
     for {
-        var got = appSource{}.Addresses("", app.AddrRange{Kind: "active", From: from})
+        var got = appAddresses("", app.AddrRange{Kind: "active", From: from})
         if batches == 0 && len(got.Rows) != addrsFirstPage {
             t.Fatalf("first batch has %d rows, want %d", len(got.Rows), addrsFirstPage)
         }
@@ -487,7 +487,7 @@ func TestAppAddressListPages(t *testing.T) {
                 i-1, i, seen[i-1], vals[seen[i-1]], seen[i], vals[seen[i]])
         }
     }
-    var back = appSource{}.Addresses("", app.AddrRange{Kind: "active", Down: 22, Restore: true})
+    var back = appAddresses("", app.AddrRange{Kind: "active", Down: 22, Restore: true})
     if len(back.Rows) != 23 || back.Rows[22].Idx != 22 {
         t.Errorf("restored list has %d rows, want 23 reaching offset 22", len(back.Rows))
     }
@@ -513,7 +513,7 @@ func TestAppAddressListRanksCollidingValues(t *testing.T) {
         rows[fmt.Sprintf("addr%02d", i)] = int64(500 + i%2)
     }
     seedAddrList(t, "active", rows)
-    var got = appSource{}.Addresses("", app.AddrRange{Kind: "active"})
+    var got = appAddresses("", app.AddrRange{Kind: "active"})
     if len(got.Rows) != 8 {
         t.Fatalf("the list shows %d of 8 addresses: %+v", len(got.Rows), got.Rows)
     }
@@ -528,7 +528,7 @@ func TestAppAddressListRanksCollidingValues(t *testing.T) {
     }
     var page []string
     for from := 0; from < 8; from++ {
-        var batch = appSource{}.Addresses("", app.AddrRange{Kind: "active", From: from})
+        var batch = appAddresses("", app.AddrRange{Kind: "active", From: from})
         if len(batch.Rows) == 0 { break }
         page = append(page, batch.Rows[0].Id)
     }
@@ -549,7 +549,7 @@ func TestAppAddressListMissing(t *testing.T) {
     defer closeDB()
     seedAddrList(t, "active", map[string]int64{"aaa": 10})
     for _, kind := range []string{"rich", "abandoned", "nonesuch", ""} {
-        var got = appSource{}.Addresses("", app.AddrRange{Kind: kind})
+        var got = appAddresses("", app.AddrRange{Kind: kind})
         if got.OK || len(got.Rows) != 0 {
             t.Errorf("kind %q served %+v", kind, got.Rows)
         }
@@ -574,7 +574,7 @@ func TestAppAddressListBoundsARestore(t *testing.T) {
         rows[fmt.Sprintf("a%05d", i)] = int64(100000 - i)
     }
     seedAddrList(t, "rich", rows)
-    var got = appSource{}.Addresses("", app.AddrRange{Kind: "rich", Down: addrsRestoreRows + 40, Restore: true})
+    var got = appAddresses("", app.AddrRange{Kind: "rich", Down: addrsRestoreRows + 40, Restore: true})
     if len(got.Rows) != addrsRestoreRows {
         t.Errorf("a restore returned %d rows, want it capped at %d", len(got.Rows), addrsRestoreRows)
     }
