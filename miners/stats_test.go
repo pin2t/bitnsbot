@@ -41,7 +41,7 @@ func node(t *testing.T, c *chain) *chain {
 // respond names each block by its height and its coinbase by the block, and pays
 // the coinbase's whole output to its last address: the payout is not the first
 // output in a real coinbase either, so attribution has to look at them all.
-func (c *chain) respond(method string, params []interface{}) (interface{}, error) {
+func (c *chain) respond(method string, params []any) (any, error) {
     switch method {
     case "getblockcount":
         return c.tip, nil
@@ -53,17 +53,17 @@ func (c *chain) respond(method string, params []interface{}) (interface{}, error
         return fmt.Sprint(h), nil
     case "getblock":
         var h, _ = strconv.ParseInt(params[0].(string), 10, 64)
-        return map[string]interface{}{"height": h, "difficulty": c.blocks[h].difficulty, "tx": []string{"coinbase" + params[0].(string)}}, nil
+        return map[string]any{"height": h, "difficulty": c.blocks[h].difficulty, "tx": []string{"coinbase" + params[0].(string)}}, nil
     case "getrawtransaction":
         var h, _ = strconv.ParseInt(strings.TrimPrefix(params[0].(string), "coinbase"), 10, 64)
         var b = c.blocks[h]
-        var vout = []interface{}{}
+        var vout = []any{}
         for i, a := range b.addresses {
             var value float64
             if i == len(b.addresses)-1 { value = float64(subsidy+b.fees) / 1e8 }
-            vout = append(vout, map[string]interface{}{"value": value, "scriptPubKey": map[string]string{"address": a}})
+            vout = append(vout, map[string]any{"value": value, "scriptPubKey": map[string]string{"address": a}})
         }
-        return map[string]interface{}{"txid": params[0], "vin": []interface{}{map[string]string{"coinbase": ""}}, "vout": vout}, nil
+        return map[string]any{"txid": params[0], "vin": []any{map[string]string{"coinbase": ""}}, "vout": vout}, nil
     }
     return nil, fmt.Errorf("unexpected call %s %v", method, params)
 }

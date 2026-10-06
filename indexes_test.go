@@ -25,7 +25,7 @@ func TestUpdateIndexesRunsInOrder(t *testing.T) {
     defer closeDB()
     var mu sync.Mutex
     var calls []string
-    coretest.Start(t, func(method string, params []interface{}) (interface{}, error) {
+    coretest.Start(t, func(method string, params []any) (any, error) {
         var label = method
         if method == "getblock" {
             label = fmt.Sprintf("getblock:%v", params[1])

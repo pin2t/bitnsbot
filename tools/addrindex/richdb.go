@@ -70,7 +70,7 @@ const rowsPerTransaction = 500000
 type state struct {
     store   *richStore
     tx      *sql.Tx
-    pending []interface{}
+    pending []any
     rows    int
     since   int
 }

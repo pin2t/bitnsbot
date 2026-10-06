@@ -13,19 +13,19 @@ import "bitnsbot/core/coretest"
 func fakeChain(t *testing.T, height int64) func(string) int {
     var mu sync.Mutex
     var calls = map[string]int{}
-    coretest.Start(t, func(method string, params []interface{}) (interface{}, error) {
+    coretest.Start(t, func(method string, params []any) (any, error) {
         mu.Lock()
         calls[method]++
         mu.Unlock()
         switch method {
         case "getblockchaininfo":
-            return map[string]interface{}{"blocks": height, "size_on_disk": 869000000000}, nil
+            return map[string]any{"blocks": height, "size_on_disk": 869000000000}, nil
         case "getchaintxstats":
-            return map[string]interface{}{"txcount": 1421109968}, nil
+            return map[string]any{"txcount": 1421109968}, nil
         case "getnodeaddresses":
-            return []interface{}{
-                map[string]interface{}{"time": 1e12, "network": "ipv4"},
-                map[string]interface{}{"time": 1e12, "network": "ipv4"},
+            return []any{
+                map[string]any{"time": 1e12, "network": "ipv4"},
+                map[string]any{"time": 1e12, "network": "ipv4"},
             }, nil
         }
         return nil, nil

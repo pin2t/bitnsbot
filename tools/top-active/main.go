@@ -61,9 +61,9 @@ func newRPCClient(url, user, pass, cookieFile string) (*rpcClient, error) {
 	return c, nil
 }
 
-func (c *rpcClient) call(ctx context.Context, method string, params []interface{}, result interface{}) error {
-	if params == nil { params = []interface{}{} }
-	var body, err = json.Marshal(map[string]interface{}{
+func (c *rpcClient) call(ctx context.Context, method string, params []any, result any) error {
+	if params == nil { params = []any{} }
+	var body, err = json.Marshal(map[string]any{
 		"jsonrpc": "1.0", "id": "top-active", "method": method, "params": params,
 	})
 	if err != nil { return err }
@@ -99,13 +99,13 @@ func (c *rpcClient) getBlockCount(ctx context.Context) (int64, error) {
 
 func (c *rpcClient) getBlockHash(ctx context.Context, height int64) (string, error) {
 	var hash string
-	var err = c.call(ctx, "getblockhash", []interface{}{height}, &hash)
+	var err = c.call(ctx, "getblockhash", []any{height}, &hash)
 	return hash, err
 }
 
 func (c *rpcClient) getBlockVerbose(ctx context.Context, hash string) (*blockData, error) {
 	var blk blockData
-	var err = c.call(ctx, "getblock", []interface{}{hash, 2}, &blk)
+	var err = c.call(ctx, "getblock", []any{hash, 2}, &blk)
 	if err != nil { return nil, err }
 	return &blk, nil
 }

@@ -205,7 +205,7 @@ func resetMempool() {
     summaryMu.Unlock()
 }
 
-// Mempool backs the Mini App's mempool page. A negative after is the whole page: the
+// appMempool backs the Mini App's mempool page. A negative after is the whole page: the
 // fields /mempool prints and the list as it stands. Anything else is what an
 // open page prepends — the arrivals newer than after, and the listed ones mined
 // since, whose rows it drops — with the fields as they stand now, which the page
@@ -216,7 +216,7 @@ func resetMempool() {
 // More says the page's list has a hole: the arrivals since after overflowed
 // what is kept, or so did the mined log, so the page is handed the whole list
 // to replace its own with rather than a prepend that would leave a gap.
-func (appSource) Mempool(lang string, after int64) app.Mempool {
+func appMempool(lang string, after int64) app.Mempool {
     var out = app.Mempool{OK: true}
     var rows, ok = mempoolFields(lang)
     if after < 0 {
@@ -241,7 +241,7 @@ func (appSource) Mempool(lang string, after int64) app.Mempool {
     }
     mempoolMu.Unlock()
     if !out.More { return out }
-    var whole = appSource{}.Mempool(lang, -1)
+    var whole = appMempool(lang, -1)
     whole.More = true
     return whole
 }

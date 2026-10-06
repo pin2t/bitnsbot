@@ -256,7 +256,7 @@ func serve(t *testing.T, c *chain) *chain {
 // respond names each block by its height, and answers getblock with the block
 // as verbosity 3 reports it: an input per spent prevout, and none carrying one
 // for a transaction that spends nothing, which is how a coinbase reads.
-func (c *chain) respond(method string, params []interface{}) (interface{}, error) {
+func (c *chain) respond(method string, params []any) (any, error) {
     switch method {
     case "getblockcount":
         return c.tip, nil
@@ -266,18 +266,18 @@ func (c *chain) respond(method string, params []interface{}) (interface{}, error
         var height, _ = strconv.Atoi(params[0].(string))
         c.fetched = append(c.fetched, height)
         if c.err[height] { return nil, errors.New("fetch failed") }
-        var amount = func(p core.Payment) map[string]interface{} {
-            return map[string]interface{}{"value": float64(p.Sat) / 1e8, "scriptPubKey": map[string]string{"hex": hex.EncodeToString(p.Script)}}
+        var amount = func(p core.Payment) map[string]any {
+            return map[string]any{"value": float64(p.Sat) / 1e8, "scriptPubKey": map[string]string{"hex": hex.EncodeToString(p.Script)}}
         }
-        var txs = []interface{}{}
+        var txs = []any{}
         for _, tx := range c.blocks[height].Txs {
-            var vin = []interface{}{}
-            var vout = []interface{}{}
-            for _, p := range tx.Spent { vin = append(vin, map[string]interface{}{"prevout": amount(p)}) }
+            var vin = []any{}
+            var vout = []any{}
+            for _, p := range tx.Spent { vin = append(vin, map[string]any{"prevout": amount(p)}) }
             for _, p := range tx.Outputs { vout = append(vout, amount(p)) }
-            txs = append(txs, map[string]interface{}{"vin": vin, "vout": vout})
+            txs = append(txs, map[string]any{"vin": vin, "vout": vout})
         }
-        return map[string]interface{}{"time": c.blocks[height].Time, "tx": txs}, nil
+        return map[string]any{"time": c.blocks[height].Time, "tx": txs}, nil
     }
     return nil, fmt.Errorf("unexpected call %s %v", method, params)
 }

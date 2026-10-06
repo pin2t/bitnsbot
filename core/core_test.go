@@ -7,7 +7,7 @@ import "bitnsbot/core"
 import "bitnsbot/core/coretest"
 
 func TestCoreGetBlockCount(t *testing.T) {
-    coretest.Start(t, func(method string, params []interface{}) (interface{}, error) {
+    coretest.Start(t, func(method string, params []any) (any, error) {
         if method != "getblockcount" {
             t.Fatalf("unexpected method: %s", method)
         }
@@ -25,7 +25,7 @@ func TestCoreGetBlockCount(t *testing.T) {
 // A method error comes back in the body with HTTP 500, not as a transport
 // failure, so the client has to read the body either way.
 func TestCoreMethodError(t *testing.T) {
-    coretest.Start(t, func(method string, params []interface{}) (interface{}, error) {
+    coretest.Start(t, func(method string, params []any) (any, error) {
         return nil, errors.New("Block not found")
     })
     var _, err = core.GetBlockHeader(context.Background(), "deadbeef")

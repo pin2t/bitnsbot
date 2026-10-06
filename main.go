@@ -60,13 +60,9 @@ var appSrv *http.Server
 // runs it before closing the database, since a copy in flight is reading it.
 var stopBackup func()
 
-// appSource adapts main's fee cache and formatters to app.Source, so the app
-// package stays unaware of Bitcoin Core, the price feeds and the cache.
-// It carries the bot because adding a watch starts a notifier goroutine, which
-// needs something to send the notification with.
-type appSource struct{ bot *bot }
-
-func (appSource) Network() app.Network {
+// The app* functions adapt main's fee cache and formatters to app.Options, so
+// the app package stays unaware of Bitcoin Core, the price feeds and the cache.
+func appNetwork() app.Network {
     networkMu.Lock()
     defer networkMu.Unlock()
     return cachedNetwork
@@ -80,7 +76,7 @@ const blocksPerPage = 12
 // stops an edited down= from asking for every block ever cached.
 const blocksMaxRows = blocksPerPage * 20
 
-// Blocks reads one window of the recent-block list straight out of the blocks
+// appBlocks reads one window of the recent-block list straight out of the blocks
 // table — `order by height desc`, which is the primary key read backwards, so
 // there is no sorting and no node round trip, and `where height < ?` starts a
 // batch at a given block without stepping over the ones above it.
@@ -94,7 +90,7 @@ const blocksMaxRows = blocksPerPage * 20
 //
 // A restore renders down to the row that was tapped; that there are more
 // below it is what keeps the list's own sentinel alive.
-func (appSource) Blocks(lang string, rng app.Range) app.Blocks {
+func appBlocks(lang string, rng app.Range) app.Blocks {
     var out = app.Blocks{Top: rng.After}
     if db == nil { return out }
     var limit = blocksPerPage
@@ -143,7 +139,7 @@ func (appSource) Blocks(lang string, rng app.Range) app.Blocks {
     return out
 }
 
-// BlockInfo backs the Mini App's block details page. It loads or computes the
+// appBlockInfo backs the Mini App's block details page. It loads or computes the
 // same record /info uses and renders the same lines from it, in the reader's
 // language — which arrives with the request rather than from a chat, since the
 // page has no chat behind it. A computed record is not stored: the collector is
@@ -154,7 +150,7 @@ func (appSource) Blocks(lang string, rng app.Range) app.Blocks {
 // the app cannot always tell from the URL: a block hash has a txid's shape,
 // so it arrives at the transaction endpoint and lands here — and a block has
 // nothing to watch.
-func (appSource) BlockInfo(lang string, height int64) app.Info {
+func appBlockInfo(lang string, height int64) app.Info {
     var out = app.Info{Title: i18nl(lang).String("Block") + " " + group(height), Kind: "block"}
     var bi, ok = loadBlock(height)
     if !ok {
@@ -181,7 +177,7 @@ func (appSource) BlockInfo(lang string, height int64) app.Info {
     return out
 }
 
-// TxInfo backs the transaction details page. A block hash has the same 64-hex
+// appTxInfo backs the transaction details page. A block hash has the same 64-hex
 // shape as a txid and only the node can tell them apart, so — exactly as info()
 // does for the bot — an id the node has a block header for is shown as that
 // block instead. Both live on the Blocks tab, so the handoff is seamless.
@@ -194,13 +190,13 @@ func (appSource) BlockInfo(lang string, height int64) app.Info {
 // bot's reply keeps them
 //
 // a block is named by height there, as "#963268"
-func (appSource) TxInfo(lang, txid string) app.Info {
+func appTxInfo(lang, txid string) app.Info {
     var out = app.Info{Title: short(txid)}
     if !core.Enabled() { return out }
     var ctx, cancel = context.WithTimeout(context.Background(), 60*time.Second)
     defer cancel()
     if header, err := core.GetBlockHeader(ctx, txid); err == nil {
-        return appSource{}.BlockInfo(lang, header.Height)
+        return appBlockInfo(lang, header.Height)
     }
     var d, ok = txPairs(ctx, lang, txid)
     if !ok { return out }
@@ -221,12 +217,12 @@ func (appSource) TxInfo(lang, txid string) app.Info {
         Rows: linkFields(rows, links), Inputs: d.inputs, Outputs: d.outputs}
 }
 
-// AddrInfo backs the address details page. An input that is not an address at
+// appAddrInfo backs the address details page. An input that is not an address at
 // all says so, rather than reporting an empty history as fact.
 //
 // no core check here: an address the statistics collector follows is
 // answered out of the database, which is the whole point of gathering it
-func (appSource) AddrInfo(lang, addr string) app.Info {
+func appAddrInfo(lang, addr string) app.Info {
     var out = app.Info{Title: short(addr)}
     var ctx, cancel = context.WithTimeout(context.Background(), 60*time.Second)
     defer cancel()
@@ -240,16 +236,16 @@ func (appSource) AddrInfo(lang, addr string) app.Info {
         return out
     }
     out.OK, out.Rows = true, appFields(pairs)
-    var txs = appSource{}.AddrTxs(lang, addr, 0)
+    var txs = appAddrTxs(lang, addr, 0)
     if txs.OK { out.Txs = &txs }
     return out
 }
 
-// AddrTxs backs the transaction views under the address page: one batch of
+// appAddrTxs backs the transaction views under the address page: one batch of
 // newest-first transactions, resolved from the address index the same way the
 // stats are, but windowed so scrolling fetches a few at a time. from is how
 // many views the reader has already been shown.
-func (appSource) AddrTxs(lang, addr string, from int) app.Txs {
+func appAddrTxs(lang, addr string, from int) app.Txs {
     var out = app.Txs{Addr: addr, Next: from}
     if !core.Enabled() { return out }
     var ctx, cancel = context.WithTimeout(context.Background(), 60*time.Second)
@@ -261,14 +257,16 @@ func (appSource) AddrTxs(lang, addr string, from int) app.Txs {
     return out
 }
 
-// Watching and SetWatch back the Mini App's watch button. They go through the
-// same addWatch/removeWatch the /watch and /unwatch commands use, so a watch
-// added from the app fires notifications exactly like one added from the chat.
-func (appSource) Watching(chat int64, kind, id string) bool { return watching(chat, id) }
-
-// SetWatch adds or removes a watch and reports the state it ended in — which is
+// appSetWatch backs the Mini App's watch button, with watching() answering its
+// state. It goes through the same addWatch/removeWatch the /watch and /unwatch
+// commands use, so a watch added from the app fires notifications exactly like
+// one added from the chat.
+//
+// appSetWatch adds or removes a watch and reports the state it ended in — which is
 // what the button renders, so a refusal shows as unpushed rather than lying.
-func (s appSource) SetWatch(chat int64, kind, id string, on bool) (bool, error) {
+// It takes the bot because adding a watch starts a notifier goroutine, which
+// needs something to send the notification with.
+func appSetWatch(b *bot, chat int64, kind, id string, on bool) (bool, error) {
     if !on {
         var _, err = removeWatch(chat, id)
         return false, err
@@ -280,22 +278,13 @@ func (s appSource) SetWatch(chat int64, kind, id string, on bool) (bool, error) 
         logging.Info("mini app: rejected watch for chat %d: at the limit of %d", chat, maxSubscriptionsPerChat)
         return false, nil
     }
-    if err := addWatch(s.bot, chat, id, ""); err != nil { return false, err }
+    if err := addWatch(b, chat, id, ""); err != nil { return false, err }
     return true, nil
 }
 
-// SetAlias names a watch the reader already has — the second step of the app's
-// two-step add (the bell files the watch, the dialog names it) and what the
-// Watches tab's edit dialog calls. An empty alias never reaches here: the page
-// treats it as "leave it alone", so clearing a name is not something a stray tap
-// can do.
-func (s appSource) SetAlias(chat int64, kind, id, alias string) (bool, error) {
-    return setAlias(s.bot, chat, id, alias)
-}
-
-// MinerInfo backs the miner details page, opened from a pool name in the block
+// appMinerInfo backs the miner details page, opened from a pool name in the block
 // list. The figures and their formatting are /miners', so the two agree.
-func (appSource) MinerInfo(lang, name string) app.Info {
+func appMinerInfo(lang, name string) app.Info {
     var out = app.Info{Title: name}
     var s, ok = miners.Get(name)
     if !ok { return out }
@@ -311,10 +300,10 @@ func (appSource) MinerInfo(lang, name string) app.Info {
     return out
 }
 
-// Watches backs the Watches tab: the calling user's own watches, and nobody
+// appWatches backs the Watches tab: the calling user's own watches, and nobody
 // else's. chat comes from the signed initData, and the same chat-scoping the bot
 // applies in watchesCmd is what keeps one user's list out of another's.
-func (appSource) Watches(chat int64) app.Watches {
+func appWatches(chat int64) app.Watches {
     var records, err = watches.List()
     if err != nil {
         logging.Err("mini app: list watches: %v", err)
@@ -380,9 +369,9 @@ func splitLinks(value string, links []linked) []app.Part {
     return parts
 }
 
-// Market reads the rate history straight from the database — cheap enough that
+// appMarket reads the rate history straight from the database — cheap enough that
 // the card needs no cache of its own, unlike fees and the chain stats.
-func (appSource) Market(lang string) app.Market {
+func appMarket(lang string) app.Market {
     var now, ok = rates.Last()
     if !ok { return app.Market{} }
     var m = app.Market{OK: true, Price: price(now)}
@@ -410,7 +399,7 @@ func (appSource) Market(lang string) app.Market {
     return m
 }
 
-func (appSource) Fees() app.Fees {
+func appFees() app.Fees {
     feesMu.Lock()
     var rec, ok, count = cachedFees, cachedFeesOK, cachedFeesCount
     feesMu.Unlock()
@@ -431,6 +420,12 @@ var commit = ""
 // The statistics collector reads the same blocks on a pass of its own:
 // the index says which transactions an address is in, where this says
 // what they did to it, and the two advance at different rates.
+//
+// The app's SetAlias names a watch the reader already has — the second step of
+// the app's two-step add (the bell files the watch, the dialog names it) and what
+// the Watches tab's edit dialog calls. An empty alias never reaches it: the page
+// treats it as "leave it alone", so clearing a name is not something a stray tap
+// can do.
 func main() {
     var b, _ = debug.ReadBuildInfo()
     if b != nil {
@@ -466,7 +461,30 @@ func main() {
         logging.Warn("database UI not started: it speaks bbolt, and the bot's database is SQLite now — run github.com/pin2t/bboltwui against a bbolt file instead")
     }
     if *appListen != "" {
-        appSrv = app.Start(*appListen, *botToken, appSource{bot: bot})
+        appSrv = app.Start(*appListen, *botToken, app.Options{
+            Fees:       appFees,
+            Network:    appNetwork,
+            Market:     appMarket,
+            Blocks:     appBlocks,
+            Addresses:  appAddresses,
+            BlockInfo:  appBlockInfo,
+            TxInfo:     appTxInfo,
+            AddrInfo:   appAddrInfo,
+            AddrTxs:    appAddrTxs,
+            MinerInfo:  appMinerInfo,
+            MinerChart: func(lang, name, data, period string) app.Chart {
+                return minerChart(lang, name, data, period, time.Now())
+            },
+            Mempool:    appMempool,
+            Watches:    appWatches,
+            Watching: func(chat int64, kind, id string) bool { return watching(chat, id) },
+            SetWatch: func(chat int64, kind, id string, on bool) (bool, error) {
+                return appSetWatch(bot, chat, kind, id, on)
+            },
+            SetAlias: func(chat int64, kind, id, alias string) (bool, error) {
+                return setAlias(bot, chat, id, alias)
+            },
+        })
     }
     if *backupPath != "" {
         var check time.Duration

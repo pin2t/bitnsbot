@@ -89,7 +89,7 @@ func BlockAt(ctx context.Context, height int) (Block, error) {
             Vout []output `json:"vout"`
         } `json:"tx"`
     }
-    if err := Call(bctx, "getblock", []interface{}{hash, 3}, &reply); err != nil { return Block{}, err }
+    if err := Call(bctx, "getblock", []any{hash, 3}, &reply); err != nil { return Block{}, err }
     var payment = func(o output) (Payment, error) {
         var script, err = hex.DecodeString(o.ScriptPubKey.Hex)
         if err != nil { return Payment{}, fmt.Errorf("block %s: malformed script %q", hash, o.ScriptPubKey.Hex) }

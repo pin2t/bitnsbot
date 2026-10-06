@@ -13,7 +13,7 @@ import "bitnsbot/core"
 
 // Responder answers one JSON-RPC call: the method and its positional params in,
 // the result or the node's error out.
-type Responder func(method string, params []interface{}) (interface{}, error)
+type Responder func(method string, params []any) (any, error)
 
 // Server is a node answering through respond. It checks basic auth as
 // testuser/testpass and reports a method error in the body with HTTP 500, the
@@ -26,7 +26,7 @@ func Server(t testing.TB, respond Responder) *httptest.Server {
         }
         var req struct {
             Method string        `json:"method"`
-            Params []interface{} `json:"params"`
+            Params []any `json:"params"`
         }
         if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
             http.Error(w, "bad request", http.StatusBadRequest)

@@ -8,12 +8,7 @@ import "bitnsbot/app"
 import "bitnsbot/logging"
 import "bitnsbot/miners"
 
-// MinerChart backs the chart under the Mini App's miner page.
-func (appSource) MinerChart(lang, name, data, period string) app.Chart {
-    return minerChart(lang, name, data, period, time.Now())
-}
-
-// minerChart is what one pool mined in each day of the last 30, each week of the
+// minerChart backs the chart under the Mini App's miner page: what one pool mined in each day of the last 30, each week of the
 // last 13 or each month of the last 12, read out of the blocks table. The buckets
 // are calendar ones in UTC, so the last is the one still running; a week starts
 // on a Monday.

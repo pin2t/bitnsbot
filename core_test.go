@@ -8,7 +8,7 @@ import "bitnsbot/core/coretest"
 // Verbosity 2 gives prevouts and a fee for a confirmed transaction, which is what
 // lets txInputs skip fetching prevouts entirely.
 func TestCoreGetRawTransactionPrevouts(t *testing.T) {
-    coretest.Start(t, func(method string, params []interface{}) (interface{}, error) {
+    coretest.Start(t, func(method string, params []any) (any, error) {
         if method != "getrawtransaction" {
             t.Fatalf("unexpected method: %s", method)
         }
