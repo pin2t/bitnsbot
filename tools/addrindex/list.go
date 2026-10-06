@@ -80,6 +80,8 @@ func list(opt *options, address string) {
     }
     var entries []entry
     var txids = map[uint32][]string{}
+    var totals summary
+    var width = 12
     for _, t := range touches {
         var ids, ok = txids[t.Height]
         if !ok {
@@ -100,16 +102,11 @@ func list(opt *options, address string) {
             continue
         }
         var received, sent = moved(tx, address)
-        entries = append(entries, entry{at: tx.Time, txid: tx.Txid, received: received, sent: sent})
-    }
-    var totals summary
-    var width int
-    for _, e := range entries {
+        var e = entry{at: tx.Time, txid: tx.Txid, received: received, sent: sent}
+        fmt.Printf("%-17s %s   %*s\n", stamp(e.at), shortID(e.txid), width, amount(e.net()))
         totals.add(e)
         if n := len(amount(e.net())); n > width { width = n }
-    }
-    for _, e := range entries {
-        fmt.Printf("%-17s %s   %*s\n", stamp(e.at), shortID(e.txid), width, amount(e.net()))
+        entries = append(entries, entry{at: tx.Time, txid: tx.Txid, received: received, sent: sent})
     }
     fmt.Println(totals)
 }
