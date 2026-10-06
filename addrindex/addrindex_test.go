@@ -124,6 +124,32 @@ func TestLookupFrom(t *testing.T) {
         t.Fatalf("full history order = %v, want 11..0", all)
     }
 }
+
+// A height bound must reach back into the ranges below the one holding it.
+// The address page always passes one — the block of the address's last
+// activity — and a scan that read the bound's range and the ones above it
+// returned only the touches sharing that last 1000-block range.
+func TestLookupFromReadsOlderRanges(t *testing.T) {
+    openTestDB(t)
+    var script = []byte("0014manyranges")
+    var prefix = string(Prefix(script))
+    for _, h := range []uint32{10, 1010, 2010, 2020, 3010} {
+        if err := merge(map[string][]Touch{prefix: {{Height: h, TxIndex: 2}}}, int(h)); err != nil {
+            t.Fatalf("merge at height %d: %v", h, err)
+        }
+    }
+    var got, capped = LookupFrom(script, 2500, 10)
+    if capped { t.Fatal("all four touches at or below 2500 fit, so capped should be false") }
+    var want = []uint32{2020, 2010, 1010, 10}
+    if len(got) != len(want) { t.Fatalf("touches = %v, want heights %v", got, want) }
+    for i, h := range want {
+        if got[i].Height != h { t.Fatalf("touches = %v, want heights %v", got, want) }
+    }
+    var page, pageCapped = LookupFrom(script, 3010, 2)
+    if !pageCapped || len(page) != 2 || page[0].Height != 3010 || page[1].Height != 2020 {
+        t.Fatalf("first page from 3010 = %v (capped=%v), want 3010, 2020 with more behind", page, pageCapped)
+    }
+}
 func TestSharedShardIsolation(t *testing.T) {
     openTestDB(t)
     var a, b []byte
