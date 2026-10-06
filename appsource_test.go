@@ -5,6 +5,7 @@ import "fmt"
 import "path/filepath"
 import "strings"
 import "testing"
+import "bitnsbot/core"
 import "bitnsbot/core/coretest"
 import "bitnsbot/app"
 import "bitnsbot/cursors"
@@ -580,5 +581,33 @@ func TestAppAddressListBoundsARestore(t *testing.T) {
     }
     if !got.More || got.Next != addrsRestoreRows {
         t.Errorf("capped restore says Next=%d More=%v; the scroll must carry on", got.Next, got.More)
+    }
+}
+
+// A card on the address page lists at most cardAddrs addresses a side and then
+// "...", so a transaction with hundreds of either still fits the screen; a side
+// of exactly cardAddrs is shown whole, with nothing cut to mark.
+func TestTxViewCutsLongSides(t *testing.T) {
+    var tx = &core.Transaction{Txid: strings.Repeat("ab", 32)}
+    for i := 0; i < cardAddrs+5; i++ {
+        var a = fmt.Sprintf("bc1qinput%02dxxxxxxxxxxxxxxxx", i)
+        tx.Vin = append(tx.Vin, core.Vin{PrevOut: &core.PrevOut{Value: 0.001, ScriptPubKey: core.ScriptPubKey{Address: a}}})
+    }
+    for i := 0; i < cardAddrs; i++ {
+        var a = fmt.Sprintf("bc1qoutput%02dxxxxxxxxxxxxxxx", i)
+        tx.Vout = append(tx.Vout, core.Vout{Value: 0.001, ScriptPubKey: core.ScriptPubKey{Address: a}})
+    }
+    var v = txView(tx, "bc1qinput00xxxxxxxxxxxxxxxx", "")
+    if len(v.Inputs) != cardAddrs+1 {
+        t.Fatalf("inputs = %d parts, want %d and a trailing ...", len(v.Inputs), cardAddrs)
+    }
+    if last := v.Inputs[cardAddrs]; last.Text != "..." || last.Id != "" {
+        t.Errorf("last input part = %#v, want a plain ...", last)
+    }
+    if v.Inputs[cardAddrs-1].Id != "bc1qinput19xxxxxxxxxxxxxxxx" {
+        t.Errorf("input %d = %#v, want the twentieth address", cardAddrs-1, v.Inputs[cardAddrs-1])
+    }
+    if len(v.Outputs) != cardAddrs || v.Outputs[cardAddrs-1].Text == "..." {
+        t.Errorf("outputs = %d parts ending %#v, want all %d with no ...", len(v.Outputs), v.Outputs[len(v.Outputs)-1], cardAddrs)
     }
 }

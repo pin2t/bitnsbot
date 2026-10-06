@@ -538,15 +538,29 @@ func txView(tx *core.Transaction, addr, lang string) app.Tx {
     if !rateOK { rate, rateOK = rates.Last() }
     if rateOK { v.USD = "≈ " + usd(delta, rate) }
     if len(tx.Vin) == 0 || tx.Vin[0].Coinbase == "" {
-        for _, in := range tx.Vin {
+        for i, in := range tx.Vin {
+            if i == cardAddrs {
+                v.Inputs = append(v.Inputs, app.FlowPart{Text: "..."})
+                break
+            }
             v.Inputs = append(v.Inputs, inputPart(in))
         }
     }
-    for _, out := range tx.Vout {
+    for i, out := range tx.Vout {
+        if i == cardAddrs {
+            v.Outputs = append(v.Outputs, app.FlowPart{Text: "..."})
+            break
+        }
         v.Outputs = append(v.Outputs, addrPart(out.ScriptPubKey.Address))
     }
     return v
 }
+
+// cardAddrs caps each side of a transaction card on the address page, so a
+// card for a transaction with hundreds of inputs or outputs still fits the
+// screen; the rest is a trailing "...". The transaction's own details page
+// lists every address.
+const cardAddrs = 20
 
 // inputPart names one input's address the same way the rest of the bot does; a
 // coinbase has none, and a missing prevout reads as the non-standard
