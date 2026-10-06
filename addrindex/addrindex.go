@@ -204,12 +204,18 @@ func Lookup(script []byte, limit int) (touches []Touch, capped bool) {
 // reversed whole. The scan stops once n+1 touches are collected, so a very
 // active address does not force reading its whole history. capped is true when
 // older touches remain behind the ones returned.
+//
+// The range holding height is the scan's upper bound, not its lower one: the
+// ranges wanted are that one and every one below it. A height of 0 means no
+// bound, so the scan starts at the shard's last range.
 func LookupFrom(script []byte, height uint32, n int) (touches []Touch, capped bool) {
     if db == nil { return nil, false }
     var prefix = Prefix(script)
     var remainder = prefix[shardLen:prefixLen]
-    var rows, err = db.Query("select shard, data from addrindex where shard >= ? and shard < ? order by shard desc",
-        key(prefix, rangeOf(height)), key(prefix, 0)+1<<32)
+    var top = key(prefix, 0) + 1<<32 - 1
+    if height > 0 { top = key(prefix, rangeOf(height)) }
+    var rows, err = db.Query("select shard, data from addrindex where shard >= ? and shard <= ? order by shard desc",
+        key(prefix, 0), top)
     if err != nil {
         logging.Warn("addrindex: lookup from: %v", err)
         return nil, false
