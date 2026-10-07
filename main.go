@@ -214,7 +214,8 @@ func appTxInfo(lang, txid string) app.Info {
         rows = append(rows, p)
     }
     return app.Info{OK: true, Title: short(d.canonical), Confirmed: d.confirmed,
-        Rows: linkFields(rows, links), Inputs: d.inputs, Outputs: d.outputs}
+        Rows: linkFields(rows, links), Inputs: d.inputs, Outputs: d.outputs,
+        InCount: d.inCount, OutCount: d.outCount}
 }
 
 // appAddrInfo backs the address details page. An input that is not an address at

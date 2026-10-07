@@ -188,7 +188,7 @@ func (s fakeSource) AddrTxs(lang, addr string, from int) Txs {
 // watch button; livePendingTxid is the mempool case that keeps the button.
 func liveTx() map[string]Info {
     return map[string]Info{
-        liveTxid: {OK: true, Confirmed: true, Title: "32e43e...870b16",
+        liveTxid: {OK: true, Confirmed: true, Title: "32e43e...870b16", InCount: 1, OutCount: 2,
             Inputs:  []FlowPart{{Text: "bc1qxy...dayd2g", Id: liveAddress, Amount: "0.1 BTC (≈ $6,614)"}},
             Outputs: []FlowPart{{Text: "1A1zP1...DivfNa", Id: "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa",
                 Amount: "0.0999 BTC (≈ $6,608)"},
@@ -238,6 +238,8 @@ func liveAddrTxs() map[string][]Tx {
             USD:    "≈ $6,614",
             Id:     liveTxid,
             Short:  "32e43e...870b16",
+            InCount:  2,
+            OutCount: 3,
             Inputs: []FlowPart{
                 {Text: "1A1zP1...DivfNa", Id: "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"},
                 {Text: "bc1qxy...dayd2g", Id: liveAddress},
@@ -1226,6 +1228,7 @@ func TestTxDetailsRender(t *testing.T) {
         `<div class="flow">`, `<div class="tcflow">`,
         `<div class="tcside tcins">`, `<div class="tcside tcout">`,
         `<span class="tcarrow">→</span>`,
+        `<span class="tchd tcins">1 in</span><span></span><span class="tchd tcout">2 out</span>`,
         `hx-get="search?q=bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh&from=blocks"`,
         `hx-get="search?q=1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa&from=blocks"`,
         `<span class="lnk" hx-get="search?q=bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh&from=blocks" hx-target="#blocklist" hx-swap="outerHTML">bc1qxy...dayd2g</span>`,
@@ -1322,7 +1325,7 @@ func TestAddressDetailsShowsTxViews(t *testing.T) {
     for _, want := range []string{`<span class="tctime">2 days ago</span>`,
         `<span class="tcid lnk" hx-get="tx?id=` + liveTxid + `&from=addresses" hx-target="#addrpanel" hx-swap="outerHTML">32e43e...870b16</span>`,
         `<span class="tamt">&#43;9 990 000 sats</span>`, `<span class="tusd">≈ $6,614</span>`,
-        `<span class="tcarrow">→</span>`,
+        `<span class="tccount"><span>2</span><span class="tcarrow">→</span><span>3</span><span class="tcnl">in</span><span></span><span class="tcnl">out</span></span>`,
         `hx-get="search?q=1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa&from=addresses"`,
         `hx-get="search?q=bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh&from=addresses"`,
         `<span>(non-standard)</span>`,

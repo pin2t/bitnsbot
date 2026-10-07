@@ -66,6 +66,8 @@ type txData struct {
     confirmed bool
     inputs    []app.FlowPart
     outputs   []app.FlowPart
+    inCount   int
+    outCount  int
 }
 
 // txPairs builds the lines a transaction is described by, plus the ids the bot
@@ -143,6 +145,7 @@ func txPairs(ctx context.Context, lang string, txid string) (txData, bool) {
         out.outputs = append(out.outputs, p)
     }
     out.canonical, out.confirmed = tx.Txid, tx.Confirmations > 0
+    out.inCount, out.outCount = len(tx.Vin), len(tx.Vout)
     return out, true
 }
 
@@ -531,7 +534,8 @@ func txView(tx *core.Transaction, addr, lang string) app.Tx {
             delta -= toSat(in.PrevOut.Value)
         }
     }
-    var v = app.Tx{Id: tx.Txid, Short: short(tx.Txid), Time: day(tx.Time, lang), Amount: signedAmountText(delta, lang)}
+    var v = app.Tx{Id: tx.Txid, Short: short(tx.Txid), Time: day(tx.Time, lang), Amount: signedAmountText(delta, lang),
+        InCount: len(tx.Vin), OutCount: len(tx.Vout)}
     var rate float64
     var rateOK bool
     if tx.Time > 0 { rate, rateOK = rates.At(time.Unix(tx.Time, 0)) }

@@ -263,6 +263,12 @@
   .tcins { text-align: left; }
   .tcout { text-align: right; }
   .tcarrow { align-self: center; color: var(--hint); font-size: 1.25rem; line-height: 1; }
+  /* A card's arrow carries the two counts on its edges, each labelled under
+     it; the details page names them in a heading row above each side. */
+  .tccount { align-self: center; display: grid; grid-template-columns: auto auto auto;
+             column-gap: 4px; align-items: center; justify-items: center; font-size: 0.8125rem; }
+  .tcnl { font-size: 0.6875rem; color: var(--hint); }
+  .tchd { font-size: 0.75rem; color: var(--hint); }
   .tcentry { display: flex; flex-direction: column; gap: 1px; }
   .tcamt { font-size: 0.75rem; }
   .txcard .lnk { color: var(--link); cursor: pointer; }
@@ -783,6 +789,7 @@
   {{- if or .Inputs .Outputs}}
   <div class="flow">
     <div class="tcflow">
+      <span class="tchd tcins">{{.InCount}} ent.</span><span></span><span class="tchd tcout">{{.OutCount}} sal.</span>
       <div class="tcside tcins">
       {{- range .Inputs}}
         <span class="tcentry">
@@ -840,7 +847,7 @@
         {{- else}}<span>{{.Text}}</span>{{end}}
       {{- end}}
       </div>
-      <span class="tcarrow">→</span>
+      <span class="tccount"><span>{{.InCount}}</span><span class="tcarrow">→</span><span>{{.OutCount}}</span><span class="tcnl">ent.</span><span></span><span class="tcnl">sal.</span></span>
       <div class="tcside tcout">
       {{- range .Outputs}}
         {{- if .Id}}<span class="lnk" hx-get="search?q={{.Id}}&from={{$.From}}" hx-target="#{{$.Slot}}" hx-swap="outerHTML">{{.Text}}</span>
