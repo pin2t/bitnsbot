@@ -1,8 +1,13 @@
 package main
 
+import "context"
 import "encoding/hex"
+import "net"
 import "reflect"
 import "testing"
+import "time"
+import "github.com/go-zeromq/zmq4"
+import "bitnsbot/signals"
 
 // Real transactions captured from a Bitcoin Core regtest node, with the inputs
 // and output scripts Core itself reported for them — a segwit spend, a
@@ -74,4 +79,66 @@ func TestParseTxRejectsGarbage(t *testing.T) {
             t.Errorf("parseTx accepted garbage %x", garbage)
         }
     }
+}
+
+// publishBlocks listens on endpoint as Core's publisher would and sends a
+// hashblock every few milliseconds until stop — a subscriber that has just
+// dialled misses whatever went out before its subscription arrived, so one
+// message would race it.
+func publishBlocks(t *testing.T, endpoint string, stop chan struct{}) chan struct{} {
+    var pub = zmq4.NewPub(context.Background())
+    if err := pub.Listen(endpoint); err != nil { t.Fatalf("listen %s: %v", endpoint, err) }
+    var done = make(chan struct{})
+    go func() {
+        defer close(done)
+        defer pub.Close()
+        for {
+            select {
+            case <-stop:
+                return
+            case <-time.After(5 * time.Millisecond):
+            }
+            pub.Send(zmq4.NewMsgFrom([]byte("hashblock"), make([]byte, 32), []byte{0, 0, 0, 0}))
+        }
+    }()
+    return done
+}
+
+// awaitBlock waits for the read loop to announce a block.
+func awaitBlock(t *testing.T, blocks <-chan struct{}, what string) {
+    t.Helper()
+    select {
+    case <-blocks:
+    case <-time.After(5 * time.Second):
+        t.Fatalf("no block signal %s", what)
+    }
+}
+
+// When Core goes away the read fails, and the loop dials the publisher again
+// and goes on reading: a block published by the node that came back still
+// reaches the bot.
+func TestZMQReconnects(t *testing.T) {
+    var saved = zmqRetry
+    zmqRetry = 20 * time.Millisecond
+    t.Cleanup(func() { zmqRetry = saved })
+    signals.Reset()
+    var blocks = signals.Subscribe(signals.Block)
+    var ln, err = net.Listen("tcp", "127.0.0.1:0")
+    if err != nil { t.Fatal(err) }
+    var endpoint = "tcp://" + ln.Addr().String()
+    ln.Close()
+    var stop = make(chan struct{})
+    var done = publishBlocks(t, endpoint, stop)
+    var ctx, cancel = context.WithCancel(context.Background())
+    t.Cleanup(cancel)
+    if err := startZMQ(ctx, []string{endpoint}, nil); err != nil { t.Fatal(err) }
+    awaitBlock(t, blocks, "from the first publisher")
+    close(stop)
+    <-done
+    time.Sleep(50 * time.Millisecond)
+    for len(blocks) > 0 { <-blocks }
+    var restart = make(chan struct{})
+    var restarted = publishBlocks(t, endpoint, restart)
+    t.Cleanup(func() { close(restart); <-restarted })
+    awaitBlock(t, blocks, "after the publisher restarted")
 }

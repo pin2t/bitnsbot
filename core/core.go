@@ -1,9 +1,9 @@
 // Package core talks to Bitcoin Core over HTTP JSON-RPC. There is one node per
 // process, so the connection is the package's own: Init points it at the node,
 // and every function below calls through it. Unlike btcd there is no websocket
-// interface and so no long-lived connection to supervise: every call is an
-// independent request, and notifications arrive over ZMQ instead. That removes
-// the reconnection machinery the btcd client needed.
+// interface: every call is an independent request, and notifications arrive
+// over ZMQ instead. A watchdog still pings the node, and after two failed pings
+// in a row dials it afresh, swapping the new connection in once it answers.
 package core
 
 import "bytes"
@@ -34,12 +34,39 @@ type conn struct {
 
 var current atomic.Pointer[conn]
 
+// pingInterval is how often the watchdog pings the node, and failedPings how
+// many failures in a row make it reconnect. Variables so a test need not wait.
+var pingInterval = 5 * time.Second
+
+var failedPings = 2
+
+// stopWatchdog stops the running watchdog. Init replaces it and Reset closes
+// it, so there is never more than one goroutine pinging.
+var stopWatchdog chan struct{}
+
+var watchdogMu sync.Mutex
+
 var errUnconfigured = errors.New("bitcoin core is not configured")
 
 // Init points the package at a node. The cookie is read here, so a bad path
 // fails now rather than on the first call.
 func Init(url, user, pass, cookie string) error {
-    var c = &conn{
+    var c = dial(url, user, pass, cookie, lru.New[string, *BlockTxids](100), lru.New[string, *VerboseBlock](20))
+    if err := c.refreshAuth(); err != nil { return err }
+    current.Store(c)
+    watchdogMu.Lock()
+    if stopWatchdog != nil { close(stopWatchdog) }
+    stopWatchdog = make(chan struct{})
+    go watchdog(c, stopWatchdog, pingInterval)
+    watchdogMu.Unlock()
+    return nil
+}
+
+// dial builds a connection with a transport of its own, so a reconnect does
+// not reuse the sockets of the connection it replaces. The block caches are
+// passed in: a reconnect talks to the same node, so what it cached still holds.
+func dial(url, user, pass, cookie string, txids *lru.Cache[string, *BlockTxids], verbose *lru.Cache[string, *VerboseBlock]) *conn {
+    return &conn{
         url: url, user: user, pass: pass, cookie: cookie,
         client: &http.Client{
             Transport: &http.Transport{
@@ -50,20 +77,71 @@ func Init(url, user, pass, cookie string) error {
                 DisableKeepAlives:   false,
             },
         },
-        blockTxidsCache:   lru.New[string, *BlockTxids](100),
-        blockVerboseCache: lru.New[string, *VerboseBlock](20),
+        blockTxidsCache:   txids,
+        blockVerboseCache: verbose,
     }
-    if err := c.refreshAuth(); err != nil { return err }
-    current.Store(c)
-    return nil
+}
+
+// watchdog pings the node every interval, pingInterval as Init read it. After failedPings failures in a
+// row it dials the node again — the cookie re-read, a fresh transport — and
+// swaps the new connection in only if it answers a ping of its own; otherwise
+// the old one stays and the next failed ping tries again. The swap is a
+// CompareAndSwap, so an Init or Reset that raced the reconnect is not undone.
+func watchdog(c *conn, stop chan struct{}, interval time.Duration) {
+    var ticker = time.NewTicker(interval)
+    defer ticker.Stop()
+    var failures int
+    for {
+        select {
+        case <-stop:
+            return
+        case <-ticker.C:
+        }
+        var err = c.ping(interval)
+        if err == nil {
+            failures = 0
+            continue
+        }
+        failures++
+        logging.Warn("bitcoin core ping failed (%d in a row): %v", failures, err)
+        if failures < failedPings { continue }
+        var fresh = dial(c.url, c.user, c.pass, c.cookie, c.blockTxidsCache, c.blockVerboseCache)
+        if authErr := fresh.refreshAuth(); authErr != nil {
+            logging.Warn("bitcoin core reconnect: %v", authErr)
+            continue
+        }
+        if pingErr := fresh.ping(interval); pingErr != nil {
+            logging.Warn("bitcoin core reconnect: %v", pingErr)
+            continue
+        }
+        if !current.CompareAndSwap(c, fresh) { return }
+        c.client.CloseIdleConnections()
+        logging.Status("reconnected to bitcoin core at %s", c.url)
+        c, failures = fresh, 0
+    }
+}
+
+// ping asks the node for a reply it can give at once, bounded by the interval
+// so a hung node counts as a failure rather than stalling the watchdog.
+func (c *conn) ping(timeout time.Duration) error {
+    var ctx, cancel = context.WithTimeout(context.Background(), timeout)
+    defer cancel()
+    return c.call(ctx, "ping", nil, nil)
 }
 
 // Enabled reports whether Init has pointed the package at a node. The bot runs
 // without one, and everything that needs it checks this first.
 func Enabled() bool { return current.Load() != nil }
 
-// Reset forgets the node, so a test leaves the next one with none.
-func Reset() { current.Store(nil) }
+// Reset forgets the node and stops its watchdog, so a test leaves the next one
+// with none.
+func Reset() {
+    watchdogMu.Lock()
+    if stopWatchdog != nil { close(stopWatchdog) }
+    stopWatchdog = nil
+    current.Store(nil)
+    watchdogMu.Unlock()
+}
 
 // refreshAuth rebuilds the basic-auth credentials. The cookie file is re-read
 // rather than cached forever because Core rewrites it with a fresh password on
