@@ -1,6 +1,8 @@
 package main
 
+import "bytes"
 import "fmt"
+import "log"
 import "os"
 import "path/filepath"
 import "strings"
@@ -56,7 +58,7 @@ func hasWatch(records []string) bool {
 func TestBackup(t *testing.T) {
     openBackupDB(t)
     var path = filepath.Join(t.TempDir(), "backup.db")
-    backup(path, "")
+    backup(path, "", time.Hour)
     if !hasWatch(readBackup(t, path)) {
         t.Fatalf("the watch is not in the backup: %#v", readBackup(t, path))
     }
@@ -72,11 +74,11 @@ func TestBackup(t *testing.T) {
 func TestBackupKeepsPreviousOnFailure(t *testing.T) {
     openBackupDB(t)
     var path = filepath.Join(t.TempDir(), "backup.db")
-    backup(path, "")
+    backup(path, "", time.Hour)
     var before, err = os.Stat(path)
     if err != nil { t.Fatalf("first backup: %v", err) }
     if err := os.Mkdir(path+".tmp", 0700); err != nil { t.Fatalf("block temp path: %v", err) }
-    backup(path, "")
+    backup(path, "", time.Hour)
     var after, serr = os.Stat(path)
     if serr != nil { t.Fatalf("previous backup was destroyed: %v", serr) }
     if !after.ModTime().Equal(before.ModTime()) || after.Size() != before.Size() {
@@ -94,7 +96,7 @@ func TestBackupScript(t *testing.T) {
     var dir = t.TempDir()
     var path = filepath.Join(dir, "backup.db")
     var marker = filepath.Join(dir, "ran")
-    backup(path, "printf '%s %s' \"$1\" \"$BACKUP_FILE\" > "+marker)
+    backup(path, "printf '%s %s' \"$1\" \"$BACKUP_FILE\" > "+marker, time.Hour)
     var got, err = os.ReadFile(marker)
     if err != nil {
         t.Fatalf("script did not run: %v", err)
@@ -122,7 +124,7 @@ func TestBackupScriptTimeout(t *testing.T) {
     var began = time.Now()
     var done = make(chan struct{})
     go func() {
-        backup(path, "(sleep 2; echo yes > "+marker+") & wait")
+        backup(path, "(sleep 2; echo yes > "+marker+") & wait", time.Hour)
         close(done)
     }()
     select {
@@ -143,7 +145,7 @@ func TestBackupScriptTimeout(t *testing.T) {
 func TestBackupWithoutScript(t *testing.T) {
     openBackupDB(t)
     var path = filepath.Join(t.TempDir(), "backup.db")
-    backup(path, "")
+    backup(path, "", time.Hour)
     if _, err := os.Stat(path); err != nil {
         t.Fatalf("backup missing: %v", err)
     }
@@ -230,5 +232,37 @@ func TestStartBackupRunsWhenDue(t *testing.T) {
     if serr != nil { t.Fatalf("stat: %v", serr) }
     if !after.ModTime().Equal(before) {
         t.Fatalf("a fresh backup was redone within the interval")
+    }
+}
+
+// The two status lines an operator reads: when the first backup is due, and
+// after each one its size, how long it took and when the next comes.
+func TestBackupLogLines(t *testing.T) {
+    openBackupDB(t)
+    var buf bytes.Buffer
+    log.SetOutput(&buf)
+    defer log.SetOutput(os.Stderr)
+    var path = filepath.Join(t.TempDir(), "backup.db")
+    if err := os.WriteFile(path, []byte("fresh"), 0600); err != nil { t.Fatal(err) }
+    if err := os.Chtimes(path, time.Now(), time.Now().Add(-22*time.Hour - 10*time.Minute)); err != nil { t.Fatal(err) }
+    var _, stop = startBackup(path, 24*time.Hour, "")
+    stop()
+    if want := "backing up scheduled for " + path + ", next backup in ~2h"; !strings.Contains(buf.String(), want) {
+        t.Errorf("startup line = %q, want %q", buf.String(), want)
+    }
+    buf.Reset()
+    backup(path, "", 24*time.Hour)
+    var line = buf.String()
+    if !strings.Contains(line, "database backed up to "+path+" (") || !strings.Contains(line, " KB) in 0.") || !strings.HasSuffix(strings.TrimSpace(line), "s. Next backup in 24h") {
+        t.Errorf("backup line = %q", line)
+    }
+}
+
+func TestRoughly(t *testing.T) {
+    for d, want := range map[time.Duration]string{
+        110 * time.Minute: "2h", 24 * time.Hour: "24h", 35*time.Minute + 20*time.Second: "35m", 40 * time.Second: "40s",
+        time.Hour - time.Second: "1h", time.Minute - 100*time.Millisecond: "1m",
+    } {
+        if got := roughly(d); got != want { t.Errorf("roughly(%s) = %q, want %q", d, got, want) }
     }
 }

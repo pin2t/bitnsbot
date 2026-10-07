@@ -3,6 +3,7 @@ package main
 import "context"
 import "database/sql"
 import "database/sql/driver"
+import "fmt"
 import "os"
 import "os/exec"
 import "strings"
@@ -194,7 +195,9 @@ var backupCheck = time.Hour
 
 // startBackup keeps a copy of the database at path no older than interval,
 // running script (when set) after each copy, and returns how often it checks
-// plus a stop for that goroutine.
+// plus a stop for that goroutine. It logs when the first backup is due —
+// "next backup in ~2h", or "now" for a copy missing or already stale, which the
+// goroutine then takes at once.
 //
 // The check is hourly rather than once per interval because of the deployment
 // setup: scripts/update.sh restarts the service on every new commit, and a
@@ -215,13 +218,18 @@ var backupCheck = time.Hour
 func startBackup(path string, interval time.Duration, script string) (time.Duration, func()) {
     var every = backupCheck
     if interval < every { every = interval }
+    var next = "now"
+    if info, err := os.Stat(path); err == nil && time.Since(info.ModTime()) < interval {
+        next = "in ~" + roughly(interval - time.Since(info.ModTime()))
+    }
+    logging.Status("backing up scheduled for %s, next backup %s", path, next)
     var stop, done = make(chan struct{}), make(chan struct{})
     go func() {
         defer close(done)
         for {
             var wait = every
             if info, err := os.Stat(path); err != nil || time.Since(info.ModTime()) >= interval {
-                backup(path, script)
+                backup(path, script, interval)
             } else if due := interval - time.Since(info.ModTime()); due < wait {
                 wait = due
             }
@@ -236,6 +244,15 @@ func startBackup(path string, interval time.Duration, script string) (time.Durat
         close(stop)
         <-done
     }
+}
+
+// roughly renders a wait in its largest whole unit, rounded — "2h", "35m",
+// "40s" — which is all a log line saying when the next backup comes needs. The
+// unit is picked after rounding, so 59m59s reads "1h" rather than "60m".
+func roughly(d time.Duration) string {
+    if d.Round(time.Minute) >= time.Hour { return fmt.Sprintf("%dh", d.Round(time.Hour)/time.Hour) }
+    if d.Round(time.Second) >= time.Minute { return fmt.Sprintf("%dm", d.Round(time.Minute)/time.Minute) }
+    return fmt.Sprintf("%ds", d.Round(time.Second)/time.Second)
 }
 
 // backup writes a consistent snapshot of the whole database to path, with
@@ -268,7 +285,7 @@ func startBackup(path string, interval time.Duration, script string) (time.Durat
 // signal. (Setpgid is unix-only; this bot targets Linux and macOS.)
 //
 // exited on its own first
-func backup(path, script string) {
+func backup(path, script string, interval time.Duration) {
     if db == nil { return }
     var began = time.Now()
     var tmp = path + ".tmp"
@@ -284,7 +301,10 @@ func backup(path, script string) {
     }
     var size int64
     if info, serr := os.Stat(path); serr == nil { size = info.Size() }
-    logging.Status("database backed up to %s (%s bytes) in %s", path, group(size), time.Since(began).Round(time.Millisecond))
+    var took = time.Since(began).Round(100 * time.Millisecond)
+    var tookText = fmt.Sprintf("%.1fs", (took % time.Minute).Seconds())
+    if took >= time.Minute { tookText = fmt.Sprintf("%dm", took/time.Minute) + tookText }
+    logging.Status("database backed up to %s (%s) in %s. Next backup in %s", path, humSize(size, 0, ""), tookText, roughly(interval))
     if script == "" { return }
     var ctx, cancel = context.WithTimeout(context.Background(), backupScriptTimeout)
     defer cancel()
