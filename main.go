@@ -488,9 +488,7 @@ func main() {
         })
     }
     if *backupPath != "" {
-        var check time.Duration
-        check, stopBackup = startBackup(*backupPath, *backupInterval, *backupScript)
-        logging.Status("backing up the database to %s when the copy there is over %s old, checked every %s", *backupPath, *backupInterval, check)
+        _, stopBackup = startBackup(*backupPath, *backupInterval, *backupScript)
     }
     if *coreURL != "" {
         if err := core.Init(*coreURL, *coreUser, *corePass, *coreCookie); err != nil {
