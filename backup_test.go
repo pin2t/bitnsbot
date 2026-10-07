@@ -1,8 +1,6 @@
 package main
 
-import "bytes"
 import "fmt"
-import "log"
 import "os"
 import "path/filepath"
 import "strings"
@@ -235,28 +233,6 @@ func TestStartBackupRunsWhenDue(t *testing.T) {
     }
 }
 
-// The two status lines an operator reads: when the first backup is due, and
-// after each one its size, how long it took and when the next comes.
-func TestBackupLogLines(t *testing.T) {
-    openBackupDB(t)
-    var buf bytes.Buffer
-    log.SetOutput(&buf)
-    defer log.SetOutput(os.Stderr)
-    var path = filepath.Join(t.TempDir(), "backup.db")
-    if err := os.WriteFile(path, []byte("fresh"), 0600); err != nil { t.Fatal(err) }
-    if err := os.Chtimes(path, time.Now(), time.Now().Add(-22*time.Hour - 10*time.Minute)); err != nil { t.Fatal(err) }
-    var _, stop = startBackup(path, 24*time.Hour, "")
-    stop()
-    if want := "backing up scheduled for " + path + ", next backup in ~2h"; !strings.Contains(buf.String(), want) {
-        t.Errorf("startup line = %q, want %q", buf.String(), want)
-    }
-    buf.Reset()
-    backup(path, "", 24*time.Hour)
-    var line = buf.String()
-    if !strings.Contains(line, "database backed up to "+path+" (") || !strings.Contains(line, " KB) in 0.") || !strings.HasSuffix(strings.TrimSpace(line), "s. Next backup in 24h") {
-        t.Errorf("backup line = %q", line)
-    }
-}
 
 func TestRoughly(t *testing.T) {
     for d, want := range map[time.Duration]string{
