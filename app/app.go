@@ -539,6 +539,10 @@ type Info struct {
     // page's transaction cards use. Only a transaction page sets them.
     Inputs  []FlowPart
     Outputs []FlowPart
+    // InCount and OutCount are how many inputs and outputs the transaction
+    // has, named above each side of the flow — the sides themselves may be cut.
+    InCount  int
+    OutCount int
     // Txs is the transaction list drawn under the rows, newest first — only an
     // address page sets it. The first batch is part of the page itself; the
     // sentinel below the views appends the next batches as the reader scrolls.
@@ -678,6 +682,11 @@ type Tx struct {
     Short   string
     Inputs  []FlowPart
     Outputs []FlowPart
+    // InCount and OutCount are the transaction's whole input and output
+    // counts, drawn on the two edges of the card's arrow, since each side
+    // stops at cardAddrs.
+    InCount  int
+    OutCount int
 }
 
 // Txs is one batch of an address's transaction views, newest first. Next is the

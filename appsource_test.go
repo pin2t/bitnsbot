@@ -314,6 +314,9 @@ func TestTxInfoLinksBlockAndAddresses(t *testing.T) {
     if len(info.Outputs) != 1 || info.Outputs[0].Id != to || info.Outputs[0].Text != short(to) {
         t.Errorf("outputs = %#v, want the one receiving address %s", info.Outputs, short(to))
     }
+    if info.InCount != 1 || info.OutCount != 1 {
+        t.Errorf("counts = %d in, %d out; want 1 and 1", info.InCount, info.OutCount)
+    }
     if info.Inputs[0].Amount != "0.1 BTC" {
         t.Errorf("input flow amount = %q, want 0.1 BTC without a stored rate", info.Inputs[0].Amount)
     }
@@ -609,5 +612,8 @@ func TestTxViewCutsLongSides(t *testing.T) {
     }
     if len(v.Outputs) != cardAddrs || v.Outputs[cardAddrs-1].Text == "..." {
         t.Errorf("outputs = %d parts ending %#v, want all %d with no ...", len(v.Outputs), v.Outputs[len(v.Outputs)-1], cardAddrs)
+    }
+    if v.InCount != cardAddrs+5 || v.OutCount != cardAddrs {
+        t.Errorf("counts = %d in, %d out; want the whole %d and %d, not what the sides show", v.InCount, v.OutCount, cardAddrs+5, cardAddrs)
     }
 }
