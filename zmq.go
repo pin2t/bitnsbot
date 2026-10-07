@@ -7,6 +7,7 @@ import "encoding/hex"
 import "fmt"
 import "strings"
 import "sync"
+import "time"
 import "github.com/go-zeromq/zmq4"
 import "bitnsbot/core"
 import "bitnsbot/logging"
@@ -256,6 +257,14 @@ func (r *reader) varInt() (uint64, bool) {
 // socket can dial every publisher and receive from all of them, and
 // subscribing to a topic an endpoint never publishes simply yields nothing.
 //
+// A failed read ends the socket rather than being retried on it: the loop
+// closes it, waits zmqRetry and dials every endpoint afresh through subscribe,
+// again every zmqRetry while Core stays down, then resumes reading on the new
+// socket. Only a cancelled context stops it. subscribe is the one way a socket
+// is made, at startup and on a reconnect alike, and closes a socket that fails
+// rather than handing it back half-dialled. Messages published while it
+// reconnects are lost, the same trade as the bot being down.
+//
 // Everything else a block moves is behind this one signal: the
 // four chain scans, and the Mini App's fee and network cards,
 // each of which waits on it alongside a timer of its own. So
@@ -266,41 +275,73 @@ func (r *reader) varInt() (uint64, bool) {
 // transactions against the watch list.
 func startZMQ(ctx context.Context, endpoints []string, b *bot) error {
     if len(endpoints) == 0 { return fmt.Errorf("no ZMQ endpoints configured") }
-    var sub = zmq4.NewSub(ctx)
-    for _, endpoint := range endpoints {
-        if err := sub.Dial(endpoint); err != nil { return fmt.Errorf("dial %s: %w", endpoint, err) }
+    var subscribe = func() (zmq4.Socket, error) {
+        var sub = zmq4.NewSub(ctx)
+        for _, endpoint := range endpoints {
+            if err := sub.Dial(endpoint); err != nil {
+                sub.Close()
+                return nil, fmt.Errorf("dial %s: %w", endpoint, err)
+            }
+        }
+        for _, topic := range []string{"hashblock", "rawtx"} {
+            if err := sub.SetOption(zmq4.OptionSubscribe, topic); err != nil {
+                sub.Close()
+                return nil, err
+            }
+        }
+        return sub, nil
     }
-    for _, topic := range []string{"hashblock", "rawtx"} {
-        if err := sub.SetOption(zmq4.OptionSubscribe, topic); err != nil { return err }
-    }
+    var sub, err = subscribe()
+    if err != nil { return err }
+    var retry = zmqRetry
     go func() {
-        defer sub.Close()
         for {
-            var msg, err = sub.Recv()
-            if err != nil {
-                if ctx.Err() != nil { return }
-                logging.Warn("zmq: %v", err)
-                continue
-            }
-            if len(msg.Frames) < 2 { continue }
-            switch string(msg.Frames[0]) {
-            case "hashblock":
-                var hash = hex.EncodeToString(msg.Frames[1])
-                logging.Info("zmq: new block hash %s", hash)
-                go processConfirms(b, hash)
-                signals.Send(signals.Block)
-            case "rawtx":
-                var tx, ok = parseTx(msg.Frames[1])
-                if !ok {
-                    logging.Warn("zmq: could not parse a %d-byte transaction", len(msg.Frames[1]))
-                    continue
+            for {
+                var msg, recvErr = sub.Recv()
+                if recvErr != nil {
+                    err = recvErr
+                    break
                 }
-                recordMempoolTx(msg.Frames[1], tx)
-                if !anyWatched() || !matches(tx) { continue }
-                go broadcast(hex.EncodeToString(msg.Frames[1]))
+                if len(msg.Frames) < 2 { continue }
+                switch string(msg.Frames[0]) {
+                case "hashblock":
+                    var hash = hex.EncodeToString(msg.Frames[1])
+                    logging.Info("zmq: new block hash %s", hash)
+                    go processConfirms(b, hash)
+                    signals.Send(signals.Block)
+                case "rawtx":
+                    var tx, ok = parseTx(msg.Frames[1])
+                    if !ok {
+                        logging.Warn("zmq: could not parse a %d-byte transaction", len(msg.Frames[1]))
+                        continue
+                    }
+                    recordMempoolTx(msg.Frames[1], tx)
+                    if !anyWatched() || !matches(tx) { continue }
+                    go broadcast(hex.EncodeToString(msg.Frames[1]))
+                }
             }
+            sub.Close()
+            if ctx.Err() != nil { return }
+            logging.Warn("zmq: %v; reconnecting", err)
+            for {
+                select {
+                case <-ctx.Done():
+                    return
+                case <-time.After(retry):
+                }
+                sub, err = subscribe()
+                if err == nil { break }
+                logging.Warn("zmq: reconnect: %v", err)
+            }
+            logging.Status("zmq: reconnected to Bitcoin Core notifications at %s", strings.Join(endpoints, ", "))
         }
     }()
     logging.Status("zmq: subscribed to Bitcoin Core notifications at %s", strings.Join(endpoints, ", "))
     return nil
 }
+
+// zmqRetry is how long the read loop waits before dialling the publishers
+// again after a read failed, and between attempts while they stay down. A
+// variable so a test need not wait; startZMQ reads it once.
+var zmqRetry = 5 * time.Second
+
