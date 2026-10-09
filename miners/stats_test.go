@@ -79,19 +79,28 @@ func seedAddresses(t *testing.T, addrs map[string]string) {
     if _, _, err := store(pools); err != nil { t.Fatalf("seed addresses: %v", err) }
 }
 
+// aggregate is one pool's statistics as the miners table holds them.
+type aggregate struct {
+    Blocks   int64
+    Reward   int64
+    Fees     int64
+    Work     float64
+    LastWork float64
+}
+
 // statOf reads one pool's aggregate, which every row of that pool repeats.
 //
 // an aggregate over no rows comes back as NULL, which is a pool with
 // nothing gathered rather than an error
-func statOf(t *testing.T, name string) record {
+func statOf(t *testing.T, name string) aggregate {
     t.Helper()
-    var s record
+    var s aggregate
     var err = db.QueryRow(`select max(blocks), max(reward), max(fees), max(totalWork), max(lastWork)
         from miners where name = ?`, name).Scan(&s.Blocks, &s.Reward, &s.Fees, &s.Work, &s.LastWork)
     if err != nil && err.Error() != "sql: no rows in result set" {
         var n int
         if db.QueryRow("select count(*) from miners where name = ?", name).Scan(&n) == nil && n == 0 {
-            return record{}
+            return aggregate{}
         }
         t.Fatalf("stat of %s: %v", name, err)
     }
