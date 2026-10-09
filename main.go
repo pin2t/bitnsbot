@@ -7,6 +7,7 @@ import "flag"
 import "fmt"
 import "html"
 import "net/http"
+import "net/http/httputil"
 import "net/url"
 import "os"
 import "os/signal"
@@ -53,7 +54,11 @@ var appListen       = flag.String("app-listen", "127.0.0.1:8080", "address the T
 var dbuiListen      = flag.String("dbui-listen", "", "ignored — the database UI speaks bbolt and is github.com/pin2t/bboltwui now; kept so a config file that sets it still starts")
 var historyFile     = flag.String("history-file", "", "path to a JSON file containing historical BTC/USD rates (same format as blockchain.info/charts/market-price); backfilled from this file on first run instead of fetching over the network")
 
+var maxToken        = flag.String("max-token", "", "MAX messenger bot token; when set, the MAX webhook server is started on -max-listen")
+var maxListen       = flag.String("max-listen", ":8084", "address the MAX webhook server binds to")
+var maxWebhookPath  = flag.String("max-webhook-path", "/webhook", "path the MAX webhook server accepts updates on")
 var appSrv *http.Server
+var maxSrv *http.Server
 
 
 // stopBackup ends the backup goroutine, set when -backup started one. shutdown
@@ -538,6 +543,17 @@ func main() {
             logging.Fatal("error listening: %v", err)
         }
     }()
+    if *maxToken != "" {
+        var mux = http.NewServeMux()
+        mux.HandleFunc(*maxWebhookPath, maxWebhookHandler)
+        maxSrv = &http.Server{Addr: *maxListen, Handler: mux}
+        go func() {
+            logging.Status("MAX webhook listening on %s%s", *maxListen, *maxWebhookPath)
+            if err := maxSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+                logging.Fatal("MAX webhook listening: %v", err)
+            }
+        }()
+    }
     <-ctx.Done()
     stop()
     shutdown(bot, srv)
@@ -555,6 +571,11 @@ func shutdown(bot *bot, srv *http.Server) {
     if appSrv != nil {
         if err := appSrv.Shutdown(ctx); err != nil {
             logging.Err("mini app shutdown: %v", err)
+        }
+    }
+    if maxSrv != nil {
+        if err := maxSrv.Shutdown(ctx); err != nil {
+            logging.Err("MAX webhook shutdown: %v", err)
         }
     }
     stopNotify()
@@ -602,6 +623,18 @@ func webhookHandler(bot *bot) http.HandlerFunc {
         update(bot, u)
         w.WriteHeader(http.StatusOK)
     }
+}
+
+// maxWebhookHandler logs every request the MAX webhook server receives, headers
+// and body included, at INFO and answers 200 OK. Nothing is acted on yet.
+func maxWebhookHandler(w http.ResponseWriter, r *http.Request) {
+    var dump, err = httputil.DumpRequest(r, true)
+    if err != nil {
+        logging.Err("MAX webhook: dump request: %v", err)
+    } else {
+        logging.Info("MAX webhook request:\n%s", dump)
+    }
+    w.WriteHeader(http.StatusOK)
 }
 
 func update(bot *bot, update Update) {
