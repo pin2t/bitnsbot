@@ -139,24 +139,6 @@ func empty() bool {
     return len(addrIndex) == 0
 }
 
-// merge returns the union of two lists, sorted, without duplicates. What a
-// record already carries is kept: the source only ever adds, so a pool that
-// stops listing an address it once used still attributes the blocks it mined
-// with it.
-func merge(have, add []string) []string {
-    var seen = map[string]bool{}
-    var out []string
-    for _, list := range [][]string{have, add} {
-        for _, s := range list {
-            if s == "" || seen[s] { continue }
-            seen[s] = true
-            out = append(out, s)
-        }
-    }
-    sort.Strings(out)
-    return out
-}
-
 // store merges the fetched definitions into the three tables and reports how many
 // addresses and tags were new.
 //
