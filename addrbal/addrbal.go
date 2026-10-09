@@ -199,8 +199,10 @@ func scan(ctx context.Context, from, to int) error {
             var change, err = flush(deltas, height)
             if err != nil { return err }
             count.Add(change)
-            logging.Info("addrbal: blocks %d..%d read in %s, %d addresses merged in %s, %d with a balance",
-                start, height, merging.Sub(began).Round(time.Millisecond), len(deltas),
+            var bm = fmt.Sprintf("blocks %d..%d", start, height)
+            if start == height { bm = fmt.Sprintf("block %d", height) }
+            logging.Info("addrbal: collected from %s in %s, %d addresses merged in %s, %d with a balance",
+                bm, merging.Sub(began).Round(time.Millisecond), len(deltas),
                 time.Since(merging).Round(time.Millisecond), count.Load())
             deltas = map[uint64]int64{}
             start = height + 1
