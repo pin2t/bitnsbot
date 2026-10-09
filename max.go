@@ -16,9 +16,9 @@ import "bitnsbot/logging"
 // older platform-api; a package var so tests point it at an httptest server.
 var maxBaseURL = "https://platform-api2.max.ru"
 
-// maxUpdateTypes are the updates the bot subscribes to: a message, and the two
-// events it answers with the start message.
-var maxUpdateTypes = []string{"message_created", "bot_started", "bot_added"}
+// maxUpdateTypes are the updates the bot subscribes to: a message, a tapped
+// button, and the two events it answers with the start message.
+var maxUpdateTypes = []string{"message_created", "message_callback", "bot_started", "bot_added"}
 
 // maxBot is the MAX Bot API client. The token travels in the Authorization
 // header — MAX no longer accepts it as a query parameter — so, unlike the
@@ -30,17 +30,27 @@ type maxBot struct {
 }
 
 // maxUpdate is MAX's Update object. Which fields are set depends on
-// update_type: a message_created carries Message, a bot_started or bot_added
+// update_type: a message_created carries Message, a message_callback carries
+// Callback and the Message its button was on, a bot_started or bot_added
 // carries ChatID and User. UserLocale is the user's client language, e.g. "ru".
 type maxUpdate struct {
-    UpdateType string      `json:"update_type"`
-    Timestamp  int64       `json:"timestamp"`
-    ChatID     int64       `json:"chat_id"`
-    User       *maxUser    `json:"user"`
-    Message    *maxMessage `json:"message"`
+    UpdateType string       `json:"update_type"`
+    Timestamp  int64        `json:"timestamp"`
+    ChatID     int64        `json:"chat_id"`
+    User       *maxUser     `json:"user"`
+    Message    *maxMessage  `json:"message"`
+    Callback   *maxCallback `json:"callback"`
     UserLocale string      `json:"user_locale"`
     Payload    string      `json:"payload"`
     IsChannel  bool        `json:"is_channel"`
+}
+
+// maxCallback is a tapped callback button; Payload is what the button carried —
+// here, the full id to look up.
+type maxCallback struct {
+    CallbackID string   `json:"callback_id"`
+    Payload    string   `json:"payload"`
+    User       *maxUser `json:"user"`
 }
 
 type maxUser struct {
@@ -119,11 +129,28 @@ func (b *maxBot) subscribe(ctx context.Context, webhookURL, secret string) error
     return nil
 }
 
-// send posts an HTML-formatted message to a chat. The start text is the
-// Telegram one, whose <b> and <a> MAX's html format also understands.
-func (b *maxBot) send(ctx context.Context, chat int64, text string) error {
+func (b *maxBot) platform() string { return "max" }
+
+// sendWithButtons posts an HTML-formatted message to a chat. The text is the
+// Telegram one: MAX's html format understands the same <b>, <a>, <code> and
+// <pre>. The ids become an inline keyboard of callback buttons, laid out as
+// Telegram's are (buttonRows), each carrying the full id as its payload so a tap
+// comes back as a message_callback that runs /info on it.
+func (b *maxBot) sendWithButtons(ctx context.Context, chat int64, text string, ids []string) error {
     var path = "/messages?" + url.Values{"chat_id": {fmt.Sprint(chat)}}.Encode()
-    return b.call(ctx, http.MethodPost, path, map[string]any{"text": text, "format": "html"}, nil)
+    var payload = map[string]any{"text": text, "format": "html", "disable_link_preview": true}
+    var rows [][]map[string]string
+    for _, row := range buttonRows(ids) {
+        var buttons []map[string]string
+        for _, btn := range row {
+            buttons = append(buttons, map[string]string{"type": "callback", "text": btn["text"], "payload": btn["callback_data"]})
+        }
+        rows = append(rows, buttons)
+    }
+    if len(rows) > 0 {
+        payload["attachments"] = []any{map[string]any{"type": "inline_keyboard", "payload": map[string]any{"buttons": rows}}}
+    }
+    return b.call(ctx, http.MethodPost, path, payload, nil)
 }
 
 // maxLang reduces a MAX user_locale ("ru", "ru-RU", "ru_RU") to the language
@@ -137,9 +164,13 @@ func maxLang(locale string) string {
 // maxWebhookHandler receives MAX updates. When -max-secret is set every request
 // must carry it in X-Max-Bot-Api-Secret, compared in constant time, since that
 // is all that stops an arbitrary POST being taken for MAX. The update is logged
-// at INFO; a bot_started or bot_added is answered with the start message in the
-// update's user_locale. A failed reply is logged and still answered 200: MAX
-// unsubscribes a bot whose webhook keeps failing.
+// at INFO, and the chat's language set from its user_locale, which every reply
+// is translated through. A message_created is a command or a pending argument,
+// run through the same dispatch Telegram's messages are, so every command works
+// here too; a message from a bot is ignored, so the bot never answers itself. A
+// message_callback is a tapped id button, and runs /info on it. A bot_started or
+// bot_added is answered with the start message. A failed reply is logged and
+// still answered 200: MAX unsubscribes a bot whose webhook keeps failing.
 func maxWebhookHandler(mb *maxBot) http.HandlerFunc {
     return func(w http.ResponseWriter, r *http.Request) {
         if r.Method != http.MethodPost {
@@ -167,14 +198,20 @@ func maxWebhookHandler(mb *maxBot) http.HandlerFunc {
             return
         }
         switch u.UpdateType {
+        case "message_created":
+            if u.Message == nil || (u.Message.Sender != nil && u.Message.Sender.IsBot) { break }
+            var chat = u.Message.Recipient.ChatID
+            if u.UserLocale != "" { SetChatLanguage(chat, maxLang(u.UserLocale)) }
+            dispatch(mb, chat, u.Message.Body.Text)
+        case "message_callback":
+            if u.Message == nil || u.Callback == nil || u.Callback.Payload == "" { break }
+            var chat = u.Message.Recipient.ChatID
+            if u.UserLocale != "" { SetChatLanguage(chat, maxLang(u.UserLocale)) }
+            logging.Info("MAX callback %q from chat %d", short(u.Callback.Payload), chat)
+            info(mb, chat, u.Callback.Payload)
         case "bot_started", "bot_added":
-            var ctx, cancel = context.WithTimeout(r.Context(), 10*time.Second)
-            if err := mb.send(ctx, u.ChatID, startText(maxLang(u.UserLocale))); err != nil {
-                logging.Err("MAX send start to chat %d: %v", u.ChatID, err)
-            } else {
-                logging.Info("MAX sent start message to chat %d", u.ChatID)
-            }
-            cancel()
+            if u.UserLocale != "" { SetChatLanguage(u.ChatID, maxLang(u.UserLocale)) }
+            start(mb, u.ChatID)
         }
         w.WriteHeader(http.StatusOK)
     }

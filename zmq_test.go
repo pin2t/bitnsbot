@@ -131,7 +131,7 @@ func TestZMQReconnects(t *testing.T) {
     var done = publishBlocks(t, endpoint, stop)
     var ctx, cancel = context.WithCancel(context.Background())
     t.Cleanup(cancel)
-    if err := startZMQ(ctx, []string{endpoint}, nil); err != nil { t.Fatal(err) }
+    if err := startZMQ(ctx, []string{endpoint}); err != nil { t.Fatal(err) }
     awaitBlock(t, blocks, "from the first publisher")
     close(stop)
     <-done

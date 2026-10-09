@@ -137,7 +137,7 @@ func TestSetAliasOnATransactionWatch(t *testing.T) {
     if renamed, err := setAlias(b, 42, txid, "Payout"); err != nil || !renamed {
         t.Fatalf("setAlias = %v, %v; want it renamed", renamed, err)
     }
-    var entries = txwatches.For(42)
+    var entries = txwatches.For("tg", 42)
     if len(entries) != 1 || entries[0].Alias != "Payout" {
         t.Errorf("transaction watches = %#v, want one named Payout", entries)
     }

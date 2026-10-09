@@ -203,14 +203,14 @@ func TestUnwatchFlow(t *testing.T) {
         t.Fatalf("unexpected not-watching reply: %q", sent[len(sent)-1])
     }
     update(b, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/unwatch"}})
-    if !pendingUnwatchChats[1] {
+    if !pendingUnwatchChats[chatKey{"tg", 1}] {
         t.Fatalf("expected chat 1 pending for unwatch")
     }
     update(b, Update{Message: &Message{Chat: Chat{ID: 1}, Text: addr}})
     if sent[len(sent)-1] != "Stopped watching "+addr {
         t.Fatalf("expected follow-up to remove chat 1's watch, got: %q", sent[len(sent)-1])
     }
-    if pendingUnwatchChats[1] {
+    if pendingUnwatchChats[chatKey{"tg", 1}] {
         t.Fatalf("expected pending cleared")
     }
     if countWatchers(addr) != 0 {
@@ -247,9 +247,9 @@ func TestWatchesFlow(t *testing.T) {
     }
     var addr = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
     var txid = "f21b47a9143a23e80cc59e81588d21558b394005580b285961957cb3bed5b3e0"
-    watches.Add(1, addr, "")
-    txwatches.Add(txid, 1, "")
-    watches.Add(2, "someoneElsesAddress", "")
+    watches.Add("tg", 1, addr, "")
+    txwatches.Add(txid, "tg", 1, "")
+    watches.Add("tg", 2, "someoneElsesAddress", "")
     update(b, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/watches"}})
     var msg = sent[len(sent)-1]
     if !strings.Contains(msg, "<code>"+addr+"</code>") {
@@ -264,7 +264,7 @@ func TestWatchesFlow(t *testing.T) {
     if strings.Contains(msg, "someoneElsesAddress") {
         t.Fatalf("must not list another chat's watch: %q", msg)
     }
-    watches.Add(3, "a<b>c", "")
+    watches.Add("tg", 3, "a<b>c", "")
     update(b, Update{Message: &Message{Chat: Chat{ID: 3}, Text: "/watches"}})
     if last := sent[len(sent)-1]; !strings.Contains(last, "a&lt;b&gt;c") {
         t.Fatalf("expected HTML-escaped watch id, got: %q", last)
@@ -297,7 +297,7 @@ func TestWatchLimit(t *testing.T) {
     openDB(filepath.Join(t.TempDir(), "watches.db"))
     defer closeDB()
     for i := 0; i < maxSubscriptionsPerChat; i++ {
-        if err := watches.Add(42, fmt.Sprintf("addr%d", i), ""); err != nil {
+        if err := watches.Add("tg", 42, fmt.Sprintf("addr%d", i), ""); err != nil {
             t.Fatalf("seed watch %d: %v", i, err)
         }
     }
@@ -353,8 +353,8 @@ func TestTxConfirmation(t *testing.T) {
     defer closeDB()
     stopNotify()
     defer stopNotify()
-    txwatches.Add(txid, 7, "Alice")
-    go processConfirms(b, "0000000000000000abc")
+    txwatches.Add(txid, "tg", 7, "Alice")
+    go processConfirms("0000000000000000abc", b)
     var found string
     var deadline = time.Now().Add(3 * time.Second)
     for time.Now().Before(deadline) {
@@ -420,8 +420,8 @@ func TestAddrConfirmation(t *testing.T) {
     coretest.Use(t, srv)
     stopNotify()
     defer stopNotify()
-    txwatches.AddAddrConfirm(txid, 7, addr, "John", txwatches.Summary{})
-    processConfirms(b, "hash200")
+    txwatches.AddAddrConfirm(txid, "tg", 7, addr, "John", txwatches.Summary{})
+    processConfirms("hash200", b)
     sentMu.Lock()
     defer sentMu.Unlock()
     var found string
@@ -444,9 +444,9 @@ func TestAddrConfirmation(t *testing.T) {
 func TestAddrConfirmDedup(t *testing.T) {
     txwatches.Reset()
     defer txwatches.Reset()
-    txwatches.AddAddrConfirm("txabc", 5, "addrX", "Alias", txwatches.Summary{})
-    txwatches.AddAddrConfirm("txabc", 5, "addrX", "Alias", txwatches.Summary{})
-    txwatches.Add("txabc", 5, "")
+    txwatches.AddAddrConfirm("txabc", "tg", 5, "addrX", "Alias", txwatches.Summary{})
+    txwatches.AddAddrConfirm("txabc", "tg", 5, "addrX", "Alias", txwatches.Summary{})
+    txwatches.Add("txabc", "tg", 5, "")
     var n = len(txwatches.Confirms([]string{"txabc"}))
     if n != 2 {
         t.Fatalf("expected 2 entries (deduped addr-confirm + distinct direct watch), got %d", n)
@@ -752,8 +752,8 @@ func TestConfirmationLinksBlock(t *testing.T) {
     coretest.Use(t, srv)
     stopNotify()
     t.Cleanup(stopNotify)
-    txwatches.AddAddrConfirm(txid, 42, addr, "", txwatches.Summary{})
-    processConfirms(b, "0000000000000000abc")
+    txwatches.AddAddrConfirm(txid, "tg", 42, addr, "", txwatches.Summary{})
+    processConfirms("0000000000000000abc", b)
     var deadline = time.Now().Add(3 * time.Second)
     for time.Now().Before(deadline) {
         markupMu.Lock()

@@ -12,6 +12,7 @@ import "sync"
 import "time"
 
 type watch struct {
+    platform  string // "tg" or "max": a chat number means nothing without it
     chatID    int64
     alias     string
     watchedAt time.Time
@@ -32,15 +33,15 @@ var mu sync.Mutex
 var pending = map[string][]watch{}
 
 // Add registers a direct transaction watch (/watch <txid>), watchedAt = now.
-func Add(txid string, chatID int64, alias string) {
-    addEntry(txid, watch{chatID: chatID, alias: alias, watchedAt: time.Now()})
+func Add(txid, platform string, chatID int64, alias string) {
+    addEntry(txid, watch{platform: platform, chatID: chatID, alias: alias, watchedAt: time.Now()})
 }
 
 // AddAddrConfirm registers a one-shot confirmation watch for a transaction just
 // seen paying a watched address, so the chat gets a second message — with how
 // long it took — once that transaction is mined. watchedAt is now (first-seen).
-func AddAddrConfirm(txid string, chatID int64, addr, alias string, summary Summary) {
-    addEntry(txid, watch{chatID: chatID, alias: alias, watchedAt: time.Now(), addr: addr, summary: summary})
+func AddAddrConfirm(txid, platform string, chatID int64, addr, alias string, summary Summary) {
+    addEntry(txid, watch{platform: platform, chatID: chatID, alias: alias, watchedAt: time.Now(), addr: addr, summary: summary})
 }
 
 // addEntry appends a watch, skipping an exact (chat, addr) duplicate so a
@@ -49,20 +50,20 @@ func addEntry(txid string, w watch) {
     mu.Lock()
     defer mu.Unlock()
     for _, e := range pending[txid] {
-        if e.chatID == w.chatID && e.addr == w.addr { return }
+        if e.platform == w.platform && e.chatID == w.chatID && e.addr == w.addr { return }
     }
     pending[txid] = append(pending[txid], w)
 }
 
 // Remove drops this chat's direct watches of txid (not the address-derived
 // confirmation watches, which RemoveAddrConfirms handles) and returns the count.
-func Remove(txid string, chatID int64) int {
+func Remove(txid, platform string, chatID int64) int {
     mu.Lock()
     defer mu.Unlock()
     var kept []watch
     var removed int
     for _, w := range pending[txid] {
-        if w.chatID == chatID && w.addr == "" { removed++ } else { kept = append(kept, w) }
+        if w.platform == platform && w.chatID == chatID && w.addr == "" { removed++ } else { kept = append(kept, w) }
     }
     if len(kept) == 0 { delete(pending, txid) } else { pending[txid] = kept }
     return removed
@@ -71,13 +72,13 @@ func Remove(txid string, chatID int64) int {
 // RemoveAddrConfirms drops any pending confirmation watches this chat holds for
 // transactions on addr — called when the address itself is unwatched, so a
 // confirmation can't arrive after the user stopped watching it.
-func RemoveAddrConfirms(addr string, chatID int64) {
+func RemoveAddrConfirms(addr, platform string, chatID int64) {
     mu.Lock()
     defer mu.Unlock()
     for txid, ws := range pending {
         var kept []watch
         for _, w := range ws {
-            if w.chatID == chatID && w.addr == addr { continue }
+            if w.platform == platform && w.chatID == chatID && w.addr == addr { continue }
             kept = append(kept, w)
         }
         if len(kept) == len(ws) { continue }
@@ -87,12 +88,12 @@ func RemoveAddrConfirms(addr string, chatID int64) {
 
 // SetAlias renames this chat's direct watches of txid and returns the count, the
 // same entries Remove acts on.
-func SetAlias(txid string, chatID int64, alias string) int {
+func SetAlias(txid, platform string, chatID int64, alias string) int {
     mu.Lock()
     defer mu.Unlock()
     var renamed int
     for i, w := range pending[txid] {
-        if w.chatID == chatID && w.addr == "" {
+        if w.platform == platform && w.chatID == chatID && w.addr == "" {
             pending[txid][i].alias = alias
             renamed++
         }
@@ -103,12 +104,12 @@ func SetAlias(txid string, chatID int64, alias string) int {
 // SetAddrAlias renames the pending confirmations this chat holds for transactions
 // on addr, so a confirmation still in flight when the address is renamed arrives
 // under the new name rather than the old one. The pair to RemoveAddrConfirms.
-func SetAddrAlias(addr string, chatID int64, alias string) {
+func SetAddrAlias(addr, platform string, chatID int64, alias string) {
     mu.Lock()
     defer mu.Unlock()
     for txid, ws := range pending {
         for i, w := range ws {
-            if w.chatID == chatID && w.addr == addr { pending[txid][i].alias = alias }
+            if w.platform == platform && w.chatID == chatID && w.addr == addr { pending[txid][i].alias = alias }
         }
     }
 }
@@ -121,12 +122,12 @@ type Entry struct {
 
 // For returns the direct transaction watches a chat holds (address-derived
 // confirmation watches are internal and not listed).
-func For(chatID int64) (res []Entry) {
+func For(platform string, chatID int64) (res []Entry) {
     mu.Lock()
     defer mu.Unlock()
     for txid, ws := range pending {
         for _, w := range ws {
-            if w.chatID == chatID && w.addr == "" { res = append(res, Entry{Txid: txid, Alias: w.alias}) }
+            if w.platform == platform && w.chatID == chatID && w.addr == "" { res = append(res, Entry{Txid: txid, Alias: w.alias}) }
         }
     }
     return res
@@ -136,6 +137,7 @@ func For(chatID int64) (res []Entry) {
 // caller needs to compose the "confirmed" message.
 type Confirmed struct {
     Txid      string
+    Platform  string
     ChatID    int64
     Alias     string
     Addr      string // "" for a direct watch; the watched address otherwise
@@ -161,7 +163,7 @@ func Confirms(txids []string) (res []Confirmed) {
         var ws, ok = pending[txid]
         if !ok { continue }
         for _, w := range ws {
-            res = append(res, Confirmed{Txid: txid, ChatID: w.chatID, Alias: w.alias, Addr: w.addr, WatchedAt: w.watchedAt, Summary: w.summary})
+            res = append(res, Confirmed{Txid: txid, Platform: w.platform, ChatID: w.chatID, Alias: w.alias, Addr: w.addr, WatchedAt: w.watchedAt, Summary: w.summary})
         }
         delete(pending, txid)
     }

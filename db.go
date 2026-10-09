@@ -42,8 +42,8 @@ var schema = []string{
     `create table if not exists mineraddr (address TEXT PRIMARY KEY, name TEXT NOT NULL references miners(name))`,
     `create table if not exists minertag (tag TEXT PRIMARY KEY, name TEXT NOT NULL references miners(name))`,
     `create table if not exists rates (ts INTEGER PRIMARY KEY, cents INTEGER NOT NULL)`,
-    `create table if not exists watches (chat INTEGER NOT NULL, addr TEXT NOT NULL, alias TEXT NOT NULL,
-        created INTEGER NOT NULL, PRIMARY KEY (chat, addr))`,
+    `create table if not exists watches (platform TEXT NOT NULL, chat INTEGER NOT NULL, addr TEXT NOT NULL,
+        alias TEXT NOT NULL, created INTEGER NOT NULL, PRIMARY KEY (platform, chat, addr))`,
     `create table if not exists addrstat (addr TEXT PRIMARY KEY, type TEXT NOT NULL, balance INTEGER NOT NULL,
         recv INTEGER NOT NULL, sent INTEGER NOT NULL, flow INTEGER NOT NULL, fees INTEGER NOT NULL,
         txs INTEGER NOT NULL, first INTEGER NOT NULL, last INTEGER NOT NULL)`,
@@ -81,6 +81,11 @@ func dsn(path string) string {
 // openDB opens the SQLite database, creates anything missing, and hands the
 // handle to every package that stores something.
 //
+// A watches table from before MAX has no platform column, and since the column
+// is part of the primary key it cannot simply be added: the table is rebuilt in
+// one transaction, every existing watch becoming a Telegram one ("tg"), which is
+// all there was.
+//
 // Every package that owns tables must be Init'd here. Forgetting one is not a
 // loud failure: those packages guard their operations on a nil handle, so the
 // package silently does nothing — which is exactly how the address index came to
@@ -101,6 +106,24 @@ func openDB(path string) error {
     db = opened
     for _, s := range schema {
         if _, err := db.Exec(s); err != nil { return err }
+    }
+    var hasPlatform int
+    if err := db.QueryRow("select count(*) from pragma_table_info('watches') where name = 'platform'").Scan(&hasPlatform); err != nil { return err }
+    if hasPlatform == 0 {
+        var tx, txErr = db.Begin()
+        if txErr != nil { return txErr }
+        defer tx.Rollback()
+        for _, s := range []string{
+            `create table watches_platform (platform TEXT NOT NULL, chat INTEGER NOT NULL, addr TEXT NOT NULL,
+                alias TEXT NOT NULL, created INTEGER NOT NULL, PRIMARY KEY (platform, chat, addr))`,
+            `insert into watches_platform (platform, chat, addr, alias, created) select 'tg', chat, addr, alias, created from watches`,
+            `drop table watches`,
+            `alter table watches_platform rename to watches`,
+        } {
+            if _, err := tx.Exec(s); err != nil { return err }
+        }
+        if err := tx.Commit(); err != nil { return err }
+        logging.Status("watches table migrated: platform column added, existing watches are Telegram's")
     }
     if err := cursors.Init(db); err != nil { return err }
     if err := blockInit(db); err != nil { return err }
