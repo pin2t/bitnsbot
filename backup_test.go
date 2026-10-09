@@ -17,7 +17,7 @@ func openBackupDB(t *testing.T) {
         t.Fatalf("openDB: %v", err)
     }
     t.Cleanup(func() { closeDB() })
-    if err := watches.Add(7, "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa", "Savings"); err != nil {
+    if err := watches.Add("tg", 7, "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa", "Savings"); err != nil {
         t.Fatalf("seed watch: %v", err)
     }
 }

@@ -18,18 +18,18 @@ import "bitnsbot/logging"
 import "bitnsbot/rates"
 
 var pendingInfoMu sync.Mutex
-var pendingInfoChats = make(map[int64]bool)
+var pendingInfoChats = make(map[chatKey]bool)
 
-func info(bot *bot, chat int64, arg string) {
+func info(bot messenger, chat int64, arg string) {
     if arg == "" {
         pendingInfoMu.Lock()
-        pendingInfoChats[chat] = true
+        pendingInfoChats[chatKey{bot.platform(), chat}] = true
         pendingInfoMu.Unlock()
         send(bot, chat, i18n(chat).String("Please send Bitcoin address or transaction or block number or block hash"), nil)
         return
     }
     pendingInfoMu.Lock()
-    delete(pendingInfoChats, chat)
+    delete(pendingInfoChats, chatKey{bot.platform(), chat})
     pendingInfoMu.Unlock()
     if !core.Enabled() {
         send(bot, chat, i18n(chat).String("Bitcoin node connection is not configured"), nil)
@@ -149,7 +149,7 @@ func txPairs(ctx context.Context, lang string, txid string) (txData, bool) {
     return out, true
 }
 
-func transaction(ctx context.Context, bot *bot, chat int64, txid string) {
+func transaction(ctx context.Context, bot messenger, chat int64, txid string) {
     var d, ok = txPairs(ctx, chatLang(chat), txid)
     if !ok {
         send(bot, chat, i18n(chat).Sprintf("Couldn't find transaction %s", short(txid)), nil)
@@ -295,7 +295,7 @@ func compactAddrs(addrs []string) string {
     return s
 }
 
-func block(ctx context.Context, bot *bot, chat int64, height int64) {
+func block(ctx context.Context, bot messenger, chat int64, height int64) {
     if bi, ok := loadBlock(height); ok {
         send(bot, chat, formatBlock(bi, chatLang(chat)), nil)
         return
@@ -722,7 +722,7 @@ func addrPairs(ctx context.Context, lang string, addr string) ([][2]string, bool
     return pairs, true, nil
 }
 
-func address(ctx context.Context, bot *bot, chat int64, addr string) {
+func address(ctx context.Context, bot messenger, chat int64, addr string) {
     var pairs, valid, err = addrPairs(ctx, chatLang(chat), addr)
     if err != nil {
         logging.Err("validate address: %v", err)

@@ -54,7 +54,7 @@ func TestInfoFlow(t *testing.T) {
     if len(sent) != 1 || sent[0] != "Please send Bitcoin address or transaction or block number or block hash" {
         t.Fatalf("unexpected first reply: %#v", sent)
     }
-    if !pendingInfoChats[1] {
+    if !pendingInfoChats[chatKey{"tg", 1}] {
         t.Fatalf("expected chat 1 to be pending")
     }
     core.Reset()
@@ -62,7 +62,7 @@ func TestInfoFlow(t *testing.T) {
     if len(sent) != 2 || sent[1] != "Bitcoin node connection is not configured" {
         t.Fatalf("unexpected second reply: %#v", sent)
     }
-    if pendingInfoChats[1] {
+    if pendingInfoChats[chatKey{"tg", 1}] {
         t.Fatalf("expected chat 1 pending flag cleared")
     }
     update(bot, Update{Message: &Message{Chat: Chat{ID: 3}, Text: "/start"}})
@@ -269,14 +269,14 @@ func TestWatchFlow(t *testing.T) {
     if len(sent) != 1 || !strings.Contains(sent[0], "alias") {
         t.Fatalf("unexpected first reply: %#v", sent)
     }
-    if !pendingWatchChats[1] {
+    if !pendingWatchChats[chatKey{"tg", 1}] {
         t.Fatalf("expected chat 1 to be pending")
     }
     update(bot, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"}})
     if len(sent) != 2 || sent[1] != "Watching 1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa" {
         t.Fatalf("unexpected second reply: %#v", sent)
     }
-    if pendingWatchChats[1] {
+    if pendingWatchChats[chatKey{"tg", 1}] {
         t.Fatalf("expected chat 1 pending flag cleared")
     }
     var txid = "f21b47a9143a23e80cc59e81588d21558b394005580b285961957cb3bed5b3e0"

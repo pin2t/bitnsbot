@@ -26,10 +26,10 @@ func TestAppWatchesAreScopedToTheChat(t *testing.T) {
     }
     defer closeDB()
     txwatches.Reset()
-    if err := watches.Add(42, "bc1qmine", "John"); err != nil { t.Fatalf("add: %v", err) }
-    if err := watches.Add(99, "bc1qtheirs", ""); err != nil { t.Fatalf("add: %v", err) }
-    txwatches.Add(strings.Repeat("a", 64), 42, "mine")
-    txwatches.Add(strings.Repeat("b", 64), 99, "theirs")
+    if err := watches.Add("tg", 42, "bc1qmine", "John"); err != nil { t.Fatalf("add: %v", err) }
+    if err := watches.Add("tg", 99, "bc1qtheirs", ""); err != nil { t.Fatalf("add: %v", err) }
+    txwatches.Add(strings.Repeat("a", 64), "tg", 42, "mine")
+    txwatches.Add(strings.Repeat("b", 64), "tg", 99, "theirs")
     var mine = appWatches(42)
     if !mine.OK { t.Fatal("lookup failed") }
     if len(mine.Addresses) != 1 || mine.Addresses[0].Id != "bc1qmine" {

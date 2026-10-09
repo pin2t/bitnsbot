@@ -1,12 +1,14 @@
 package main
 
 import "bytes"
+import "database/sql"
 import "log"
 import "os"
 import "path/filepath"
 import "strings"
 import "testing"
 import "bitnsbot/logging"
+import "bitnsbot/watches"
 
 // Every package that owns tables is Init'd by openDB, and every table it stores
 // into is created there. This is pinned because forgetting one fails *silently*:
@@ -135,4 +137,34 @@ func TestOpenDBLogsQueries(t *testing.T) {
     buf.Reset()
     if _, err := db.Exec("delete from cursors"); err != nil { t.Fatal(err) }
     if buf.Len() != 0 { t.Errorf("logged below DB level: %q", buf.String()) }
+}
+
+// A database from before MAX has a watches table keyed (chat, addr) with no
+// platform. openDB rebuilds it with the platform in the key, and every watch it
+// held — all of them made on Telegram — comes out as Telegram's, alias and age
+// intact. A second open finds nothing to do.
+func TestOpenDBMigratesWatchesToPlatform(t *testing.T) {
+    var path = filepath.Join(t.TempDir(), "bitnsbot.sqlite")
+    var old, err = sql.Open("sqlite", path)
+    if err != nil { t.Fatal(err) }
+    for _, s := range []string{
+        `create table watches (chat INTEGER NOT NULL, addr TEXT NOT NULL, alias TEXT NOT NULL,
+            created INTEGER NOT NULL, PRIMARY KEY (chat, addr))`,
+        `insert into watches values (42, 'addrA', 'Cold', 1700000000), (-7, 'addrB', '', 1700000001)`,
+    } {
+        if _, err := old.Exec(s); err != nil { t.Fatal(err) }
+    }
+    old.Close()
+    for range 2 {
+        if err := openDB(path); err != nil { t.Fatalf("openDB: %v", err) }
+        var list, lerr = watches.List()
+        if lerr != nil { t.Fatal(lerr) }
+        if len(list) != 2 || list[0] != (watches.Watch{Platform: "tg", Chat: 42, Address: "addrA", Alias: "Cold"}) ||
+            list[1] != (watches.Watch{Platform: "tg", Chat: -7, Address: "addrB"}) {
+            t.Fatalf("migrated %+v", list)
+        }
+        if err := watches.Add("max", 42, "addrA", ""); err != nil { t.Fatalf("the platform is not in the key: %v", err) }
+        if _, err := watches.Remove("max", 42, "addrA"); err != nil { t.Fatal(err) }
+        closeDB()
+    }
 }

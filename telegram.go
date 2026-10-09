@@ -94,6 +94,18 @@ func (b *bot) call(ctx context.Context, method string, payload any) (json.RawMes
     return apiResp.Result, nil
 }
 
+// messenger is a platform the bot talks on — Telegram (*bot) or MAX (*maxBot).
+// Every command handler and the watch notifier reply through one, so the same
+// command works on both. platform is what a stored watch is filed under, and
+// what keeps a Telegram chat apart from a MAX chat that happens to share its
+// number.
+type messenger interface {
+    platform() string
+    sendWithButtons(ctx context.Context, chatID int64, text string, ids []string) error
+}
+
+func (b *bot) platform() string { return "tg" }
+
 func (b *bot) send(ctx context.Context, chatID int64, text string) error {
     return b.sendWithButtons(ctx, chatID, text, nil)
 }

@@ -7,8 +7,8 @@ import "time"
 import _ "modernc.org/sqlite"
 
 // The table as openDB creates it.
-const ddl = `create table watches (chat INTEGER NOT NULL, addr TEXT NOT NULL, alias TEXT NOT NULL,
-    created INTEGER NOT NULL, PRIMARY KEY (chat, addr))`
+const ddl = `create table watches (platform TEXT NOT NULL, chat INTEGER NOT NULL, addr TEXT NOT NULL,
+    alias TEXT NOT NULL, created INTEGER NOT NULL, PRIMARY KEY (platform, chat, addr))`
 
 // open returns the handle as well, which the format tests need to look at the
 // table directly.
@@ -26,7 +26,7 @@ func openTestDB(t *testing.T) { open(t) }
 
 func TestAdd(t *testing.T) {
     openTestDB(t)
-    if err := Add(42, "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa", "Cold wallet"); err != nil {
+    if err := Add("tg", 42, "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa", "Cold wallet"); err != nil {
         t.Fatalf("add: %v", err)
     }
     var list, err = List()
@@ -43,8 +43,8 @@ func TestAdd(t *testing.T) {
 
 func TestList(t *testing.T) {
     openTestDB(t)
-    Add(1, "addrA", "")
-    Add(2, "addrB", "")
+    Add("tg", 1, "addrA", "")
+    Add("tg", 2, "addrB", "")
     var list, err = List()
     if err != nil {
         t.Fatalf("list: %v", err)
@@ -67,10 +67,10 @@ func TestList(t *testing.T) {
 // removing a watch that doesn't belong to the chat removes nothing
 func TestRemove(t *testing.T) {
     openTestDB(t)
-    Add(1, "sharedAddr", "")
-    Add(2, "sharedAddr", "")
-    Add(1, "otherAddr", "")
-    var removed, err = Remove(1, "sharedAddr")
+    Add("tg", 1, "sharedAddr", "")
+    Add("tg", 2, "sharedAddr", "")
+    Add("tg", 1, "otherAddr", "")
+    var removed, err = Remove("tg", 1, "sharedAddr")
     if err != nil {
         t.Fatalf("remove: %v", err)
     }
@@ -86,7 +86,7 @@ func TestRemove(t *testing.T) {
             t.Fatalf("chat 1's sharedAddr watch should be gone: %#v", list)
         }
     }
-    if n, _ := Remove(999, "sharedAddr"); n != 0 {
+    if n, _ := Remove("tg", 999, "sharedAddr"); n != 0 {
         t.Fatalf("expected 0 removed for wrong chat, got %d", n)
     }
 }
@@ -97,7 +97,7 @@ func TestRemove(t *testing.T) {
 // a negative chat id — a Telegram group — round-trips too
 func TestKeyFormat(t *testing.T) {
     var handle = open(t)
-    if err := Add(260439275, "bc1q5rasj5fedy3f9vgh9x84jqlgtvj964k0xn5z6r", "Cold"); err != nil {
+    if err := Add("tg", 260439275, "bc1q5rasj5fedy3f9vgh9x84jqlgtvj964k0xn5z6r", "Cold"); err != nil {
         t.Fatal(err)
     }
     var chat, created int64
@@ -110,7 +110,7 @@ func TestKeyFormat(t *testing.T) {
         t.Errorf("row = %d %q %q", chat, addr, alias)
     }
     if created == 0 { t.Error("created was not stored") }
-    if err := Add(-1001234567890, "addrG", ""); err != nil { t.Fatal(err) }
+    if err := Add("tg", -1001234567890, "addrG", ""); err != nil { t.Fatal(err) }
     var list, err = List()
     if err != nil { t.Fatal(err) }
     var found bool
@@ -124,11 +124,11 @@ func TestKeyFormat(t *testing.T) {
 // — and it keeps the time it was first made rather than looking newly created.
 func TestAddIsIdempotent(t *testing.T) {
     var handle = open(t)
-    if err := Add(7, "addrA", "First"); err != nil { t.Fatal(err) }
+    if err := Add("tg", 7, "addrA", "First"); err != nil { t.Fatal(err) }
     var created int64
     if err := handle.QueryRow("select created from watches").Scan(&created); err != nil { t.Fatal(err) }
     time.Sleep(1100 * time.Millisecond)
-    if err := Add(7, "addrA", "Second"); err != nil { t.Fatal(err) }
+    if err := Add("tg", 7, "addrA", "Second"); err != nil { t.Fatal(err) }
     var list, _ = List()
     if len(list) != 1 || list[0].Alias != "Second" {
         t.Fatalf("re-watching gave %+v, want one watch with the newer alias", list)
@@ -149,11 +149,32 @@ func TestCountIsScopedByPrefix(t *testing.T) {
         chat int64
         addr string
     }{{26, "a"}, {26, "b"}, {260, "c"}, {260, "d"}, {260, "e"}, {-26, "f"}} {
-        if err := Add(w.chat, w.addr, ""); err != nil { t.Fatal(err) }
+        if err := Add("tg", w.chat, w.addr, ""); err != nil { t.Fatal(err) }
     }
     for chat, want := range map[int64]int{26: 2, 260: 3, -26: 1, 99: 0} {
-        var got, err = Count(chat)
+        var got, err = Count("tg", chat)
         if err != nil { t.Fatal(err) }
         if got != want { t.Errorf("Count(%d) = %d, want %d", chat, got, want) }
+    }
+}
+
+// The platform is a third of the key: the same chat number on Telegram and on
+// MAX are two different chats, and neither sees, counts or removes the other's.
+func TestPlatformsAreSeparate(t *testing.T) {
+    open(t)
+    if err := Add("tg", 5, "addrA", "telegram"); err != nil { t.Fatal(err) }
+    if err := Add("max", 5, "addrA", "max"); err != nil { t.Fatal(err) }
+    if err := Add("max", 5, "addrB", ""); err != nil { t.Fatal(err) }
+    if n, _ := Count("tg", 5); n != 1 { t.Errorf("Count(tg) = %d, want 1", n) }
+    if n, _ := Count("max", 5); n != 2 { t.Errorf("Count(max) = %d, want 2", n) }
+    if n, _ := SetAlias("max", 5, "addrA", "renamed"); n != 1 { t.Errorf("SetAlias(max) = %d, want 1", n) }
+    if n, _ := Remove("tg", 5, "addrB"); n != 0 { t.Errorf("Remove(tg) of a MAX watch removed %d", n) }
+    if n, _ := Remove("tg", 5, "addrA"); n != 1 { t.Errorf("Remove(tg) = %d, want 1", n) }
+    var list, err = List()
+    if err != nil { t.Fatal(err) }
+    if len(list) != 2 { t.Fatalf("left %+v, want the two MAX watches", list) }
+    for _, w := range list {
+        if w.Platform != "max" { t.Errorf("left %+v", w) }
+        if w.Address == "addrA" && w.Alias != "renamed" { t.Errorf("alias %q", w.Alias) }
     }
 }

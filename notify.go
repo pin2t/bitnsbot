@@ -25,6 +25,7 @@ type notification struct {
 }
 
 type notifyKey struct {
+    platform string
     chat int64
     id   string
 }
@@ -37,13 +38,13 @@ type notifyChans struct {
 var notifyMu sync.Mutex
 var notifies = make(map[notifyKey]notifyChans)
 
-func startNotifyChat(b *bot, chat int64, watch, alias string) {
+func startNotifyChat(b messenger, chat int64, watch, alias string) {
     var ch = make(chan notification)
     var stop = make(chan struct{})
     notifyMu.Lock()
-    notifies[notifyKey{chat, watch}] = notifyChans{ch, stop}
+    notifies[notifyKey{b.platform(), chat, watch}] = notifyChans{ch, stop}
     notifyMu.Unlock()
-    go func(b *bot, chat int64, watch, alias string, ch <-chan notification, stop chan struct{}) {
+    go func(b messenger, chat int64, watch, alias string, ch <-chan notification, stop chan struct{}) {
         for {
             select {
             case <-stop:
@@ -52,7 +53,7 @@ func startNotifyChat(b *bot, chat int64, watch, alias string) {
                 var msg, ids, summary, ok = addressNotification(chat, n, watch, alias)
                 if !ok { continue }
                 send(b, chat, msg, ids)
-                txwatches.AddAddrConfirm(n.txid, chat, watch, alias, summary)
+                txwatches.AddAddrConfirm(n.txid, b.platform(), chat, watch, alias, summary)
             }
         }
     }(b, chat, watch, alias, ch, stop)
@@ -146,10 +147,10 @@ func fields(pairs [][2]string) string {
     return "\n\n<pre>" + joinAlign(pairs) + "</pre>"
 }
 
-func stopNotifyChat(chat int64, id string) {
+func stopNotifyChat(platform string, chat int64, id string) {
     notifyMu.Lock()
     defer notifyMu.Unlock()
-    var key = notifyKey{chat, id}
+    var key = notifyKey{platform, chat, id}
     if c, found := notifies[key]; found {
         close(c.stop)
         delete(notifies, key)
@@ -326,15 +327,19 @@ func confEstimate(feeRate float64) string {
 
 // startNotify turns every persisted watchCmd back into a live watcher goroutine
 // on startup and, if core is connected, loads the watched addresses into core's
-// transaction filter so notifications resume across restarts.
-func startNotify(bot *bot) {
+// transaction filter so notifications resume across restarts. A watch goes to
+// the messenger of its own platform; one whose platform is not running this time
+// (MAX without -max-token) is left in the store, untouched, for a start that is.
+func startNotify(ms ...messenger) {
     var records, err = watches.List()
     if err != nil {
         logging.Err("list watches: %v", err)
         return
     }
     for _, w := range records {
-        startNotifyChat(bot, w.Chat, w.Address, w.Alias)
+        for _, m := range ms {
+            if m.platform() == w.Platform { startNotifyChat(m, w.Chat, w.Address, w.Alias) }
+        }
     }
     var addrs = notifyAddresses()
     if core.Enabled() && len(addrs) > 0 {
@@ -399,9 +404,10 @@ func confirmationMessage(chat int64, c txwatches.Confirmed, height int64) (strin
 // appears in the just-connected block. The block's txids come from a light
 // getblock (verbosity 1); the fetch is skipped entirely when nothing is watched,
 // so an idle bot pays nothing per block. Runs off core's read-loop goroutine
-// (spawned by notifier.Handle) since it calls back into core.
-func processConfirms(b *bot, hash string) {
-    if b == nil || !core.Enabled() { return }
+// (spawned by notifier.Handle) since it calls back into core. Each confirmation
+// goes out on the messenger of the platform its watch was made on.
+func processConfirms(hash string, ms ...messenger) {
+    if len(ms) == 0 || !core.Enabled() { return }
     if !txwatches.Any() { return }
     var ctx, cancel = context.WithTimeout(context.Background(), 30*time.Second)
     defer cancel()
@@ -412,7 +418,9 @@ func processConfirms(b *bot, hash string) {
     }
     for _, c := range txwatches.Confirms(blk.Tx) {
         var msg, ids = confirmationMessage(c.ChatID, c, blk.Height)
-        send(b, c.ChatID, msg, ids)
-        logging.Info("confirmed watch %s for chat %d in block %d", short(c.Txid), c.ChatID, blk.Height)
+        for _, m := range ms {
+            if m.platform() == c.Platform { send(m, c.ChatID, msg, ids) }
+        }
+        logging.Info("confirmed watch %s for %s chat %d in block %d", short(c.Txid), c.Platform, c.ChatID, blk.Height)
     }
 }

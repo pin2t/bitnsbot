@@ -273,7 +273,7 @@ func (r *reader) varInt() (uint64, bool) {
 // were already going to do it. The confirmation messages are the
 // exception: they are per-block by nature, matching this block's
 // transactions against the watch list.
-func startZMQ(ctx context.Context, endpoints []string, b *bot) error {
+func startZMQ(ctx context.Context, endpoints []string, ms ...messenger) error {
     if len(endpoints) == 0 { return fmt.Errorf("no ZMQ endpoints configured") }
     var subscribe = func() (zmq4.Socket, error) {
         var sub = zmq4.NewSub(ctx)
@@ -307,7 +307,7 @@ func startZMQ(ctx context.Context, endpoints []string, b *bot) error {
                 case "hashblock":
                     var hash = hex.EncodeToString(msg.Frames[1])
                     logging.Info("zmq: new block hash %s", hash)
-                    go processConfirms(b, hash)
+                    go processConfirms(hash, ms...)
                     signals.Send(signals.Block)
                 case "rawtx":
                     var tx, ok = parseTx(msg.Frames[1])
