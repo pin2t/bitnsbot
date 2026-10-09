@@ -7,7 +7,6 @@ import "flag"
 import "fmt"
 import "html"
 import "net/http"
-import "net/http/httputil"
 import "net/url"
 import "os"
 import "os/signal"
@@ -56,7 +55,8 @@ var historyFile     = flag.String("history-file", "", "path to a JSON file conta
 
 var maxToken        = flag.String("max-token", "", "MAX messenger bot token; when set, the MAX webhook server is started on -max-listen")
 var maxListen       = flag.String("max-listen", ":8084", "address the MAX webhook server binds to")
-var maxWebhookPath  = flag.String("max-webhook-path", "/webhook", "path the MAX webhook server accepts updates on")
+var maxWebhookURL   = flag.String("max-webhook-url", "", "public https URL MAX should send updates to, registered via POST /subscriptions on startup; its path is the one the MAX webhook server accepts updates on (empty skips subscribing and accepts them on /)")
+var maxSecret       = flag.String("max-secret", "", "optional secret passed to MAX on subscribing and checked against the X-Max-Bot-Api-Secret header of every update")
 var appSrv *http.Server
 var maxSrv *http.Server
 
@@ -544,15 +544,31 @@ func main() {
         }
     }()
     if *maxToken != "" {
+        var hookURL, perr = url.Parse(*maxWebhookURL)
+        if perr != nil {
+            logging.Fatal("-max-webhook-url: %v", perr)
+        }
+        var hookPath = hookURL.Path
+        if hookPath == "" { hookPath = "/" }
         var mux = http.NewServeMux()
-        mux.HandleFunc(*maxWebhookPath, maxWebhookHandler)
+        mux.HandleFunc(hookPath, maxWebhookHandler(newMaxBot(*maxToken, maxBaseURL)))
         maxSrv = &http.Server{Addr: *maxListen, Handler: mux}
         go func() {
-            logging.Status("MAX webhook listening on %s%s", *maxListen, *maxWebhookPath)
+            logging.Status("MAX webhook listening on %s%s", *maxListen, hookPath)
             if err := maxSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
                 logging.Fatal("MAX webhook listening: %v", err)
             }
         }()
+        if *maxWebhookURL != "" {
+            var ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
+            var err = newMaxBot(*maxToken, maxBaseURL).subscribe(ctx, *maxWebhookURL, *maxSecret)
+            cancel()
+            if err != nil {
+                logging.Err("MAX subscribe: %v", err)
+            } else {
+                logging.Status("MAX webhook subscribed at %s", *maxWebhookURL)
+            }
+        }
     }
     <-ctx.Done()
     stop()
@@ -623,18 +639,6 @@ func webhookHandler(bot *bot) http.HandlerFunc {
         update(bot, u)
         w.WriteHeader(http.StatusOK)
     }
-}
-
-// maxWebhookHandler logs every request the MAX webhook server receives, headers
-// and body included, at INFO and answers 200 OK. Nothing is acted on yet.
-func maxWebhookHandler(w http.ResponseWriter, r *http.Request) {
-    var dump, err = httputil.DumpRequest(r, true)
-    if err != nil {
-        logging.Err("MAX webhook: dump request: %v", err)
-    } else {
-        logging.Info("MAX webhook request:\n%s", dump)
-    }
-    w.WriteHeader(http.StatusOK)
 }
 
 func update(bot *bot, update Update) {
@@ -735,11 +739,16 @@ var commands = []struct{ name, line string }{
 }
 
 func start(bot *bot, chat int64) {
-    var text = i18n(chat).String("Bitnsbot. I keep an eye on the Bitcoin network for you.\n\n")
-    for _, c := range commands { text += i18n(chat).String(c.line) }
-    send(bot, chat, text + "\n" +
-        i18n(chat).Sprintf("Version %s. Build %s. Source code <a href=\"https://github.com/pin2t/bitnsbot\">bitnsbot</a>. Don't forget to give me a ⭐",
-            ver, commit), nil)
+    send(bot, chat, startText(chatLang(chat)), nil)
+}
+
+// startText is the /start reply in a language, shared by Telegram and MAX.
+func startText(lang string) string {
+    var text = i18nl(lang).String("Bitnsbot. I keep an eye on the Bitcoin network for you.\n\n")
+    for _, c := range commands { text += i18nl(lang).String(c.line) }
+    return text + "\n" +
+        i18nl(lang).Sprintf("Version %s. Build %s. Source code <a href=\"https://github.com/pin2t/bitnsbot\">bitnsbot</a>. Don't forget to give me a ⭐",
+            ver, commit)
 }
 
 // menuDescription is the text Telegram shows beside a command in the menu: the
