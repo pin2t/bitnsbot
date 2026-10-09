@@ -69,13 +69,13 @@ func blockAt(ctx context.Context, height int64) (block, error) {
 // are the pool definitions — they are written by update and by the migration,
 // never by the collector, which reads a record only to add to its aggregates.
 type record struct {
-    Blocks    int64    `json:"blocks"`
-    Reward    int64    `json:"reward"`   // satoshi (subsidy + fees)
-    Fees      int64    `json:"fees"`     // satoshi
-    Work      float64  `json:"work"`     // Σ per-block work (difficulty × 2^32 hashes)
-    LastWork  float64  `json:"lastWork"` // work of this miner's most recent block
-    Addresses []string `json:"addresses"`
-    Tags      []string `json:"tags"`
+    Blocks    int64
+    Reward    int64    // satoshi (subsidy + fees)
+    Fees      int64    // satoshi
+    Work      float64  // Σ per-block work (difficulty × 2^32 hashes)
+    LastWork  float64  // work of this miner's most recent block
+    Addresses []string
+    Tags      []string
 }
 
 // Update aggregates every block from the cursor to tip into the per-pool
@@ -96,7 +96,7 @@ func Update(tip int64) {
     } else {
         from = last + 1
     }
-    var began = last
+    var first = from
     for from <= tip {
         var to = from + chunkSize - 1
         if to > tip { to = tip }
@@ -129,9 +129,9 @@ func Update(tip int64) {
         from = to + 1
         if from < tip { time.Sleep(cooldownPeriod) }
     }
-    if last > began {
-        var bm = fmt.Sprintf("blocks %d..%d", began + 1, last)
-        if last == from { bm = fmt.Sprintf("block %d", began + 1) }
+    if last >= first {
+        var bm = fmt.Sprintf("blocks %d..%d", first, last)
+        if last == from { bm = fmt.Sprintf("block %d", first) }
         logging.Info("miners stats: collected from " + bm)
     }
 }

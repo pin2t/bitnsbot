@@ -197,7 +197,7 @@ func updateBlocks(tip int64) {
     }
     var from int64
     if last.Valid { from = last.Int64 + 1 }
-    var began = from - 1
+    var first = from
     for from <= tip {
         var to = from + blocksChunkSize - 1
         if to > tip { to = tip }
@@ -227,9 +227,9 @@ func updateBlocks(tip int64) {
         if to < tip { time.Sleep(blocksChunkPause) }
         from = to + 1
     }
-    if from-1 > began {
-        var bm = fmt.Sprintf("blocks %d..%d", began, from - 1)
-        if from - 1 == began { bm = fmt.Sprintf("block %d", began) }
+    if first <= tip {
+        var bm = fmt.Sprintf("blocks %d..%d", first, from - 1)
+        if first == from - 1 { bm = fmt.Sprintf("block %d", first) }
         logging.Info("blocks: collected from " + bm)
     }
 }
