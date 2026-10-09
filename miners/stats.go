@@ -119,7 +119,7 @@ func Update(tip int64) {
     }
     if last >= first {
         var bm = fmt.Sprintf("blocks %d..%d", first, last)
-        if last == from { bm = fmt.Sprintf("block %d", first) }
+        if last == first { bm = fmt.Sprintf("block %d", first) }
         logging.Info("miners stats: collected from " + bm)
     }
 }
