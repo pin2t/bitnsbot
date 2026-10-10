@@ -33,13 +33,7 @@
   }
 }
 </script>
-<!-- Type and colour are MAX UI's own — its Typography components and its
-     variables. What is here is only the layout it has no component for. -->
 <style>
-  /* The document never scrolls. The app fills the webview as one column: the
-     views scroll inside .main, and the tab bar is the column's last row rather
-     than a fixed element, which a phone's webview does not keep at its foot.
-     Snackbars rise above the bar. */
   html, body, #root, .app { height: 100%; }
   html, body { overflow: hidden; overscroll-behavior: none; }
   .app { --snackbar-bottom-offset: 72px; }
@@ -54,6 +48,12 @@
   /* Six periods share one row, so the percentages shrink with the width rather
      than wrap. */
   .pct { font-size: min(var(--font-size-label), 3.4vw); }
+  /* The Addresses tab fills the scroller whatever it holds, so the picker
+     sits at its foot while a list loads and the spinner is centred above it. */
+  .fill:not([hidden]) { min-height: 100%; display: flex; flex-direction: column; }
+  .fill > .view { flex: 1; padding-bottom: 0; }
+  .pane { flex: 1; display: flex; flex-direction: column; }
+  .pane.wait { justify-content: center; }
   .seg { position: sticky; bottom: 0; z-index: 1; padding: 8px 12px; background: var(--background-surface); }
 
   /* Equal sides keep the title on the centre line, and the title's column is
@@ -423,24 +423,25 @@ function AddressLists({ open }) {
     api("addresses?kind=" + kind).then(r => alive && setList(r), error => alive && setList({ error }));
     return () => { alive = false; };
   }, [kind]);
+  const pick = k => { document.querySelector(".main").scrollTop = 0; setKind(k); };
   const more = () => api("addresses?" + qs({ kind, from: list.Next })).then(
     r => setList(l => l && l.Kind === r.Kind ? { ...l, Rows: l.Rows.concat(r.Rows || []), Next: r.Next, More: r.OK && r.More } : l),
     () => setList(l => ({ ...l, More: false })));
   let body;
   if (!list || list.error) {
-    body = html`<${Status} state=${list}/>`;
+    body = html`<div className="pane wait"><${Status} state=${list}/></div>`;
   } else if (!list.OK) {
-    body = html`<${Empty}>адресов пока нет<//>`;
+    body = html`<div className="pane wait"><${Empty}>адресов пока нет<//></div>`;
   } else {
-    body = html`<${CellList} mode="island">
+    body = html`<div className="pane"><${CellList} mode="island">
       ${list.Rows.map((a, i) => html`<${CellSimple} key=${a.Idx} separator=${i > 0} height="compact" title=${a.Short}
         after=${html`<${Aside}>${a.Value}<//>`} onClick=${() => open({ type: "address", a: a.Id })}/>`)}
     <//>
-    ${list.More ? html`<${Sentinel} key=${kind + list.Next} onVisible=${more}/>` : null}`;
+    ${list.More ? html`<${Sentinel} key=${kind + list.Next} onVisible=${more}/>` : null}</div>`;
   }
   return html`<${View}>
     ${body}
-    <div className="seg"><${Segmented} items=${kinds} activeItem=${kind} onClick=${setKind}/></div>
+    <div className="seg"><${Segmented} items=${kinds} activeItem=${kind} onClick=${pick}/></div>
   <//>`;
 }
 
@@ -863,7 +864,7 @@ function App() {
     <main ref=${main} className="main">
       <div hidden=${!onTab("home")}><${Home} open=${open}/></div>
       <div hidden=${!onTab("blocks")}><${BlockList} open=${open}/></div>
-      <div hidden=${!onTab("addresses")}><${AddressLists} open=${open}/></div>
+      <div className="fill" hidden=${!onTab("addresses")}><${AddressLists} open=${open}/></div>
       <div hidden=${!onTab("watches")}><${WatchList} open=${open} shown=${onTab("watches")}/></div>
       ${stack.map(e => html`<div key=${e.key} hidden=${e !== top}><${Page} page=${e.page} open=${open} back=${back}/></div>`)}
     </main>
