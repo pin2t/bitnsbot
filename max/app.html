@@ -33,144 +33,93 @@
   }
 }
 </script>
+<!-- Type and colour are MAX UI's own — its Typography components and its
+     variables. What is here is only the layout it has no component for. -->
 <style>
-  html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
-  body { margin: 0; background: #edeef2; }
-  @media (prefers-color-scheme: dark) { body { background: #0f0f12; } }
-  [hidden] { display: none !important; }
-  /* The bottom tab bar is fixed, so everything scrolls in the window and the
-     shell keeps clear of the bar and the phone's home indicator. */
-  :root { --navh: 56px; --safe: env(safe-area-inset-bottom, 0px); }
-  .shell { min-height: 100vh; padding-bottom: calc(var(--navh) + var(--safe)); box-sizing: border-box; }
-  .view { display: flex; flex-direction: column; gap: 12px; padding: 12px 0 16px; }
-  .note, .empty { margin: 0; color: var(--text-tertiary); font-size: 0.8125rem; line-height: 1.3; }
-  .empty { padding: 32px 16px; text-align: center; }
-  .center { display: flex; justify-content: center; padding: 32px 0; }
-  .lnk { color: var(--text-themed); cursor: pointer; }
-  .mono { font-variant-numeric: tabular-nums; }
-
-  /* A card is a MAX UI island list with one cell of our own inside, laid out
-     as a grid of figures. */
+  /* The document never scrolls. The app fills the webview as one column: the
+     views scroll inside .main, and the tab bar is the column's last row rather
+     than a fixed element, which a phone's webview does not keep at its foot.
+     Snackbars rise above the bar. */
+  html, body, #root, .app { height: 100%; }
+  html, body { overflow: hidden; overscroll-behavior: none; }
+  .app { --snackbar-bottom-offset: 72px; }
+  .main { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior-y: contain; }
+  .view { padding: 12px 0; }
+  .void { padding: 24px 16px; text-align: center; }
+  .mid { text-align: center; }
   .card { padding: 12px; }
-  .card .note { margin-top: 10px; }
-  .fig { min-width: 0; }
-  .fig .lbl { display: block; color: var(--text-tertiary); font-size: 0.75rem; line-height: 1rem;
-              white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .fig .val { display: block; margin-top: 2px; color: var(--text-primary); font-size: 1rem; font-weight: 600;
-              line-height: 1.3rem; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
-  .fig .unit { font-size: 0.75rem; font-weight: 400; color: var(--text-tertiary); }
-  .fig .sub { display: block; color: var(--text-secondary); font-size: 0.8125rem; }
-  .price { font-size: 1.5rem; font-weight: 600; line-height: 1.8rem; font-variant-numeric: tabular-nums; }
+  .lnk { color: var(--text-themed); cursor: pointer; }
+  .up { color: var(--icon-positive); }
+  .down { color: var(--text-negative); }
   /* Six periods share one row, so the percentages shrink with the width rather
-     than wrap — the Telegram Mini App's rule for the same card. */
-  .changes { margin-top: 10px; }
-  .changes .fig { text-align: center; }
-  .changes .val { font-size: min(0.8125rem, 3.4vw); }
-  .up { color: var(--icon-positive) !important; }
-  .down { color: var(--text-negative) !important; }
-  .flat { color: var(--text-tertiary) !important; font-weight: 400 !important; }
-  .search { padding: 0 12px; }
-  /* 16px is the floor iOS WebKit zooms the page below when a field is focused. */
-  .search input, .dlg input { font-size: max(1rem, 16px) !important; }
+     than wrap. */
+  .pct { font-size: min(var(--font-size-label), 3.4vw); }
+  .seg { position: sticky; bottom: 0; z-index: 1; padding: 8px 12px; background: var(--background-surface); }
 
-  .row-after { color: var(--text-tertiary); font-size: 0.8125rem; text-align: right;
-               white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 45vw; }
-  .row-after.lnk { color: var(--text-themed); }
-  .sentinel { display: flex; justify-content: center; padding: 12px 0; }
-  /* The address-list picker sits at the foot of the tab, over the bar, where a
-     thumb reaches it — as it does in the Telegram Mini App. */
-  .seg { position: sticky; bottom: calc(var(--navh) + var(--safe)); padding: 8px 12px;
-         background: var(--background-surface); z-index: 1; }
+  /* Equal sides keep the title on the centre line, and the title's column is
+     the one that gives way, so a long title ellipsises rather than run over
+     Back. */
+  .head { display: grid; grid-template-columns: 1fr minmax(0, auto) 1fr; align-items: center; gap: 8px; padding: 0 12px; }
+  .head > :last-child { justify-self: end; }
 
-  .head { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center;
-          gap: 8px; padding: 8px 12px 0; }
-  .head .title { display: flex; align-items: center; gap: 2px; min-width: 0; font-size: 1.0625rem;
-                 font-weight: 600; }
-  .head .title span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .head .side { display: flex; justify-content: flex-end; }
-  .head .back { justify-self: start; }
-
-  .flow { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: 4px 8px;
-          align-items: start; font-size: 0.8125rem; overflow-wrap: anywhere; }
-  .flow .side { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
-  .flow .out { text-align: right; }
-  .flow .hd { font-size: 0.75rem; color: var(--text-tertiary); }
-  .flow .arrow { align-self: center; color: var(--text-tertiary); font-size: 1.25rem; line-height: 1; }
-  .flow .amt { display: block; font-size: 0.75rem; color: var(--text-secondary); }
-  .flow .count { align-self: center; display: grid; grid-template-columns: auto auto auto; column-gap: 4px;
-                 justify-items: center; font-size: 0.8125rem; }
-  .flow .count .nl { font-size: 0.6875rem; color: var(--text-tertiary); }
+  .flow { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: 4px 8px; align-items: start;
+          overflow-wrap: anywhere; }
+  .flow .c { align-self: center; }
+  .out { text-align: right; }
+  .count { display: grid; grid-template-columns: repeat(3, auto); column-gap: 4px; justify-items: center; }
   .txcard { padding: 10px 12px; }
   .txcard + .txcard { border-top: 0.5px solid var(--divider-primary); }
-  .txcard .top { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 6px; }
-  .txcard .time { font-size: 0.8125rem; color: var(--text-tertiary); }
-  .txcard .id { flex: 1; min-width: 0; text-align: center; font-size: 0.8125rem; white-space: nowrap;
-                overflow: hidden; text-overflow: ellipsis; }
-  .txcard .am { text-align: right; font-size: 0.875rem; font-weight: 600; }
-  .txcard .usd { display: block; font-size: 0.75rem; font-weight: 400; color: var(--text-tertiary); }
+  .grow { flex: 1; text-align: center; }
 
-  .chart { padding: 12px; display: flex; flex-direction: column; gap: 8px; }
-  .chart .chead { font-size: 0.8125rem; line-height: 1.3; white-space: nowrap; overflow: hidden;
-                  text-overflow: ellipsis; }
-  .chart .chead .cv { font-weight: 600; }
-  .chart .chead .cl { color: var(--text-tertiary); }
-  .chart .plot { display: grid; grid-template-columns: auto minmax(0, 1fr); grid-template-rows: 7.5rem auto;
-                 column-gap: 6px; margin-top: 4px; }
-  .chart .yax { display: flex; flex-direction: column; justify-content: space-between; margin: -0.5em 0;
-                font-size: 0.6875rem; line-height: 1em; color: var(--text-tertiary); text-align: right;
-                font-variant-numeric: tabular-nums; }
-  .chart .area { position: relative; border-bottom: 1px solid var(--divider-primary); }
-  .chart .gl { position: absolute; left: 0; right: 0; top: 0; border-top: 1px solid var(--divider-secondary); }
-  .chart .gl.m { top: 50%; }
-  .chart .bars { position: relative; display: flex; align-items: flex-end; gap: 2px; height: 100%; }
+  .plot { display: grid; grid-template-columns: auto minmax(0, 1fr); grid-template-rows: 7.5rem auto; column-gap: 6px;
+          margin-top: 4px; color: var(--text-tertiary); font-size: var(--font-size-tag); line-height: 1.2; }
+  .yax { display: flex; flex-direction: column; justify-content: space-between; margin: -0.5em 0; line-height: 1em;
+         text-align: right; }
+  .area { position: relative; border-bottom: 1px solid var(--divider-primary); }
+  .gl { position: absolute; left: 0; right: 0; top: 0; border-top: 1px solid var(--divider-secondary); }
+  .gl.m { top: 50%; }
+  .bars { position: relative; display: flex; align-items: flex-end; gap: 2px; height: 100%; }
   /* The whole column is the target, not the painted bar, so a short one can
      still be tapped. */
-  .chart .bar { flex: 1; min-width: 0; height: 100%; display: flex; align-items: flex-end;
-                justify-content: center; cursor: pointer; outline: none; }
-  .chart .bar i { display: block; width: 100%; max-width: 24px; background: var(--button-primary);
-                  border-radius: 4px 4px 0 0; }
-  .chart .bar i.nz { min-height: 2px; }
-  .chart .bars.sel .bar i { opacity: .35; }
-  .chart .bars.sel .bar.on i { opacity: 1; }
-  .chart .ticks { grid-column: 2; display: flex; gap: 2px; height: 1.4em; padding-top: 3px;
-                  font-size: 0.6875rem; line-height: 1.2; color: var(--text-tertiary); }
-  .chart .ticks > span { flex: 1; min-width: 0; position: relative; }
-  .chart .ticks > span > span { position: absolute; left: 50%; transform: translateX(-50%); white-space: nowrap; }
-  .chart .ticks > span:first-child > span { left: 0; transform: none; }
-  .chart .ticks > span:last-child > span { left: auto; right: 0; transform: none; }
+  .bar { flex: 1; min-width: 0; height: 100%; display: flex; align-items: flex-end; justify-content: center;
+         cursor: pointer; outline: none; }
+  .bar i { width: 100%; max-width: 24px; background: var(--button-primary); border-radius: 4px 4px 0 0; }
+  .bar i.nz { min-height: 2px; }
+  .bars.sel .bar i { opacity: .35; }
+  .bars.sel .bar.on i { opacity: 1; }
+  .ticks { grid-column: 2; display: flex; gap: 2px; height: 1.4em; padding-top: 3px; }
+  .ticks > span { flex: 1; min-width: 0; position: relative; }
+  .ticks > span > span { position: absolute; left: 50%; transform: translateX(-50%); white-space: nowrap; }
+  .ticks > span:first-child > span { left: 0; transform: none; }
+  .ticks > span:last-child > span { left: auto; right: 0; transform: none; }
 
-  .nav { position: fixed; left: 0; right: 0; bottom: 0; z-index: 2; display: flex;
-         height: var(--navh); padding-bottom: var(--safe); background: var(--background-primary);
-         border-top: 0.5px solid var(--divider-primary); }
-  .navbtn { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
-            gap: 2px; border: 0; background: none; color: var(--text-tertiary); font: inherit;
-            font-size: 0.6875rem; cursor: pointer; }
+  .nav { flex: none; display: flex; padding-bottom: env(safe-area-inset-bottom, 0px);
+         background: var(--background-primary); border-top: 0.5px solid var(--divider-primary); }
+  .navbtn { flex: 1; height: 56px; display: flex; flex-direction: column; align-items: center; justify-content: center;
+            gap: 2px; color: var(--text-tertiary); }
   .navbtn.on { color: var(--text-themed); }
   .ico { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width: 1.7;
          stroke-linecap: round; stroke-linejoin: round; }
   .ico.s { width: 20px; height: 20px; stroke-width: 2; }
 
   .dlg { width: min(360px, calc(100vw - 32px)); box-sizing: border-box; padding: 16px; border: 0;
-         border-radius: 16px; background: var(--background-primary); color: var(--text-primary); }
-  .dlg::backdrop { background: rgba(12, 13, 14, .32); }
-  .dlg form { display: flex; flex-direction: column; gap: 12px; }
-  .dlg .t { text-align: center; }
-  /* Stacked rather than side by side: "Изменить псевдоним" does not fit half
-     the dialog on a 320px phone. */
-  .dbtns { display: flex; flex-direction: column; gap: 8px; }
+         border-radius: var(--size-border-radius-semantic-border-radius-floating); background: var(--background-primary);
+         color: var(--text-primary); }
+  .dlg::backdrop { background: var(--background-overlay, rgba(12, 13, 14, .32)); }
 </style>
 </head>
 <body>
 <div id="root"></div>
 <script type="module">
-import { createElement, useState, useEffect, useLayoutEffect, useRef } from "react";
+import { createElement, Fragment, useState, useEffect, useLayoutEffect, useRef } from "react";
 import { createRoot } from "react-dom/client";
 import htm from "htm";
-import { MaxUI, Panel, Grid, Typography, Button, IconButton, CellList, CellHeader, CellSimple,
-         Input, Segmented, Spinner, Tappable, SnackbarProvider, useSnackbar,
+import { MaxUI, Panel, Container, Flex, Grid, Typography, EllipsisText, Button, IconButton, CellList, CellHeader,
+         CellSimple, Input, Segmented, Spinner, Tappable, SnackbarProvider, useSnackbar, useColorScheme,
          Icon16SearchOutline } from "@maxhub/max-ui";
 
 const html = htm.bind(createElement);
+const Text = Typography.Text;
 const WebApp = window.WebApp;
 
 // The launch data MAX signs, sent with every request for the server to check.
@@ -182,6 +131,11 @@ function launchData() {
 }
 const initData = launchData();
 if (WebApp && typeof WebApp.ready === "function") { try { WebApp.ready(); } catch (e) {} }
+// The views scroll inside the page and the webview itself never does, so a pull
+// down a list would otherwise reach MAX as a swipe closing the app.
+if (WebApp && typeof WebApp.disableVerticalSwipes === "function") {
+  try { Promise.resolve(WebApp.disableVerticalSwipes()).catch(() => {}); } catch (e) {}
+}
 
 function qs(params) { return new URLSearchParams(params).toString(); }
 
@@ -265,7 +219,7 @@ const icons = {
   edit: svg(html`<path d="M4 20h4L18 10a2.8 2.8 0 0 0-4-4L4 16v4z"/><path d="M13.5 6.5l4 4"/>`, "s"),
   copy: svg(html`<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/>`, "s"),
   done: svg(html`<path d="M20 6 9 17l-5-5"/>`, "s"),
-  back: svg(html`<path d="M15 18l-6-6 6-6"/>`, "s"),
+  back: svg(html`<path d="M15 18l-6-6 6-6"/>`),
 };
 
 const tabs = [
@@ -275,30 +229,47 @@ const tabs = [
   { id: "watches", title: "Наблюдение" },
 ];
 
+function View({ children }) {
+  return html`<${Flex} direction="column" align="stretch" gap=${12} className="view">${children}<//>`;
+}
+
 // Status stands in for a view that has nothing to show yet: a spinner while it
 // loads, and a sentence when it failed.
 function Status({ state }) {
   if (!state || state.loading || (!state.error && !state.data)) {
-    return html`<div className="center"><${Spinner} size=${24}/></div>`;
+    return html`<${Flex} justify="center" className="void"><${Spinner} size=${24}/><//>`;
   }
-  if (state.error && state.error.status === 401) { return html`<p className="empty">Откройте мини-приложение в MAX</p>`; }
-  return html`<p className="empty">не удалось загрузить</p>`;
+  if (state.error && state.error.status === 401) { return html`<${Empty}>Откройте мини-приложение в MAX<//>`; }
+  return html`<${Empty}>не удалось загрузить<//>`;
 }
 
-function Empty({ children }) { return html`<p className="empty">${children}</p>`; }
+function Empty({ children }) {
+  return html`<div className="void"><${Text} variant="description" color="tertiary">${children}<//></div>`;
+}
+
+function Note({ children }) { return html`<${Text} variant="description" color="tertiary">${children}<//>`; }
 
 // Link is a tappable piece of text inside a cell. It stops the tap there, so a
 // cell that is itself tappable does not open as well.
-function Link({ onClick, children, className }) {
+function Link({ onClick, children }) {
   const go = e => { e.stopPropagation(); onClick(); };
-  return html`<span role="link" tabIndex=${0} className=${"lnk" + (className ? " " + className : "")}
+  return html`<span role="link" tabIndex=${0} className="lnk"
     onClick=${go} onKeyDown=${e => { if (e.key === "Enter") { go(e); } }}>${children}</span>`;
+}
+
+// Aside is the figure on the right of a list row, a link when it has somewhere
+// to go.
+function Aside({ onClick, children }) {
+  return onClick
+    ? html`<${Link} onClick=${onClick}><${Text} variant="description">${children}<//><//>`
+    : html`<${Text} variant="description" color="tertiary">${children}<//>`;
 }
 
 // Sentinel loads the next batch when it scrolls into view. Each batch renders a
 // new one (the caller keys it by where the batch starts), which is what chains
 // the loading until the screen is full. A hidden tab's sentinel is not on screen
-// and waits until the tab is shown.
+// and waits until the tab is shown. The views scroll inside .main, so that is
+// the root the margin is measured from.
 function Sentinel({ onVisible }) {
   const ref = useRef(null);
   const cb = useRef(onVisible);
@@ -310,36 +281,36 @@ function Sentinel({ onVisible }) {
       fired = true;
       io.disconnect();
       cb.current();
-    }, { rootMargin: "200px" });
+    }, { root: ref.current.closest(".main"), rootMargin: "200px" });
     io.observe(ref.current);
     return () => io.disconnect();
   }, []);
-  return html`<div ref=${ref} className="sentinel"><${Spinner} size=${20}/></div>`;
+  return html`<${Flex} ref=${ref} justify="center" className="void"><${Spinner} size=${20}/><//>`;
 }
 
 function Card({ title, children }) {
-  return html`<${CellList} mode="island" header=${html`<${CellHeader}>${title}<//>`}>
-    <div className="card">${children}</div>
+  return html`<${CellList} mode="island" header=${html`<${CellHeader} className="mid">${title}<//>`}>
+    <${Flex} direction="column" align="stretch" gap=${10} className="card">${children}<//>
   <//>`;
 }
 
-function Fig({ label, children, sub, cls }) {
-  return html`<div className="fig">
-    <span className="lbl">${label}</span>
-    <span className=${"val" + (cls ? " " + cls : "")}>${children}</span>
-    ${sub ? html`<span className="sub">${sub}</span>` : null}
-  </div>`;
+function Fig({ label, children, sub }) {
+  return html`<${Flex} direction="column" gap=${2}>
+    <${Text} variant="label" color="tertiary">${label}<//>
+    <${Text} variant="body-strong">${children}<//>
+    ${sub ? html`<${Text} variant="description" color="secondary">${sub}<//>` : null}
+  <//>`;
 }
 
 function FeesCard({ open }) {
   const [s, reload] = useLoad("fees");
   useEvent("fees", reload);
   const f = s.data;
-  const tier = (label, t) => html`<${Fig} key=${label} label=${label} sub=${t.USD}>${t.Rate} <span className="unit">сат/вБ</span><//>`;
+  const tier = (label, t) => html`<${Fig} key=${label} label=${label} sub=${t.USD}>${t.Rate} <${Text} variant="label" color="tertiary">сат/вБ<//><//>`;
   return html`<${Card} title="Комиссии сети">
-    ${!f ? html`<${Status} state=${s}/>` : !f.OK ? html`<p className="note">комиссии недоступны</p>` : html`
+    ${!f ? html`<${Status} state=${s}/>` : !f.OK ? html`<${Note}>комиссии недоступны<//>` : html`
       <${Grid} cols=${3} gap=${8}>${tier("10-20 мин.", f.Fast)}${tier("~1 час", f.Hour)}${tier("более 2-х ч", f.Slow)}<//>
-      <p className="note">на основе <${Link} onClick=${() => open({ type: "mempool" })}>${f.TxCount}<//> ожидающих транзакций</p>`}
+      <${Note}>на основе <${Link} onClick=${() => open({ type: "mempool" })}>${f.TxCount}<//> ожидающих транзакций<//>`}
   <//>`;
 }
 
@@ -348,7 +319,7 @@ function NetworkCard() {
   useEvent("network", reload);
   const n = s.data;
   return html`<${Card} title="Блокчейн">
-    ${!n ? html`<${Status} state=${s}/>` : !n.OK ? html`<p className="note">статистика сети недоступна</p>` : html`
+    ${!n ? html`<${Status} state=${s}/>` : !n.OK ? html`<${Note}>статистика сети недоступна<//>` : html`
       <${Grid} cols=${2} gapX=${12} gapY=${10}>
         <${Fig} label="Монет">${n.Coins} / ${n.Cap}<//>
         <${Fig} label="Блоков">${n.Blocks}<//>
@@ -365,12 +336,15 @@ function MarketCard() {
   useEvent("market", reload);
   const m = s.data;
   return html`<${Card} title="Рынок">
-    ${!m ? html`<${Status} state=${s}/>` : !m.OK ? html`<p className="note">данные рынка недоступны</p>` : html`
-      <div className="price">${m.Price}</div>
-      <div className="changes"><${Grid} cols=${6} gap=${4}>
-        ${(m.Changes || []).map(c => html`<${Fig} key=${c.Label} label=${c.Label}
-          cls=${c.Neutral ? "flat" : c.Up ? "up" : "down"}>${c.Pct}<//>`)}
-      <//></div>`}
+    ${!m ? html`<${Status} state=${s}/>` : !m.OK ? html`<${Note}>данные рынка недоступны<//>` : html`
+      <${Text} variant="header" className="mid">${m.Price}<//>
+      <${Grid} cols=${6} gap=${4}>
+        ${(m.Changes || []).map(c => html`<${Flex} key=${c.Label} direction="column" align="center" gap=${2}>
+          <${Text} variant="label" color="tertiary">${c.Label}<//>
+          <${Text} variant="label-strong" color=${c.Neutral ? "tertiary" : "inherit"}
+            className=${"pct" + (c.Neutral ? "" : c.Up ? " up" : " down")}>${c.Pct}<//>
+        <//>`)}
+      <//>`}
   <//>`;
 }
 
@@ -381,21 +355,21 @@ function Search({ open }) {
     const page = pageFor(q);
     if (page) { e.target.querySelector("input").blur(); open(page); }
   };
-  return html`<form className="search" onSubmit=${submit}>
+  return html`<${Container}><form onSubmit=${submit}>
     <${Input} value=${q} onChange=${e => setQ(e.target.value)} type="search" enterKeyHint="search"
       autoCapitalize="off" autoCorrect="off" spellCheck=${false} withClearButton
       iconBefore=${html`<${Icon16SearchOutline}/>`}
       placeholder="Транзакция, блок или адрес" hint="Вставьте ид транзакции, номер блока, либо адрес"/>
-  </form>`;
+  </form><//>`;
 }
 
 function Home({ open }) {
-  return html`<div className="view">
+  return html`<${View}>
     <${FeesCard} open=${open}/>
     <${NetworkCard}/>
     <${MarketCard}/>
     <${Search} open=${open}/>
-  </div>`;
+  <//>`;
 }
 
 // BlockList is the Blocks tab: the newest blocks, older ones appended as the
@@ -419,19 +393,17 @@ function BlockList({ open }) {
       });
     }, () => {});
   });
-  if (!list || list.error) { return html`<div className="view"><${Status} state=${list ? list : null}/></div>`; }
-  if (!list.OK) { return html`<div className="view"><${Empty}>блоки ещё не загружены<//></div>`; }
-  return html`<div className="view">
+  if (!list || list.error) { return html`<${View}><${Status} state=${list ? list : null}/><//>`; }
+  if (!list.OK) { return html`<${View}><${Empty}>блоки ещё не загружены<//><//>`; }
+  return html`<${View}>
     <${CellList} mode="island">
       ${list.Rows.map((b, i) => html`<${CellSimple} key=${b.Num} separator=${i > 0} height="compact"
         title=${b.Height} subtitle=${b.Size + " · " + b.Txs}
         onClick=${() => open({ type: "block", height: String(b.Num) })}
-        after=${b.MinerKnown
-          ? html`<${Link} className="row-after" onClick=${() => open({ type: "miner", name: b.Miner })}>${b.Miner}<//>`
-          : html`<span className="row-after">${b.Miner}</span>`}/>`)}
+        after=${html`<${Aside} onClick=${b.MinerKnown ? () => open({ type: "miner", name: b.Miner }) : null}>${b.Miner}<//>`}/>`)}
     <//>
     ${list.More ? html`<${Sentinel} key=${list.Next} onVisible=${older}/>` : null}
-  </div>`;
+  <//>`;
 }
 
 const kinds = [
@@ -463,15 +435,14 @@ function AddressLists({ open }) {
   } else {
     body = html`<${CellList} mode="island">
       ${list.Rows.map((a, i) => html`<${CellSimple} key=${a.Idx} separator=${i > 0} height="compact" title=${a.Short}
-        after=${html`<span className="row-after">${a.Value}</span>`}
-        onClick=${() => open({ type: "address", a: a.Id })}/>`)}
+        after=${html`<${Aside}>${a.Value}<//>`} onClick=${() => open({ type: "address", a: a.Id })}/>`)}
     <//>
     ${list.More ? html`<${Sentinel} key=${kind + list.Next} onVisible=${more}/>` : null}`;
   }
-  return html`<div className="view">
+  return html`<${View}>
     ${body}
     <div className="seg"><${Segmented} items=${kinds} activeItem=${kind} onClick=${setKind}/></div>
-  </div>`;
+  <//>`;
 }
 
 // WatchList is the Watches tab, the reader's own: fetched whenever the tab is
@@ -505,7 +476,7 @@ function WatchList({ open, shown }) {
       ${(w.Addresses || []).length ? html`<${CellList} mode="island" header=${html`<${CellHeader}>Адреса<//>`}>${rows(w.Addresses, "address")}<//>` : null}
       ${(w.Txs || []).length ? html`<${CellList} mode="island" header=${html`<${CellHeader}>Транзакции<//>`}>${rows(w.Txs, "tx")}<//>` : null}`;
   }
-  return html`<div className="view">${body}</div>`;
+  return html`<${View}>${body}<//>`;
 }
 
 function copyText(text) {
@@ -565,11 +536,17 @@ function Bell({ kind, id }) {
     aria-label=${on ? "Не следить" : "Следить"} aria-pressed=${!!on} onClick=${toggle}>${icons.bell}<//>`;
 }
 
+// Head is a page's title row: Back, the title with its copy button, and the
+// bell. Back is an icon, so the sides stay narrow enough for a shortened id to
+// fit between them on a 320px phone.
 function Head({ title, back, kind, id, confirmed }) {
   return html`<div className="head">
-    <${Button} className="back" variant="ghost" size="small" iconBefore=${icons.back} onClick=${back}>Назад<//>
-    <div className="title"><span>${title}</span>${kind ? html`<${CopyButton} id=${id}/>` : null}</div>
-    <div className="side">${kind && !confirmed ? html`<${Bell} kind=${kind} id=${id}/>` : null}</div>
+    <${IconButton} variant="ghost" size="small" aria-label="Назад" onClick=${back}>${icons.back}<//>
+    <${Flex} align="center" gap=${2}>
+      <${EllipsisText}><${Typography.Headline} variant="small">${title}<//><//>
+      ${kind ? html`<${CopyButton} id=${id}/>` : null}
+    <//>
+    <div>${kind && !confirmed ? html`<${Bell} kind=${kind} id=${id}/>` : null}</div>
   </div>`;
 }
 
@@ -601,38 +578,49 @@ function Fields({ rows, open }) {
   <//>`);
 }
 
-function Side({ parts, open, amounts }) {
-  return (parts || []).map((p, i) => html`<div key=${i}>
-    ${p.Id ? html`<${Link} onClick=${() => open(pageFor(p.Id))}>${p.Text}<//>` : html`<span>${p.Text}</span>`}
-    ${amounts && p.Amount ? html`<span className="amt">${p.Amount}</span>` : null}
-  </div>`);
+function Side({ parts, open, amounts, out }) {
+  return html`<${Flex} direction="column" gap=${4} align=${out ? "flex-end" : "flex-start"} className=${out ? "out" : ""}>
+    ${(parts || []).map((p, i) => html`<div key=${i}>
+      <${Text} variant="description">${p.Id ? html`<${Link} onClick=${() => open(pageFor(p.Id))}>${p.Text}<//>` : p.Text}<//>
+      ${amounts && p.Amount ? html`<div><${Text} variant="label" color="secondary">${p.Amount}<//></div>` : null}
+    </div>`)}
+  <//>`;
 }
 
 // Flow is a transaction's two sides: the input addresses on the left, the
 // outputs on the right, each with what it moved.
 function Flow({ info, open }) {
   return html`<${CellList} mode="island"><div className="card flow">
-    <span className="hd">${info.InCount} вх.</span><span></span><span className="hd out">${info.OutCount} вых.</span>
-    <div className="side"><${Side} parts=${info.Inputs} open=${open} amounts/></div>
-    <span className="arrow">→</span>
-    <div className="side out"><${Side} parts=${info.Outputs} open=${open} amounts/></div>
+    <${Text} variant="label" color="tertiary">${info.InCount} вх.<//>
+    <span></span>
+    <${Text} variant="label" color="tertiary" className="out">${info.OutCount} вых.<//>
+    <${Side} parts=${info.Inputs} open=${open} amounts/>
+    <${Text} variant="title" color="tertiary" className="c">→<//>
+    <${Side} parts=${info.Outputs} open=${open} amounts out/>
   </div><//>`;
 }
 
 function TxCard({ tx, open }) {
-  return html`<div className="txcard">
-    <div className="top">
-      <span className="time">${tx.Time}</span>
-      <${Link} className="id" onClick=${() => open({ type: "tx", id: tx.Id })}>${tx.Short}<//>
-      <span className="am">${tx.Amount}${tx.USD ? html`<span className="usd">${tx.USD}</span>` : null}</span>
-    </div>
+  return html`<${Flex} direction="column" align="stretch" gap=${6} className="txcard">
+    <${Flex} justify="space-between" align="baseline" gap=${8}>
+      <${Text} variant="description" color="tertiary">${tx.Time}<//>
+      <${EllipsisText} className="grow">
+        <${Link} onClick=${() => open({ type: "tx", id: tx.Id })}><${Text} variant="description">${tx.Short}<//><//>
+      <//>
+      <${Flex} direction="column" align="flex-end">
+        <${Text} variant="detail-strong">${tx.Amount}<//>
+        ${tx.USD ? html`<${Text} variant="label" color="tertiary">${tx.USD}<//>` : null}
+      <//>
+    <//>
     <div className="flow">
-      <div className="side"><${Side} parts=${tx.Inputs} open=${open}/></div>
-      <span className="count"><span>${tx.InCount}</span><span className="arrow">→</span><span>${tx.OutCount}</span>
-        <span className="nl">вх.</span><span></span><span className="nl">вых.</span></span>
-      <div className="side out"><${Side} parts=${tx.Outputs} open=${open}/></div>
+      <${Side} parts=${tx.Inputs} open=${open}/>
+      <div className="count c">
+        <${Text} variant="description">${tx.InCount}<//><${Text} variant="description" color="tertiary">→<//><${Text} variant="description">${tx.OutCount}<//>
+        <${Text} variant="tag" color="tertiary">вх.<//><span></span><${Text} variant="tag" color="tertiary">вых.<//>
+      </div>
+      <${Side} parts=${tx.Outputs} open=${open} out/>
     </div>
-  </div>`;
+  <//>`;
 }
 
 // AddrTxs is an address page's transactions, newest first: the first batch comes
@@ -668,11 +656,14 @@ function Chart({ first }) {
   };
   const bars = chart.Bars || [];
   const shown = hover >= 0 ? bars[hover] : held >= 0 ? bars[held] : null;
-  return html`<${CellList} mode="island"><div className="chart">
+  return html`<${CellList} mode="island"><${Flex} direction="column" align="stretch" gap=${8} className="card">
     <${Segmented} items=${chartData} activeItem=${chart.Data} onClick=${d => pick(d, chart.Period)}/>
     <${Segmented} items=${chartPeriods} activeItem=${chart.Period} onClick=${p => pick(chart.Data, p)}/>
-    ${busy ? html`<div className="center"><${Spinner} size=${20}/></div>` : !chart.OK ? html`<${Empty}>нет блоков за этот период<//>` : html`
-      <div className="chead"><span className="cv">${shown ? shown.Value : chart.Value}</span> <span className="cl">${shown ? shown.Label : chart.Label}</span></div>
+    ${busy ? html`<${Flex} justify="center" className="void"><${Spinner} size=${20}/><//>` : !chart.OK ? html`<${Empty}>нет блоков за этот период<//>` : html`
+      <${EllipsisText}>
+        <${Text} variant="description-strong">${shown ? shown.Value : chart.Value}<//>${" "}
+        <${Text} variant="description" color="tertiary">${shown ? shown.Label : chart.Label}<//>
+      <//>
       <div className="plot">
         <div className="yax"><span>${chart.Top}</span><span>${chart.Mid}</span><span>0</span></div>
         <div className="area">
@@ -687,7 +678,7 @@ function Chart({ first }) {
         </div>
         <div className="ticks">${bars.map((b, i) => html`<span key=${i}>${b.Tick ? html`<span>${b.Tick}</span>` : null}</span>`)}</div>
       </div>`}
-  </div><//>`;
+  <//><//>`;
 }
 
 // Details is a block, transaction, address or miner page. title stands in until
@@ -696,7 +687,7 @@ function Details({ path, title, open, back }) {
   const [s] = useLoad(path);
   const info = s.data;
   const ok = info && info.OK;
-  return html`<div className="view">
+  return html`<${View}>
     <${Head} title=${info && info.Title ? info.Title : title} back=${back}
       kind=${ok ? info.Kind : ""} id=${ok ? info.Id : ""} confirmed=${ok && info.Confirmed}/>
     ${!info ? html`<${Status} state=${s}/>` : !ok
@@ -705,7 +696,7 @@ function Details({ path, title, open, back }) {
       ${(info.Inputs || []).length || (info.Outputs || []).length ? html`<${Flow} info=${info} open=${open}/>` : null}
       ${info.Txs ? html`<${AddrTxs} first=${info.Txs} open=${open}/>` : null}
       ${info.Chart ? html`<${Chart} first=${info.Chart}/>` : null}`}
-  </div>`;
+  <//>`;
 }
 
 const keptTxs = 100;
@@ -751,11 +742,11 @@ function Mempool({ open, back }) {
     body = html`<${Fields} rows=${mp.Rows} open=${open}/>
       <${CellList} mode="island" header=${html`<${CellHeader}>Новые транзакции<//>`}>
         ${mp.Txs.length ? mp.Txs.map((t, i) => html`<${CellSimple} key=${t.Id} separator=${i > 0} height="compact" title=${t.Short}
-          subtitle=${t.Amount} after=${html`<span className="row-after">${agoText(t.At, now)}</span>`}
+          subtitle=${t.Amount} after=${html`<${Aside}>${agoText(t.At, now)}<//>`}
           onClick=${() => open({ type: "tx", id: t.Id })}/>`) : html`<${Empty}>ожидание транзакций…<//>`}
       <//>`;
   }
-  return html`<div className="view"><${Head} title="Мемпул" back=${back}/>${body}</div>`;
+  return html`<${View}><${Head} title="Мемпул" back=${back}/>${body}<//>`;
 }
 
 function Page({ page, open, back }) {
@@ -771,7 +762,9 @@ function Page({ page, open, back }) {
 
 // AliasDialog names a watch, in two shapes: right after the bell files one it
 // offers only Save, while the Watches tab's edit icon can also delete. Save on
-// an empty field changes nothing, which is how a reader dismisses it.
+// an empty field changes nothing, which is how a reader dismisses it. The
+// buttons are stacked: "Изменить псевдоним" does not fit half the dialog on a
+// 320px phone.
 function AliasDialog() {
   const ref = useRef(null);
   const input = useRef(null);
@@ -797,38 +790,49 @@ function AliasDialog() {
   const remove = () => done(api("watch?" + qs({ kind: st.kind, id: st.id, on: "0" }), { method: "POST" }),
     "Не удалось удалить наблюдение");
   return html`<dialog ref=${ref} className="dlg" onClick=${e => { if (e.target === ref.current) { close(); } }}>
-    <form onSubmit=${save}>
-      <${Typography.Title} className="t">Псевдоним<//>
+    <form onSubmit=${save}><${Flex} direction="column" align="stretch" gap=${12}>
+      <${Typography.Title} className="mid">Псевдоним<//>
       <${Input} ref=${input} value=${st.alias} onChange=${e => setSt({ ...st, alias: e.target.value })} maxLength=${64}
         autoComplete="off" autoCapitalize="off" placeholder="Псевдоним для наблюдения"/>
-      <div className="dbtns">
+      <${Flex} direction="column" align="stretch" gap=${8}>
         <${Button} type="submit" stretched loading=${busy}>${st.edit ? "Изменить псевдоним" : "Сохранить"}<//>
         ${st.edit ? html`<${Button} type="button" variant="destructive" stretched disabled=${busy} onClick=${remove}>Удалить<//>` : null}
-      </div>
-    </form>
+      <//>
+    <//></form>
   </dialog>`;
 }
 
+// Nav is the tab bar. The canvas behind the app takes the bar's colour, so a
+// strip of webview below the page — a phone's inset the page is not told of —
+// reads as the bar running on to the screen's edge.
 function Nav({ active, go }) {
-  return html`<nav className="nav">${tabs.map(t => html`<${Tappable} key=${t.id} as="button" type="button"
-    className=${"navbtn" + (t.id === active ? " on" : "")} onClick=${() => go(t.id)}>${icons[t.id]}<span>${t.title}</span><//>`)}</nav>`;
+  const ref = useRef(null);
+  const scheme = useColorScheme();
+  useLayoutEffect(() => {
+    document.documentElement.style.backgroundColor = getComputedStyle(ref.current).backgroundColor;
+  }, [scheme]);
+  return html`<nav ref=${ref} className="nav">${tabs.map(t => html`<${Tappable} key=${t.id} as="button" type="button"
+    className=${"navbtn" + (t.id === active ? " on" : "")} onClick=${() => go(t.id)}>
+    ${icons[t.id]}<${Text} variant="tag">${t.title}<//>
+  <//>`)}</nav>`;
 }
 
 // App keeps the four tabs mounted, so a list keeps its rows and the place the
 // reader had scrolled to. A page opened on top of them goes on a stack, and
 // Back pops it: a chain of pages unwinds one at a time, to where the reader
-// started. The window is the one scroller, so each view's scroll position is
-// saved as it is left and put back when it is shown again. Tapping a tab drops
-// the stack and shows that tab as it was.
+// started. .main is the one scroller, so each view's scroll position is saved
+// as it is left and put back when it is shown again. Tapping a tab drops the
+// stack and shows that tab as it was.
 function App() {
   const [root, setRoot] = useState("home");
   const [stack, setStack] = useState([]);
+  const main = useRef(null);
   const scrolls = useRef({});
   const seq = useRef(0);
   const top = stack.length ? stack[stack.length - 1] : null;
   const view = top ? top.key : "tab:" + root;
   const shown = useRef(view);
-  const leave = () => { scrolls.current[shown.current] = window.scrollY; };
+  const leave = () => { scrolls.current[shown.current] = main.current.scrollTop; };
   const open = page => {
     if (!page) { return; }
     leave();
@@ -840,7 +844,7 @@ function App() {
   const go = tab => { leave(); setStack([]); setRoot(tab); };
   useLayoutEffect(() => {
     shown.current = view;
-    window.scrollTo(0, scrolls.current[view] || 0);
+    main.current.scrollTop = scrolls.current[view] || 0;
   }, [view]);
   const backRef = useRef(back);
   backRef.current = back;
@@ -856,28 +860,26 @@ function App() {
     try { if (bb) { if (stack.length) { bb.show(); } else { bb.hide(); } } } catch (e) {}
   }, [stack.length]);
   const onTab = t => !top && root === t;
-  return html`<div className="shell">
-    <div hidden=${!onTab("home")}><${Home} open=${open}/></div>
-    <div hidden=${!onTab("blocks")}><${BlockList} open=${open}/></div>
-    <div hidden=${!onTab("addresses")}><${AddressLists} open=${open}/></div>
-    <div hidden=${!onTab("watches")}><${WatchList} open=${open} shown=${onTab("watches")}/></div>
-    ${stack.map(e => html`<div key=${e.key} hidden=${e !== top}><${Page} page=${e.page} open=${open} back=${back}/></div>`)}
+  return html`<${Fragment}>
+    <main ref=${main} className="main">
+      <div hidden=${!onTab("home")}><${Home} open=${open}/></div>
+      <div hidden=${!onTab("blocks")}><${BlockList} open=${open}/></div>
+      <div hidden=${!onTab("addresses")}><${AddressLists} open=${open}/></div>
+      <div hidden=${!onTab("watches")}><${WatchList} open=${open} shown=${onTab("watches")}/></div>
+      ${stack.map(e => html`<div key=${e.key} hidden=${e !== top}><${Page} page=${e.page} open=${open} back=${back}/></div>`)}
+    </main>
     <${Nav} active=${top ? top.tab : root} go=${go}/>
     <${AliasDialog}/>
-  </div>`;
+  <//>`;
 }
 
 // MAX UI picks its look from the platform: MAX names it, and on a desktop or
 // the web MAX UI's own guess stands.
 const platform = WebApp && (WebApp.platform === "ios" || WebApp.platform === "android") ? WebApp.platform : undefined;
 
-function Outside() {
-  return html`<div className="shell"><p className="empty">Откройте мини-приложение в MAX</p></div>`;
-}
-
-createRoot(document.getElementById("root")).render(html`<${MaxUI} platform=${platform}>
+createRoot(document.getElementById("root")).render(html`<${MaxUI} platform=${platform} className="app" resetBody>
   <${Panel} mode="secondary">
-    <${SnackbarProvider}>${initData ? html`<${App}/>` : html`<${Outside}/>`}<//>
+    <${SnackbarProvider}>${initData ? html`<${App}/>` : html`<${Empty}>Откройте мини-приложение в MAX<//>`}<//>
   <//>
 <//>`);
 </script>
