@@ -30,7 +30,7 @@ func TestAppWatchesAreScopedToTheChat(t *testing.T) {
     if err := watches.Add("tg", 99, "bc1qtheirs", ""); err != nil { t.Fatalf("add: %v", err) }
     txwatches.Add(strings.Repeat("a", 64), "tg", 42, "mine")
     txwatches.Add(strings.Repeat("b", 64), "tg", 99, "theirs")
-    var mine = appWatches(42)
+    var mine = appWatches("tg", 42)
     if !mine.OK { t.Fatal("lookup failed") }
     if len(mine.Addresses) != 1 || mine.Addresses[0].Id != "bc1qmine" {
         t.Errorf("addresses = %+v; want only this chat's", mine.Addresses)
@@ -44,11 +44,11 @@ func TestAppWatchesAreScopedToTheChat(t *testing.T) {
     if mine.Txs[0].Short != short(strings.Repeat("a", 64)) {
         t.Errorf("Short = %q, want the shortened id", mine.Txs[0].Short)
     }
-    var theirs = appWatches(99)
+    var theirs = appWatches("tg", 99)
     if len(theirs.Addresses) != 1 || theirs.Addresses[0].Id != "bc1qtheirs" {
         t.Errorf("the other chat got %+v", theirs.Addresses)
     }
-    var none = appWatches(7)
+    var none = appWatches("tg", 7)
     if len(none.Addresses) != 0 || len(none.Txs) != 0 {
         t.Errorf("an unrelated chat was served %+v / %+v", none.Addresses, none.Txs)
     }
