@@ -3,6 +3,7 @@ package app
 import "context"
 import "net/http/httptest"
 import "strings"
+import "sync"
 import "testing"
 import "time"
 
@@ -195,5 +196,37 @@ func TestNotifyThrottlesMempool(t *testing.T) {
     <-done
     if n := strings.Count(w.Body.String(), "event: mempool\n"); n != 2 {
         t.Errorf("%d mempool events for ten changes inside one interval, want 2: %q", n, w.Body.String())
+    }
+}
+
+// A listener hears what the stream carries — every event, the mempool's
+// throttled the same way — which is what keeps the MAX Mini App's stream in
+// step with this one.
+func TestListenHearsAnnouncedEvents(t *testing.T) {
+    var saved = throttled["mempool"]
+    throttled["mempool"] = 200 * time.Millisecond
+    t.Cleanup(func() { throttled["mempool"] = saved })
+    throttleMu.Lock()
+    throttleLast, throttlePending = map[string]time.Time{}, map[string]bool{}
+    throttleMu.Unlock()
+    var mu sync.Mutex
+    var heard []string
+    var on = true
+    t.Cleanup(func() { mu.Lock(); on = false; mu.Unlock() })
+    Listen(func(event string) {
+        mu.Lock()
+        defer mu.Unlock()
+        if on { heard = append(heard, event) }
+    })
+    Notify("fees")
+    for i := 0; i < 10; i++ {
+        Notify("mempool")
+        time.Sleep(10 * time.Millisecond)
+    }
+    time.Sleep(350 * time.Millisecond)
+    mu.Lock()
+    defer mu.Unlock()
+    if strings.Join(heard, " ") != "fees mempool mempool" {
+        t.Errorf("heard %q, want fees and two mempool events", heard)
     }
 }

@@ -321,6 +321,10 @@ func Notify(event string) {
 
 func announce(event string) {
     invalidate(event)
+    listenMu.Lock()
+    var heard = listeners
+    listenMu.Unlock()
+    for _, fn := range heard { fn(event) }
     subsMu.Lock()
     defer subsMu.Unlock()
     for ch := range subs {
@@ -329,6 +333,19 @@ func announce(event string) {
         default:
         }
     }
+}
+
+var listenMu sync.Mutex
+var listeners []func(string)
+
+// Listen has fn told of every event Notify announces, once it is past the
+// throttling — which is how the MAX Mini App, showing the same cards and lists,
+// hears of the same changes without main notifying twice wherever something
+// moves. fn is called on the announcing goroutine, so it must not block.
+func Listen(fn func(event string)) {
+    listenMu.Lock()
+    defer listenMu.Unlock()
+    listeners = append(listeners, fn)
 }
 
 // subscribes reports how many streams are connected; used by the tests to

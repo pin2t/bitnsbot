@@ -57,8 +57,10 @@ var maxToken        = flag.String("max-token", "", "MAX messenger bot token; whe
 var maxListen       = flag.String("max-listen", ":8084", "address the MAX webhook server binds to")
 var maxWebhookURL   = flag.String("max-webhook-url", "", "public https URL MAX should send updates to, registered via POST /subscriptions on startup; its path is the one the MAX webhook server accepts updates on (empty skips subscribing and accepts them on /)")
 var maxSecret       = flag.String("max-secret", "", "optional secret passed to MAX on subscribing and checked against the X-Max-Bot-Api-Secret header of every update")
+var maxAppListen    = flag.String("max-app-listen", "127.0.0.1:8085", "address the MAX Mini App web server binds to when -max-token is set (empty disables it; bind to localhost and put a tunnel in front, as with -app-listen)")
 var appSrv *http.Server
 var maxSrv *http.Server
+var maxAppSrv *http.Server
 
 
 // stopBackup ends the backup goroutine, set when -backup started one. shutdown
@@ -263,16 +265,17 @@ func appAddrTxs(lang, addr string, from int) app.Txs {
     return out
 }
 
-// appSetWatch backs the Mini App's watch button, with watching() answering its
+// appSetWatch backs the Mini Apps' watch button, with watching() answering its
 // state. It goes through the same addWatch/removeWatch the /watch and /unwatch
-// commands use, so a watch added from the app fires notifications exactly like
+// commands use, so a watch added from an app fires notifications exactly like
 // one added from the chat.
 //
 // appSetWatch adds or removes a watch and reports the state it ended in — which is
 // what the button renders, so a refusal shows as unpushed rather than lying.
-// It takes the bot because adding a watch starts a notifier goroutine, which
-// needs something to send the notification with.
-func appSetWatch(b *bot, chat int64, kind, id string, on bool) (bool, error) {
+// It takes the messenger because adding a watch starts a notifier goroutine,
+// which needs something to send the notification with — and the messenger is
+// also the platform the watch is filed under.
+func appSetWatch(b messenger, chat int64, kind, id string, on bool) (bool, error) {
     if !on {
         var _, err = removeWatch(b.platform(), chat, id)
         return false, err
@@ -281,7 +284,7 @@ func appSetWatch(b *bot, chat int64, kind, id string, on bool) (bool, error) {
     var full, err = atWatchLimit(b.platform(), chat)
     if err != nil { return false, err }
     if full {
-        logging.Info("mini app: rejected watch for chat %d: at the limit of %d", chat, maxSubscriptionsPerChat)
+        logging.Info("mini app: rejected watch for %s chat %d: at the limit of %d", b.platform(), chat, maxSubscriptionsPerChat)
         return false, nil
     }
     if err := addWatch(b, chat, id, ""); err != nil { return false, err }
@@ -307,10 +310,11 @@ func appMinerInfo(lang, name string) app.Info {
 }
 
 // appWatches backs the Watches tab: the calling user's own watches, and nobody
-// else's. chat comes from the signed initData, and the same chat-scoping the bot
-// applies in watchesCmd is what keeps one user's list out of another's. The Mini
-// App is Telegram's, so only Telegram watches are listed.
-func appWatches(chat int64) app.Watches {
+// else's. chat comes from the signed launch data, and the same chat-scoping the
+// bot applies in watchesCmd is what keeps one user's list out of another's. Each
+// Mini App lists its own platform's watches — Telegram's or MAX's — since a chat
+// number means nothing without it.
+func appWatches(platform string, chat int64) app.Watches {
     var records, err = watches.List()
     if err != nil {
         logging.Err("mini app: list watches: %v", err)
@@ -318,10 +322,10 @@ func appWatches(chat int64) app.Watches {
     }
     var out = app.Watches{OK: true}
     for _, r := range records {
-        if r.Platform != "tg" || r.Chat != chat { continue }
+        if r.Platform != platform || r.Chat != chat { continue }
         out.Addresses = append(out.Addresses, app.Watch{Short: short(r.Address), Id: r.Address, Alias: r.Alias})
     }
-    for _, e := range txwatches.For("tg", chat) {
+    for _, e := range txwatches.For(platform, chat) {
         out.Txs = append(out.Txs, app.Watch{Short: short(e.Txid), Id: e.Txid, Alias: e.Alias})
     }
     return out
@@ -406,6 +410,43 @@ func appMarket(lang string) app.Market {
     return m
 }
 
+// appOptions is the data a Mini App renders: the same functions for the Telegram
+// app and the MAX one, so the two show the same chain. b is the platform the app
+// is on — its watch list, its watch button and its aliases act on that
+// platform's watches, and a watch added from it is notified through it.
+//
+// SetAlias names a watch the reader already has — the second step of the app's
+// two-step add (the bell files the watch, the dialog names it) and what the
+// Watches tab's edit dialog calls. An empty alias never reaches it: the page
+// treats it as "leave it alone", so clearing a name is not something a stray
+// tap can do.
+func appOptions(b messenger) app.Options {
+    return app.Options{
+        Fees:       appFees,
+        Network:    appNetwork,
+        Market:     appMarket,
+        Blocks:     appBlocks,
+        Addresses:  appAddresses,
+        BlockInfo:  appBlockInfo,
+        TxInfo:     appTxInfo,
+        AddrInfo:   appAddrInfo,
+        AddrTxs:    appAddrTxs,
+        MinerInfo:  appMinerInfo,
+        MinerChart: func(lang, name, data, period string) app.Chart {
+            return minerChart(lang, name, data, period, time.Now())
+        },
+        Mempool:    appMempool,
+        Watches:    func(chat int64) app.Watches { return appWatches(b.platform(), chat) },
+        Watching:   func(chat int64, kind, id string) bool { return watching(b.platform(), chat, id) },
+        SetWatch: func(chat int64, kind, id string, on bool) (bool, error) {
+            return appSetWatch(b, chat, kind, id, on)
+        },
+        SetAlias: func(chat int64, kind, id, alias string) (bool, error) {
+            return setAlias(b, chat, id, alias)
+        },
+    }
+}
+
 func appFees() app.Fees {
     feesMu.Lock()
     var rec, ok, count = cachedFees, cachedFeesOK, cachedFeesCount
@@ -427,12 +468,6 @@ var commit = ""
 // The statistics collector reads the same blocks on a pass of its own:
 // the index says which transactions an address is in, where this says
 // what they did to it, and the two advance at different rates.
-//
-// The app's SetAlias names a watch the reader already has — the second step of
-// the app's two-step add (the bell files the watch, the dialog names it) and what
-// the Watches tab's edit dialog calls. An empty alias never reaches it: the page
-// treats it as "leave it alone", so clearing a name is not something a stray tap
-// can do.
 func main() {
     var b, _ = debug.ReadBuildInfo()
     if b != nil {
@@ -468,30 +503,7 @@ func main() {
         logging.Warn("database UI not started: it speaks bbolt, and the bot's database is SQLite now — run github.com/pin2t/bboltwui against a bbolt file instead")
     }
     if *appListen != "" {
-        appSrv = app.Start(*appListen, *botToken, app.Options{
-            Fees:       appFees,
-            Network:    appNetwork,
-            Market:     appMarket,
-            Blocks:     appBlocks,
-            Addresses:  appAddresses,
-            BlockInfo:  appBlockInfo,
-            TxInfo:     appTxInfo,
-            AddrInfo:   appAddrInfo,
-            AddrTxs:    appAddrTxs,
-            MinerInfo:  appMinerInfo,
-            MinerChart: func(lang, name, data, period string) app.Chart {
-                return minerChart(lang, name, data, period, time.Now())
-            },
-            Mempool:    appMempool,
-            Watches:    appWatches,
-            Watching: func(chat int64, kind, id string) bool { return watching("tg", chat, id) },
-            SetWatch: func(chat int64, kind, id string, on bool) (bool, error) {
-                return appSetWatch(bot, chat, kind, id, on)
-            },
-            SetAlias: func(chat int64, kind, id, alias string) (bool, error) {
-                return setAlias(bot, chat, id, alias)
-            },
-        })
+        appSrv = app.Start(*appListen, *botToken, appOptions(bot))
     }
     if *backupPath != "" {
         _, stopBackup = startBackup(*backupPath, *backupInterval, *backupScript)
@@ -509,9 +521,9 @@ func main() {
         logging.Status("connected to Bitcoin Core at %s (height %d)", *coreURL, height)
     }
     var ms = []messenger{bot}
-    var mb *maxBot
+    var mb maxMessenger
     if *maxToken != "" {
-        mb = newMaxBot(*maxToken, maxBaseURL)
+        mb = newMaxMessenger(*maxToken)
         ms = append(ms, mb)
     }
     startNotify(ms...)
@@ -550,33 +562,7 @@ func main() {
             logging.Fatal("error listening: %v", err)
         }
     }()
-    if *maxToken != "" {
-        var hookURL, perr = url.Parse(*maxWebhookURL)
-        if perr != nil {
-            logging.Fatal("-max-webhook-url: %v", perr)
-        }
-        var hookPath = hookURL.Path
-        if hookPath == "" { hookPath = "/" }
-        var mux = http.NewServeMux()
-        mux.HandleFunc(hookPath, maxWebhookHandler(mb))
-        maxSrv = &http.Server{Addr: *maxListen, Handler: mux}
-        go func() {
-            logging.Status("MAX webhook listening on %s%s", *maxListen, hookPath)
-            if err := maxSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-                logging.Fatal("MAX webhook listening: %v", err)
-            }
-        }()
-        if *maxWebhookURL != "" {
-            var ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
-            var err = mb.subscribe(ctx, *maxWebhookURL, *maxSecret)
-            cancel()
-            if err != nil {
-                logging.Err("MAX subscribe: %v", err)
-            } else {
-                logging.Status("MAX webhook subscribed at %s", *maxWebhookURL)
-            }
-        }
-    }
+    if *maxToken != "" { startMax(mb) }
     <-ctx.Done()
     stop()
     shutdown(bot, srv)
@@ -599,6 +585,11 @@ func shutdown(bot *bot, srv *http.Server) {
     if maxSrv != nil {
         if err := maxSrv.Shutdown(ctx); err != nil {
             logging.Err("MAX webhook shutdown: %v", err)
+        }
+    }
+    if maxAppSrv != nil {
+        if err := maxAppSrv.Shutdown(ctx); err != nil {
+            logging.Err("MAX mini app shutdown: %v", err)
         }
     }
     stopNotify()
