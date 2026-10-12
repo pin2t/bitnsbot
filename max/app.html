@@ -37,7 +37,12 @@
   html, body, #root, .app { height: 100%; }
   html, body { overflow: hidden; overscroll-behavior: none; }
   .app { --snackbar-bottom-offset: 72px; }
-  .main { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior-y: contain; }
+  /* The view grows with the window up to 450px and is centred beyond that. The
+     side padding does it rather than a max-width, so the scroller and the tab
+     bar stay full width: a wheel scrolls anywhere, and the bar runs edge to
+     edge. */
+  .main { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior-y: contain;
+          padding-inline: max(0px, calc((100% - 450px) / 2)); }
   .view { padding: 12px 0; }
   .void { padding: 24px 16px; text-align: center; }
   .mid { text-align: center; }
@@ -93,7 +98,8 @@
   .ticks > span:first-child > span { left: 0; transform: none; }
   .ticks > span:last-child > span { left: auto; right: 0; transform: none; }
 
-  .nav { flex: none; display: flex; border-top: 0.5px solid; }
+  .nav { flex: none; display: flex; border-top: 0.5px solid;
+         padding-inline: max(0px, calc((100% - 450px) / 2)); }
   .navbtn { flex: 1; height: 56px; display: flex; flex-direction: column; align-items: center; justify-content: center;
             gap: 2px; color: var(--text-tertiary); }
   .navbtn.on { color: var(--text-themed); }

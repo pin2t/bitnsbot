@@ -82,7 +82,12 @@
     background: var(--bg); color: var(--fg);
     font: 1.0625rem/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   }
-  main { flex: 1; overflow-y: auto; padding: 16px 16px 8px; }
+  /* The view grows with the window up to 450px and is centred beyond that. The
+     side padding does it rather than a max-width, so main and nav stay full
+     width: the scroller still scrolls under a wheel or a finger anywhere, and
+     the tab bar's top border still runs edge to edge. */
+  main { flex: 1; overflow-y: auto; padding: 16px 16px 8px;
+         padding-inline: max(16px, calc((100% - 450px) / 2 + 16px)); }
   .panel { display: none; height: 100%; }
   .panel.active { display: flex; flex-direction: column; }
 
@@ -315,7 +320,8 @@
   .dbtns button[hidden] { display: none; }
 
   nav { display: flex; border-top: 1px solid var(--line); background: var(--bg);
-        padding-bottom: env(safe-area-inset-bottom, 0); }
+        padding-bottom: env(safe-area-inset-bottom, 0);
+        padding-inline: max(0px, calc((100% - 450px) / 2)); }
   nav button { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 2px;
                padding: 6px 0 7px; border: 0; background: none; cursor: pointer;
                font-size: 0.875rem; color: var(--hint); font-family: inherit; }
