@@ -719,13 +719,13 @@ func dispatch(bot messenger, chat int64, text string) {
 var chatNames = lru.New[chatKey, string](10000)
 
 // logLimit is how many characters of a message the log keeps.
-const logLimit = 120
+const logLimit = 100
 
 // logMessage logs a message received in chat from name, and remembers the name
 // for what is sent back (logSent).
 func logMessage(bot messenger, chat int64, name, text string) {
     chatNames.Put(chatKey{bot.platform(), chat}, name)
-    logging.Info("bot (%s): received from %s (%d): %s", bot.platform(), name, chat, logText(text))
+    logging.Info("bot (%s): <-- %s (%d): %s", bot.platform(), name, chat, logText(text))
 }
 
 // logSent logs a message sent to chat, under the name the chat was last heard
@@ -733,7 +733,7 @@ func logMessage(bot messenger, chat int64, name, text string) {
 func logSent(bot messenger, chat int64, text string) {
     var name, ok = chatNames.Get(chatKey{bot.platform(), chat})
     if !ok { name = "unknown" }
-    logging.Info("bot (%s): sent to %s (%d): %s", bot.platform(), name, chat, logText(text))
+    logging.Info("bot (%s): --> %s (%d): %s", bot.platform(), name, chat, logText(text))
 }
 
 // logText is a message as one log line: its HTML tags dropped and entities
