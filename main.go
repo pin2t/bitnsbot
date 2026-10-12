@@ -463,7 +463,7 @@ func appFees() app.Fees {
         Slow: tier(rec.minimum), TxCount: group(int64(count))}
 }
 
-var ver = "1.3"
+var ver = "1.4"
 var commit = ""
 
 // The statistics collector reads the same blocks on a pass of its own:
@@ -781,7 +781,7 @@ func start(bot messenger, chat int64) {
 
 // startText is the /start reply in a language, shared by Telegram and MAX.
 func startText(lang string) string {
-    var text = i18nl(lang).String("Bitnsbot. I keep an eye on the Bitcoin network for you.\n\n")
+    var text = i18nl(lang).String("<a href=\"https://bitnsbot.com\">Bitnsbot</a>. I keep an eye on the Bitcoin network for you.") + "\n\n"
     for _, c := range commands { text += i18nl(lang).String(c.line) }
     return text + "\n" +
         i18nl(lang).Sprintf("Version %s. Build %s. Source code <a href=\"https://github.com/pin2t/bitnsbot\">bitnsbot</a>. Don't forget to give me a ⭐",
