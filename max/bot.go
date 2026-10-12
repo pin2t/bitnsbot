@@ -222,7 +222,6 @@ func Webhook(secret string, h Handlers) http.HandlerFunc {
             http.Error(w, "bad request", http.StatusBadRequest)
             return
         }
-        logging.Info("MAX update: %s", body)
         var u Update
         if err := json.Unmarshal(body, &u); err != nil {
             logging.Err("decode MAX update: %v", err)
