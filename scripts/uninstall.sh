@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # uninstall.sh — stop and remove the bitnsbot systemd service and the auto-update
-# cron job. Data under /opt/bitnsbot (binary, config, database) is left in place
+# timer. Data under /opt/bitnsbot (binary, config, database) is left in place
 # unless --purge is given. The bitnsbot-static landing page service and its
 # lighttpd config go too; the lighttpd package itself is left installed.
 #
@@ -10,6 +10,9 @@ set -euo pipefail
 PREFIX=/opt/bitnsbot
 SERVICE=bitnsbot
 UNIT=/etc/systemd/system/$SERVICE.service
+UPDATE_SERVICE=$SERVICE-update
+UPDATE_UNIT=/etc/systemd/system/$UPDATE_SERVICE.service
+UPDATE_TIMER=/etc/systemd/system/$UPDATE_SERVICE.timer
 CRON=/etc/cron.d/$SERVICE
 LOG=/var/log/$SERVICE-update.log
 STATIC_SERVICE="${STATIC_SERVICE:-bitnsbot-static}"
@@ -28,15 +31,17 @@ if [ "${1:-}" = "--purge" ]; then
     PURGE=1
 fi
 
-echo ">> removing cron job $CRON"
-rm -f "$CRON"
+echo ">> stopping and removing the auto-update timer $UPDATE_SERVICE"
+systemctl disable --now "$UPDATE_SERVICE.timer" 2>/dev/null || true
+systemctl stop "$UPDATE_SERVICE.service" 2>/dev/null || true
+rm -f "$UPDATE_TIMER" "$UPDATE_UNIT" "$CRON"
 
 echo ">> stopping and disabling $SERVICE"
 systemctl stop "$SERVICE" 2>/dev/null || true
 systemctl disable "$SERVICE" 2>/dev/null || true
 rm -f "$UNIT"
 systemctl daemon-reload
-systemctl reset-failed "$SERVICE" 2>/dev/null || true
+systemctl reset-failed "$SERVICE" "$UPDATE_SERVICE" 2>/dev/null || true
 
 echo ">> stopping and removing $STATIC_SERVICE (the landing page)"
 systemctl stop "$STATIC_SERVICE" 2>/dev/null || true

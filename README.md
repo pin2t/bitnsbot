@@ -39,7 +39,6 @@ Bitcoin blockchain explorer and events notification bot. It can send notificatio
 | `-backup-interval` | `24h` | How often to back up the database |
 | `-backup-script` | | Command run after each backup,<br>with the backup path as `$1` and in `$BACKUP_FILE` |
 | `-verbose` | `0` | Log verbosity: `0` = ERR/WARN/status, `1` = +INFO,<br>`2` = +NET/DB |
-| `-log-no-ts` | `false` | Omit the date and time prefix from each log line |
 | `-dbui-listen` | | Ignored, and kept only so a config file<br>that sets it still starts —<br>the database UI speaks bbolt and is now<br>[bboltwui](https://github.com/pin2t/bboltwui) |
 | `-history-file` | | Path to a JSON file containing<br>historical BTC/USD rates |
 | `-config` | | Path to a properties file<br>(`name=value` lines) with flag values;<br>command-line flags take precedence |
