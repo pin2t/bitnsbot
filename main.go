@@ -53,7 +53,6 @@ var backupScript    = flag.String("backup-script", "", "command run after each b
 var appListen       = flag.String("app-listen", "127.0.0.1:8080", "address the Telegram Mini App web server binds to (empty disables it; bind to localhost — the Cloudflare tunnel is what faces the network)")
 var dbuiListen      = flag.String("dbui-listen", "", "ignored — the database UI speaks bbolt and is github.com/pin2t/bboltwui now; kept so a config file that sets it still starts")
 var historyFile     = flag.String("history-file", "", "path to a JSON file containing historical BTC/USD rates (same format as blockchain.info/charts/market-price); backfilled from this file on first run instead of fetching over the network")
-
 var maxToken        = flag.String("max-token", "", "MAX messenger bot token; when set, the MAX webhook server is started on -max-listen")
 var maxListen       = flag.String("max-listen", ":8084", "address the MAX webhook server binds to")
 var maxWebhookURL   = flag.String("max-webhook-url", "", "public https URL MAX should send updates to, registered via POST /subscriptions on startup; its path is the one the MAX webhook server accepts updates on (empty skips subscribing and accepts them on /)")
@@ -725,7 +724,7 @@ const logLimit = 100
 // for what is sent back (logSent).
 func logMessage(bot messenger, chat int64, name, text string) {
     chatNames.Put(chatKey{bot.platform(), chat}, name)
-    logging.Info("bot (%s): <-- %s (%d): %s", bot.platform(), name, chat, logText(text))
+    logging.Info("bot (%s) <-- %s (%d): %s", bot.platform(), name, chat, logText(text))
 }
 
 // logSent logs a message sent to chat, under the name the chat was last heard
@@ -733,7 +732,7 @@ func logMessage(bot messenger, chat int64, name, text string) {
 func logSent(bot messenger, chat int64, text string) {
     var name, ok = chatNames.Get(chatKey{bot.platform(), chat})
     if !ok { name = "unknown" }
-    logging.Info("bot (%s): --> %s (%d): %s", bot.platform(), name, chat, logText(text))
+    logging.Info("bot (%s) --> %s (%d): %s", bot.platform(), name, chat, logText(text))
 }
 
 // logText is a message as one log line: its HTML tags dropped and entities
