@@ -1,4 +1,4 @@
-# bitnsbot
+# bitnsbot ([bitnsbot.com](https://bitnsbot.com))
 [![CI](https://github.com/pin2t/bitnsbot/actions/workflows/ci.yml/badge.svg)](https://github.com/pin2t/bitnsbot/actions/workflows/ci.yml)
 
 [@bitnsbot](https://telegram.me/bitnsbot)
