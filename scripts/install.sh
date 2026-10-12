@@ -11,6 +11,9 @@
 #   /opt/bitnsbot/bitnsbot.db     SQLite database (created by the service on first run)
 #   /opt/bitnsbot/update.sh       copy of the auto-update script (run by cron)
 #   /opt/bitnsbot/deploy.env      records REPO_DIR and BUILD_USER for update.sh
+#
+# It also runs static.sh, which serves the checkout's static/ landing page with
+# lighttpd as the bitnsbot-static service on 127.0.0.1:8086. STATIC=0 skips it.
 set -euo pipefail
 
 PREFIX=/opt/bitnsbot
@@ -169,7 +172,17 @@ else
     systemctl --no-pager --lines=0 status "$SERVICE" || true
 fi
 
+if [ "${STATIC:-1}" != "0" ]; then
+    if ! BUILD_USER="$BUILD_USER" "$SCRIPT_DIR/static.sh"; then
+        echo "!! the landing page service failed to install — the bot is installed regardless;"
+        echo "!! fix it and re-run: sudo ./scripts/static.sh"
+    fi
+fi
+
 echo
 echo ">> done. Follow logs with:"
 echo "     journalctl -u $SERVICE -f     # the service"
 echo "     tail -f $LOG   # auto-updates"
+if [ "${STATIC:-1}" != "0" ]; then
+    echo "     journalctl -u bitnsbot-static -f   # the landing page"
+fi

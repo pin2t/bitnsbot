@@ -16,6 +16,9 @@ The source checkout stays where you cloned it (e.g. `/home/pi/bitnsbot`); the
 scripts build there, as the checkout's owner, and only copy the binary into
 `/opt`.
 
+`install.sh` also serves the landing page in the checkout's `static/` (see
+[The landing page](#the-landing-page) below), as a second service.
+
 ## Prerequisites
 
 - Go, `git`, and `systemd` on the host; the repo cloned (default assumption:
@@ -55,6 +58,40 @@ does *not* start the service — edit that file (at least `bot-token`), then:
 sudo systemctl start bitnsbot
 ```
 
+## The landing page
+
+`static.sh` — run by `install.sh`, and safe to run on its own or again — serves
+`static/` from the checkout with **lighttpd**, as the `bitnsbot-static` service
+on `127.0.0.1:8086`:
+
+| Path                                          | What                              |
+|-----------------------------------------------|-----------------------------------|
+| `/etc/lighttpd/bitnsbot-static.conf`          | its own lighttpd config            |
+| `/etc/systemd/system/bitnsbot-static.service` | the service                        |
+
+```sh
+sudo ./scripts/static.sh                    # (re)install just the landing page
+sudo STATIC_PORT=8090 ./scripts/static.sh   # elsewhere; STATIC_BIND sets the address
+sudo STATIC=0 ./scripts/install.sh          # install the bot without it
+```
+
+- **It serves the checkout itself**, so each auto-update puts the new page live
+  without a restart.
+- **It runs as the checkout's owner, not `www-data`**: a home directory is often
+  mode 700 (Raspberry Pi OS's is), which `www-data` cannot read. The unit lets it
+  read `/home` and write nowhere.
+- **The stock `lighttpd.service` is masked when `static.sh` installs lighttpd**,
+  since Debian's package would otherwise start it on port 80 straight away. A
+  lighttpd that was already installed is left as it was. Unmask it with
+  `sudo systemctl unmask lighttpd` if you want it.
+- **It is local only.** Publish it the way the Mini App is published: a public
+  hostname in the Cloudflare tunnel pointing at `http://127.0.0.1:8086`.
+- A failure here does not undo the bot's install; `install.sh` says so and the
+  bot keeps running.
+
+`uninstall.sh` removes the service and its config, and leaves the lighttpd
+package installed.
+
 ## Auto-update
 
 `install.sh` schedules `/etc/cron.d/bitnsbot` to run `update.sh` every 5 minutes.
@@ -75,6 +112,7 @@ Follow along with:
 
 ```sh
 journalctl -u bitnsbot -f          # the service
+journalctl -u bitnsbot-static -f   # the landing page
 tail -f /var/log/bitnsbot-update.log   # auto-updates
 ```
 
