@@ -83,9 +83,9 @@ func (c *called) handlers() Handlers {
         c.mu.Unlock()
     }
     return Handlers{
-        Message:  func(chat int64, text, lang string) { add("message " + strconv.FormatInt(chat, 10) + " " + text + " " + lang) },
-        Callback: func(chat int64, payload, lang string) { add("callback " + strconv.FormatInt(chat, 10) + " " + payload + " " + lang) },
-        Started:  func(chat int64, lang string) { add("started " + strconv.FormatInt(chat, 10) + " " + lang) },
+        Message:  func(chat int64, name, text, lang string) { add("message " + strconv.FormatInt(chat, 10) + " " + name + " " + text + " " + lang) },
+        Callback: func(chat int64, name, payload, lang string) { add("callback " + strconv.FormatInt(chat, 10) + " " + name + " " + payload + " " + lang) },
+        Started:  func(chat int64, name, lang string) { add("started " + strconv.FormatInt(chat, 10) + " " + name + " " + lang) },
     }
 }
 
@@ -116,7 +116,7 @@ func TestWebhookRoutesUpdates(t *testing.T) {
     for _, u := range updates {
         if code := post(t, h, "", u); code != http.StatusOK { t.Fatalf("status %d for %s", code, u) }
     }
-    var want = []string{"message 376690654 /start ru", "callback 77 100 es", "started 5 en", "started 8 "}
+    var want = []string{"message 376690654 Илья /start ru", "callback 77 unknown 100 es", "started 5 unknown en", "started 8 unknown "}
     if strings.Join(c.what, "|") != strings.Join(want, "|") { t.Fatalf("handled\n %q\nwant %q", c.what, want) }
     if code := post(t, h, "", "not json"); code != http.StatusBadRequest { t.Fatalf("garbage answered %d", code) }
 }

@@ -70,6 +70,17 @@ type User struct {
     LastActivityTime int64  `json:"last_activity_time"`
 }
 
+// DisplayName is what the user is called: their display name, else their first name,
+// else their username, and "unknown" for no user at all — MAX may send an
+// update with none.
+func (u *User) DisplayName() string {
+    if u == nil { return "unknown" }
+    for _, n := range []string{u.Name, u.FirstName, u.Username} {
+        if n != "" { return n }
+    }
+    return "unknown"
+}
+
 type Message struct {
     Sender    *User     `json:"sender"`
     Recipient Recipient `json:"recipient"`
@@ -174,15 +185,16 @@ func Lang(locale string) string {
 
 // Handlers are what the webhook does with an update. Running a command is
 // package main's business, so main supplies them. lang is the update's
-// user_locale reduced by Lang, empty when MAX sent none.
+// user_locale reduced by Lang, empty when MAX sent none, and name is who sent
+// it (DisplayName), for the log.
 type Handlers struct {
     // Message is a message somebody typed: a command, or the argument a bare
     // command asked for.
-    Message func(chat int64, text, lang string)
+    Message func(chat int64, name, text, lang string)
     // Callback is a tapped id button, payload the full id it carried.
-    Callback func(chat int64, payload, lang string)
+    Callback func(chat int64, name, payload, lang string)
     // Started is the bot being started or added to a chat.
-    Started func(chat int64, lang string)
+    Started func(chat int64, name, lang string)
 }
 
 // Webhook receives MAX updates. When secret is set every request must carry it
@@ -221,12 +233,12 @@ func Webhook(secret string, h Handlers) http.HandlerFunc {
         switch u.UpdateType {
         case "message_created":
             if u.Message == nil || (u.Message.Sender != nil && u.Message.Sender.IsBot) { break }
-            h.Message(u.Message.Recipient.ChatID, u.Message.Body.Text, lang)
+            h.Message(u.Message.Recipient.ChatID, u.Message.Sender.DisplayName(), u.Message.Body.Text, lang)
         case "message_callback":
             if u.Message == nil || u.Callback == nil || u.Callback.Payload == "" { break }
-            h.Callback(u.Message.Recipient.ChatID, u.Callback.Payload, lang)
+            h.Callback(u.Message.Recipient.ChatID, u.Callback.User.DisplayName(), u.Callback.Payload, lang)
         case "bot_started", "bot_added":
-            h.Started(u.ChatID, lang)
+            h.Started(u.ChatID, u.User.DisplayName(), lang)
         }
         w.WriteHeader(http.StatusOK)
     }

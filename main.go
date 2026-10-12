@@ -29,6 +29,8 @@ import "bitnsbot/watches"
 import "unicode/utf8"
 import "sort"
 import "math"
+import "regexp"
+import "bitnsbot/lru"
 
 var configPath      = flag.String("config", "", "path to a properties file (name=value lines) with flag values; command-line flags take precedence")
 var verbose         = flag.Int("verbose", 0, "log verbosity: 0=ERR/WARN/status, 1=+INFO, 2=+NET/DB (raw external traffic and storage requests)")
@@ -610,7 +612,9 @@ func callback(bot *bot, q *CallbackQuery) {
     }
     cancel()
     if q.Message == nil || q.Data == "" { return }
-    logging.Info("callback %q from chat %d", short(q.Data), q.Message.Chat.ID)
+    var from = "unknown"
+    if q.From != nil { from = q.From.name() }
+    logMessage(bot, q.Message.Chat.ID, from, q.Data)
     info(bot, q.Message.Chat.ID, q.Data)
 }
 
@@ -653,7 +657,9 @@ func update(bot *bot, update Update) {
     if msg.From != nil && msg.From.LanguageCode != "" {
         SetChatLanguage(chat, msg.From.LanguageCode)
     }
-    logMessage(msg)
+    var from = "unknown"
+    if msg.From != nil { from = msg.From.name() }
+    logMessage(bot, chat, from, msg.Text)
     dispatch(bot, chat, msg.Text)
 }
 
@@ -711,16 +717,43 @@ func dispatch(bot messenger, chat int64, text string) {
     }
 }
 
-func logMessage(msg *Message) {
-    var from = "unknown"
-    if msg.From != nil {
-        from = msg.From.Username
-        if from == "" {
-            from = msg.From.FirstName
-        }
-    }
-    logging.Info("message from %s (chat %d): %s", from, msg.Chat.ID, msg.Text)
+// chatNames remembers who each chat last heard from, so a message sent to it —
+// a reply, or a notification long after — is logged with a name as well as the
+// chat id. Bounded like chatLangs, since anyone can message the bot.
+var chatNames = lru.New[chatKey, string](10000)
+
+// logLimit is how many characters of a message the log keeps.
+const logLimit = 120
+
+// logMessage logs a message received in chat from name, and remembers the name
+// for what is sent back (logSent).
+func logMessage(bot messenger, chat int64, name, text string) {
+    chatNames.Put(chatKey{bot.platform(), chat}, name)
+    logging.Info("bot (%s): received from %s (%d): %s", bot.platform(), name, chat, logText(text))
 }
+
+// logSent logs a message sent to chat, under the name the chat was last heard
+// from as, "unknown" when it has not been since the bot started.
+func logSent(bot messenger, chat int64, text string) {
+    var name, ok = chatNames.Get(chatKey{bot.platform(), chat})
+    if !ok { name = "unknown" }
+    logging.Info("bot (%s): sent to %s (%d): %s", bot.platform(), name, chat, logText(text))
+}
+
+// logText is a message as one log line: its HTML tags dropped and entities
+// decoded, since every reply is HTML, its line breaks made spaces, and cut to
+// logLimit characters followed by "...". Characters, not bytes, so a Russian
+// message is not cut inside a letter.
+func logText(text string) string {
+    var plain = html.UnescapeString(htmlTag.ReplaceAllString(text, ""))
+    plain = strings.NewReplacer("\r\n", " ", "\r", " ", "\n", " ").Replace(plain)
+    var runes = []rune(plain)
+    if len(runes) > logLimit { return string(runes[:logLimit]) + "..." }
+    return plain
+}
+
+// htmlTag matches one HTML tag, for logText to drop.
+var htmlTag = regexp.MustCompile(`<[^>]*>`)
 
 func parseCommand(text string) (command, arg string) {
     var fields = strings.SplitN(strings.TrimSpace(text), " ", 2)
@@ -1475,5 +1508,5 @@ func send(bot messenger, chat int64, text string, ids []string) {
         logging.Err("send message: %v", err)
         return
     }
-    logging.Info("sent message to chat %d", chat)
+    logSent(bot, chat, text)
 }
