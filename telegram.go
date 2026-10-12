@@ -55,6 +55,14 @@ type User struct {
     LanguageCode string `json:"language_code"`
 }
 
+// name is what the user is called in the log: their username, else their first
+// name, else "unknown".
+func (u *User) name() string {
+    if u.Username != "" { return u.Username }
+    if u.FirstName != "" { return u.FirstName }
+    return "unknown"
+}
+
 type Chat struct {
     ID   int64  `json:"id"`
     Type string `json:"type"`

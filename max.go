@@ -42,17 +42,19 @@ func (m maxMessenger) sendWithButtons(ctx context.Context, chat int64, text stri
 // translated through it.
 func maxHandlers(mb maxMessenger) max.Handlers {
     return max.Handlers{
-        Message: func(chat int64, text, lang string) {
+        Message: func(chat int64, name, text, lang string) {
             if lang != "" { SetChatLanguage(chat, lang) }
+            logMessage(mb, chat, name, text)
             dispatch(mb, chat, text)
         },
-        Callback: func(chat int64, payload, lang string) {
+        Callback: func(chat int64, name, payload, lang string) {
             if lang != "" { SetChatLanguage(chat, lang) }
-            logging.Info("MAX callback %q from chat %d", short(payload), chat)
+            logMessage(mb, chat, name, payload)
             info(mb, chat, payload)
         },
-        Started: func(chat int64, lang string) {
+        Started: func(chat int64, name, lang string) {
             if lang != "" { SetChatLanguage(chat, lang) }
+            logMessage(mb, chat, name, "/start")
             start(mb, chat)
         },
     }
