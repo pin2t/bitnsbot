@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # uninstall.sh — stop and remove the bitnsbot systemd service and the auto-update
 # cron job. Data under /opt/bitnsbot (binary, config, database) is left in place
-# unless --purge is given.
+# unless --purge is given. The bitnsbot-static landing page service and its
+# lighttpd config go too; the lighttpd package itself is left installed.
 #
 #   Run as root:  sudo ./scripts/uninstall.sh [--purge]
 set -euo pipefail
@@ -11,6 +12,9 @@ SERVICE=bitnsbot
 UNIT=/etc/systemd/system/$SERVICE.service
 CRON=/etc/cron.d/$SERVICE
 LOG=/var/log/$SERVICE-update.log
+STATIC_SERVICE="${STATIC_SERVICE:-bitnsbot-static}"
+STATIC_UNIT=/etc/systemd/system/$STATIC_SERVICE.service
+STATIC_CONF=/etc/lighttpd/$STATIC_SERVICE.conf
 
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
@@ -33,6 +37,13 @@ systemctl disable "$SERVICE" 2>/dev/null || true
 rm -f "$UNIT"
 systemctl daemon-reload
 systemctl reset-failed "$SERVICE" 2>/dev/null || true
+
+echo ">> stopping and removing $STATIC_SERVICE (the landing page)"
+systemctl stop "$STATIC_SERVICE" 2>/dev/null || true
+systemctl disable "$STATIC_SERVICE" 2>/dev/null || true
+rm -f "$STATIC_UNIT" "$STATIC_CONF"
+systemctl daemon-reload
+systemctl reset-failed "$STATIC_SERVICE" 2>/dev/null || true
 
 if [ "$PURGE" -eq 1 ]; then
     echo ">> purging $PREFIX and $LOG"
