@@ -9,7 +9,7 @@ systemd Linux host). The runtime package is **self-contained** under
 | `/opt/bitnsbot/bitnsbot`    | the binary                                        |
 | `/opt/bitnsbot/bitnsbot.conf`| config (`name=value`; `chmod 600` — holds secrets)|
 | `/opt/bitnsbot/bitnsbot.db` | SQLite database (created on first run)            |
-| `/opt/bitnsbot/update.sh`   | copy of the auto-update script (run by cron)      |
+| `/opt/bitnsbot/update.sh`   | copy of the auto-update script (run by the timer) |
 | `/opt/bitnsbot/deploy.env`  | records `REPO_DIR` / `BUILD_USER` for updates     |
 
 The source checkout stays where you cloned it (e.g. `/home/pi/bitnsbot`); the
@@ -42,11 +42,23 @@ scripts build there, as the checkout's owner, and only copy the binary into
   Neither is strictly required to start: without ZMQ the bot answers commands
   but never notifies.
 
+## Logs
+
+Everything — the bot, the auto-update and the landing page — logs to the
+systemd journal. The bot detects it is writing to the journal (systemd's
+`JOURNAL_STREAM`) and then leaves the timestamp off each line, which the journal
+adds itself, and marks each line with its syslog priority, so:
+
+```sh
+journalctl -u bitnsbot -p warning   # only the bot's warnings and errors
+journalctl -u bitnsbot -p err       # only its errors
+```
+
 ## Usage
 
 ```sh
-sudo ./scripts/install.sh        # build + test, install service + cron, start
-sudo ./scripts/uninstall.sh      # stop + remove service and cron (keeps data)
+sudo ./scripts/install.sh        # build + test, install service + update timer, start
+sudo ./scripts/uninstall.sh      # stop + remove service and update timer (keeps data)
 sudo ./scripts/uninstall.sh --purge   # also delete /opt/bitnsbot and the log
 ```
 
@@ -94,26 +106,33 @@ package installed.
 
 ## Auto-update
 
-`install.sh` schedules `/etc/cron.d/bitnsbot` to run `update.sh` every 5 minutes.
-Each run:
+`install.sh` installs `bitnsbot-update.timer`, which runs `update.sh` as the
+oneshot `bitnsbot-update.service` every 5 minutes (`systemctl list-timers` shows
+the next run). Each run:
 
 1. `git fetch origin master`; if `HEAD` already equals `origin/master`, it exits
-   silently (so the cron log only grows on real updates).
+   silently (so the journal only hears of real updates).
 2. Otherwise checks out `master`, fast-forwards to `origin/master`, then
    **builds and runs the full test suite**.
 3. Only if both pass does it atomically swap in the new binary and
    `systemctl restart bitnsbot`. A failed build or test leaves the running
    binary untouched and logs the failure.
 
-A `flock` guards against overlapping runs (a build+test can take longer than the
-5-minute interval). Logs go to `/var/log/bitnsbot-update.log`.
+Its output — the build and test output included — goes to the journal, like the
+bot's, with failures at priority `err`, so `journalctl -u bitnsbot-update -p err`
+lists only failed updates. A timer never starts a second run of a service that
+is still running, and a `flock` keeps a run by hand from overlapping one.
+
+Earlier versions ran `update.sh` from `/etc/cron.d/bitnsbot` and appended to
+`/var/log/bitnsbot-update.log`; `install.sh` removes that cron job and leaves the
+old log where it is (`uninstall.sh --purge` deletes it).
 
 Follow along with:
 
 ```sh
 journalctl -u bitnsbot -f          # the service
 journalctl -u bitnsbot-static -f   # the landing page
-tail -f /var/log/bitnsbot-update.log   # auto-updates
+journalctl -u bitnsbot-update -f   # auto-updates
 ```
 
 ## Notes / limitations
@@ -122,6 +141,6 @@ tail -f /var/log/bitnsbot-update.log   # auto-updates
   checkout is ahead of or has diverged from `origin/master` (e.g. you made local
   commits), the update is skipped — nothing is fast-forwarded, discarded, or
   redeployed.
-- Changing these scripts themselves requires re-running `install.sh` (cron runs
-  the copy in `/opt`, not the one in the repo).
+- Changing these scripts themselves requires re-running `install.sh` (the timer
+  runs the copy in `/opt`, not the one in the repo).
 - Override defaults with env vars, e.g. `sudo BUILD_USER=someone ./scripts/install.sh`.

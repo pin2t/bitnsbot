@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # install.sh — build + test bitnsbot from this checkout, install it under
 # /opt/bitnsbot as a systemd service (ordered after bitcoind), and schedule the
-# auto-update cron job.
+# auto-update: bitnsbot-update.timer runs update.sh as bitnsbot-update.service
+# every 5 minutes, so its output is in the journal (journalctl -u bitnsbot-update).
 #
 #   Run from the repo:  sudo ./scripts/install.sh
 #
@@ -9,7 +10,7 @@
 #   /opt/bitnsbot/bitnsbot        the binary
 #   /opt/bitnsbot/bitnsbot.conf    config (name=value; created as a template if absent)
 #   /opt/bitnsbot/bitnsbot.db     SQLite database (created by the service on first run)
-#   /opt/bitnsbot/update.sh       copy of the auto-update script (run by cron)
+#   /opt/bitnsbot/update.sh       copy of the auto-update script (run by the timer)
 #   /opt/bitnsbot/deploy.env      records REPO_DIR and BUILD_USER for update.sh
 #
 # It also runs static.sh, which serves the checkout's static/ landing page with
@@ -23,6 +24,9 @@ CONFIG=$PREFIX/bitnsbot.conf
 DB=$PREFIX/bitnsbot.db
 ENVFILE=$PREFIX/deploy.env
 UNIT=/etc/systemd/system/$SERVICE.service
+UPDATE_SERVICE=$SERVICE-update
+UPDATE_UNIT=/etc/systemd/system/$UPDATE_SERVICE.service
+UPDATE_TIMER=/etc/systemd/system/$UPDATE_SERVICE.timer
 CRON=/etc/cron.d/$SERVICE
 LOG=/var/log/$SERVICE-update.log
 
@@ -48,12 +52,12 @@ echo ">> build user: $BUILD_USER"
 echo ">> prefix:     $PREFIX"
 
 # Build and test as the (non-root) repo owner so Go's caches and the checkout
-# stay owned by that user. A non-login shell with an explicit HOME/PATH keeps
+# stay owned by that user. setpriv, like update.sh, so no PAM session is logged. A non-login shell with an explicit HOME/PATH keeps
 # output clean and finds go whether it came from apt (/usr/bin) or the official
 # tarball (/usr/local/go/bin).
 GOPATHS="/usr/local/go/bin:$BUILD_HOME/go/bin:/usr/local/bin:/usr/bin:/bin"
 as_user() {
-    runuser -u "$BUILD_USER" -- env HOME="$BUILD_HOME" \
+    setpriv --reuid="$BUILD_USER" --regid="$(id -g "$BUILD_USER")" --init-groups -- env HOME="$BUILD_HOME" \
         GOCACHE="$BUILD_HOME/.cache/go-build" PATH="$GOPATHS" \
         bash -c "cd '$REPO_DIR' && $1"
 }
@@ -150,16 +154,38 @@ NoNewPrivileges=true
 WantedBy=multi-user.target
 UNITEOF
 
-echo ">> writing cron job $CRON (auto-update every 5 minutes)"
-cat > "$CRON" <<CRONEOF
-# Auto-update bitnsbot from origin/master every 5 minutes.
-MAILTO=""
-*/5 * * * * root $PREFIX/update.sh >> $LOG 2>&1
-CRONEOF
-chmod 644 "$CRON"
+echo ">> writing $UPDATE_UNIT and $UPDATE_TIMER (auto-update every 5 minutes)"
+cat > "$UPDATE_UNIT" <<UPDATEEOF
+[Unit]
+Description=bitnsbot auto-update from origin/master
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=$PREFIX/update.sh
+UPDATEEOF
+cat > "$UPDATE_TIMER" <<TIMEREOF
+[Unit]
+Description=Run bitnsbot-update every 5 minutes
+
+[Timer]
+OnCalendar=*:0/5
+
+[Install]
+WantedBy=timers.target
+TIMEREOF
+
+# The cron job earlier versions installed would run update.sh a second time.
+# Its log stays where it was, for its history; the journal has the rest.
+if [ -f "$CRON" ]; then
+    echo ">> removing the old cron job $CRON (kept $LOG)"
+    rm -f "$CRON"
+fi
 
 systemctl daemon-reload
 systemctl enable "$SERVICE" >/dev/null
+systemctl enable --now "$UPDATE_SERVICE.timer" >/dev/null
 
 if [ "$NEEDS_CONFIG" -eq 1 ]; then
     echo
@@ -182,7 +208,7 @@ fi
 echo
 echo ">> done. Follow logs with:"
 echo "     journalctl -u $SERVICE -f     # the service"
-echo "     tail -f $LOG   # auto-updates"
+echo "     journalctl -u $UPDATE_SERVICE -f   # auto-updates"
 if [ "${STATIC:-1}" != "0" ]; then
     echo "     journalctl -u bitnsbot-static -f   # the landing page"
 fi
