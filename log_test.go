@@ -25,10 +25,10 @@ func TestMessageLogging(t *testing.T) {
         From: &User{Username: "alice"},
         Text: "/start",
     }})
-    if !strings.Contains(buf.String(), "bot (tg): received from alice (42): /start") {
+    if !strings.Contains(buf.String(), "bot (tg) <-- alice (42): /start") {
         t.Fatalf("expected log line for username case, got: %q", buf.String())
     }
-    if !strings.Contains(buf.String(), "bot (tg): sent to alice (42): ") {
+    if !strings.Contains(buf.String(), "bot (tg) --> alice (42): ") {
         t.Fatalf("expected the reply logged under the sender's name, got: %q", buf.String())
     }
     buf.Reset()
@@ -37,12 +37,12 @@ func TestMessageLogging(t *testing.T) {
         From: &User{FirstName: "Bob"},
         Text: "hi",
     }})
-    if !strings.Contains(buf.String(), "bot (tg): received from Bob (7): hi") {
+    if !strings.Contains(buf.String(), "bot (tg) <-- Bob (7): hi") {
         t.Fatalf("expected log line for first-name fallback, got: %q", buf.String())
     }
     buf.Reset()
     update(bot, Update{Message: &Message{Chat: Chat{ID: 9}, Text: "anon"}})
-    if !strings.Contains(buf.String(), "bot (tg): received from unknown (9): anon") {
+    if !strings.Contains(buf.String(), "bot (tg) <-- unknown (9): anon") {
         t.Fatalf("expected log line for nil From, got: %q", buf.String())
     }
 }
@@ -54,9 +54,9 @@ func TestLogText(t *testing.T) {
     var cases = []struct{ in, want string }{
         {"Block #100\n\n<pre>Hash:  0000\r\nTime:  now</pre>", "Block #100  Hash:  0000 Time:  now"},
         {"a &lt; b\rc", "a < b c"},
-        {strings.Repeat("a", 120), strings.Repeat("a", 120)},
-        {strings.Repeat("a", 121), strings.Repeat("a", 120) + "..."},
-        {strings.Repeat("ж", 121), strings.Repeat("ж", 120) + "..."},
+        {strings.Repeat("a", 100), strings.Repeat("a", 100)},
+        {strings.Repeat("a", 101), strings.Repeat("a", 100) + "..."},
+        {strings.Repeat("ж", 101), strings.Repeat("ж", 100) + "..."},
     }
     for _, c := range cases {
         if got := logText(c.in); got != c.want { t.Errorf("logText(%q) = %q, want %q", c.in, got, c.want) }
