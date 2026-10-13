@@ -5,11 +5,11 @@
 
 Bitcoin blockchain explorer and events notification bot. It can send notifications on watched addresses and transactions. It also sends various information and statistics on Bitcoin network
 
-<img src="./img/1.jpeg" alt="transaction notification" width="300"><img src="./img/2.jpeg" alt="Address notification" width="300">
+<img src="./static/img/screen-1.jpeg" alt="transaction notification" width="300"><img src="./static/img/screen-2.jpeg" alt="Address notification" width="300">
 
 #### Mini App
 
-<img src="./img/3.jpeg" alt="Info" width="300"><img src="./img/4.jpeg" alt="Info" width="300"><img src="./img/5.jpeg" alt="Info" width="300">
+<img src="./static/img/screen-3.jpeg" alt="Info" width="300"><img src="./static/img/screen-4.jpeg" alt="Info" width="300"><img src="./static/img/screen-5.jpeg" alt="Info" width="300">
 
 ### How to run
 
