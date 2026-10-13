@@ -3,8 +3,50 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>BITNSBOT</title>
-    <meta name="description" content="Bitcoin blockchain explorer and notification bot for Telegram and MAX.">
+    <title>Bitcoin Transaction Notifications for Telegram &amp; MAX — bitnsbot</title>
+    <meta name="description" content="Free bot that notifies you about Bitcoin transactions: watch any address or txid and get an alert when it is paid, spent and confirmed. For Telegram and MAX.">
+    <link rel="canonical" href="https://bitnsbot.com/">
+    <meta name="theme-color" content="#f7931a">
+    <meta property="og:type" content="website">
+    <meta property="og:site_name" content="bitnsbot">
+    <meta property="og:url" content="https://bitnsbot.com/">
+    <meta property="og:title" content="Bitcoin Transaction Notifications for Telegram &amp; MAX">
+    <meta property="og:description" content="Watch any Bitcoin address or transaction and get an alert when it is paid, spent and confirmed. Free and open source.">
+    <meta property="og:image" content="https://bitnsbot.com/img/screen-1.jpeg">
+    <meta property="og:image:width" content="570">
+    <meta property="og:image:height" content="1280">
+    <meta property="og:image:alt" content="Telegram notification of an incoming Bitcoin transaction">
+    <meta name="twitter:card" content="summary">
+    <meta name="twitter:title" content="Bitcoin Transaction Notifications for Telegram &amp; MAX">
+    <meta name="twitter:description" content="Watch any Bitcoin address or transaction and get an alert when it is paid, spent and confirmed.">
+    <meta name="twitter:image" content="https://bitnsbot.com/img/screen-1.jpeg">
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "SoftwareApplication",
+        "name": "bitnsbot",
+        "alternateName": "Bitcoin network notifications bot",
+        "url": "https://bitnsbot.com/",
+        "description": "Telegram and MAX bot that sends Bitcoin transaction notifications: watch addresses and transactions and get alerts when they are paid, spent and confirmed. Also a Bitcoin blockchain explorer for blocks, fees, the mempool, mining pools and the market.",
+        "applicationCategory": "FinanceApplication",
+        "operatingSystem": "Telegram, MAX",
+        "image": "https://bitnsbot.com/img/screen-1.jpeg",
+        "screenshot": [
+            "https://bitnsbot.com/img/screen-1.jpeg",
+            "https://bitnsbot.com/img/screen-2.jpeg",
+            "https://bitnsbot.com/img/screen-3.jpeg",
+            "https://bitnsbot.com/img/screen-4.jpeg",
+            "https://bitnsbot.com/img/screen-5.jpeg"
+        ],
+        "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"},
+        "license": "https://opensource.org/licenses/MIT",
+        "sameAs": [
+            "https://t.me/bitnsbot",
+            "https://max.ru/se14621575_bot",
+            "https://github.com/pin2t/bitnsbot"
+        ]
+    }
+    </script>
     <style>
         :root {
             --bg: #f6f7f9;
@@ -41,7 +83,7 @@
             align-items: center;
             justify-content: space-between;
             gap: 16px;
-            max-width: 1040px;
+            max-width: 900px;
             width: 100%;
             margin: 0 auto;
             padding: 24px 16px;
@@ -73,11 +115,25 @@
             flex-direction: column;
             align-items: center;
             justify-content: center;
-            gap: 32px;
-            max-width: 1040px;
+            gap: 28px;
+            max-width: 900px;
             width: 100%;
             margin: 0 auto;
             padding: 8px 16px 24px;
+        }
+        .intro {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 8px;
+        }
+        h1 {
+            margin: 0;
+            max-width: 26em;
+            text-align: center;
+            font-size: 1.625rem;
+            line-height: 1.25;
+            font-weight: 750;
         }
         .tagline {
             margin: 0;
@@ -90,8 +146,52 @@
             display: flex;
             align-items: center;
             justify-content: center;
-            gap: 56px;
+            gap: 40px;
             width: 100%;
+        }
+        .side {
+            flex: 1 1 0;
+            min-width: 0;
+            max-width: 520px;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+        .features h2 {
+            margin: 0 0 10px;
+            font-size: 1.0625rem;
+            letter-spacing: 0.02em;
+        }
+        .features ul {
+            margin: 0;
+            padding: 0;
+            list-style: none;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px 22px;
+            font-size: 0.8125rem;
+            line-height: 1.45;
+            color: var(--muted);
+        }
+        .features li {
+            position: relative;
+            padding-left: 14px;
+        }
+        .features li::before {
+            content: "";
+            position: absolute;
+            left: 0;
+            top: 0.55em;
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: var(--accent);
+        }
+        .features strong { color: var(--text); }
+        .features code {
+            font: 0.95em ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            color: var(--text);
+            white-space: nowrap;
         }
         .carousel {
             display: flex;
@@ -101,7 +201,7 @@
         }
         .screens {
             position: relative;
-            width: clamp(160px, min(78vw, calc((100vh - 380px) * 0.445)), 300px);
+            width: clamp(160px, min(78vw, calc((100vh - 440px) * 0.445)), 300px);
             aspect-ratio: 570 / 1280;
             border-radius: 28px;
             overflow: hidden;
@@ -140,16 +240,16 @@
         .dots button[aria-current="true"]::before { background: var(--accent); transform: scale(1.25); }
         .dots button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 50%; }
         .qrs {
-            display: flex;
-            flex-direction: column;
-            gap: 20px;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 14px;
         }
         .qr {
             display: flex;
-            flex-direction: column;
             align-items: center;
-            gap: 10px;
-            padding: 16px 16px 14px;
+            gap: 14px;
+            min-width: 0;
+            padding: 10px;
             border: 1px solid var(--line);
             border-radius: 18px;
             background: var(--card);
@@ -159,12 +259,14 @@
         .qr:hover { border-color: var(--muted); }
         .qr img {
             display: block;
-            width: clamp(104px, calc(50vh - 256px), 180px);
-            height: clamp(104px, calc(50vh - 256px), 180px);
+            flex: none;
+            width: 100px;
+            height: 100px;
             border-radius: 8px;
         }
+        .qr span { display: flex; flex-direction: column; min-width: 0; }
         .qr strong { font-size: 1rem; }
-        .qr small { color: var(--muted); font-size: 0.875rem; }
+        .qr small { color: var(--muted); font-size: 0.8125rem; overflow-wrap: anywhere; }
         footer {
             padding: 14px 16px 18px;
             border-top: 1px solid var(--line);
@@ -174,10 +276,12 @@
         }
         @media (max-width: 720px) {
             .stage { flex-direction: column; gap: 40px; }
-            .qrs { flex-direction: row; flex-wrap: wrap; justify-content: center; gap: 12px; }
-            .qr { padding: 12px 12px 10px; gap: 6px; }
-            .qr img { width: 128px; height: 128px; }
-            .qr small { font-size: 0.8125rem; }
+            h1 { font-size: 1.375rem; }
+            .side { flex: none; width: 100%; }
+        }
+        @media (max-width: 480px) {
+            .features ul { grid-template-columns: 1fr; }
+            .qr { flex-direction: column; gap: 6px; text-align: center; }
         }
         @media (max-width: 360px) {
             .title { font-size: 1.375rem; }
@@ -190,37 +294,51 @@
 </head>
 <body>
     <header>
-        <h1 class="title"><span>BIT</span>NSBOT</h1>
+        <div class="title"><span>BIT</span>NSBOT</div>
         <a class="github" href="https://github.com/pin2t/bitnsbot">
             <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-.68 0-1.36.09-2 .27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.45-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8Z"/></svg>
             <span>GitHub</span>
         </a>
     </header>
     <main>
-        <p class="tagline">Bitcoin blockchain explorer and notification bot for Telegram and MAX: watch addresses and transactions, look up blocks, fees, the mempool and the market — in chat or in the Mini App.</p>
+        <div class="intro">
+            <h1>Bitcoin transaction notifications in Telegram and MAX</h1>
+            <p class="tagline">A free Bitcoin notification bot and blockchain explorer: watch addresses and transactions, look up blocks, fees, the mempool and the market — in chat or in the Mini App.</p>
+        </div>
         <div class="stage">
             <section class="carousel" aria-label="Screenshots">
                 <div class="screens">
-                    <img class="active" src="img/screen-1.jpeg" alt="The bot's commands and an address notification">
-                    <img src="img/screen-2.jpeg" alt="Notifications in the chat" loading="lazy">
-                    <img src="img/screen-3.jpeg" alt="Mini App home: fees, blockchain and market" loading="lazy">
-                    <img src="img/screen-4.jpeg" alt="Mini App: the richest addresses" loading="lazy">
-                    <img src="img/screen-5.jpeg" alt="Mini App: an address's statistics" loading="lazy">
+                    <img class="active" src="img/screen-1.jpeg" alt="Telegram notification of an incoming Bitcoin transaction on a watched address">
+                    <img src="img/screen-2.jpeg" alt="Bitcoin transaction confirmation notifications in the chat" loading="lazy">
+                    <img src="img/screen-3.jpeg" alt="Mini App: Bitcoin network fees, blockchain and market" loading="lazy">
+                    <img src="img/screen-4.jpeg" alt="Mini App: the richest Bitcoin addresses" loading="lazy">
+                    <img src="img/screen-5.jpeg" alt="Mini App: Bitcoin address balance and transaction statistics" loading="lazy">
                 </div>
                 <div class="dots"></div>
             </section>
-            <section class="qrs" aria-label="Open the bot">
-                <a class="qr" href="https://t.me/bitnsbot">
-                    <img src="img/qr-telegram.svg" alt="QR code for @bitnsbot on Telegram">
-                    <strong>Telegram</strong>
-                    <small>@bitnsbot</small>
-                </a>
-                <a class="qr" href="https://max.ru/se14621575_bot">
-                    <img src="img/qr-max.svg" alt="QR code for the bot on MAX">
-                    <strong>MAX</strong>
-                    <small>max.ru/se14621575_bot</small>
-                </a>
-            </section>
+            <div class="side">
+                <section class="features" aria-labelledby="features-title">
+                    <h2 id="features-title">What it does</h2>
+                    <ul>
+                        <li><strong>Watch a Bitcoin address.</strong> <code>/watch &lt;address&gt;</code> notifies you of every transaction paying or spending it — in the mempool, then again once confirmed.</li>
+                        <li><strong>Watch a transaction.</strong> <code>/watch &lt;txid&gt;</code> tells you when it confirms, in which block and how long it took.</li>
+                        <li><strong>Amounts and fees.</strong> Each notification shows the amount in BTC and USD, the fee, the fee rate and the expected time to confirm.</li>
+                        <li><strong>Blockchain explorer.</strong> <code>/info</code> looks up any transaction, block or address: balance, received, sent and history.</li>
+                        <li><strong>Fees, mempool, market.</strong> Live fee estimates, mempool size and flow, mining pools and the BTC price.</li>
+                        <li><strong>Free and open source.</strong> Runs on its own Bitcoin Core node. MIT licensed, in English, Russian and Spanish.</li>
+                    </ul>
+                </section>
+                <section class="qrs" aria-label="Open the bot">
+                    <a class="qr" href="https://t.me/bitnsbot">
+                        <img src="img/qr-telegram.svg" alt="QR code for @bitnsbot on Telegram">
+                        <span><strong>Telegram</strong><small>@bitnsbot</small></span>
+                    </a>
+                    <a class="qr" href="https://max.ru/se14621575_bot">
+                        <img src="img/qr-max.svg" alt="QR code for the bot on MAX">
+                        <span><strong>MAX</strong><small>se14621575_bot</small></span>
+                    </a>
+                </section>
+            </div>
         </div>
     </main>
     <footer>Open source software. MIT license.</footer>
