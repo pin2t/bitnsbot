@@ -116,7 +116,7 @@
             flex-direction: column;
             align-items: center;
             justify-content: center;
-            gap: 28px;
+            gap: 20px;
             max-width: 900px;
             width: 100%;
             margin: 0 auto;
@@ -145,7 +145,7 @@
         }
         .stage {
             display: flex;
-            align-items: center;
+            align-items: flex-start;
             justify-content: center;
             gap: 40px;
             width: 100%;
@@ -247,10 +247,12 @@
         }
         .qr {
             display: flex;
+            flex-direction: column;
             align-items: center;
-            gap: 14px;
+            gap: 8px;
             min-width: 0;
-            padding: 10px;
+            padding: 12px 10px 10px;
+            text-align: center;
             border: 1px solid var(--line);
             border-radius: 18px;
             background: var(--card);
@@ -260,12 +262,12 @@
         .qr:hover { border-color: var(--muted); }
         .qr img {
             display: block;
-            flex: none;
-            width: 100px;
-            height: 100px;
+            width: min(clamp(110px, calc(100vh - 670px), 200px), 100%);
+            height: auto;
+            aspect-ratio: 1;
             border-radius: 8px;
         }
-        .qr span { display: flex; flex-direction: column; min-width: 0; }
+        .qr span { display: flex; flex-direction: column; align-items: center; min-width: 0; }
         .qr strong { font-size: 1rem; }
         .qr small { color: var(--muted); font-size: 0.8125rem; overflow-wrap: anywhere; }
         footer {
@@ -279,10 +281,10 @@
             .stage { flex-direction: column; gap: 40px; }
             h1 { font-size: 1.375rem; }
             .side { flex: none; width: 100%; }
+            .qr img { width: min(160px, 100%); }
         }
         @media (max-width: 480px) {
             .features ul { grid-template-columns: 1fr; }
-            .qr { flex-direction: column; gap: 6px; text-align: center; }
         }
         @media (max-width: 360px) {
             .title { font-size: 1.375rem; }
