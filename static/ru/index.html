@@ -3,6 +3,13 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <script>
+        document.addEventListener("click", function (e) {
+            var link = e.target.closest && e.target.closest(".langs a[lang]");
+            if (!link) return;
+            try { localStorage.setItem("lang", link.lang); } catch (x) {}
+        });
+    </script>
     <title>Уведомления о Bitcoin-транзакциях в Telegram и MAX — bitnsbot</title>
     <meta name="description" content="Бесплатный бот с уведомлениями о Bitcoin-транзакциях: отслеживайте любой адрес или транзакцию и узнавайте о поступлении, списании и подтверждении. Для Telegram и MAX.">
     <link rel="canonical" href="https://bitnsbot.com/ru/">
