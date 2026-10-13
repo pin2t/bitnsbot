@@ -83,21 +83,16 @@ func (c *chain) respond(method string, params []any) (any, error) {
     return nil, fmt.Errorf("unexpected call %s %v", method, params)
 }
 
-// The two tables as openDB creates them.
-const ddl = `create table addrstat (addr TEXT PRIMARY KEY, type TEXT NOT NULL, balance INTEGER NOT NULL,
-    recv INTEGER NOT NULL, sent INTEGER NOT NULL, flow INTEGER NOT NULL, fees INTEGER NOT NULL,
-    txs INTEGER NOT NULL, first INTEGER NOT NULL, last INTEGER NOT NULL);
-    create table cursors (name TEXT PRIMARY KEY, place INTEGER NOT NULL)`
-
 // open puts a row under each address and runs Init over them, which is how the
 // set is filled: the table's keys are the set, and inserting one is what adds an
-// address to it.
+// address to it. A first Init on the empty database creates the table the rows
+// go into.
 func open(t *testing.T, addrs ...string) *sql.DB {
     t.Helper()
     var handle, err = sql.Open("sqlite", filepath.Join(t.TempDir(), "t.db"))
     if err != nil { t.Fatalf("open: %v", err) }
-    if _, err := handle.Exec(ddl); err != nil { t.Fatal(err) }
     if err := cursors.Init(handle); err != nil { t.Fatalf("cursors: %v", err) }
+    if err := Init(handle); err != nil { t.Fatalf("init: %v", err) }
     t.Cleanup(func() { handle.Close(); db = nil; watched = map[string]string{} })
     add(t, handle, addrs...)
     if err := Init(handle); err != nil { t.Fatalf("init: %v", err) }

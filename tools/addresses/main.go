@@ -192,7 +192,6 @@ func main() {
 	}
 	for _, ddl := range []string{
 		`create table if not exists addresses (addr TEXT PRIMARY KEY, txs INTEGER NOT NULL)`,
-		`create table if not exists cursors (name TEXT PRIMARY KEY, place INTEGER NOT NULL)`,
 	} {
 		if _, err := d.Exec(ddl); err != nil {
 			logging.Fatal("create tables: %v", err)

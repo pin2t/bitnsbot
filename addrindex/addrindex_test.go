@@ -13,15 +13,10 @@ import "bitnsbot/core"
 import "bitnsbot/core/coretest"
 import "bitnsbot/cursors"
 
-// The two tables as openDB creates them.
-const ddl = `create table addrindex (shard INTEGER PRIMARY KEY, data BLOB NOT NULL);
-    create table cursors (name TEXT PRIMARY KEY, place INTEGER NOT NULL)`
-
 func openTestDB(t *testing.T) {
     t.Helper()
     var handle, err = sql.Open("sqlite", filepath.Join(t.TempDir(), "addrindex.sqlite"))
     if err != nil { t.Fatalf("open: %v", err) }
-    if _, err := handle.Exec(ddl); err != nil { t.Fatal(err) }
     if err := cursors.Init(handle); err != nil { t.Fatalf("cursors: %v", err) }
     if err := Init(handle); err != nil { t.Fatalf("init: %v", err) }
     t.Cleanup(func() {

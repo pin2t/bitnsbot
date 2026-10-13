@@ -90,11 +90,13 @@ var count atomic.Int64
 var loaded atomic.Bool
 var caughtUp atomic.Bool
 
-// Init stores the handle. The `addrbal` table is openDB's to create, and the
+// Init stores the handle and creates the `addrbal` table when it is missing. The
 // scan's place is a row of the cursors table under cursors.AddrBal.
 func Init(handle *sql.DB) error {
     db = handle
-    return nil
+    if db == nil { return nil }
+    var _, err = db.Exec(`create table if not exists addrbal (shard INTEGER PRIMARY KEY, data BLOB NOT NULL)`)
+    return err
 }
 
 // Count is how many addresses hold a positive balance, and whether the scan has

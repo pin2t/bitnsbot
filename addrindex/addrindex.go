@@ -85,13 +85,14 @@ type Touch struct {
     TxIndex uint16
 }
 
-// Init stores the handle. The `addrindex` and `cursors` tables are the caller's
-// to create — openDB's in the bot, the tool's own in tools/addrindex — and the
-// cursors package has to be given the same handle, since the build's place is a
-// row of that table under cursors.AddrIndex.
+// Init stores the handle and creates the `addrindex` table when it is missing.
+// The cursors package has to be given the same handle first, since the build's
+// place is a row of its table under cursors.AddrIndex.
 func Init(handle *sql.DB) error {
     db = handle
-    return nil
+    if db == nil { return nil }
+    var _, err = db.Exec(`create table if not exists addrindex (shard INTEGER PRIMARY KEY, data BLOB NOT NULL)`)
+    return err
 }
 
 // Prefix is the index prefix for a scriptPubKey: the first prefixLen bytes of

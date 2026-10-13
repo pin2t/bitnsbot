@@ -2,6 +2,7 @@ package main
 
 import "context"
 import "time"
+import "bitnsbot/blocks"
 import "bitnsbot/addrbal"
 import "bitnsbot/addrindex"
 import "bitnsbot/addrstat"
@@ -52,7 +53,7 @@ func updateIndexes() {
         logging.Warn("indexes: tip: %v", err)
         return
     }
-    updateBlocks(tip)
+    blocks.Update(tip)
     miners.Update(tip)
     if err := addrindex.Update(tip); err != nil {
         logging.Warn("addrindex: %v", err)

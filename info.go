@@ -1,5 +1,6 @@
 package main
 
+import "bitnsbot/blocks"
 import "bitnsbot/app"
 import "context"
 import "html"
@@ -296,7 +297,7 @@ func compactAddrs(addrs []string) string {
 }
 
 func block(ctx context.Context, bot messenger, chat int64, height int64) {
-    if bi, ok := loadBlock(height); ok {
+    if bi, ok := blocks.Load(height); ok {
         send(bot, chat, formatBlock(bi, chatLang(chat)), nil)
         return
     }
@@ -305,34 +306,13 @@ func block(ctx context.Context, bot messenger, chat int64, height int64) {
         send(bot, chat, i18n(chat).Sprintf("Couldn't find block %d", height), nil)
         return
     }
-    var bi, ciErr = computeBlockInfo(ctx, hash)
+    var bi, ciErr = blocks.Compute(ctx, hash)
     if ciErr != nil {
         logging.Err("compute block %d: %v", height, ciErr)
         send(bot, chat, i18n(chat).String("Sorry, something went wrong fetching that block"), nil)
         return
     }
     send(bot, chat, formatBlock(bi, chatLang(chat)), nil)
-}
-
-// feeStats summarises a block's fee distribution. Core reports each
-// transaction's fee directly in getblock verbosity 2, so unlike the btcd path
-// this needs no prevout fetching at all — the bounded 16-way fan-out that used
-// to be here existed only because btcd made callers compute fees themselves.
-// The coinbase has no fee and is skipped.
-//
-// coinbase
-func feeStats(txs []core.Transaction) (low, avg, high int64, count int) {
-    var total int64
-    for i, t := range txs {
-        if i == 0 { continue }
-        var fee = toSat(t.Fee)
-        if count == 0 || fee < low { low = fee }
-        if fee > high { high = fee }
-        total += fee
-        count++
-    }
-    if count == 0 { return 0, 0, 0, 0 }
-    return low, (total + int64(count)/2) / int64(count), high, count
 }
 
 // addrTxLimit bounds how many of an address's transactions are resolved for the
@@ -447,7 +427,7 @@ func txStartHeight(addr string) uint32 {
     var statCursor, statOK = cursors.Get(cursors.AddrStat)
     var indexCursor, indexOK = addrindex.Cursor()
     if !statOK || !indexOK || statCursor < int64(indexCursor) { return 0 }
-    if h, ok := blockByTime(s.Last); ok && h > 0 { return uint32(h) }
+    if h, ok := blocks.ByTime(s.Last); ok && h > 0 { return uint32(h) }
     return 0
 }
 
@@ -734,4 +714,56 @@ func address(ctx context.Context, bot messenger, chat int64, addr string) {
         return
     }
     send(bot, chat, i18n(chat).Sprintf("Address %s\n\n<pre>%s</pre>", short(addr), joinAlign(pairs)), nil)
+}
+
+func minerName(name, lang string) string {
+    if name == "" { return i18nl(lang).String("Unknown") }
+    return name
+}
+
+// formatBlock renders a cached block record as the /info block reply.
+// blockPairs builds the label/value lines a block is described by. Shared with
+// the Mini App's block details page, so the two cannot drift apart. A pair with
+// an empty value is a heading ("Fees", "Tx sizes"), not a field.
+//
+// a size, not a fee: Russian declines the two differently, so this is its
+// own key rather than the "average" the fee line above uses
+func blockPairs(bi *blocks.Info, lang string) [][2]string {
+    var difficulty = metric(bi.Difficulty, 2)
+    var pairs = [][2]string{
+        {i18nl(lang).String("Hash"), short(bi.Hash)},
+        {i18nl(lang).String("Time"), when(bi.Time, lang)},
+        {i18nl(lang).String("Size"), humSize(int64(bi.Size), 2, lang)},
+        {i18nl(lang).String("Transactions"), strconv.Itoa(bi.NumTx)},
+        {i18nl(lang).String("Miner"), minerName(bi.Miner, lang)},
+        {i18nl(lang).String("Difficulty"), difficulty},
+    }
+    switch {
+    case !bi.FeesOK:     pairs = append(pairs, [2]string{i18nl(lang).String("Fees"), i18nl(lang).String("unavailable")})
+    case bi.NumTx <= 1:  pairs = append(pairs, [2]string{i18nl(lang).String("Fees"), i18nl(lang).String("none (coinbase only)")})
+    default:
+        var feeLine = func (fee int64, sz int32) string {
+            return group(fee) + " " + i18nl(lang).String("sats") +
+                " (" + strings.TrimSuffix(strconv.FormatFloat(float64(fee) / float64(sz), 'f', 1, 64), ".0") + " " + i18nl(lang).String("sat/vB") + ")"
+        }
+        pairs = append(pairs,
+            [2]string{i18nl(lang).String("Fees"), ""},
+            [2]string{i18nl(lang).String("lowest"), feeLine(bi.FeeMin, bi.TxSizeMin)},
+            [2]string{i18nl(lang).String("average"), feeLine(bi.FeeAvg, bi.TxSizeAvg)},
+            [2]string{i18nl(lang).String("highest"), feeLine(bi.FeeMax, bi.TxSizeMax)},
+        )
+    }
+    pairs = append(pairs,
+        [2]string{i18nl(lang).String("Tx sizes"), ""},
+        [2]string{i18nl(lang).String("minimum"), group(int64(bi.TxSizeMin)) + " " + i18nl(lang).String("B")},
+        [2]string{i18nl(lang).String("average-tx"), group(int64(bi.TxSizeAvg)) + " " + i18nl(lang).String("B")},
+        [2]string{i18nl(lang).String("maximum"), group(int64(bi.TxSizeMax)) + " " + i18nl(lang).String("B")},
+        [2]string{i18nl(lang).String("Reward"), amountLine(bi.Reward, time.Unix(bi.Time, 0), false, lang)},
+        [2]string{i18nl(lang).String("Reward + fees"), amountLine(bi.Total, time.Unix(bi.Time, 0), false, lang)},
+    )
+    return pairs
+}
+
+func formatBlock(bi *blocks.Info, lang string) string {
+    return i18nl(lang).Sprintf("Block #%d\n\n<pre>%s</pre>", bi.Height, joinAlign(blockPairs(bi, lang)))
 }

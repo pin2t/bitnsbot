@@ -6,6 +6,7 @@ import "strconv"
 import "strings"
 import "sync"
 import "testing"
+import "bitnsbot/blocks"
 import "bitnsbot/addrbal"
 import "bitnsbot/core/coretest"
 import "bitnsbot/cursors"
@@ -73,7 +74,7 @@ func TestUpdateIndexesRunsInOrder(t *testing.T) {
         t.Errorf("calls = %v, want the block cache's getblocks before the address index's", got)
     }
     for h := 0; h <= 2; h++ {
-        if _, ok := loadBlock(int64(h)); !ok {
+        if _, ok := blocks.Load(int64(h)); !ok {
             t.Errorf("block %d was not cached", h)
         }
     }

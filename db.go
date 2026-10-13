@@ -10,6 +10,7 @@ import "strings"
 import "syscall"
 import "time"
 import "modernc.org/sqlite"
+import "bitnsbot/blocks"
 import "bitnsbot/addrbal"
 import "bitnsbot/addrindex"
 import "bitnsbot/addrstat"
@@ -20,41 +21,8 @@ import "bitnsbot/rates"
 import "bitnsbot/watches"
 
 // db is the bot's SQLite database, and the handle every package that stores
-// anything is given. One file, one handle, one schema.
+// anything is given. One file, one handle.
 var db *sql.DB
-
-// schema is the source of truth for the database. The package tests and
-// tools/addrindex carry copies of the tables they use, which have to be kept in
-// step with it by hand, since nothing can import package main.
-//
-// create table if not exists, because unlike the migration this runs on every
-// start and against a database a migration may already have built.
-var schema = []string{
-    `create table if not exists blocks (height INTEGER PRIMARY KEY, hash TEXT NOT NULL, ts INTEGER NOT NULL,
-        size INTEGER NOT NULL, txs INTEGER NOT NULL, miner TEXT NOT NULL, feesOK INTEGER NOT NULL,
-        minFee INTEGER NOT NULL, avgFee INTEGER NOT NULL, maxFee INTEGER NOT NULL,
-        txSizeMin INTEGER NOT NULL, txSizeAvg INTEGER NOT NULL, txSizeMax INTEGER NOT NULL,
-        reward INTEGER NOT NULL, fees INTEGER NOT NULL, difficulty REAL NOT NULL)`,
-    `create table if not exists market (ts INTEGER PRIMARY KEY, price INTEGER NOT NULL, cap INTEGER NOT NULL,
-        volume24h INTEGER NOT NULL)`,
-    `create table if not exists miners (name TEXT PRIMARY KEY, blocks INTEGER NOT NULL,
-        reward INTEGER NOT NULL, fees INTEGER NOT NULL, totalWork REAL NOT NULL, lastWork REAL NOT NULL)`,
-    `create table if not exists mineraddr (address TEXT PRIMARY KEY, name TEXT NOT NULL references miners(name))`,
-    `create table if not exists minertag (tag TEXT PRIMARY KEY, name TEXT NOT NULL references miners(name))`,
-    `create table if not exists rates (ts INTEGER PRIMARY KEY, cents INTEGER NOT NULL)`,
-    `create table if not exists watches (platform TEXT NOT NULL, chat INTEGER NOT NULL, addr TEXT NOT NULL,
-        alias TEXT NOT NULL, created INTEGER NOT NULL, PRIMARY KEY (platform, chat, addr))`,
-    `create table if not exists addrstat (addr TEXT PRIMARY KEY, type TEXT NOT NULL, balance INTEGER NOT NULL,
-        recv INTEGER NOT NULL, sent INTEGER NOT NULL, flow INTEGER NOT NULL, fees INTEGER NOT NULL,
-        txs INTEGER NOT NULL, first INTEGER NOT NULL, last INTEGER NOT NULL)`,
-    `create table if not exists cursors (name TEXT PRIMARY KEY, place INTEGER NOT NULL)`,
-    `create table if not exists addrindex (shard INTEGER PRIMARY KEY, data BLOB NOT NULL)`,
-    `create table if not exists addrbal (shard INTEGER PRIMARY KEY, data BLOB NOT NULL)`,
-    `create index if not exists addrstat_balance on addrstat (balance)`,
-    `create index if not exists addrstat_txs on addrstat (txs)`,
-    `create index if not exists addrstat_last on addrstat (last)`,
-    `create index if not exists blocks_ts on blocks (ts)`,
-}
 
 // dsn carries the pragmas rather than running them, because a PRAGMA applies to
 // the connection that ran it and database/sql hands out a pool: in the DSN the
@@ -78,13 +46,11 @@ func dsn(path string) string {
         "&_pragma=foreign_keys(on)"
 }
 
-// openDB opens the SQLite database, creates anything missing, and hands the
-// handle to every package that stores something.
-//
-// A watches table from before MAX has no platform column, and since the column
-// is part of the primary key it cannot simply be added: the table is rebuilt in
-// one transaction, every existing watch becoming a Telegram one ("tg"), which is
-// all there was.
+// openDB opens the SQLite database and hands the handle to every package that
+// stores something. Each package's Init creates its own tables and indexes when
+// they are missing — every statement is `create ... if not exists`, since it runs
+// on every start — so the schema lives beside the code that reads it. cursors
+// comes first, because the scans keep their place in its table.
 //
 // Every package that owns tables must be Init'd here. Forgetting one is not a
 // loud failure: those packages guard their operations on a nil handle, so the
@@ -104,29 +70,8 @@ func openDB(path string) error {
     opened.SetMaxIdleConns(4)
     if err := opened.Ping(); err != nil { return err }
     db = opened
-    for _, s := range schema {
-        if _, err := db.Exec(s); err != nil { return err }
-    }
-    var hasPlatform int
-    if err := db.QueryRow("select count(*) from pragma_table_info('watches') where name = 'platform'").Scan(&hasPlatform); err != nil { return err }
-    if hasPlatform == 0 {
-        var tx, txErr = db.Begin()
-        if txErr != nil { return txErr }
-        defer tx.Rollback()
-        for _, s := range []string{
-            `create table watches_platform (platform TEXT NOT NULL, chat INTEGER NOT NULL, addr TEXT NOT NULL,
-                alias TEXT NOT NULL, created INTEGER NOT NULL, PRIMARY KEY (platform, chat, addr))`,
-            `insert into watches_platform (platform, chat, addr, alias, created) select 'tg', chat, addr, alias, created from watches`,
-            `drop table watches`,
-            `alter table watches_platform rename to watches`,
-        } {
-            if _, err := tx.Exec(s); err != nil { return err }
-        }
-        if err := tx.Commit(); err != nil { return err }
-        logging.Status("watches table migrated: platform column added, existing watches are Telegram's")
-    }
     if err := cursors.Init(db); err != nil { return err }
-    if err := blockInit(db); err != nil { return err }
+    if err := blocks.Init(db); err != nil { return err }
     if err := rates.Init(db); err != nil { return err }
     if err := watches.Init(db); err != nil { return err }
     if err := miners.Init(db); err != nil { return err }

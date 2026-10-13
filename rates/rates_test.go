@@ -9,16 +9,10 @@ import "time"
 import "database/sql"
 import _ "modernc.org/sqlite"
 
-// The two tables as openDB creates them.
-const ddl = `create table rates (ts INTEGER PRIMARY KEY, cents INTEGER NOT NULL);
-    create table market (ts INTEGER PRIMARY KEY, price INTEGER NOT NULL, cap INTEGER NOT NULL,
-        volume24h INTEGER NOT NULL)`
-
 func openTestDB(t *testing.T) *sql.DB {
     t.Helper()
     var handle, err = sql.Open("sqlite", filepath.Join(t.TempDir(), "rates.db"))
     if err != nil { t.Fatalf("open: %v", err) }
-    if _, err := handle.Exec(ddl); err != nil { t.Fatal(err) }
     if err := Init(handle); err != nil { t.Fatalf("init: %v", err) }
     t.Cleanup(func() { handle.Close(); db = nil })
     return handle

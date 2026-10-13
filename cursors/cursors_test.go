@@ -5,15 +5,11 @@ import "path/filepath"
 import "testing"
 import _ "modernc.org/sqlite"
 
-// The table as openDB creates it.
-const ddl = `create table cursors (name TEXT PRIMARY KEY, place INTEGER NOT NULL)`
-
 func open(t *testing.T) *sql.DB {
     t.Helper()
     var handle, err = sql.Open("sqlite", filepath.Join(t.TempDir(), "test.db"))
     if err != nil { t.Fatal(err) }
     t.Cleanup(func() { handle.Close(); db = nil })
-    if _, err := handle.Exec(ddl); err != nil { t.Fatal(err) }
     if err := Init(handle); err != nil { t.Fatalf("init: %v", err) }
     return handle
 }

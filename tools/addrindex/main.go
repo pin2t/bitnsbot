@@ -141,19 +141,11 @@ func main() {
 // db is the open index, shared by the commands.
 var db *sql.DB
 
-// indexDDL is the index's two tables exactly as the bot's openDB creates them, so
-// -db can be the bot's own database and either side carries on from the other's
-// cursor.
-var indexDDL = []string{
-    `create table if not exists addrindex (shard INTEGER PRIMARY KEY, data BLOB NOT NULL)`,
-    `create table if not exists cursors (name TEXT PRIMARY KEY, place INTEGER NOT NULL)`,
-}
-
 // openIndex opens the database with the pragmas the bot opens its own with —
 // WAL, so the index can be read while a build writes it, and a busy timeout, so
-// a bot sharing the file makes this wait rather than fail — creates the index's
-// tables when they are missing, and hands the handle to the packages that read
-// and write them.
+// a bot sharing the file makes this wait rather than fail — and hands the handle
+// to the packages that create, read and write the index's tables, exactly as the
+// bot's openDB does.
 //
 // existing is list's: SQLite would otherwise create the file and answer with an
 // empty index, which reads like a build that never ran rather than a mistyped
@@ -165,12 +157,6 @@ func openIndex(path string, existing bool) error {
     var opened, err = sql.Open("sqlite", "file:"+path+
         "?_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=busy_timeout(10000)")
     if err != nil { return err }
-    for _, ddl := range indexDDL {
-        if _, err := opened.Exec(ddl); err != nil {
-            opened.Close()
-            return err
-        }
-    }
     db = opened
     if err := cursors.Init(db); err != nil { return err }
     return addrindex.Init(db)

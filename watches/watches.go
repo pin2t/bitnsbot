@@ -22,10 +22,13 @@ type Watch struct {
 // every row to find out whose it is. `created` is the one fact about a watch that
 // is otherwise unrecoverable; nothing reads it but List's ordering.
 //
-// Init stores the shared handle. The table itself is created by openDB.
+// Init stores the shared handle and creates the table when it is missing.
 func Init(handle *sql.DB) error {
     db = handle
-    return nil
+    if db == nil { return nil }
+    var _, err = db.Exec(`create table if not exists watches (platform TEXT NOT NULL, chat INTEGER NOT NULL,
+        addr TEXT NOT NULL, alias TEXT NOT NULL, created INTEGER NOT NULL, PRIMARY KEY (platform, chat, addr))`)
+    return err
 }
 
 // Add stores an address watch for a chat. Watching an address the chat already

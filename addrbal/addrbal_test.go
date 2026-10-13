@@ -78,12 +78,6 @@ func (c *chain) respond(method string, params []any) (any, error) {
 func open(t *testing.T, c *chain) {
     var handle, err = sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "addrbal.db"))
     if err != nil { t.Fatal(err) }
-    for _, s := range []string{
-        "create table addrbal (shard INTEGER PRIMARY KEY, data BLOB NOT NULL)",
-        "create table cursors (name TEXT PRIMARY KEY, place INTEGER NOT NULL)",
-    } {
-        if _, err := handle.Exec(s); err != nil { t.Fatal(err) }
-    }
     cursors.Init(handle)
     Init(handle)
     count.Store(0)

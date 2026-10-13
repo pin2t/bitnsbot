@@ -17,6 +17,7 @@ import "syscall"
 import "time"
 import "runtime/debug"
 import "github.com/pin2t/flagex"
+import "bitnsbot/blocks"
 import "bitnsbot/addrbal"
 import "bitnsbot/app"
 import "bitnsbot/core"
@@ -112,7 +113,7 @@ func appBlocks(lang string, rng app.Range) app.Blocks {
     if rng.Down > 0 {
         where, args = " where height >= ?", []any{rng.Down}
     }
-    var rows, err = db.Query("select "+blockColumns+" from blocks"+where+
+    var rows, err = db.Query("select "+blocks.Columns+" from blocks"+where+
         " order by height desc limit ?", append(args, limit+1)...)
     if err != nil {
         logging.Warn("mini app: blocks: %v", err)
@@ -124,7 +125,7 @@ func appBlocks(lang string, rng app.Range) app.Blocks {
             out.More = true
             break
         }
-        var bi, ok = scanBlock(rows)
+        var bi, ok = blocks.Scan(rows)
         if !ok { continue }
         out.Rows = append(out.Rows, app.Block{
             Height:     group(bi.Height),
@@ -159,14 +160,14 @@ func appBlocks(lang string, rng app.Range) app.Blocks {
 // nothing to watch.
 func appBlockInfo(lang string, height int64) app.Info {
     var out = app.Info{Title: i18nl(lang).String("Block") + " " + group(height), Kind: "block"}
-    var bi, ok = loadBlock(height)
+    var bi, ok = blocks.Load(height)
     if !ok {
         if !core.Enabled() { return out }
         var ctx, cancel = context.WithTimeout(context.Background(), 60*time.Second)
         defer cancel()
         var hash, err = core.GetBlockHash(ctx, height)
         if err != nil { return out }
-        bi, err = computeBlockInfo(ctx, hash)
+        bi, err = blocks.Compute(ctx, hash)
         if err != nil {
             logging.Warn("mini app: compute block %d: %v", height, err)
             return out
@@ -1285,7 +1286,7 @@ func refreshNetwork(withNodes bool) {
     if n, ok := addrbal.Count(); ok { funded = bigCount(n) }
     networkMu.Lock()
     cachedNetwork = app.Network{OK: true,
-        Coins:  metric(toBTC(circulatingSupply(info.Blocks)), 1),
+        Coins:  metric(toBTC(blocks.CirculatingSupply(info.Blocks)), 1),
         Cap:    "21 M",
         Blocks: group(info.Blocks),
         Size:   humSize(info.SizeOnDisk, 0, ""),

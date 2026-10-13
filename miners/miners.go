@@ -54,9 +54,19 @@ var indexMu sync.RWMutex
 var addrIndex = map[string]string{}
 var tagIndex []tagged
 
-// Init stores the shared handle and builds the in-memory mappings from the rows.
+// Init stores the shared handle, creates the three tables when they are missing,
+// and builds the in-memory mappings from the rows.
 func Init(handle *sql.DB) error {
     db = handle
+    if db == nil { return nil }
+    for _, s := range []string{
+        `create table if not exists miners (name TEXT PRIMARY KEY, blocks INTEGER NOT NULL,
+            reward INTEGER NOT NULL, fees INTEGER NOT NULL, totalWork REAL NOT NULL, lastWork REAL NOT NULL)`,
+        `create table if not exists mineraddr (address TEXT PRIMARY KEY, name TEXT NOT NULL references miners(name))`,
+        `create table if not exists minertag (tag TEXT PRIMARY KEY, name TEXT NOT NULL references miners(name))`,
+    } {
+        if _, err := db.Exec(s); err != nil { return err }
+    }
     return loadIndex()
 }
 

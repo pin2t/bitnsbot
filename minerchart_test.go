@@ -4,23 +4,24 @@ import "path/filepath"
 import "strconv"
 import "testing"
 import "time"
+import "bitnsbot/blocks"
 import "bitnsbot/app"
 
 // chartDB opens a database holding the given blocks, each a height, a time, the
 // pool that mined it and the difficulty it was mined at.
-func chartDB(t *testing.T, blocks ...blockInfo) {
+func chartDB(t *testing.T, infos ...blocks.Info) {
     if err := openDB(filepath.Join(t.TempDir(), "chart.db")); err != nil {
         t.Fatalf("open db: %v", err)
     }
     t.Cleanup(func() { closeDB() })
-    for i := range blocks {
-        if err := flushBlocks([]*blockInfo{&blocks[i]}); err != nil { t.Fatalf("store block: %v", err) }
+    for i := range infos {
+        if err := blocks.Flush([]*blocks.Info{&infos[i]}); err != nil { t.Fatalf("store block: %v", err) }
     }
 }
 
 // at is a block of the test's own: the fields the chart reads, and nothing else.
-func at(height int64, when time.Time, miner string, difficulty float64) blockInfo {
-    return blockInfo{Height: height, Hash: strconv.FormatInt(height, 16), Time: when.Unix(), Miner: miner,
+func at(height int64, when time.Time, miner string, difficulty float64) blocks.Info {
+    return blocks.Info{Height: height, Hash: strconv.FormatInt(height, 16), Time: when.Unix(), Miner: miner,
         Difficulty: difficulty}
 }
 

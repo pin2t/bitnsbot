@@ -29,10 +29,13 @@ const AddrBal = "addrbal"
 
 var db *sql.DB
 
-// Init is called from openDB, before the packages that keep a place here.
+// Init is called from openDB, before the packages that keep a place here, and
+// creates the table when it is missing. A nil handle forgets the database.
 func Init(handle *sql.DB) error {
     db = handle
-    return nil
+    if db == nil { return nil }
+    var _, err = db.Exec(`create table if not exists cursors (name TEXT PRIMARY KEY, place INTEGER NOT NULL)`)
+    return err
 }
 
 // Get reads one scan's place. Not found is not zero: a scan that has never run
