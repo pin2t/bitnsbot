@@ -54,8 +54,9 @@ type Stat struct {
 var watchedMu sync.RWMutex
 var watched = map[string]string{}
 
-// Init stores the shared handle and builds the lookup the scan matches scripts
-// against.
+// Init stores the shared handle, creates the table and the three indexes the
+// rankings are read through when they are missing, and builds the lookup the
+// scan matches scripts against.
 //
 // **The set is whatever the addrstat table holds.** A row's key is an address and
 // the rest of it is what the scan has gathered, so inserting an address is what
@@ -67,6 +68,17 @@ var watched = map[string]string{}
 // can tell apart from an address the chain has simply never seen.
 func Init(handle *sql.DB) error {
     db = handle
+    if db == nil { return nil }
+    for _, s := range []string{
+        `create table if not exists addrstat (addr TEXT PRIMARY KEY, type TEXT NOT NULL, balance INTEGER NOT NULL,
+            recv INTEGER NOT NULL, sent INTEGER NOT NULL, flow INTEGER NOT NULL, fees INTEGER NOT NULL,
+            txs INTEGER NOT NULL, first INTEGER NOT NULL, last INTEGER NOT NULL)`,
+        `create index if not exists addrstat_balance on addrstat (balance)`,
+        `create index if not exists addrstat_txs on addrstat (txs)`,
+        `create index if not exists addrstat_last on addrstat (last)`,
+    } {
+        if _, err := db.Exec(s); err != nil { return err }
+    }
     return load()
 }
 

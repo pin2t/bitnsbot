@@ -6,17 +6,12 @@ import "testing"
 import "time"
 import _ "modernc.org/sqlite"
 
-// The table as openDB creates it.
-const ddl = `create table watches (platform TEXT NOT NULL, chat INTEGER NOT NULL, addr TEXT NOT NULL,
-    alias TEXT NOT NULL, created INTEGER NOT NULL, PRIMARY KEY (platform, chat, addr))`
-
 // open returns the handle as well, which the format tests need to look at the
 // table directly.
 func open(t *testing.T) *sql.DB {
     t.Helper()
     var handle, err = sql.Open("sqlite", filepath.Join(t.TempDir(), "watches.db"))
     if err != nil { t.Fatalf("open: %v", err) }
-    if _, err := handle.Exec(ddl); err != nil { t.Fatal(err) }
     if err := Init(handle); err != nil { t.Fatalf("init: %v", err) }
     t.Cleanup(func() { handle.Close(); db = nil })
     return handle

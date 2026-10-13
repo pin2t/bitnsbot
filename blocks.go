@@ -41,10 +41,20 @@ type blockInfo struct {
 }
 
 // blockInit is called once by openDB before any goroutine reads or writes the
-// blocks table. The collector's place is the highest height in that table, so a
-// row it kept in cursors before that is dropped rather than left to mislead.
+// blocks table, and creates it, with the blocks_ts index the miner chart reads a
+// period through, when it is missing.
 func blockInit(handle *sql.DB) error {
     db = handle
+    for _, s := range []string{
+        `create table if not exists blocks (height INTEGER PRIMARY KEY, hash TEXT NOT NULL, ts INTEGER NOT NULL,
+            size INTEGER NOT NULL, txs INTEGER NOT NULL, miner TEXT NOT NULL, feesOK INTEGER NOT NULL,
+            minFee INTEGER NOT NULL, avgFee INTEGER NOT NULL, maxFee INTEGER NOT NULL,
+            txSizeMin INTEGER NOT NULL, txSizeAvg INTEGER NOT NULL, txSizeMax INTEGER NOT NULL,
+            reward INTEGER NOT NULL, fees INTEGER NOT NULL, difficulty REAL NOT NULL)`,
+        `create index if not exists blocks_ts on blocks (ts)`,
+    } {
+        if _, err := db.Exec(s); err != nil { return err }
+    }
     db.Exec("update blocks set miner = '' where miner = 'Unknown'")
     return nil
 }

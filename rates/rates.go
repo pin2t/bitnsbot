@@ -34,9 +34,17 @@ type rate struct {
     Cents int64
 }
 
-// Init stores the shared handle. The two tables are created by openDB.
+// Init stores the shared handle and creates the two tables when they are missing.
 func Init(handle *sql.DB) error {
     db = handle
+    if db == nil { return nil }
+    for _, s := range []string{
+        `create table if not exists rates (ts INTEGER PRIMARY KEY, cents INTEGER NOT NULL)`,
+        `create table if not exists market (ts INTEGER PRIMARY KEY, price INTEGER NOT NULL, cap INTEGER NOT NULL,
+            volume24h INTEGER NOT NULL)`,
+    } {
+        if _, err := db.Exec(s); err != nil { return err }
+    }
     return nil
 }
 
