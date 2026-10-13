@@ -10,6 +10,7 @@ import "strings"
 import "syscall"
 import "time"
 import "modernc.org/sqlite"
+import "bitnsbot/blocks"
 import "bitnsbot/addrbal"
 import "bitnsbot/addrindex"
 import "bitnsbot/addrstat"
@@ -70,7 +71,7 @@ func openDB(path string) error {
     if err := opened.Ping(); err != nil { return err }
     db = opened
     if err := cursors.Init(db); err != nil { return err }
-    if err := blockInit(db); err != nil { return err }
+    if err := blocks.Init(db); err != nil { return err }
     if err := rates.Init(db); err != nil { return err }
     if err := watches.Init(db); err != nil { return err }
     if err := miners.Init(db); err != nil { return err }
