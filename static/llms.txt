@@ -30,7 +30,7 @@ The Telegram and MAX Mini Apps show network fees, blockchain and market cards, r
 
 ## Links
 
-- Website: https://bitnsbot.com/
+- Website: https://bitnsbot.com/ (in Russian: https://bitnsbot.com/ru/)
 - Telegram: https://t.me/bitnsbot
 - MAX: https://max.ru/se14621575_bot
 - Source code: https://github.com/pin2t/bitnsbot
