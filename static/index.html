@@ -3,6 +3,19 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <script>
+        (function () {
+            var chosen = null;
+            try { chosen = localStorage.getItem("lang"); } catch (x) {}
+            var wanted = chosen || (navigator.languages && navigator.languages[0]) || navigator.language || "";
+            if (/^ru\b/i.test(wanted)) location.replace("ru/" + location.search + location.hash);
+        })();
+        document.addEventListener("click", function (e) {
+            var link = e.target.closest && e.target.closest(".langs a[lang]");
+            if (!link) return;
+            try { localStorage.setItem("lang", link.lang); } catch (x) {}
+        });
+    </script>
     <title>Bitcoin Transaction Notifications for Telegram &amp; MAX — bitnsbot</title>
     <meta name="description" content="Free bot that notifies you about Bitcoin transactions: watch any address or txid and get an alert when it is paid, spent and confirmed. For Telegram and MAX.">
     <link rel="canonical" href="https://bitnsbot.com/">
