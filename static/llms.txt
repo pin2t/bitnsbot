@@ -1,0 +1,36 @@
+# bitnsbot
+
+> bitnsbot is a free, open-source Bitcoin transaction notification bot and blockchain explorer for Telegram (@bitnsbot) and MAX. Watch any Bitcoin address or transaction and get a notification when it is paid, spent and confirmed.
+
+The bot runs on its own Bitcoin Core full node and uses no third-party block explorer API. It is MIT licensed and speaks English, Russian and Spanish.
+
+## Notifications
+
+- Watch a Bitcoin address with `/watch <address> [alias]`: every transaction that pays the address or spends from it is reported when it reaches the mempool, and again when it is confirmed in a block. The message shows the amount in BTC and USD (or, for a spend, what was sent, the change and the net move), the fee, the fee rate and the expected time to confirm.
+- Watch a transaction with `/watch <txid> [alias]`: a one-shot notification when it confirms, with the block height and how long it took.
+- `/watches` lists your watches, `/unwatch <address or txid>` stops one.
+
+## Explorer commands
+
+- `/info <txid | block height | block hash | address>`: status, confirmations, amount, fee, inputs and outputs of a transaction; size, miner, fees and reward of a block; balance, total received and sent, fees and activity period of an address.
+- `/fees`: fee estimates projected from the live mempool, the way mempool.space computes them.
+- `/mempool`: mempool size, transaction count, totals and flow rate.
+- `/miners`: top mining pools by blocks mined, with an estimate of their power consumption.
+- `/market`: BTC price, market capitalisation, 24h volume and price changes.
+
+## Mini App
+
+The Telegram and MAX Mini Apps show network fees, blockchain and market cards, recent blocks, mining pools, the most active, richest and long-dormant Bitcoin addresses, and the reader's own watch list, with block, transaction and address pages.
+
+## FAQ
+
+- How do I get notified when a Bitcoin address receives a payment? Open https://t.me/bitnsbot in Telegram and send `/watch <address>`.
+- How do I know when my Bitcoin transaction is confirmed? Send `/watch <txid>` to @bitnsbot; it messages you when the transaction is mined.
+- Is it free? Yes. It is free and open source under the MIT license.
+
+## Links
+
+- Website: https://bitnsbot.com/
+- Telegram: https://t.me/bitnsbot
+- MAX: https://max.ru/se14621575_bot
+- Source code: https://github.com/pin2t/bitnsbot
