@@ -185,7 +185,7 @@ func TestStartBackupRetakesWhenStale(t *testing.T) {
     t.Fatal("a backup that went stale was not retaken before a whole interval had passed")
 }
 
-// The check rate is the smaller of the hour and the interval, so a -backup-interval
+// The check rate is the smaller of the hour and the interval, so a -backupInterval
 // shorter than an hour is not held back to one.
 //
 // a fresh file, so neither goroutine finds a backup due while it runs
