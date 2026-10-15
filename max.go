@@ -60,9 +60,9 @@ func maxHandlers(mb maxMessenger) max.Handlers {
     }
 }
 
-// startMax serves MAX's webhook on -max-listen, at the path of -max-webhook-url,
+// startMax serves MAX's webhook on -maxListen, at the path of -maxWebhookURL,
 // subscribes that URL when it is set, and starts the MAX Mini App on
-// -max-app-listen. A failed subscription is logged rather than fatal: the bot
+// -maxAppListen. A failed subscription is logged rather than fatal: the bot
 // still runs on Telegram, and a restart retries it.
 //
 // The Mini App shows what the Telegram one does, so it hears of the same
@@ -70,7 +70,7 @@ func maxHandlers(mb maxMessenger) max.Handlers {
 func startMax(mb maxMessenger) {
     var hookURL, err = url.Parse(*maxWebhookURL)
     if err != nil {
-        logging.Fatal("-max-webhook-url: %v", err)
+        logging.Fatal("-maxWebhookURL: %v", err)
     }
     var hookPath = hookURL.Path
     if hookPath == "" { hookPath = "/" }

@@ -92,22 +92,22 @@ if [ ! -f "$CONFIG" ]; then
 # the systemd unit take precedence over anything set here.
 
 # Required: Telegram bot token (keep this file private, it is chmod 600).
-bot-token=PUT-YOUR-TELEGRAM-BOT-TOKEN-HERE
+botToken=PUT-YOUR-TELEGRAM-BOT-TOKEN-HERE
 
 # Webhook the local telegram-bot-api proxy POSTs updates to.
-webhook-url=http://localhost:8080/bot
-#api-base-url=http://localhost:8081
+webhookURL=http://localhost:8080/bot
+#apiBaseURL=http://localhost:8081
 #listen=:8080
-#secret-token=
+#secretToken=
 
-# Bitcoin Core JSON-RPC (leave core-url empty to run without a node).
-core-url=http://127.0.0.1:8332
+# Bitcoin Core JSON-RPC (leave coreURL empty to run without a node).
+coreURL=http://127.0.0.1:8332
 # Authenticate with either the cookie file Core writes into its data directory
 # (simplest — it needs no configuration on Core's side and is rotated on every
 # restart), or an explicit rpcuser/rpcpassword pair. Set one, not both.
-core-cookie=/home/pi/.bitcoin/.cookie
-#core-user=
-#core-pass=
+coreCookie=/home/pi/.bitcoin/.cookie
+#coreUser=
+#corePass=
 
 # ZeroMQ endpoints for block and mempool notifications. Core publishes each
 # topic on whatever address its own -zmqpub* option names, so this is a
@@ -116,7 +116,7 @@ core-cookie=/home/pi/.bitcoin/.cookie
 #     zmqpubhashblock=tcp://127.0.0.1:28332
 #     zmqpubrawtx=tcp://127.0.0.1:28333
 # Without this the bot still answers commands but never sends notifications.
-core-zmq=tcp://127.0.0.1:28332,tcp://127.0.0.1:28333
+coreZMQ=tcp://127.0.0.1:28332,tcp://127.0.0.1:28333
 
 #verbose=1
 CFG
@@ -189,7 +189,7 @@ systemctl enable --now "$UPDATE_SERVICE.timer" >/dev/null
 
 if [ "$NEEDS_CONFIG" -eq 1 ]; then
     echo
-    echo "!! Service enabled but NOT started — edit $CONFIG (bot-token, core-url, ...), then:"
+    echo "!! Service enabled but NOT started — edit $CONFIG (botToken, coreURL, ...), then:"
     echo "!!     sudo systemctl start $SERVICE"
 else
     echo ">> starting $SERVICE"

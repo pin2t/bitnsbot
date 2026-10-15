@@ -64,7 +64,7 @@ sudo ./scripts/uninstall.sh --purge   # also delete /opt/bitnsbot and the log
 
 `install.sh` builds and tests first and **installs nothing if either fails**. On
 the first run it drops a config **template** at `/opt/bitnsbot/bitnsbot.conf` and
-does *not* start the service — edit that file (at least `bot-token`), then:
+does *not* start the service — edit that file (at least `botToken`), then:
 
 ```sh
 sudo systemctl start bitnsbot

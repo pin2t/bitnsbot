@@ -275,7 +275,7 @@ func loadHistoryFromFile() ([]rate, error) {
 // backfill loads the full daily BTC/USD history once, so /info on an old
 // transaction can show a USD value from around its block time instead of
 // nothing. Skipped when the store already holds backfilled history.  When
-// -history-file is set it reads from the local file first; otherwise it
+// -historyFile is set it reads from the local file first; otherwise it
 // fetches over the network.
 func backfill() {
     if hasHistory() { return }

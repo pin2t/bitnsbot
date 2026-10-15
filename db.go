@@ -156,7 +156,7 @@ func closeDB() error {
 var backupScriptTimeout = 30 * time.Minute
 
 // backupCheck is how often the goroutine asks whether a backup is due, which is
-// not the same thing as how often one is taken: -backup-interval is how old a
+// not the same thing as how often one is taken: -backupInterval is how old a
 // backup may get, and this is how often that age is looked at. A package var so
 // tests shrink it.
 var backupCheck = time.Hour

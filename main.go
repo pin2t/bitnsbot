@@ -35,30 +35,30 @@ import "bitnsbot/lru"
 
 var configPath      = flag.String("config", "", "path to a properties file (name=value lines) with flag values; command-line flags take precedence")
 var verbose         = flag.Int("verbose", 0, "log verbosity: 0=ERR/WARN/status, 1=+INFO, 2=+NET/DB (raw external traffic and storage requests)")
-var botToken        = flag.String("bot-token", "", "Telegram bot token authenticating outbound Bot API calls (required)")
+var botToken        = flag.String("botToken", "", "Telegram bot token authenticating outbound Bot API calls (required)")
 var listenAddr      = flag.String("listen", ":8082", "address the Telegram webhook server binds to")
-var webhookPath     = flag.String("webhook-path", "/bot", "path the Bot API server will POST updates to")
-var webhookURL      = flag.String("webhook-url", "", "URL the Bot API server should send updates to, e.g. http://localhost:8080/bot")
-var apiBaseURL      = flag.String("api-base-url", "http://localhost:8081", "base URL of the local telegram-bot-api server")
-var secretToken     = flag.String("secret-token", "", "optional secret checked against the X-Telegram-Bot-Api-Secret-Token header")
-var registerHook    = flag.Bool("register-webhook", true, "call setWebhook on startup")
+var webhookPath     = flag.String("webhookPath", "/bot", "path the Bot API server will POST updates to")
+var webhookURL      = flag.String("webhookURL", "", "URL the Bot API server should send updates to, e.g. http://localhost:8080/bot")
+var apiBaseURL      = flag.String("apiBaseURL", "http://localhost:8081", "base URL of the local telegram-bot-api server")
+var secretToken     = flag.String("secretToken", "", "optional secret checked against the X-Telegram-Bot-Api-Secret-Token header")
+var registerHook    = flag.Bool("registerWebhook", true, "call setWebhook on startup")
 var dbPath          = flag.String("db", "bitnsbot.db", "path to the bot's SQLite database")
-var coreURL         = flag.String("core-url", "", "Bitcoin Core JSON-RPC URL, e.g. http://127.0.0.1:8332 (leave empty to skip connecting to the node)")
-var coreUser        = flag.String("core-user", "", "Bitcoin Core RPC username (or use -core-cookie)")
-var corePass        = flag.String("core-pass", "", "Bitcoin Core RPC password (or use -core-cookie)")
-var coreCookie      = flag.String("core-cookie", "", "path to Bitcoin Core's .cookie file, an alternative to -core-user/-core-pass")
-var coreZMQ         = flag.String("core-zmq", "", "comma-separated ZMQ endpoints publishing hashblock and rawtx, e.g. tcp://127.0.0.1:28332,tcp://127.0.0.1:28333")
+var coreURL         = flag.String("coreURL", "", "Bitcoin Core JSON-RPC URL, e.g. http://127.0.0.1:8332 (leave empty to skip connecting to the node)")
+var coreUser        = flag.String("coreUser", "", "Bitcoin Core RPC username (or use -coreCookie)")
+var corePass        = flag.String("corePass", "", "Bitcoin Core RPC password (or use -coreCookie)")
+var coreCookie      = flag.String("coreCookie", "", "path to Bitcoin Core's .cookie file, an alternative to -coreUser/-corePass")
+var coreZMQ         = flag.String("coreZMQ", "", "comma-separated ZMQ endpoints publishing hashblock and rawtx, e.g. tcp://127.0.0.1:28332,tcp://127.0.0.1:28333")
 var backupPath      = flag.String("backup", "", "path to copy the database to periodically (empty disables backups)")
-var backupInterval  = flag.Duration("backup-interval", 24*time.Hour, "how old the backup may get before a fresh one is taken")
-var backupScript    = flag.String("backup-script", "", "command run after each backup, with the backup's path as $1 and in $BACKUP_FILE (empty runs nothing)")
-var appListen       = flag.String("app-listen", "127.0.0.1:8080", "address the Telegram Mini App web server binds to (empty disables it; bind to localhost — the Cloudflare tunnel is what faces the network)")
-var dbuiListen      = flag.String("dbui-listen", "", "ignored — the database UI speaks bbolt and is github.com/pin2t/bboltwui now; kept so a config file that sets it still starts")
-var historyFile     = flag.String("history-file", "", "path to a JSON file containing historical BTC/USD rates (same format as blockchain.info/charts/market-price); backfilled from this file on first run instead of fetching over the network")
-var maxToken        = flag.String("max-token", "", "MAX messenger bot token; when set, the MAX webhook server is started on -max-listen")
-var maxListen       = flag.String("max-listen", ":8084", "address the MAX webhook server binds to")
-var maxWebhookURL   = flag.String("max-webhook-url", "", "public https URL MAX should send updates to, registered via POST /subscriptions on startup; its path is the one the MAX webhook server accepts updates on (empty skips subscribing and accepts them on /)")
-var maxSecret       = flag.String("max-secret", "", "optional secret passed to MAX on subscribing and checked against the X-Max-Bot-Api-Secret header of every update")
-var maxAppListen    = flag.String("max-app-listen", "127.0.0.1:8085", "address the MAX Mini App web server binds to when -max-token is set (empty disables it; bind to localhost and put a tunnel in front, as with -app-listen)")
+var backupInterval  = flag.Duration("backupInterval", 24*time.Hour, "how old the backup may get before a fresh one is taken")
+var backupScript    = flag.String("backupScript", "", "command run after each backup, with the backup's path as $1 and in $BACKUP_FILE (empty runs nothing)")
+var appListen       = flag.String("appListen", "127.0.0.1:8080", "address the Telegram Mini App web server binds to (empty disables it; bind to localhost — the Cloudflare tunnel is what faces the network)")
+var dbuiListen      = flag.String("dbuiListen", "", "ignored — the database UI speaks bbolt and is github.com/pin2t/bboltwui now; kept so a config file that sets it still starts")
+var historyFile     = flag.String("historyFile", "", "path to a JSON file containing historical BTC/USD rates (same format as blockchain.info/charts/market-price); backfilled from this file on first run instead of fetching over the network")
+var maxToken        = flag.String("maxToken", "", "MAX messenger bot token; when set, the MAX webhook server is started on -maxListen")
+var maxListen       = flag.String("maxListen", ":8084", "address the MAX webhook server binds to")
+var maxWebhookURL   = flag.String("maxWebhookURL", "", "public https URL MAX should send updates to, registered via POST /subscriptions on startup; its path is the one the MAX webhook server accepts updates on (empty skips subscribing and accepts them on /)")
+var maxSecret       = flag.String("maxSecret", "", "optional secret passed to MAX on subscribing and checked against the X-Max-Bot-Api-Secret header of every update")
+var maxAppListen    = flag.String("maxAppListen", "127.0.0.1:8085", "address the MAX Mini App web server binds to when -maxToken is set (empty disables it; bind to localhost and put a tunnel in front, as with -appListen)")
 var appSrv *http.Server
 var maxSrv *http.Server
 var maxAppSrv *http.Server
@@ -488,7 +488,7 @@ func main() {
     }
     logging.SetVerbose(*verbose)
     if *botToken == "" {
-        logging.Fatal("-bot-token is required")
+        logging.Fatal("-botToken is required")
     }
     var bot = newBot(*botToken, *apiBaseURL)
     var err error
@@ -539,7 +539,7 @@ func main() {
     }
     if *registerHook {
         if *webhookURL == "" {
-            logging.Fatal("-webhook-url is required when -register-webhook=true")
+            logging.Fatal("-webhookURL is required when -registerWebhook=true")
         }
         var ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
         var err = bot.setWebhook(ctx, *webhookURL, *secretToken)
