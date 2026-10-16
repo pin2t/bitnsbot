@@ -1,10 +1,11 @@
-package app
+package telegram
 
 import "strconv"
 import "strings"
 import "sync"
 import "testing"
 import "time"
+import "bitnsbot/app"
 
 // countingSource records how often each card's data was asked for, which is what
 // a cache hit is measured by: the fragment still renders, but Options are not
@@ -12,8 +13,8 @@ import "time"
 type countingSource struct {
     mu    sync.Mutex
     calls map[string]int
-    b     []Block
-    al    map[string][]Addr
+    b     []app.Block
+    al    map[string][]app.Addr
 }
 
 func newCounting() *countingSource {
@@ -32,30 +33,30 @@ func (s *countingSource) hit(name string) {
     s.mu.Unlock()
 }
 
-func (s *countingSource) Fees() Fees       { s.hit("fees"); return liveFees() }
-func (s *countingSource) Network() Network { s.hit("network"); return liveNetwork() }
-func (s *countingSource) Market(lang string) Market { s.hit("market"); return liveMarket() }
+func (s *countingSource) Fees() app.Fees       { s.hit("fees"); return liveFees() }
+func (s *countingSource) Network() app.Network { s.hit("network"); return liveNetwork() }
+func (s *countingSource) Market(lang string) app.Market { s.hit("market"); return liveMarket() }
 
-func (s *countingSource) BlockInfo(lang string, height int64) Info {
+func (s *countingSource) BlockInfo(lang string, height int64) app.Info {
     s.hit("blockinfo" + strconv.FormatInt(height, 10))
-    return Info{OK: true, Title: "Block " + strconv.FormatInt(height, 10),
-        Rows: []Field{{Label: "Hash", Value: "0000ab...9f21cd"}}}
+    return app.Info{OK: true, Title: "Block " + strconv.FormatInt(height, 10),
+        Rows: []app.Field{{Label: "Hash", Value: "0000ab...9f21cd"}}}
 }
 
-func (s *countingSource) TxInfo(lang, txid string) Info {
+func (s *countingSource) TxInfo(lang, txid string) app.Info {
     s.hit("txinfo")
-    return Info{OK: true, Title: "Transaction " + txid, Rows: []Field{{Label: "Amount", Value: "1 sat"}}}
+    return app.Info{OK: true, Title: "Transaction " + txid, Rows: []app.Field{{Label: "Amount", Value: "1 sat"}}}
 }
 
-func (s *countingSource) AddrInfo(lang, addr string) Info {
+func (s *countingSource) AddrInfo(lang, addr string) app.Info {
     s.hit("addrinfo")
-    return Info{OK: true, Title: "Address " + addr, Rows: []Field{{Label: "Type", Value: "segwit (bech32)"}}}
+    return app.Info{OK: true, Title: "Address " + addr, Rows: []app.Field{{Label: "Type", Value: "segwit (bech32)"}}}
 }
 
-func (s *countingSource) AddrTxs(lang, addr string, from int) Txs {
+func (s *countingSource) AddrTxs(lang, addr string, from int) app.Txs {
     s.hit("addrtxs:" + strconv.Itoa(from))
     var all = liveAddrTxs()[liveAddress]
-    var out = Txs{Addr: addr, Next: from}
+    var out = app.Txs{Addr: addr, Next: from}
     if from >= len(all) { return out }
     var end = from + 5
     if end > len(all) { end = len(all) }
@@ -65,12 +66,12 @@ func (s *countingSource) AddrTxs(lang, addr string, from int) Txs {
     return out
 }
 
-func (s *countingSource) MinerInfo(lang, name string) Info {
+func (s *countingSource) MinerInfo(lang, name string) app.Info {
     s.hit("minerinfo")
-    return Info{OK: true, Title: name, Rows: []Field{{Label: "Blocks mined", Value: "22 blocks"}}}
+    return app.Info{OK: true, Title: name, Rows: []app.Field{{Label: "Blocks mined", Value: "22 blocks"}}}
 }
 
-func (s *countingSource) MinerChart(lang, name, data, period string) Chart {
+func (s *countingSource) MinerChart(lang, name, data, period string) app.Chart {
     s.hit("minerchart:" + data + ":" + period)
     return liveChart(name, data, period)
 }
@@ -81,36 +82,36 @@ func (s *countingSource) SetWatch(chat int64, kind, id string, on bool) (bool, e
 
 func (s *countingSource) SetAlias(chat int64, kind, id, alias string) (bool, error) { return true, nil }
 
-func (s *countingSource) Mempool(lang string, after int64) Mempool {
+func (s *countingSource) Mempool(lang string, after int64) app.Mempool {
     s.hit("mempool")
     return liveMempool(after)
 }
 
-func (s *countingSource) Watches(chat int64) Watches {
+func (s *countingSource) Watches(chat int64) app.Watches {
     s.hit("watches")
-    return Watches{OK: true}
+    return app.Watches{OK: true}
 }
 
-func (s *countingSource) Addresses(lang string, rng AddrRange) Addrs {
+func (s *countingSource) Addresses(lang string, rng app.AddrRange) app.Addrs {
     s.hit("addresses:" + rng.Kind + ":" + strconv.Itoa(rng.From))
     return addrWindow(s.al[rng.Kind], rng)
 }
 
 // below the fixture: a batch that exists but holds nothing recognisable
 // — enough for the eviction test to scroll deep
-func (s *countingSource) Blocks(lang string, rng Range) Blocks {
+func (s *countingSource) Blocks(lang string, rng app.Range) app.Blocks {
     s.hit("blocks" + rangeKey(rng))
     var b = window(s.b, rng)
     if !b.OK && rng.Before > 0 {
         var h = rng.Before - 1
-        b = Blocks{OK: true, Top: h, Next: h, More: true,
-            Rows: []Block{{Height: strconv.FormatInt(h, 10), Num: h}}}
+        b = app.Blocks{OK: true, Top: h, Next: h, More: true,
+            Rows: []app.Block{{Height: strconv.FormatInt(h, 10), Num: h}}}
     }
     return b
 }
 
-func (s *countingSource) options() Options {
-    return Options{
+func (s *countingSource) options() app.Options {
+    return app.Options{
         Fees:       s.Fees,
         Network:    s.Network,
         Market:     s.Market,
@@ -132,7 +133,7 @@ func (s *countingSource) options() Options {
 
 // rangeKey names a window the way the tests count them: one key per distinct
 // request, so a cache hit shows up as a call that did not happen.
-func rangeKey(rng Range) string {
+func rangeKey(rng app.Range) string {
     switch {
     case rng.Before > 0: return "before" + strconv.FormatInt(rng.Before, 10)
     case rng.After > 0:  return "after" + strconv.FormatInt(rng.After, 10)
@@ -163,7 +164,7 @@ func TestCardsServedFromCache(t *testing.T) {
     }
 }
 
-// Notify is what makes a card update, so it must drop the rendered copy — and
+// notify is what makes a card update, so it must drop the rendered copy — and
 // only that card's.
 func TestNotifyClearsOneCard(t *testing.T) {
     var src = newCounting()
@@ -171,7 +172,7 @@ func TestNotifyClearsOneCard(t *testing.T) {
     var data = freshInitData("TESTTOKEN")
     var paths = []string{"/fees", "/network", "/market", "/blocks"}
     for _, p := range paths { get(h, p, data) }
-    Notify("fees")
+    notify("fees")
     for _, p := range paths { get(h, p, data) }
     if n := src.count("fees"); n != 2 {
         t.Errorf("fees rendered %d times; the notify should have cleared it", n)
@@ -207,16 +208,16 @@ func TestAnyNotifyClearsPage(t *testing.T) {
         var src = newCounting()
         var h = handler(t, "TESTTOKEN", src.options())
         get(h, "/", "")
-        Notify(event)
+        notify(event)
         get(h, "/", "")
         if n := src.count("fees"); n != 2 {
-            t.Errorf("after Notify(%q) the page rendered %d times, want 2", event, n)
+            t.Errorf("after notify(%q) the page rendered %d times, want 2", event, n)
         }
     }
     var src = newCounting()
     var h = handler(t, "TESTTOKEN", src.options())
     get(h, "/", "")
-    Notify("something-else")
+    notify("something-else")
     get(h, "/", "")
     if n := src.count("fees"); n != 1 {
         t.Errorf("an unknown event cleared the page (%d renders); only real cards should", n)
@@ -231,7 +232,7 @@ func TestNotifyBlocksClearsEveryPage(t *testing.T) {
     var data = freshInitData("TESTTOKEN")
     get(h, "/blocks", data)
     get(h, "/moreblocks?before=963257", data)
-    Notify("blocks")
+    notify("blocks")
     get(h, "/blocks", data)
     get(h, "/moreblocks?before=963257", data)
     for _, p := range []string{"blockstop", "blocksbefore963257"} {
@@ -290,7 +291,7 @@ func TestBlocksCacheEvictsOldestPage(t *testing.T) {
 }
 
 // Nothing sweeps the caches on a timer, so the deadline has to be enforced on
-// read. This is the backstop for data that changes without a Notify — the block
+// read. This is the backstop for data that changes without a notify — the block
 // collector fills the bucket in the background without announcing it.
 //
 // the page ages out on the same deadline
@@ -349,7 +350,7 @@ func TestCacheConcurrentRequests(t *testing.T) {
             get(h, "/fees", data)
             get(h, "/network", data)
             get(h, "/moreblocks?before="+strconv.Itoa(963257-i%3), data)
-            if i%5 == 0 { Notify("blocks") }
+            if i%5 == 0 { notify("blocks") }
         }(i)
     }
     wg.Wait()
@@ -373,7 +374,7 @@ func TestMinerChartCachedUntilABlock(t *testing.T) {
     if n := src.count("minerchart:consumption:year"); n != 1 {
         t.Errorf("another selection rendered %d times, want 1 — it is its own entry", n)
     }
-    Notify("blocks")
+    notify("blocks")
     get(h, "/minerchart?name=AntPool&data=blocks&period=month", data)
     if n := src.count("minerchart:blocks:month"); n != 2 {
         t.Errorf("the chart rendered %d times across a block, want 2", n)

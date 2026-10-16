@@ -137,15 +137,15 @@ func Start(opt Options) error {
 // server Start did not start is skipped.
 func Shutdown(ctx context.Context) error {
     mu.Lock()
-    var hook, page = hookSrv, appSrv
+    var hook, mini = hookSrv, appSrv
     hookSrv, appSrv = nil, nil
     mu.Unlock()
     var errs []error
     if hook != nil {
         if err := hook.Shutdown(ctx); err != nil { errs = append(errs, fmt.Errorf("webhook: %w", err)) }
     }
-    if page != nil {
-        if err := page.Shutdown(ctx); err != nil { errs = append(errs, fmt.Errorf("mini app: %w", err)) }
+    if mini != nil {
+        if err := mini.Shutdown(ctx); err != nil { errs = append(errs, fmt.Errorf("mini app: %w", err)) }
     }
     return errors.Join(errs...)
 }

@@ -1,4 +1,4 @@
-package app
+package telegram
 
 import "net/http"
 import "net/http/httptest"
@@ -6,6 +6,7 @@ import "strconv"
 import "strings"
 import "testing"
 import "time"
+import "bitnsbot/app"
 
 // getLang is get() with an Accept-Language header, which is all a plain browser
 // offers.
@@ -136,17 +137,17 @@ func TestCacheIsPerLanguage(t *testing.T) {
     }
 }
 
-// Notify has to drop the card in every language, or the readers of the ones it
+// notify has to drop the card in every language, or the readers of the ones it
 // missed keep the stale copy until the TTL runs out.
 func TestNotifyClearsEveryLanguage(t *testing.T) {
     var src = newCounting()
     var h = handler(t, "TESTTOKEN", src.options())
     var data = freshInitData("TESTTOKEN")
     for _, lang := range langs { getLang(h, "/fees", data, lang) }
-    Notify("fees")
+    notify("fees")
     for _, lang := range langs { getLang(h, "/fees", data, lang) }
     if n := src.count("fees"); n != 2*len(langs) {
-        t.Errorf("fees rendered %d times across %d languages, want %d — Notify missed some",
+        t.Errorf("fees rendered %d times across %d languages, want %d — notify missed some",
             n, len(langs), 2*len(langs))
     }
 }
@@ -180,47 +181,47 @@ type langSpy struct {
     seen *[]string
 }
 
-func (s langSpy) Market(lang string) Market {
+func (s langSpy) Market(lang string) app.Market {
     *s.seen = append(*s.seen, "market:"+lang)
     return s.fakeSource.Market(lang)
 }
 
-func (s langSpy) Blocks(lang string, rng Range) Blocks {
+func (s langSpy) Blocks(lang string, rng app.Range) app.Blocks {
     *s.seen = append(*s.seen, "blocks:"+lang)
     return s.fakeSource.Blocks(lang, rng)
 }
 
-func (s langSpy) Addresses(lang string, rng AddrRange) Addrs {
+func (s langSpy) Addresses(lang string, rng app.AddrRange) app.Addrs {
     *s.seen = append(*s.seen, "addresses:"+lang)
     return s.fakeSource.Addresses(lang, rng)
 }
 
-func (s langSpy) BlockInfo(lang string, height int64) Info {
+func (s langSpy) BlockInfo(lang string, height int64) app.Info {
     *s.seen = append(*s.seen, "block:"+lang)
     return s.fakeSource.BlockInfo(lang, height)
 }
 
-func (s langSpy) TxInfo(lang, txid string) Info {
+func (s langSpy) TxInfo(lang, txid string) app.Info {
     *s.seen = append(*s.seen, "tx:"+lang)
     return s.fakeSource.TxInfo(lang, txid)
 }
 
-func (s langSpy) AddrInfo(lang, addr string) Info {
+func (s langSpy) AddrInfo(lang, addr string) app.Info {
     *s.seen = append(*s.seen, "address:"+lang)
     return s.fakeSource.AddrInfo(lang, addr)
 }
 
-func (s langSpy) MinerInfo(lang, name string) Info {
+func (s langSpy) MinerInfo(lang, name string) app.Info {
     *s.seen = append(*s.seen, "miner:"+lang)
     return s.fakeSource.MinerInfo(lang, name)
 }
 
-func (s langSpy) MinerChart(lang, name, data, period string) Chart {
+func (s langSpy) MinerChart(lang, name, data, period string) app.Chart {
     *s.seen = append(*s.seen, "minerchart:"+lang)
     return s.fakeSource.MinerChart(lang, name, data, period)
 }
 
-func (s langSpy) options() Options {
+func (s langSpy) options() app.Options {
     var opt = s.fakeSource.options()
     opt.Market = s.Market
     opt.Blocks = s.Blocks

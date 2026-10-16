@@ -59,7 +59,6 @@ var maxListen       = flag.String("maxListen", ":8084", "address the MAX webhook
 var maxWebhookURL   = flag.String("maxWebhookURL", "", "public https URL MAX should send updates to, registered via POST /subscriptions on startup; its path is the one the MAX webhook server accepts updates on (empty skips subscribing and accepts them on /)")
 var maxSecret       = flag.String("maxSecret", "", "optional secret passed to MAX on subscribing and checked against the X-Max-Bot-Api-Secret header of every update")
 var maxAppListen    = flag.String("maxAppListen", "127.0.0.1:8085", "address the MAX Mini App web server binds to when -maxToken is set (empty disables it; bind to localhost and put a tunnel in front, as with -appListen)")
-var appSrv *http.Server
 
 
 // stopBackup ends the backup goroutine, set when -backup started one. shutdown
@@ -67,7 +66,7 @@ var appSrv *http.Server
 var stopBackup func()
 
 // The app* functions adapt main's fee cache and formatters to app.Options, so
-// the app package stays unaware of Bitcoin Core, the price feeds and the cache.
+// the Mini Apps stay unaware of Bitcoin Core, the price feeds and the cache.
 func appNetwork() app.Network {
     networkMu.Lock()
     defer networkMu.Unlock()
@@ -496,9 +495,6 @@ func main() {
     if *dbuiListen != "" {
         logging.Warn("database UI not started: it speaks bbolt, and the bot's database is SQLite now — run github.com/pin2t/bboltwui against a bbolt file instead")
     }
-    if *appListen != "" {
-        appSrv = app.Start(*appListen, *botToken, appOptions(telegram.Platform))
-    }
     if *backupPath != "" {
         _, stopBackup = startBackup(*backupPath, *backupInterval, *backupScript)
     }
@@ -528,6 +524,8 @@ func main() {
         Menus:       menus(),
         Message:     message,
         Callback:    callback,
+        AppListen:   *appListen,
+        App:         appOptions(telegram.Platform),
     }); err != nil {
         logging.Fatal("Telegram: %v", err)
     }
@@ -578,12 +576,7 @@ func shutdown() {
     var ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
     defer cancel()
     if err := telegram.Shutdown(ctx); err != nil {
-        logging.Err("webhook server shutdown: %v", err)
-    }
-    if appSrv != nil {
-        if err := appSrv.Shutdown(ctx); err != nil {
-            logging.Err("mini app shutdown: %v", err)
-        }
+        logging.Err("Telegram shutdown: %v", err)
     }
     if err := max.Shutdown(ctx); err != nil {
         logging.Err("MAX shutdown: %v", err)

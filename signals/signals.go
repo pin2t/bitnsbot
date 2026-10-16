@@ -7,8 +7,8 @@
 // of its own. That timer is the floor, not the cadence: a block arrives every
 // ten minutes on average and the timers are ten minutes long, so the catch-up
 // could sit a whole interval behind a block it already knows about. A signal is
-// what closes that gap, and it is the same shape the app package's Notify uses
-// for the same reason.
+// what closes that gap, and it is the same shape the Mini Apps' event streams
+// use for the same reason.
 //
 // A subscriber's channel holds **one** pending signal, sent without blocking. So
 // a catch-up that is busy when three blocks arrive wakes once more when it

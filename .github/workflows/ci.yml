@@ -18,7 +18,7 @@
                 {"run": "go build -o /tmp/varname-vet github.com/pin2t/govets/varname-vet && go vet -vettool=/tmp/varname-vet ./..."},
                 {"run": "go build -o /tmp/groupdecl-vet github.com/pin2t/govets/groupdecl-vet && go vet -vettool=/tmp/groupdecl-vet ./..."},
                 {"run": "go build -o /tmp/i18n-vet ./tools/i18n-vet/ && /tmp/i18n-vet ."},
-                {"run": "go build -o /tmp/i18n-html ./tools/i18n-html/ && /tmp/i18n-html ./app/"},
+                {"run": "go build -o /tmp/i18n-html ./tools/i18n-html/ && /tmp/i18n-html ./telegram/"},
                 {"run": "go test -v -race -coverprofile=coverage.out ./..."},
                 {
                     "name": "Upload coverage",

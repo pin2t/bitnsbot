@@ -67,9 +67,9 @@ var subsMu sync.Mutex
 var subs = map[chan string]struct{}{}
 
 // notify tells every open page that a card's data changed, so it fetches the new
-// figures. Start has the Telegram Mini App call it for every event that app is
-// told of, after its own throttling, so the two show the same changes at the
-// same time.
+// figures. Start registers it with app.Listen, so it hears every event
+// app.Notify announces, after the throttling, just as the Telegram Mini App
+// does — the two show the same changes at the same time.
 //
 // What the event makes stale is dropped before it goes out, or a page reacting
 // to it would be handed the copy it was told to replace. A new block moves the

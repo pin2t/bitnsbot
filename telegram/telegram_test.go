@@ -1,6 +1,8 @@
 package telegram
 
+import "bufio"
 import "encoding/json"
+import "io"
 import "net"
 import "net/http"
 import "net/http/httptest"
@@ -8,6 +10,8 @@ import "strconv"
 import "strings"
 import "sync"
 import "testing"
+import "time"
+import "bitnsbot/app"
 
 // fakeAPI stands in for the Bot API server, recording each method called and
 // its decoded body, and answering every call ok.
@@ -50,7 +54,7 @@ func (c *called) options(secret string) Options {
     }
 }
 
-func post(t *testing.T, h http.HandlerFunc, secret, update string) int {
+func postUpdate(t *testing.T, h http.HandlerFunc, secret, update string) int {
     t.Helper()
     var req = httptest.NewRequest(http.MethodPost, "/bot", strings.NewReader(update))
     if secret != "" { req.Header.Set("X-Telegram-Bot-Api-Secret-Token", secret) }
@@ -77,14 +81,14 @@ func TestWebhookRoutesUpdates(t *testing.T) {
         `{"update_id":1}`,
     }
     for _, u := range updates {
-        if code := post(t, h, "", u); code != http.StatusOK { t.Fatalf("status %d for %s", code, u) }
+        if code := postUpdate(t, h, "", u); code != http.StatusOK { t.Fatalf("status %d for %s", code, u) }
     }
     var want = []string{"tg message 42 alice /start ru", "tg message 7 Bob hi ", "tg message 9 unknown anon ", "tg callback 5 carol 100 es"}
     if strings.Join(c.what, "|") != strings.Join(want, "|") { t.Fatalf("handled\n %q\nwant %q", c.what, want) }
     if len(f.methods) != 2 || f.methods[0] != "/botT/answerCallbackQuery" || f.bodies[0]["callback_query_id"] != "q1" || f.bodies[1]["callback_query_id"] != "q2" {
         t.Fatalf("answered %v %v", f.methods, f.bodies)
     }
-    if code := post(t, h, "", "not json"); code != http.StatusBadRequest { t.Fatalf("garbage answered %d", code) }
+    if code := postUpdate(t, h, "", "not json"); code != http.StatusBadRequest { t.Fatalf("garbage answered %d", code) }
 }
 
 func TestWebhookChecksSecret(t *testing.T) {
@@ -92,7 +96,7 @@ func TestWebhookChecksSecret(t *testing.T) {
     var h = webhook(c.options("s3cret"))
     var update = `{"message":{"chat":{"id":1},"text":"/fees"}}`
     for _, tc := range []struct{ secret string; code, handled int }{{"", 401, 0}, {"wrong", 401, 0}, {"s3cret", 200, 1}} {
-        if code := post(t, h, tc.secret, update); code != tc.code || len(c.what) != tc.handled {
+        if code := postUpdate(t, h, tc.secret, update); code != tc.code || len(c.what) != tc.handled {
             t.Fatalf("secret %q: status %d, handled %d", tc.secret, code, len(c.what))
         }
     }
@@ -147,4 +151,57 @@ func TestStartRegistersAndServes(t *testing.T) {
     if err := Shutdown(t.Context()); err != nil { t.Fatal(err) }
     if _, err := http.Post("http://"+addr+"/bot", "application/json", strings.NewReader(`{}`)); err == nil { t.Fatal("the webhook still answers after Shutdown") }
     if err := Start(Options{Token: "T", APIBaseURL: f.server(t).URL, Register: true}); err == nil { t.Fatal("registered a webhook with no URL") }
+}
+
+// Start serves the Mini App on AppListen from the data App supplies, and
+// registers it for what app.Notify announces: an event reaches a page's open
+// stream. Shutdown stops it along with the webhook.
+func TestStartServesTheMiniApp(t *testing.T) {
+    var ln, err = net.Listen("tcp", "127.0.0.1:0")
+    if err != nil { t.Fatal(err) }
+    var addr = ln.Addr().String()
+    ln.Close()
+    invalidateAll()
+    if err := Start(Options{Token: "TESTTOKEN", AppListen: addr, App: fakeSource{f: liveFees()}.options()}); err != nil { t.Fatal(err) }
+    defer Shutdown(t.Context())
+    var resp *http.Response
+    var deadline = time.Now().Add(2 * time.Second)
+    for {
+        resp, err = http.Get("http://" + addr + "/")
+        if err == nil || time.Now().After(deadline) { break }
+        time.Sleep(10 * time.Millisecond)
+    }
+    if err != nil { t.Fatal(err) }
+    var page, _ = io.ReadAll(resp.Body)
+    resp.Body.Close()
+    if resp.StatusCode != http.StatusOK || !strings.HasSuffix(strings.TrimSpace(string(page)), "</html>") { t.Fatalf("/ answered %d", resp.StatusCode) }
+    var before = subscribes()
+    var stream, serr = http.Get("http://" + addr + "/events")
+    if serr != nil { t.Fatal(serr) }
+    defer stream.Body.Close()
+    for subscribes() == before && time.Now().Before(deadline) { time.Sleep(5 * time.Millisecond) }
+    var heard = make(chan bool, 1)
+    go func() {
+        var r = bufio.NewReader(stream.Body)
+        for {
+            var line, rerr = r.ReadString('\n')
+            if rerr != nil {
+                heard <- false
+                return
+            }
+            if line == "event: fees\n" {
+                heard <- true
+                return
+            }
+        }
+    }()
+    app.Notify("fees")
+    select {
+    case ok := <-heard:
+        if !ok { t.Fatal("the stream ended without the event") }
+    case <-time.After(2 * time.Second):
+        t.Fatal("app.Notify never reached the Mini App's stream")
+    }
+    if err := Shutdown(t.Context()); err != nil { t.Fatal(err) }
+    if _, err := http.Get("http://" + addr + "/"); err == nil { t.Fatal("the Mini App still answers after Shutdown") }
 }

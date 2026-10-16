@@ -1,9 +1,12 @@
 // Package telegram is everything the bot does on Telegram: the Bot API client,
-// the webhook that receives updates, and the command menu.
+// the webhook that receives updates, the command menu, and the Mini App — a web
+// page Telegram opens in its in-app webview, rendered as HTML fragments that
+// HTMX swaps into the page.
 //
 // Start is the one way in. Running a command is package main's business, so
-// the webhook hands each update to the handlers main passes in Options, and
-// main replies through Send. The package holds the process's one Bot API
+// the webhook hands each update to the handlers main passes in Options, the
+// Mini App reads its chain data through the app.Options in it, and main replies
+// through Send. The package holds the process's one Bot API
 // connection in package variables, the way core holds its one node.
 //
 // The bot runs behind a self-hosted telegram-bot-api server on localhost, which
@@ -24,6 +27,7 @@ import "sort"
 import "strings"
 import "sync"
 import "time"
+import "bitnsbot/app"
 import "bitnsbot/logging"
 
 // Platform is what a watch made on Telegram is filed under, and what keeps a
@@ -68,10 +72,16 @@ type Options struct {
     Message func(platform string, chat int64, name, text, lang string)
     // Callback is a tapped inline-keyboard button, data the full id it carried.
     Callback func(platform string, chat int64, name, data, lang string)
+    // AppListen is the address the Mini App binds to; empty starts none. Bind
+    // it to localhost: the Cloudflare tunnel is what faces the network.
+    AppListen string
+    // App is the chain data the Mini App renders. The launch data Telegram
+    // signs for it is verified with Token.
+    App app.Options
 }
 
-// mu guards token, baseURL and server: Start sets them while a notifier left
-// over from an earlier start, in the tests, may still be sending.
+// mu guards token, baseURL, server and appSrv: Start sets them while a notifier
+// left over from an earlier start, in the tests, may still be sending.
 var mu sync.Mutex
 
 // token authenticates every Bot API call; empty until Start.
@@ -80,17 +90,23 @@ var token string
 // baseURL is the Bot API server called.
 var baseURL string
 
-// server is the webhook server Start started, nil without one.
+// server and appSrv are the webhook server and the Mini App Start started, nil
+// for one it did not.
 var server *http.Server
+var appSrv *http.Server
 
 var httpClient = &http.Client{Timeout: 15 * time.Second}
 
 // Start sets the token and the server every call goes to, registers the
-// webhook and the menu when asked to, and serves the webhook on Listen. A menu that fails to
-// register is logged and skipped — the bot works fine without one — and every
-// other failure is returned. An empty WebhookURL would remove the webhook
-// rather than set one, so registering without one is refused. The menu goes up
-// one list per language, in a fixed order.
+// webhook and the menu when asked to, serves the webhook on Listen, and starts
+// the Mini App on AppListen. A menu that fails to register is logged and
+// skipped — the bot works fine without one — and every other failure is
+// returned. An empty WebhookURL would remove the webhook rather than set one,
+// so registering without one is refused. The menu goes up one list per
+// language, in a fixed order.
+//
+// The Mini App hears of every change app.Notify announces, the moment the MAX
+// one does.
 func Start(opt Options) error {
     mu.Lock()
     token, baseURL = opt.Token, strings.TrimRight(opt.APIBaseURL, "/")
@@ -104,10 +120,10 @@ func Start(opt Options) error {
         cancel()
         if err != nil { return fmt.Errorf("set webhook: %w", err) }
         logging.Status("webhook registered at %s", opt.WebhookURL)
-        var langs []string
-        for lang := range opt.Menus { langs = append(langs, lang) }
-        sort.Strings(langs)
-        for _, lang := range langs {
+        var codes []string
+        for lang := range opt.Menus { codes = append(codes, lang) }
+        sort.Strings(codes)
+        for _, lang := range codes {
             var menu = map[string]any{"commands": opt.Menus[lang]}
             if lang != "" { menu["language_code"] = lang }
             var mctx, mcancel = context.WithTimeout(context.Background(), 15*time.Second)
@@ -120,36 +136,50 @@ func Start(opt Options) error {
             logging.Status("command menu registered: %d commands, language %q", len(opt.Menus[lang]), lang)
         }
     }
-    if opt.Listen == "" { return nil }
-    var ln, err = net.Listen("tcp", opt.Listen)
-    if err != nil { return err }
-    var path = opt.WebhookPath
-    if path == "" { path = "/" }
-    var mux = http.NewServeMux()
-    mux.HandleFunc(path, webhook(opt))
-    var srv = &http.Server{Handler: mux}
-    mu.Lock()
-    server = srv
-    mu.Unlock()
-    go func() {
-        logging.Status("listening on %s", opt.Listen)
-        if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
-            logging.Fatal("error listening: %v", err)
-        }
-    }()
+    if opt.Listen != "" {
+        var ln, err = net.Listen("tcp", opt.Listen)
+        if err != nil { return err }
+        var path = opt.WebhookPath
+        if path == "" { path = "/" }
+        var mux = http.NewServeMux()
+        mux.HandleFunc(path, webhook(opt))
+        var srv = &http.Server{Handler: mux}
+        mu.Lock()
+        server = srv
+        mu.Unlock()
+        go func() {
+            logging.Status("listening on %s", opt.Listen)
+            if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
+                logging.Fatal("error listening: %v", err)
+            }
+        }()
+    }
+    if opt.AppListen != "" {
+        app.Listen(notify)
+        var srv = startApp(opt.AppListen, opt.Token, opt.App)
+        mu.Lock()
+        appSrv = srv
+        mu.Unlock()
+    }
     return nil
 }
 
-// Shutdown drains the webhook server, waiting for the handlers in flight, so a
-// caller can close what those handlers use once it returns. Without a server
-// it does nothing.
+// Shutdown drains the webhook server and then the Mini App, waiting for the
+// requests in flight, so a caller can close what they use once it returns. A
+// server Start did not start is skipped.
 func Shutdown(ctx context.Context) error {
     mu.Lock()
-    var srv = server
-    server = nil
+    var hook, mini = server, appSrv
+    server, appSrv = nil, nil
     mu.Unlock()
-    if srv == nil { return nil }
-    return srv.Shutdown(ctx)
+    var errs []error
+    if hook != nil {
+        if err := hook.Shutdown(ctx); err != nil { errs = append(errs, fmt.Errorf("webhook: %w", err)) }
+    }
+    if mini != nil {
+        if err := mini.Shutdown(ctx); err != nil { errs = append(errs, fmt.Errorf("mini app: %w", err)) }
+    }
+    return errors.Join(errs...)
 }
 
 // Send posts an HTML message to a chat, with one inline-keyboard button per id,
