@@ -46,7 +46,7 @@ var initDataTTL = 24 * time.Hour
 var keepAlive = 30 * time.Second
 
 // cacheTTL is the longest an answer is served from memory, the Telegram Mini
-// App's figure. Notify clears what an event makes stale sooner; this covers
+// App's figure. notify clears what an event makes stale sooner; this covers
 // what moves without one.
 var cacheTTL = 10 * time.Minute
 
@@ -66,9 +66,9 @@ var cache = lru.New[string, []byte](cached)
 var subsMu sync.Mutex
 var subs = map[chan string]struct{}{}
 
-// Notify tells every open page that a card's data changed, so it fetches the new
-// figures. main has it called for every event the Telegram Mini App is told
-// of, after that app's own throttling, so the two show the same changes at the
+// notify tells every open page that a card's data changed, so it fetches the new
+// figures. Start has the Telegram Mini App call it for every event that app is
+// told of, after its own throttling, so the two show the same changes at the
 // same time.
 //
 // What the event makes stale is dropped before it goes out, or a page reacting
@@ -76,7 +76,7 @@ var subs = map[chan string]struct{}{}
 // block list, every details page and the miner charts, so it clears everything.
 //
 // Sends are non-blocking: a slow page must not stall the caller.
-func Notify(event string) {
+func notify(event string) {
     cacheMu.Lock()
     switch event {
     case "fees", "network", "market":
@@ -309,14 +309,14 @@ type watchState struct {
     Error bool
 }
 
-// Start serves the MAX Mini App on addr and returns the server, so the caller
-// can drain it before closing anything it depends on. token is the MAX bot
+// startApp serves the MAX Mini App on addr and returns the server, so Shutdown
+// can drain it before the caller closes anything it depends on. token is the MAX bot
 // token, used only to verify the launch data. Bind addr to localhost and put a
 // tunnel in front, as with the Telegram Mini App.
 //
 // Shutdown runs the hook before it starts waiting, so the open event streams
 // end instead of holding it open until the deadline.
-func Start(addr, token string, opt app.Options) *http.Server {
+func startApp(addr, token string, opt app.Options) *http.Server {
     var closing = make(chan struct{})
     var srv = &http.Server{Addr: addr, Handler: routes(token, opt, closing)}
     srv.RegisterOnShutdown(func() { close(closing) })

@@ -68,7 +68,8 @@ func TestBlockLookupDoesNotStore(t *testing.T) {
         json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": true})
     }))
     defer tg.Close()
-    block(context.Background(), newBot("TESTTOKEN", tg.URL), 1, 500)
+    useTelegram(t, tg.URL)
+    block(context.Background(), "tg", 1, 500)
     if len(sent) != 1 || !strings.Contains(sent[0], "Block #500") {
         t.Fatalf("/info 500 replied %q", sent)
     }

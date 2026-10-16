@@ -286,11 +286,11 @@ func TestCacheIsClearedByEvents(t *testing.T) {
     }
     if r.count("fees") != 1 || r.count("block") != 1 { t.Fatalf("cached calls %v", r.calls) }
     if r.count("blocks") != 2 || r.count("mempool 3") != 2 || len(r.chats) != 2 { t.Fatalf("uncached calls %v, watches %d", r.calls, len(r.chats)) }
-    Notify("fees")
+    notify("fees")
     call(t, srv, "GET", "/api/fees", ld, nil)
     call(t, srv, "GET", "/api/block?height=5", ld, nil)
     if r.count("fees") != 2 || r.count("block") != 1 { t.Fatalf("after a fees event %v", r.calls) }
-    Notify("blocks")
+    notify("blocks")
     call(t, srv, "GET", "/api/fees", ld, nil)
     call(t, srv, "GET", "/api/block?height=5", ld, nil)
     if r.count("fees") != 3 || r.count("block") != 2 { t.Fatalf("after a block %v", r.calls) }
@@ -350,7 +350,7 @@ func TestEventStream(t *testing.T) {
         if n > 0 { break }
         if time.Now().After(deadline) { t.Fatal("the stream never subscribed") }
     }
-    Notify("blocks")
+    notify("blocks")
     var lines = bufio.NewReader(resp.Body)
     var first, _ = lines.ReadString('\n')
     var second, _ = lines.ReadString('\n')

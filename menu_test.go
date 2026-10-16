@@ -5,6 +5,7 @@ import "net/http"
 import "net/http/httptest"
 import "strings"
 import "testing"
+import "bitnsbot/telegram"
 
 // The menu and /start must list exactly the same commands with the same
 // descriptions — that is the whole point of driving both off `commands`.
@@ -19,7 +20,8 @@ func TestMenuMatchesStart(t *testing.T) {
         json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": true})
     }))
     defer server.Close()
-    update(newBot("TESTTOKEN", server.URL), Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/start"}})
+    useTelegram(t, server.URL)
+    message("tg", 1, "", "/start", "")
     if len(sent) != 1 {
         t.Fatalf("expected one /start reply, got %#v", sent)
     }
@@ -78,8 +80,9 @@ func TestMenuCommandsWithinTelegramLimits(t *testing.T) {
     }
 }
 
-// registerMenu publishes one list per language: the default (no language_code)
-// plus one for each translation, each carrying that language's descriptions.
+// Starting Telegram publishes the menus as one list per language: the default
+// (no language_code) plus one for each translation, each carrying that
+// language's descriptions.
 func TestRegisterMenuPerLanguage(t *testing.T) {
     type menuCall struct {
         Commands []struct {
@@ -98,7 +101,9 @@ func TestRegisterMenuPerLanguage(t *testing.T) {
         json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": true})
     }))
     defer server.Close()
-    registerMenu(newBot("TESTTOKEN", server.URL))
+    var err = telegram.Start(telegram.Options{Token: "TESTTOKEN", APIBaseURL: server.URL,
+        Register: true, WebhookURL: "http://localhost:8082/bot", Menus: menus()})
+    if err != nil { t.Fatal(err) }
     if len(calls) != 1+len(langTrans) {
         t.Fatalf("got %d setMyCommands calls, want %d (default plus one per language)", len(calls), 1+len(langTrans))
     }

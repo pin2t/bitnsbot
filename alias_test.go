@@ -36,7 +36,7 @@ func TestSetAliasRenamesALiveWatch(t *testing.T) {
         json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": true})
     }))
     defer tg.Close()
-    var b = newBot("TESTTOKEN", tg.URL)
+    useTelegram(t, tg.URL)
     var watchedAddr = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
     var txid = "f21b47a9143a23e80cc59e81588d21558b394005580b285961957cb3bed5b3e0"
     var srv = coretest.Server(t, func(method string, params []any) (any, error) {
@@ -70,8 +70,8 @@ func TestSetAliasRenamesALiveWatch(t *testing.T) {
     stopNotify()
     resetWatched()
     defer stopNotify()
-    if err := addWatch(b, 42, watchedAddr, ""); err != nil { t.Fatalf("add watch: %v", err) }
-    var renamed, err = setAlias(b, 42, watchedAddr, "John")
+    if err := addWatch("tg", 42, watchedAddr, ""); err != nil { t.Fatalf("add watch: %v", err) }
+    var renamed, err = setAlias("tg", 42, watchedAddr, "John")
     if err != nil || !renamed { t.Fatalf("setAlias = %v, %v; want it to rename the watch", renamed, err) }
     var list, lerr = watches.List()
     if lerr != nil { t.Fatalf("list: %v", lerr) }
@@ -104,22 +104,21 @@ func TestSetAliasRenamesALiveWatch(t *testing.T) {
 // Renaming is chat-scoped like every other watch operation, and a watch nobody
 // holds is not renamed into existence.
 func TestSetAliasIsScopedToTheChat(t *testing.T) {
-    var b = newBot("TESTTOKEN", "http://127.0.0.1:1")
     openDB(filepath.Join(t.TempDir(), "watches.db"))
     defer closeDB()
     stopNotify()
     resetWatched()
     defer stopNotify()
     var addr = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
-    if err := addWatch(b, 42, addr, "Mine"); err != nil { t.Fatalf("add watch: %v", err) }
-    if renamed, err := setAlias(b, 99, addr, "Theirs"); err != nil || renamed {
+    if err := addWatch("tg", 42, addr, "Mine"); err != nil { t.Fatalf("add watch: %v", err) }
+    if renamed, err := setAlias("tg", 99, addr, "Theirs"); err != nil || renamed {
         t.Errorf("setAlias for another chat = %v, %v; want it to rename nothing", renamed, err)
     }
     var list, _ = watches.List()
     if len(list) != 1 || list[0].Alias != "Mine" {
         t.Errorf("watches = %#v; another chat renamed one", list)
     }
-    if renamed, err := setAlias(b, 42, "1BoatSLRHtKNngkdXEeobR76b53LETtpyT", "Ghost"); err != nil || renamed {
+    if renamed, err := setAlias("tg", 42, "1BoatSLRHtKNngkdXEeobR76b53LETtpyT", "Ghost"); err != nil || renamed {
         t.Errorf("renaming an unwatched address = %v, %v; want nothing renamed", renamed, err)
     }
 }
@@ -127,14 +126,13 @@ func TestSetAliasIsScopedToTheChat(t *testing.T) {
 // A transaction watch is renamed in the in-memory list the same way, and shows
 // up renamed in /watches.
 func TestSetAliasOnATransactionWatch(t *testing.T) {
-    var b = newBot("TESTTOKEN", "http://127.0.0.1:1")
     openDB(filepath.Join(t.TempDir(), "watches.db"))
     defer closeDB()
     stopNotify()
     defer stopNotify()
     var txid = "f21b47a9143a23e80cc59e81588d21558b394005580b285961957cb3bed5b3e0"
-    if err := addWatch(b, 42, txid, ""); err != nil { t.Fatalf("add watch: %v", err) }
-    if renamed, err := setAlias(b, 42, txid, "Payout"); err != nil || !renamed {
+    if err := addWatch("tg", 42, txid, ""); err != nil { t.Fatalf("add watch: %v", err) }
+    if renamed, err := setAlias("tg", 42, txid, "Payout"); err != nil || !renamed {
         t.Fatalf("setAlias = %v, %v; want it renamed", renamed, err)
     }
     var entries = txwatches.For("tg", 42)

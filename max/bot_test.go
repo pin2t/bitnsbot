@@ -2,6 +2,7 @@ package max
 
 import "encoding/json"
 import "io"
+import "net"
 import "net/http"
 import "net/http/httptest"
 import "strconv"
@@ -37,37 +38,39 @@ func (f *fakeAPI) server(t *testing.T) *httptest.Server {
 
 func TestSubscribe(t *testing.T) {
     var f = &fakeAPI{response: `{"success":true}`}
-    var b = New("MAXTOKEN", f.server(t).URL)
-    if err := b.Subscribe(t.Context(), "https://example.org/webhook", "s3cret"); err != nil { t.Fatal(err) }
+    var c = newClient("MAXTOKEN", f.server(t).URL)
+    if err := c.subscribe(t.Context(), "https://example.org/webhook", "s3cret"); err != nil { t.Fatal(err) }
     if f.paths[0] != "/subscriptions" || f.auths[0] != "MAXTOKEN" { t.Fatalf("got %s with auth %q", f.paths[0], f.auths[0]) }
     if f.bodies[0]["url"] != "https://example.org/webhook" || f.bodies[0]["secret"] != "s3cret" { t.Fatalf("body %v", f.bodies[0]) }
     var types, _ = json.Marshal(f.bodies[0]["update_types"])
     if string(types) != `["message_created","message_callback","bot_started","bot_added"]` { t.Fatalf("update_types %s", types) }
-    if err := b.Subscribe(t.Context(), "https://example.org/webhook", ""); err != nil { t.Fatal(err) }
+    if err := c.subscribe(t.Context(), "https://example.org/webhook", ""); err != nil { t.Fatal(err) }
     if _, ok := f.bodies[1]["secret"]; ok { t.Fatalf("secret sent although none is set: %v", f.bodies[1]) }
 }
 
 func TestSubscribeRefused(t *testing.T) {
     var f = &fakeAPI{response: `{"success":false,"message":"bad url"}`}
-    var err = New("MAXTOKEN", f.server(t).URL).Subscribe(t.Context(), "http://x", "")
+    var err = newClient("MAXTOKEN", f.server(t).URL).subscribe(t.Context(), "http://x", "")
     if err == nil || !strings.Contains(err.Error(), "bad url") { t.Fatalf("got %v", err) }
 }
 
-// The rows become one inline keyboard of callback buttons, in their rows, and a
-// message with none carries no keyboard at all.
+// The ids become one inline keyboard of callback buttons, two to a row, each
+// labelled with the shortened id and carrying the full id as its payload, and a
+// message with none carries no keyboard at all. Send goes through the client
+// Start made.
 func TestSendButtons(t *testing.T) {
     var f = &fakeAPI{}
-    var b = New("MAXTOKEN", f.server(t).URL)
-    var rows = [][]Button{{{"a...b", "aaab"}, {"100", "100"}}, {{"c", "c"}}}
-    if err := b.Send(t.Context(), 3, "<b>hi</b>", rows); err != nil { t.Fatal(err) }
-    if f.paths[0] != "/messages?chat_id=3" || f.bodies[0]["format"] != "html" || f.bodies[0]["text"] != "<b>hi</b>" {
-        t.Fatalf("sent %s %v", f.paths[0], f.bodies[0])
+    if err := Start(Options{Token: "MAXTOKEN", APIBaseURL: f.server(t).URL}); err != nil { t.Fatal(err) }
+    var txid = strings.Repeat("d", 64)
+    if err := Send(t.Context(), 3, "<b>hi</b>", []string{txid, "100", "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"}); err != nil { t.Fatal(err) }
+    if f.paths[0] != "/messages?chat_id=3" || f.auths[0] != "MAXTOKEN" || f.bodies[0]["format"] != "html" || f.bodies[0]["text"] != "<b>hi</b>" {
+        t.Fatalf("sent %s %q %v", f.paths[0], f.auths[0], f.bodies[0])
     }
     var raw, _ = json.Marshal(f.bodies[0]["attachments"])
-    var want = `[{"payload":{"buttons":[[{"payload":"aaab","text":"a...b","type":"callback"},{"payload":"100","text":"100","type":"callback"}],[{"payload":"c","text":"c","type":"callback"}]]},"type":"inline_keyboard"}]`
+    var want = `[{"payload":{"buttons":[[{"payload":"` + txid + `","text":"dddddd...dddddd","type":"callback"},{"payload":"100","text":"100","type":"callback"}],[{"payload":"1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa","text":"1A1zP1...DivfNa","type":"callback"}]]},"type":"inline_keyboard"}]`
     if string(raw) != want { t.Fatalf("attachments\n got %s\nwant %s", raw, want) }
-    if err := b.Send(t.Context(), 3, "plain", nil); err != nil { t.Fatal(err) }
-    if _, ok := f.bodies[1]["attachments"]; ok { t.Fatalf("a message with no buttons got a keyboard: %v", f.bodies[1]) }
+    if err := Send(t.Context(), 3, "plain", nil); err != nil { t.Fatal(err) }
+    if _, ok := f.bodies[1]["attachments"]; ok { t.Fatalf("a message with no ids got a keyboard: %v", f.bodies[1]) }
 }
 
 // called records what the webhook handed to its handlers.
@@ -76,16 +79,17 @@ type called struct {
     what []string
 }
 
-func (c *called) handlers() Handlers {
+func (c *called) handlers(secret string) Options {
     var add = func(s string) {
         c.mu.Lock()
         c.what = append(c.what, s)
         c.mu.Unlock()
     }
-    return Handlers{
-        Message:  func(chat int64, name, text, lang string) { add("message " + strconv.FormatInt(chat, 10) + " " + name + " " + text + " " + lang) },
-        Callback: func(chat int64, name, payload, lang string) { add("callback " + strconv.FormatInt(chat, 10) + " " + name + " " + payload + " " + lang) },
-        Started:  func(chat int64, name, lang string) { add("started " + strconv.FormatInt(chat, 10) + " " + name + " " + lang) },
+    return Options{
+        Secret:   secret,
+        Message:  func(platform string, chat int64, name, text, lang string) { add(platform + " message " + strconv.FormatInt(chat, 10) + " " + name + " " + text + " " + lang) },
+        Callback: func(platform string, chat int64, name, payload, lang string) { add(platform + " callback " + strconv.FormatInt(chat, 10) + " " + name + " " + payload + " " + lang) },
+        Started:  func(platform string, chat int64, name, lang string) { add(platform + " started " + strconv.FormatInt(chat, 10) + " " + name + " " + lang) },
     }
 }
 
@@ -104,7 +108,7 @@ func post(t *testing.T, h http.HandlerFunc, secret, update string) int {
 // and ignored.
 func TestWebhookRoutesUpdates(t *testing.T) {
     var c = &called{}
-    var h = Webhook("", c.handlers())
+    var h = webhook(c.handlers(""))
     var updates = []string{
         `{"message":{"recipient":{"chat_type":"dialog","chat_id":376690654,"user_id":514924285},"timestamp":1791551633577,"body":{"mid":"mid.1","seq":1,"text":"/start"},"sender":{"user_id":146983203,"first_name":"Илья","is_bot":false,"name":"Илья"}},"timestamp":1791551633577,"user_locale":"ru","update_type":"message_created"}`,
         `{"message":{"recipient":{"chat_id":9},"body":{"text":"/fees"},"sender":{"user_id":1,"is_bot":true}},"update_type":"message_created"}`,
@@ -116,14 +120,14 @@ func TestWebhookRoutesUpdates(t *testing.T) {
     for _, u := range updates {
         if code := post(t, h, "", u); code != http.StatusOK { t.Fatalf("status %d for %s", code, u) }
     }
-    var want = []string{"message 376690654 Илья /start ru", "callback 77 unknown 100 es", "started 5 unknown en", "started 8 unknown "}
+    var want = []string{"max message 376690654 Илья /start ru", "max callback 77 unknown 100 es", "max started 5 unknown en", "max started 8 unknown "}
     if strings.Join(c.what, "|") != strings.Join(want, "|") { t.Fatalf("handled\n %q\nwant %q", c.what, want) }
     if code := post(t, h, "", "not json"); code != http.StatusBadRequest { t.Fatalf("garbage answered %d", code) }
 }
 
 func TestWebhookChecksSecret(t *testing.T) {
     var c = &called{}
-    var h = Webhook("s3cret", c.handlers())
+    var h = webhook(c.handlers("s3cret"))
     var update = `{"update_type":"bot_added","chat_id":1,"user_locale":"en"}`
     for _, tc := range []struct{ secret string; code, handled int }{{"", 401, 0}, {"wrong", 401, 0}, {"s3cret", 200, 1}} {
         if code := post(t, h, tc.secret, update); code != tc.code || len(c.what) != tc.handled {
@@ -135,8 +139,33 @@ func TestWebhookChecksSecret(t *testing.T) {
     if rec.Code != http.StatusMethodNotAllowed { t.Fatalf("GET answered %d", rec.Code) }
 }
 
-func TestLang(t *testing.T) {
+func TestLangOf(t *testing.T) {
     for in, want := range map[string]string{"ru": "ru", "ru-RU": "ru", "es_ES": "es", "EN": "en", "": ""} {
-        if got := Lang(in); got != want { t.Errorf("Lang(%q) = %q, want %q", in, got, want) }
+        if got := langOf(in); got != want { t.Errorf("langOf(%q) = %q, want %q", in, got, want) }
     }
+}
+
+// Start serves the webhook on Listen at the path of WebhookURL, checking the
+// secret, subscribes that URL with the same secret, and Shutdown stops the
+// server.
+func TestStartServesAndSubscribes(t *testing.T) {
+    var f = &fakeAPI{response: `{"success":true}`}
+    var ln, err = net.Listen("tcp", "127.0.0.1:0")
+    if err != nil { t.Fatal(err) }
+    var addr = ln.Addr().String()
+    ln.Close()
+    var c = &called{}
+    var opt = c.handlers("s3cret")
+    opt.Token, opt.APIBaseURL, opt.Listen, opt.WebhookURL = "MAXTOKEN", f.server(t).URL, addr, "https://example.org/max/hook"
+    if err := Start(opt); err != nil { t.Fatal(err) }
+    defer Shutdown(t.Context())
+    if len(f.paths) != 1 || f.paths[0] != "/subscriptions" || f.bodies[0]["secret"] != "s3cret" { t.Fatalf("subscribed %v %v", f.paths, f.bodies) }
+    var req, _ = http.NewRequest(http.MethodPost, "http://"+addr+"/max/hook", strings.NewReader(`{"update_type":"bot_started","chat_id":5,"user_locale":"ru"}`))
+    req.Header.Set("X-Max-Bot-Api-Secret", "s3cret")
+    var resp, perr = http.DefaultClient.Do(req)
+    if perr != nil { t.Fatal(perr) }
+    resp.Body.Close()
+    if resp.StatusCode != http.StatusOK || strings.Join(c.what, "|") != "max started 5 unknown ru" { t.Fatalf("status %d, handled %q", resp.StatusCode, c.what) }
+    if err := Shutdown(t.Context()); err != nil { t.Fatal(err) }
+    if _, err := http.Post("http://"+addr+"/max/hook", "application/json", strings.NewReader(`{}`)); err == nil { t.Fatal("the webhook still answers after Shutdown") }
 }

@@ -21,38 +21,38 @@ import "bitnsbot/rates"
 var pendingInfoMu sync.Mutex
 var pendingInfoChats = make(map[chatKey]bool)
 
-func info(bot messenger, chat int64, arg string) {
+func info(platform string, chat int64, arg string) {
     if arg == "" {
         pendingInfoMu.Lock()
-        pendingInfoChats[chatKey{bot.platform(), chat}] = true
+        pendingInfoChats[chatKey{platform, chat}] = true
         pendingInfoMu.Unlock()
-        send(bot, chat, i18n(chat).String("Please send Bitcoin address or transaction or block number or block hash"), nil)
+        send(platform, chat, i18n(chat).String("Please send Bitcoin address or transaction or block number or block hash"), nil)
         return
     }
     pendingInfoMu.Lock()
-    delete(pendingInfoChats, chatKey{bot.platform(), chat})
+    delete(pendingInfoChats, chatKey{platform, chat})
     pendingInfoMu.Unlock()
     if !core.Enabled() {
-        send(bot, chat, i18n(chat).String("Bitcoin node connection is not configured"), nil)
+        send(platform, chat, i18n(chat).String("Bitcoin node connection is not configured"), nil)
         return
     }
     var ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
     defer cancel()
     if len(arg) == 64 {
         if app.IsTxID(arg) {
-            transaction(ctx, bot, chat, arg)
+            transaction(ctx, platform, chat, arg)
             return
         }
         if header, err := core.GetBlockHeader(ctx, arg); err == nil {
-            block(ctx, bot, chat, header.Height)
+            block(ctx, platform, chat, header.Height)
             return
         }
     }
     if height, err := strconv.ParseInt(arg, 10, 64); err == nil && height >= 0 {
-        block(ctx, bot, chat, height)
+        block(ctx, platform, chat, height)
         return
     }
-    address(ctx, bot, chat, arg)
+    address(ctx, platform, chat, arg)
 }
 
 // txData is everything one transaction is described by: the lines /info
@@ -150,13 +150,13 @@ func txPairs(ctx context.Context, lang string, txid string) (txData, bool) {
     return out, true
 }
 
-func transaction(ctx context.Context, bot messenger, chat int64, txid string) {
+func transaction(ctx context.Context, platform string, chat int64, txid string) {
     var d, ok = txPairs(ctx, chatLang(chat), txid)
     if !ok {
-        send(bot, chat, i18n(chat).Sprintf("Couldn't find transaction %s", short(txid)), nil)
+        send(platform, chat, i18n(chat).Sprintf("Couldn't find transaction %s", short(txid)), nil)
         return
     }
-    send(bot, chat, i18n(chat).Sprintf("Transaction <code>%s</code>\n\n<pre>%s</pre>", d.canonical, joinAlign(d.pairs)), d.ids)
+    send(platform, chat, i18n(chat).Sprintf("Transaction <code>%s</code>\n\n<pre>%s</pre>", d.canonical, joinAlign(d.pairs)), d.ids)
 }
 
 // txInputs reports a transaction's fee, the addresses it spends from and the
@@ -296,23 +296,23 @@ func compactAddrs(addrs []string) string {
     return s
 }
 
-func block(ctx context.Context, bot messenger, chat int64, height int64) {
+func block(ctx context.Context, platform string, chat int64, height int64) {
     if bi, ok := blocks.Load(height); ok {
-        send(bot, chat, formatBlock(bi, chatLang(chat)), nil)
+        send(platform, chat, formatBlock(bi, chatLang(chat)), nil)
         return
     }
     var hash, err = core.GetBlockHash(ctx, height)
     if err != nil {
-        send(bot, chat, i18n(chat).Sprintf("Couldn't find block %d", height), nil)
+        send(platform, chat, i18n(chat).Sprintf("Couldn't find block %d", height), nil)
         return
     }
     var bi, ciErr = blocks.Compute(ctx, hash)
     if ciErr != nil {
         logging.Err("compute block %d: %v", height, ciErr)
-        send(bot, chat, i18n(chat).String("Sorry, something went wrong fetching that block"), nil)
+        send(platform, chat, i18n(chat).String("Sorry, something went wrong fetching that block"), nil)
         return
     }
-    send(bot, chat, formatBlock(bi, chatLang(chat)), nil)
+    send(platform, chat, formatBlock(bi, chatLang(chat)), nil)
 }
 
 // addrTxLimit bounds how many of an address's transactions are resolved for the
@@ -702,18 +702,18 @@ func addrPairs(ctx context.Context, lang string, addr string) ([][2]string, bool
     return pairs, true, nil
 }
 
-func address(ctx context.Context, bot messenger, chat int64, addr string) {
+func address(ctx context.Context, platform string, chat int64, addr string) {
     var pairs, valid, err = addrPairs(ctx, chatLang(chat), addr)
     if err != nil {
         logging.Err("validate address: %v", err)
-        send(bot, chat, i18n(chat).String("Sorry, something went wrong looking up that address"), nil)
+        send(platform, chat, i18n(chat).String("Sorry, something went wrong looking up that address"), nil)
         return
     }
     if !valid {
-        send(bot, chat, i18n(chat).Sprintf("%s doesn't look like a valid Bitcoin address", html.EscapeString(addr)), nil)
+        send(platform, chat, i18n(chat).Sprintf("%s doesn't look like a valid Bitcoin address", html.EscapeString(addr)), nil)
         return
     }
-    send(bot, chat, i18n(chat).Sprintf("Address %s\n\n<pre>%s</pre>", short(addr), joinAlign(pairs)), nil)
+    send(platform, chat, i18n(chat).Sprintf("Address %s\n\n<pre>%s</pre>", short(addr), joinAlign(pairs)), nil)
 }
 
 func minerName(name, lang string) string {

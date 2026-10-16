@@ -68,7 +68,7 @@ func TestWatchNotification(t *testing.T) {
         json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": true})
     }))
     defer tg.Close()
-    var b = newBot("TESTTOKEN", tg.URL)
+    useTelegram(t, tg.URL)
     var watchedAddr = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
     var txid = "f21b47a9143a23e80cc59e81588d21558b394005580b285961957cb3bed5b3e0"
     var srv = coretest.Server(t, func(method string, params []any) (any, error) {
@@ -113,7 +113,7 @@ func TestWatchNotification(t *testing.T) {
     stopNotify()
     resetWatched()
     defer stopNotify()
-    watchCmd(b, 42, watchedAddr+" John")
+    watchCmd("tg", 42, watchedAddr+" John")
     broadcast("deadbeefrawtxhex")
     var deadline = time.Now().Add(3 * time.Second)
     for time.Now().Before(deadline) {
@@ -175,19 +175,19 @@ func TestUnwatchFlow(t *testing.T) {
         json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": true})
     }))
     defer server.Close()
-    var b = newBot("TESTTOKEN", server.URL)
+    useTelegram(t, server.URL)
     core.Reset()
     stopNotify()
     defer stopNotify()
     openDB(filepath.Join(t.TempDir(), "watches.db"))
     defer closeDB()
     var addr = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
-    update(b, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/watch " + addr}})
-    update(b, Update{Message: &Message{Chat: Chat{ID: 2}, Text: "/watch " + addr}})
+    message("tg", 1, "", "/watch " + addr, "")
+    message("tg", 2, "", "/watch " + addr, "")
     if countWatchers(addr) != 2 {
         t.Fatalf("expected 2 watchers, got %d", countWatchers(addr))
     }
-    update(b, Update{Message: &Message{Chat: Chat{ID: 2}, Text: "/unwatch " + addr}})
+    message("tg", 2, "", "/unwatch " + addr, "")
     if sent[len(sent)-1] != "Stopped watching "+addr {
         t.Fatalf("unexpected unwatch reply: %#v", sent)
     }
@@ -198,15 +198,15 @@ func TestUnwatchFlow(t *testing.T) {
     if len(records) != 1 || records[0].Chat != 1 {
         t.Fatalf("expected only chat 1's record in store, got %#v", records)
     }
-    update(b, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/unwatch bogusaddr"}})
+    message("tg", 1, "", "/unwatch bogusaddr", "")
     if sent[len(sent)-1] != "You're not watching bogusaddr" {
         t.Fatalf("unexpected not-watching reply: %q", sent[len(sent)-1])
     }
-    update(b, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/unwatch"}})
+    message("tg", 1, "", "/unwatch", "")
     if !pendingUnwatchChats[chatKey{"tg", 1}] {
         t.Fatalf("expected chat 1 pending for unwatch")
     }
-    update(b, Update{Message: &Message{Chat: Chat{ID: 1}, Text: addr}})
+    message("tg", 1, "", addr, "")
     if sent[len(sent)-1] != "Stopped watching "+addr {
         t.Fatalf("expected follow-up to remove chat 1's watch, got: %q", sent[len(sent)-1])
     }
@@ -236,12 +236,12 @@ func TestWatchesFlow(t *testing.T) {
         json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": true})
     }))
     defer server.Close()
-    var b = newBot("TESTTOKEN", server.URL)
+    useTelegram(t, server.URL)
     openDB(filepath.Join(t.TempDir(), "watches.db"))
     defer closeDB()
     stopNotify()
     defer stopNotify()
-    update(b, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/watches"}})
+    message("tg", 1, "", "/watches", "")
     if sent[len(sent)-1] != "You're not watching anything yet" {
         t.Fatalf("unexpected empty reply: %q", sent[len(sent)-1])
     }
@@ -250,7 +250,7 @@ func TestWatchesFlow(t *testing.T) {
     watches.Add("tg", 1, addr, "")
     txwatches.Add(txid, "tg", 1, "")
     watches.Add("tg", 2, "someoneElsesAddress", "")
-    update(b, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/watches"}})
+    message("tg", 1, "", "/watches", "")
     var msg = sent[len(sent)-1]
     if !strings.Contains(msg, "<code>"+addr+"</code>") {
         t.Fatalf("expected full address in <code>, got: %q", msg)
@@ -265,7 +265,7 @@ func TestWatchesFlow(t *testing.T) {
         t.Fatalf("must not list another chat's watch: %q", msg)
     }
     watches.Add("tg", 3, "a<b>c", "")
-    update(b, Update{Message: &Message{Chat: Chat{ID: 3}, Text: "/watches"}})
+    message("tg", 3, "", "/watches", "")
     if last := sent[len(sent)-1]; !strings.Contains(last, "a&lt;b&gt;c") {
         t.Fatalf("expected HTML-escaped watch id, got: %q", last)
     }
@@ -288,7 +288,7 @@ func TestWatchLimit(t *testing.T) {
         json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": true})
     }))
     defer server.Close()
-    var b = newBot("TESTTOKEN", server.URL)
+    useTelegram(t, server.URL)
     core.Reset()
     stopNotify()
     defer stopNotify()
@@ -302,7 +302,7 @@ func TestWatchLimit(t *testing.T) {
         }
     }
     var addr = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
-    watchCmd(b, 42, addr)
+    watchCmd("tg", 42, addr)
     if last := sent[len(sent)-1]; !strings.Contains(last, "limit") {
         t.Fatalf("expected a limit rejection, got %q", last)
     }
@@ -330,7 +330,7 @@ func TestTxConfirmation(t *testing.T) {
         json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": true})
     }))
     defer tg.Close()
-    var b = newBot("TESTTOKEN", tg.URL)
+    useTelegram(t, tg.URL)
     var txid = "f21b47a9143a23e80cc59e81588d21558b394005580b285961957cb3bed5b3e0"
     var srv = coretest.Server(t, func(method string, params []any) (any, error) {
         var p = params
@@ -354,7 +354,7 @@ func TestTxConfirmation(t *testing.T) {
     stopNotify()
     defer stopNotify()
     txwatches.Add(txid, "tg", 7, "Alice")
-    go processConfirms("0000000000000000abc", b)
+    go processConfirms("0000000000000000abc")
     var found string
     var deadline = time.Now().Add(3 * time.Second)
     for time.Now().Before(deadline) {
@@ -407,7 +407,7 @@ func TestAddrConfirmation(t *testing.T) {
         json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": true})
     }))
     defer tg.Close()
-    var b = newBot("TESTTOKEN", tg.URL)
+    useTelegram(t, tg.URL)
     var addr = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
     var txid = "f21b47a9143a23e80cc59e81588d21558b394005580b285961957cb3bed5b3e0"
     var srv = coretest.Server(t, func(method string, params []any) (any, error) {
@@ -421,7 +421,7 @@ func TestAddrConfirmation(t *testing.T) {
     stopNotify()
     defer stopNotify()
     txwatches.AddAddrConfirm(txid, "tg", 7, addr, "John", txwatches.Summary{})
-    processConfirms("hash200", b)
+    processConfirms("hash200")
     sentMu.Lock()
     defer sentMu.Unlock()
     var found string
@@ -534,7 +534,7 @@ func awaitNotification(t *testing.T, btcdSrv *httptest.Server, watchedAddr strin
         capturedMu.Unlock()
         json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": true})
     }))
-    var b = newBot("TESTTOKEN", tg.URL)
+    useTelegram(t, tg.URL)
     coretest.Use(t, btcdSrv)
     feesMu.Lock()
     cachedFees = recommendedFees{fastest: 50, halfHour: 30, hour: 20, economy: 10, minimum: 1}
@@ -548,7 +548,7 @@ func awaitNotification(t *testing.T, btcdSrv *httptest.Server, watchedAddr strin
     t.Cleanup(func() { closeDB() })
     t.Cleanup(stopNotify)
     t.Cleanup(resetWatched)
-    watchCmd(b, 42, watchedAddr+" John")
+    watchCmd("tg", 42, watchedAddr+" John")
     broadcast("deadbeefrawtxhex")
     var deadline = time.Now().Add(3 * time.Second)
     for time.Now().Before(deadline) {
@@ -742,7 +742,7 @@ func TestConfirmationLinksBlock(t *testing.T) {
         json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": true})
     }))
     defer tg.Close()
-    var b = newBot("TESTTOKEN", tg.URL)
+    useTelegram(t, tg.URL)
     var srv = coretest.Server(t, func(method string, params []any) (any, error) {
         if method == "getblock" {
             return map[string]any{"height": 959126, "tx": []string{txid}}, nil
@@ -753,7 +753,7 @@ func TestConfirmationLinksBlock(t *testing.T) {
     stopNotify()
     t.Cleanup(stopNotify)
     txwatches.AddAddrConfirm(txid, "tg", 42, addr, "", txwatches.Summary{})
-    processConfirms("0000000000000000abc", b)
+    processConfirms("0000000000000000abc")
     var deadline = time.Now().Add(3 * time.Second)
     for time.Now().Before(deadline) {
         markupMu.Lock()

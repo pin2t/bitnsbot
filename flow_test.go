@@ -14,6 +14,14 @@ import "bitnsbot/core"
 import "bitnsbot/core/coretest"
 import "bitnsbot/cursors"
 import "bitnsbot/lru"
+import "bitnsbot/telegram"
+
+// useTelegram points the telegram package at a fake Bot API at url, which is
+// where every reply the test provokes is then sent.
+func useTelegram(t *testing.T, url string) {
+    t.Helper()
+    if err := telegram.Start(telegram.Options{Token: "TESTTOKEN", APIBaseURL: url}); err != nil { t.Fatal(err) }
+}
 
 // infoBlockHash is a real mainnet block hash: 64 hex characters, exactly the
 // same shape as a txid.
@@ -49,8 +57,8 @@ func TestInfoFlow(t *testing.T) {
         json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": true})
     }))
     defer server.Close()
-    var bot = newBot("TESTTOKEN", server.URL)
-    update(bot, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/info"}})
+    useTelegram(t, server.URL)
+    message("tg", 1, "", "/info", "")
     if len(sent) != 1 || sent[0] != "Please send Bitcoin address or transaction or block number or block hash" {
         t.Fatalf("unexpected first reply: %#v", sent)
     }
@@ -58,18 +66,18 @@ func TestInfoFlow(t *testing.T) {
         t.Fatalf("expected chat 1 to be pending")
     }
     core.Reset()
-    update(bot, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "hello world"}})
+    message("tg", 1, "", "hello world", "")
     if len(sent) != 2 || sent[1] != "Bitcoin node connection is not configured" {
         t.Fatalf("unexpected second reply: %#v", sent)
     }
     if pendingInfoChats[chatKey{"tg", 1}] {
         t.Fatalf("expected chat 1 pending flag cleared")
     }
-    update(bot, Update{Message: &Message{Chat: Chat{ID: 3}, Text: "/start"}})
+    message("tg", 3, "", "/start", "")
     if len(sent) != 3 || !strings.Contains(sent[2], "<b>/info</b>") || !strings.Contains(sent[2], "<b>/watches</b>") {
         t.Fatalf("unexpected /start reply: %#v", sent)
     }
-    update(bot, Update{Message: &Message{Chat: Chat{ID: 4}, Text: "just chatting, no pending info"}})
+    message("tg", 4, "", "just chatting, no pending info", "")
     if len(sent) != 3 {
         t.Fatalf("expected no reply for plain text without pending state, got: %#v", sent)
     }
@@ -170,7 +178,7 @@ func TestInfoFlow(t *testing.T) {
     })
     defer btcdServer.Close()
     coretest.Use(t, btcdServer)
-    update(bot, Update{Message: &Message{Chat: Chat{ID: 5}, Text: "/info 100"}})
+    message("tg", 5, "", "/info 100", "")
     if len(sent) != 4 {
         t.Fatalf("expected block reply, got %#v", sent)
     }
@@ -188,7 +196,7 @@ func TestInfoFlow(t *testing.T) {
         t.Fatalf("expected HTML parse mode, got: %q", lastMode)
     }
     var txid = "f21b47a9143a23e80cc59e81588d21558b394005580b285961957cb3bed5b3e0"
-    update(bot, Update{Message: &Message{Chat: Chat{ID: 6}, Text: "/info " + txid}})
+    message("tg", 6, "", "/info " + txid, "")
     if len(sent) != 5 {
         t.Fatalf("expected transaction reply, got %#v", sent)
     }
@@ -202,19 +210,19 @@ func TestInfoFlow(t *testing.T) {
             t.Fatalf("transaction reply missing %q: %q", want, sent[4])
         }
     }
-    update(bot, Update{Message: &Message{Chat: Chat{ID: 9}, Text: "/info " + infoBlockHash}})
+    message("tg", 9, "", "/info " + infoBlockHash, "")
     if len(sent) != 6 {
         t.Fatalf("expected a block reply for the block hash, got %#v", sent)
     }
     if sent[5] != sent[3] {
         t.Fatalf("/info <block hash> replied:\n%s\nbut /info <height> replied:\n%s", sent[5], sent[3])
     }
-    update(bot, Update{Message: &Message{Chat: Chat{ID: 7}, Text: "/info 1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"}})
+    message("tg", 7, "", "/info 1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa", "")
     if len(sent) != 7 || !strings.Contains(sent[6], "Address 1A1zP1...DivfNa") ||
         !strings.Contains(sent[6], "standard (P2PKH)") || !strings.Contains(sent[6], "Activity: unavailable") {
         t.Fatalf("unexpected address (index disabled) reply: %#v", sent)
     }
-    update(bot, Update{Message: &Message{Chat: Chat{ID: 8}, Text: "/info addresswithhistory"}})
+    message("tg", 8, "", "/info addresswithhistory", "")
     if len(sent) != 8 {
         t.Fatalf("expected address reply, got %#v", sent)
     }
@@ -223,15 +231,15 @@ func TestInfoFlow(t *testing.T) {
             t.Fatalf("address reply missing %q: %q", want, sent[7])
         }
     }
-    update(bot, Update{Message: &Message{Chat: Chat{ID: 12}, Text: "/info invalidaddr"}})
+    message("tg", 12, "", "/info invalidaddr", "")
     if len(sent) != 9 || !strings.Contains(sent[8], "doesn't look like a valid Bitcoin address") {
         t.Fatalf("unexpected invalid address reply: %#v", sent)
     }
-    update(bot, Update{Message: &Message{Chat: Chat{ID: 10}, Text: "/info " + recentTxid}})
+    message("tg", 10, "", "/info " + recentTxid, "")
     if len(sent) != 10 || !strings.Contains(sent[9], "Confirmations:") {
         t.Fatalf("expected transaction reply for recent transaction, got: %#v", sent)
     }
-    update(bot, Update{Message: &Message{Chat: Chat{ID: 11}, Text: "/info 200"}})
+    message("tg", 11, "", "/info 200", "")
     if len(sent) != 11 || !strings.Contains(sent[10], "Block #200") || !strings.Contains(sent[10], "Time:          2 d ago") {
         t.Fatalf("expected relative time format for recent block, got: %#v", sent)
     }
@@ -256,7 +264,7 @@ func TestWatchFlow(t *testing.T) {
         json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": true})
     }))
     defer server.Close()
-    var bot = newBot("TESTTOKEN", server.URL)
+    useTelegram(t, server.URL)
     var err error
     err = openDB(filepath.Join(t.TempDir(), "watches.db"))
     if err != nil {
@@ -265,14 +273,14 @@ func TestWatchFlow(t *testing.T) {
     defer closeDB()
     stopNotify()
     defer stopNotify()
-    update(bot, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/watch"}})
+    message("tg", 1, "", "/watch", "")
     if len(sent) != 1 || !strings.Contains(sent[0], "alias") {
         t.Fatalf("unexpected first reply: %#v", sent)
     }
     if !pendingWatchChats[chatKey{"tg", 1}] {
         t.Fatalf("expected chat 1 to be pending")
     }
-    update(bot, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"}})
+    message("tg", 1, "", "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa", "")
     if len(sent) != 2 || sent[1] != "Watching 1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa" {
         t.Fatalf("unexpected second reply: %#v", sent)
     }
@@ -280,21 +288,21 @@ func TestWatchFlow(t *testing.T) {
         t.Fatalf("expected chat 1 pending flag cleared")
     }
     var txid = "f21b47a9143a23e80cc59e81588d21558b394005580b285961957cb3bed5b3e0"
-    update(bot, Update{Message: &Message{Chat: Chat{ID: 2}, Text: "/watch " + txid}})
+    message("tg", 2, "", "/watch " + txid, "")
     if len(sent) != 3 || sent[2] != "Watching "+txid {
         t.Fatalf("unexpected third reply: %#v", sent)
     }
     var aliasAddr = "1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2"
-    update(bot, Update{Message: &Message{Chat: Chat{ID: 5}, Text: "/watch " + aliasAddr + " Savings"}})
+    message("tg", 5, "", "/watch " + aliasAddr + " Savings", "")
     if sent[len(sent)-1] != "Watching "+aliasAddr+" (Savings)" {
         t.Fatalf("unexpected alias reply: %#v", sent)
     }
-    update(bot, Update{Message: &Message{Chat: Chat{ID: 6}, Text: "/watch"}})
-    update(bot, Update{Message: &Message{Chat: Chat{ID: 6}, Text: aliasAddr + " Cold storage"}})
+    message("tg", 6, "", "/watch", "")
+    message("tg", 6, "", aliasAddr + " Cold storage", "")
     if sent[len(sent)-1] != "Watching "+aliasAddr+" (Cold storage)" {
         t.Fatalf("unexpected pending-alias reply: %#v", sent)
     }
-    update(bot, Update{Message: &Message{Chat: Chat{ID: 5}, Text: "/watches"}})
+    message("tg", 5, "", "/watches", "")
     if !strings.Contains(sent[len(sent)-1], "<code>"+aliasAddr+"</code> (Savings)") {
         t.Fatalf("expected alias in /watches listing: %q", sent[len(sent)-1])
     }
@@ -328,9 +336,9 @@ func TestFeesFlow(t *testing.T) {
         json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": true})
     }))
     defer server.Close()
-    var bot = newBot("TESTTOKEN", server.URL)
+    useTelegram(t, server.URL)
     core.Reset()
-    update(bot, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/fees"}})
+    message("tg", 1, "", "/fees", "")
     if len(sent) != 1 || sent[0] != "Bitcoin node connection is not configured" {
         t.Fatalf("unexpected not-configured reply: %#v", sent)
     }
@@ -363,7 +371,7 @@ func TestFeesFlow(t *testing.T) {
         cachedFees, cachedFeesOK, cachedFeesCount = rec, true, len(entries)
         feesMu.Unlock()
     }
-    update(bot, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/fees"}})
+    message("tg", 1, "", "/fees", "")
     if len(sent) != 2 {
         t.Fatalf("expected a fees reply, got %#v", sent)
     }
@@ -398,13 +406,13 @@ func TestFeesUnavailable(t *testing.T) {
         json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": true})
     }))
     defer server.Close()
-    var bot = newBot("TESTTOKEN", server.URL)
+    useTelegram(t, server.URL)
     var btcdServer = coretest.Server(t, func(method string, params []any) (any, error) {
         return nil, fmt.Errorf("not enough blocks have been observed")
     })
     defer btcdServer.Close()
     coretest.Use(t, btcdServer)
-    update(bot, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/fees"}})
+    message("tg", 1, "", "/fees", "")
     if len(sent) != 1 || !strings.Contains(sent[0], "aren't available") {
         t.Fatalf("unexpected unavailable reply: %#v", sent)
     }
@@ -452,9 +460,9 @@ func TestMempoolFlow(t *testing.T) {
         json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": true})
     }))
     defer server.Close()
-    var bot = newBot("TESTTOKEN", server.URL)
+    useTelegram(t, server.URL)
     core.Reset()
-    update(bot, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/mempool"}})
+    message("tg", 1, "", "/mempool", "")
     if len(sent) != 1 || sent[0] != "Bitcoin node connection is not configured" {
         t.Fatalf("unexpected not-configured reply: %#v", sent)
     }
@@ -485,7 +493,7 @@ func TestMempoolFlow(t *testing.T) {
     summaryMu.Lock()
     summaryAmount, summaryFee, summaryOK = 350000000, 30000, true
     summaryMu.Unlock()
-    update(bot, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/mempool"}})
+    message("tg", 1, "", "/mempool", "")
     if len(sent) != 2 {
         t.Fatalf("expected a mempool reply, got %#v", sent)
     }
@@ -500,7 +508,7 @@ func TestMempoolFlow(t *testing.T) {
     summaryMu.Lock()
     summaryOK = false
     summaryMu.Unlock()
-    update(bot, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/mempool"}})
+    message("tg", 1, "", "/mempool", "")
     if strings.Contains(sent[2], "Total flow") || strings.Contains(sent[2], "Total fees") {
         t.Fatalf("expected no totals with empty cache: %q", sent[2])
     }
@@ -564,7 +572,7 @@ func TestMempoolFlowRate(t *testing.T) {
         json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": true})
     }))
     defer tg.Close()
-    var b = newBot("TESTTOKEN", tg.URL)
+    useTelegram(t, tg.URL)
     var srv = coretest.Server(t, func(method string, params []any) (any, error) {
         if method == "getmempoolinfo" {
             return map[string]any{"size": 5000, "bytes": 2000000}, nil
@@ -573,7 +581,7 @@ func TestMempoolFlowRate(t *testing.T) {
     })
     defer srv.Close()
     coretest.Use(t, srv)
-    update(b, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/mempool"}})
+    message("tg", 1, "", "/mempool", "")
     if len(sent) != 1 || !strings.Contains(sent[0], "Flow rate:") || !strings.Contains(sent[0], "2.5 tx/sec (+0.5)") {
         t.Fatalf("expected flow rate line in reply: %#v", sent)
     }
@@ -596,7 +604,7 @@ func TestI18nSetLanguage(t *testing.T) {
 		json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": true})
 	}))
 	defer server.Close()
-	var bot = newBot("TESTTOKEN", server.URL)
+	useTelegram(t, server.URL)
 	var err = openDB(filepath.Join(t.TempDir(), "watches.db"))
 	if err != nil {
 		t.Fatalf("openDB: %v", err)
@@ -604,31 +612,31 @@ func TestI18nSetLanguage(t *testing.T) {
 	defer closeDB()
 	stopNotify()
 	defer stopNotify()
-	update(bot, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/watch bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4 Test"}})
+	message("tg", 1, "", "/watch bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4 Test", "")
 	if len(sent) != 1 || !strings.Contains(sent[0], "Watching bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4 (Test)") {
 		t.Fatalf("expected English watch reply, got: %#v", sent)
 	}
 	SetChatLanguage(2, "ru")
-	update(bot, Update{Message: &Message{Chat: Chat{ID: 2}, Text: "/watch bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4 Тест"}})
+	message("tg", 2, "", "/watch bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4 Тест", "")
 	if len(sent) != 2 || !strings.Contains(sent[1], "Отслеживаю ") {
 		t.Fatalf("expected Russian watch reply, got: %#v", sent)
 	}
-	update(bot, Update{Message: &Message{Chat: Chat{ID: 2}, Text: "/unwatch bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"}})
+	message("tg", 2, "", "/unwatch bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4", "")
 	if len(sent) != 3 || !strings.Contains(sent[2], "Прекращено отслеживание") {
 		t.Fatalf("expected Russian unwatch reply, got: %#v", sent)
 	}
 	SetChatLanguage(3, "es")
-	update(bot, Update{Message: &Message{Chat: Chat{ID: 3}, Text: "/watch bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4 Prueba"}})
+	message("tg", 3, "", "/watch bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4 Prueba", "")
 	if len(sent) != 4 || !strings.Contains(sent[3], "Observando ") {
 		t.Fatalf("expected Spanish watch reply, got: %#v", sent)
 	}
-	update(bot, Update{Message: &Message{Chat: Chat{ID: 3}, Text: "/unwatch bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"}})
+	message("tg", 3, "", "/unwatch bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4", "")
 	if len(sent) != 5 || !strings.Contains(sent[4], "Se dejó de observar") {
 		t.Fatalf("expected Spanish unwatch reply, got: %#v", sent)
 	}
 }
 
-// Simulate a Telegram user with language_code "ru" — the update handler
+// Simulate a Telegram user with language_code "ru" — the message handler
 // should call SetChatLanguage automatically.
 //
 // Same chat, different language in a later message — should switch.
@@ -644,7 +652,7 @@ func TestI18nAutoDetect(t *testing.T) {
 		json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": true})
 	}))
 	defer server.Close()
-	var bot = newBot("TESTTOKEN", server.URL)
+	useTelegram(t, server.URL)
 	var err = openDB(filepath.Join(t.TempDir(), "watches.db"))
 	if err != nil {
 		t.Fatalf("openDB: %v", err)
@@ -652,19 +660,11 @@ func TestI18nAutoDetect(t *testing.T) {
 	defer closeDB()
 	stopNotify()
 	defer stopNotify()
-	update(bot, Update{Message: &Message{
-		Chat: Chat{ID: 1},
-		From: &User{LanguageCode: "ru"},
-		Text: "/watch bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4 тест",
-	}})
+	message("tg", 1, "", "/watch bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4 тест", "ru")
 	if len(sent) != 1 || !strings.Contains(sent[0], "Отслеживаю ") {
 		t.Fatalf("expected auto-detected Russian reply, got: %#v", sent)
 	}
-	update(bot, Update{Message: &Message{
-		Chat: Chat{ID: 1},
-		From: &User{LanguageCode: "es"},
-		Text: "/unwatch bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4",
-	}})
+	message("tg", 1, "", "/unwatch bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4", "es")
 	if len(sent) != 2 || !strings.Contains(sent[1], "Se dejó de observar") {
 		t.Fatalf("expected auto-detected Spanish reply after language switch, got: %#v", sent)
 	}
@@ -702,12 +702,12 @@ func TestMinersFlow(t *testing.T) {
         json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": true})
     }))
     defer server.Close()
-    var bot = newBot("TESTTOKEN", server.URL)
+    useTelegram(t, server.URL)
     if err := openDB(filepath.Join(t.TempDir(), "miners.db")); err != nil {
         t.Fatalf("openDB: %v", err)
     }
     defer closeDB()
-    update(bot, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/miners"}})
+    message("tg", 1, "", "/miners", "")
     if len(sent) != 1 || !strings.Contains(sent[0], "still collecting") {
         t.Fatalf("unexpected empty-stats reply: %#v", sent)
     }
@@ -733,7 +733,7 @@ func TestMinersFlow(t *testing.T) {
     if terr != nil { t.Fatal(terr) }
     if err := cursors.Set(tx, cursors.Miners, 9); err != nil { t.Fatal(err) }
     if err := tx.Commit(); err != nil { t.Fatal(err) }
-    update(bot, Update{Message: &Message{Chat: Chat{ID: 1}, Text: "/miners"}})
+    message("tg", 1, "", "/miners", "")
     if len(sent) != 2 {
         t.Fatalf("expected a miners reply, got %#v", sent)
     }

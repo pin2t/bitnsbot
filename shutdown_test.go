@@ -3,15 +3,18 @@ package main
 import "net"
 import "net/http"
 import "path/filepath"
+import "strings"
 import "testing"
 import "time"
 import "bitnsbot/core"
+import "bitnsbot/telegram"
 import "bitnsbot/watches"
 
 // TestShutdownDrainsHandlersBeforeClosingStore verifies the ordering the
 // feature exists for: the webhook server is stopped first and waits for
 // in-flight handlers to finish, so a handler using the store never sees it
 // closed out from under it — and once shutdown returns, the store is closed.
+// The handler is the Telegram webhook's own, reached by a real update.
 //
 // the store must still be open while a handler runs
 //
@@ -25,23 +28,24 @@ func TestShutdownDrainsHandlersBeforeClosingStore(t *testing.T) {
     core.Reset()
     var started = make(chan struct{})
     var finished = make(chan error, 1)
-    var mux = http.NewServeMux()
-    mux.HandleFunc("/slow", func(w http.ResponseWriter, r *http.Request) {
-        close(started)
-        time.Sleep(200 * time.Millisecond)
-        var _, listErr = watches.List()
-        finished <- listErr
-        w.WriteHeader(http.StatusOK)
-    })
     var ln, lnErr = net.Listen("tcp", "127.0.0.1:0")
     if lnErr != nil {
         t.Fatalf("listen: %v", lnErr)
     }
-    var srv = &http.Server{Handler: mux}
-    go srv.Serve(ln)
-    go http.Get("http://" + ln.Addr().String() + "/slow")
+    var addr = ln.Addr().String()
+    ln.Close()
+    var slow = func(platform string, chat int64, name, text, lang string) {
+        close(started)
+        time.Sleep(200 * time.Millisecond)
+        var _, listErr = watches.List()
+        finished <- listErr
+    }
+    if err := telegram.Start(telegram.Options{Token: "TESTTOKEN", Listen: addr, WebhookPath: "/bot", Message: slow}); err != nil {
+        t.Fatalf("start: %v", err)
+    }
+    go http.Post("http://"+addr+"/bot", "application/json", strings.NewReader(`{"message":{"chat":{"id":1},"text":"/watches"}}`))
     <-started
-    shutdown(nil, srv)
+    shutdown()
     if handlerErr := <-finished; handlerErr != nil {
         t.Fatalf("store was closed while a handler was still running: %v", handlerErr)
     }
