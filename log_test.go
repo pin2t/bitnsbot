@@ -14,36 +14,29 @@ func TestMessageLogging(t *testing.T) {
         w.Write([]byte(`{"ok":true,"result":true}`))
     }))
     defer server.Close()
-    var bot = newBot("TESTTOKEN", server.URL)
+    useTelegram(t, server.URL)
+    chatNames.Clear()
     logging.SetVerbose(1)
     defer logging.SetVerbose(0)
     var buf bytes.Buffer
     log.SetOutput(&buf)
     defer log.SetOutput(os.Stderr)
-    update(bot, Update{Message: &Message{
-        Chat: Chat{ID: 42},
-        From: &User{Username: "alice"},
-        Text: "/start",
-    }})
+    message("tg", 42, "alice", "/start", "")
     if !strings.Contains(buf.String(), "bot (tg) <-- alice (42): /start") {
-        t.Fatalf("expected log line for username case, got: %q", buf.String())
+        t.Fatalf("expected log line for the sender's name, got: %q", buf.String())
     }
     if !strings.Contains(buf.String(), "bot (tg) --> alice (42): ") {
         t.Fatalf("expected the reply logged under the sender's name, got: %q", buf.String())
     }
     buf.Reset()
-    update(bot, Update{Message: &Message{
-        Chat: Chat{ID: 7},
-        From: &User{FirstName: "Bob"},
-        Text: "hi",
-    }})
-    if !strings.Contains(buf.String(), "bot (tg) <-- Bob (7): hi") {
-        t.Fatalf("expected log line for first-name fallback, got: %q", buf.String())
+    message("max", 7, "Bob", "hi", "")
+    if !strings.Contains(buf.String(), "bot (max) <-- Bob (7): hi") {
+        t.Fatalf("expected log line naming the platform, got: %q", buf.String())
     }
     buf.Reset()
-    update(bot, Update{Message: &Message{Chat: Chat{ID: 9}, Text: "anon"}})
-    if !strings.Contains(buf.String(), "bot (tg) <-- unknown (9): anon") {
-        t.Fatalf("expected log line for nil From, got: %q", buf.String())
+    send("tg", 9, "anon", nil)
+    if !strings.Contains(buf.String(), "bot (tg) --> unknown (9): anon") {
+        t.Fatalf("expected a chat never heard from logged as unknown, got: %q", buf.String())
     }
 }
 

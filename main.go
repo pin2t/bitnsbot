@@ -1,7 +1,6 @@
 package main
 
 import "context"
-import "crypto/subtle"
 import "encoding/json"
 import "flag"
 import "fmt"
@@ -22,13 +21,14 @@ import "bitnsbot/addrbal"
 import "bitnsbot/app"
 import "bitnsbot/core"
 import "bitnsbot/logging"
+import "bitnsbot/max"
 import "bitnsbot/miners"
 import "bitnsbot/rates"
 import "bitnsbot/signals"
+import "bitnsbot/telegram"
 import "bitnsbot/txwatches"
 import "bitnsbot/watches"
 import "unicode/utf8"
-import "sort"
 import "math"
 import "regexp"
 import "bitnsbot/lru"
@@ -59,9 +59,6 @@ var maxListen       = flag.String("maxListen", ":8084", "address the MAX webhook
 var maxWebhookURL   = flag.String("maxWebhookURL", "", "public https URL MAX should send updates to, registered via POST /subscriptions on startup; its path is the one the MAX webhook server accepts updates on (empty skips subscribing and accepts them on /)")
 var maxSecret       = flag.String("maxSecret", "", "optional secret passed to MAX on subscribing and checked against the X-Max-Bot-Api-Secret header of every update")
 var maxAppListen    = flag.String("maxAppListen", "127.0.0.1:8085", "address the MAX Mini App web server binds to when -maxToken is set (empty disables it; bind to localhost and put a tunnel in front, as with -appListen)")
-var appSrv *http.Server
-var maxSrv *http.Server
-var maxAppSrv *http.Server
 
 
 // stopBackup ends the backup goroutine, set when -backup started one. shutdown
@@ -69,7 +66,7 @@ var maxAppSrv *http.Server
 var stopBackup func()
 
 // The app* functions adapt main's fee cache and formatters to app.Options, so
-// the app package stays unaware of Bitcoin Core, the price feeds and the cache.
+// the Mini Apps stay unaware of Bitcoin Core, the price feeds and the cache.
 func appNetwork() app.Network {
     networkMu.Lock()
     defer networkMu.Unlock()
@@ -273,22 +270,21 @@ func appAddrTxs(lang, addr string, from int) app.Txs {
 //
 // appSetWatch adds or removes a watch and reports the state it ended in — which is
 // what the button renders, so a refusal shows as unpushed rather than lying.
-// It takes the messenger because adding a watch starts a notifier goroutine,
-// which needs something to send the notification with — and the messenger is
-// also the platform the watch is filed under.
-func appSetWatch(b messenger, chat int64, kind, id string, on bool) (bool, error) {
+// platform is the one the app is on: the watch is filed under it, and the
+// notifier goroutine adding one starts sends through it.
+func appSetWatch(platform string, chat int64, kind, id string, on bool) (bool, error) {
     if !on {
-        var _, err = removeWatch(b.platform(), chat, id)
+        var _, err = removeWatch(platform, chat, id)
         return false, err
     }
-    if watching(b.platform(), chat, id) { return true, nil }
-    var full, err = atWatchLimit(b.platform(), chat)
+    if watching(platform, chat, id) { return true, nil }
+    var full, err = atWatchLimit(platform, chat)
     if err != nil { return false, err }
     if full {
-        logging.Info("mini app: rejected watch for %s chat %d: at the limit of %d", b.platform(), chat, maxSubscriptionsPerChat)
+        logging.Info("mini app: rejected watch for %s chat %d: at the limit of %d", platform, chat, maxSubscriptionsPerChat)
         return false, nil
     }
-    if err := addWatch(b, chat, id, ""); err != nil { return false, err }
+    if err := addWatch(platform, chat, id, ""); err != nil { return false, err }
     return true, nil
 }
 
@@ -412,8 +408,8 @@ func appMarket(lang string) app.Market {
 }
 
 // appOptions is the data a Mini App renders: the same functions for the Telegram
-// app and the MAX one, so the two show the same chain. b is the platform the app
-// is on — its watch list, its watch button and its aliases act on that
+// app and the MAX one, so the two show the same chain. platform is the one the
+// app is on — its watch list, its watch button and its aliases act on that
 // platform's watches, and a watch added from it is notified through it.
 //
 // SetAlias names a watch the reader already has — the second step of the app's
@@ -421,7 +417,7 @@ func appMarket(lang string) app.Market {
 // Watches tab's edit dialog calls. An empty alias never reaches it: the page
 // treats it as "leave it alone", so clearing a name is not something a stray
 // tap can do.
-func appOptions(b messenger) app.Options {
+func appOptions(platform string) app.Options {
     return app.Options{
         Fees:       appFees,
         Network:    appNetwork,
@@ -437,13 +433,13 @@ func appOptions(b messenger) app.Options {
             return minerChart(lang, name, data, period, time.Now())
         },
         Mempool:    appMempool,
-        Watches:    func(chat int64) app.Watches { return appWatches(b.platform(), chat) },
-        Watching:   func(chat int64, kind, id string) bool { return watching(b.platform(), chat, id) },
+        Watches:    func(chat int64) app.Watches { return appWatches(platform, chat) },
+        Watching:   func(chat int64, kind, id string) bool { return watching(platform, chat, id) },
         SetWatch: func(chat int64, kind, id string, on bool) (bool, error) {
-            return appSetWatch(b, chat, kind, id, on)
+            return appSetWatch(platform, chat, kind, id, on)
         },
         SetAlias: func(chat int64, kind, id, alias string) (bool, error) {
-            return setAlias(b, chat, id, alias)
+            return setAlias(platform, chat, id, alias)
         },
     }
 }
@@ -490,7 +486,6 @@ func main() {
     if *botToken == "" {
         logging.Fatal("-botToken is required")
     }
-    var bot = newBot(*botToken, *apiBaseURL)
     var err error
     if err = openDB(*dbPath); err != nil {
         logging.Fatal("open database: %v", err)
@@ -499,9 +494,6 @@ func main() {
     rates.Start()
     if *dbuiListen != "" {
         logging.Warn("database UI not started: it speaks bbolt, and the bot's database is SQLite now — run github.com/pin2t/bboltwui against a bbolt file instead")
-    }
-    if *appListen != "" {
-        appSrv = app.Start(*appListen, *botToken, appOptions(bot))
     }
     if *backupPath != "" {
         _, stopBackup = startBackup(*backupPath, *backupInterval, *backupScript)
@@ -518,13 +510,43 @@ func main() {
         }
         logging.Status("connected to Bitcoin Core at %s (height %d)", *coreURL, height)
     }
-    var ms = []messenger{bot}
-    var mb maxMessenger
-    if *maxToken != "" {
-        mb = newMaxMessenger(*maxToken)
-        ms = append(ms, mb)
+    if *registerHook && *webhookURL == "" {
+        logging.Fatal("-webhookURL is required when -registerWebhook=true")
     }
-    startNotify(ms...)
+    if err := telegram.Start(telegram.Options{
+        Token:       *botToken,
+        APIBaseURL:  *apiBaseURL,
+        Listen:      *listenAddr,
+        WebhookPath: *webhookPath,
+        WebhookURL:  *webhookURL,
+        Secret:      *secretToken,
+        Register:    *registerHook,
+        Menus:       menus(),
+        Message:     message,
+        Callback:    callback,
+        AppListen:   *appListen,
+        App:         appOptions(telegram.Platform),
+    }); err != nil {
+        logging.Fatal("Telegram: %v", err)
+    }
+    var platforms = []string{telegram.Platform}
+    if *maxToken != "" {
+        if err := max.Start(max.Options{
+            Token:      *maxToken,
+            Listen:     *maxListen,
+            WebhookURL: *maxWebhookURL,
+            Secret:     *maxSecret,
+            AppListen:  *maxAppListen,
+            App:        appOptions(max.Platform),
+            Message:    message,
+            Callback:   callback,
+            Started:    started,
+        }); err != nil {
+            logging.Fatal("MAX: %v", err)
+        }
+        platforms = append(platforms, max.Platform)
+    }
+    startNotify(platforms...)
     miners.Start()
     startIndexUpdates()
     startMempoolStats()
@@ -533,62 +555,31 @@ func main() {
     startNetworkStats()
     startMarketUpdates()
     if core.Enabled() && *coreZMQ != "" {
-        if err := startZMQ(context.Background(), strings.Split(*coreZMQ, ","), ms...); err != nil {
+        if err := startZMQ(context.Background(), strings.Split(*coreZMQ, ",")); err != nil {
             logging.Fatal("subscribe to Bitcoin Core ZMQ: %v", err)
         }
     }
-    if *registerHook {
-        if *webhookURL == "" {
-            logging.Fatal("-webhookURL is required when -registerWebhook=true")
-        }
-        var ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
-        var err = bot.setWebhook(ctx, *webhookURL, *secretToken)
-        cancel()
-        if err != nil {
-            logging.Fatal("set webhook: %v", err)
-        }
-        logging.Status("webhook registered at %s", *webhookURL)
-        registerMenu(bot)
-    }
-    http.HandleFunc(*webhookPath, webhookHandler(bot))
-    var srv = &http.Server{Addr: *listenAddr}
     var ctx, stop = signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
     defer stop()
-    go func() {
-        logging.Status("listening on %s", *listenAddr)
-        if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-            logging.Fatal("error listening: %v", err)
-        }
-    }()
-    if *maxToken != "" { startMax(mb) }
     <-ctx.Done()
     stop()
-    shutdown(bot, srv)
+    shutdown()
 }
 
-// both before closeDB, so the database is not closed under a copy in flight
-// or a rebuild that is writing to it
-func shutdown(bot *bot, srv *http.Server) {
+// shutdown tears down in dependency order: the webhook servers and the Mini
+// Apps first, waiting for the handlers in flight, since those handlers use the
+// database; then the notifiers and the backup, both before closeDB, so the
+// database is not closed under a copy in flight or a rebuild that is writing
+// to it.
+func shutdown() {
     logging.Status("shutting down")
     var ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
     defer cancel()
-    if err := srv.Shutdown(ctx); err != nil {
-        logging.Err("webhook server shutdown: %v", err)
+    if err := telegram.Shutdown(ctx); err != nil {
+        logging.Err("Telegram shutdown: %v", err)
     }
-    if appSrv != nil {
-        if err := appSrv.Shutdown(ctx); err != nil {
-            logging.Err("mini app shutdown: %v", err)
-        }
-    }
-    if maxSrv != nil {
-        if err := maxSrv.Shutdown(ctx); err != nil {
-            logging.Err("MAX webhook shutdown: %v", err)
-        }
-    }
-    if maxAppSrv != nil {
-        if err := maxAppSrv.Shutdown(ctx); err != nil {
-            logging.Err("MAX mini app shutdown: %v", err)
-        }
+    if err := max.Shutdown(ctx); err != nil {
+        logging.Err("MAX shutdown: %v", err)
     }
     stopNotify()
     if stopBackup != nil { stopBackup() }
@@ -597,66 +588,31 @@ func shutdown(bot *bot, srv *http.Server) {
     }
 }
 
-// callback handles a tapped inline-keyboard button. The button's data is the
-// full id, so the lookup is just /info on it. Telegram leaves the button
-// spinning until the query is answered, so that happens first and regardless of
-// what the lookup does.
-func callback(bot *bot, q *CallbackQuery) {
-    var ctx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
-    if err := bot.answerCallback(ctx, q.ID); err != nil {
-        logging.Warn("answer callback: %v", err)
-    }
-    cancel()
-    if q.Message == nil || q.Data == "" { return }
-    var from = "unknown"
-    if q.From != nil { from = q.From.name() }
-    logMessage(bot, q.Message.Chat.ID, from, q.Data)
-    info(bot, q.Message.Chat.ID, q.Data)
+// message runs a message typed in a chat on a platform — Telegram and MAX both
+// hand theirs here, so a command behaves the same on either. The chat's
+// language is set from the sender's client first, since every reply is
+// translated through it.
+func message(platform string, chat int64, name, text, lang string) {
+    if lang != "" { SetChatLanguage(chat, lang) }
+    logMessage(platform, chat, name, text)
+    dispatch(platform, chat, text)
 }
 
-func webhookHandler(bot *bot) http.HandlerFunc {
-    return func(w http.ResponseWriter, r *http.Request) {
-        if r.Method != http.MethodPost {
-            http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-            return
-        }
-        if *secretToken != "" {
-            var got = r.Header.Get("X-Telegram-Bot-Api-Secret-Token")
-            if subtle.ConstantTimeCompare([]byte(got), []byte(*secretToken)) != 1 {
-                http.Error(w, "unauthorized", http.StatusUnauthorized)
-                return
-            }
-        }
-        defer r.Body.Close()
-        var u Update
-        if err := json.NewDecoder(r.Body).Decode(&u); err != nil {
-            logging.Err("decode update: %v", err)
-            http.Error(w, "bad request", http.StatusBadRequest)
-            return
-        }
-        update(bot, u)
-        w.WriteHeader(http.StatusOK)
-    }
+// callback runs a tapped id button. The button carries the full id, so the
+// lookup is just /info on it.
+func callback(platform string, chat int64, name, id, lang string) {
+    if lang != "" { SetChatLanguage(chat, lang) }
+    logMessage(platform, chat, name, id)
+    info(platform, chat, id)
 }
 
-func update(bot *bot, update Update) {
-    if q := update.CallbackQuery; q != nil {
-        if q.From != nil && q.From.LanguageCode != "" && q.Message != nil {
-            SetChatLanguage(q.Message.Chat.ID, q.From.LanguageCode)
-        }
-        callback(bot, q)
-        return
-    }
-    var msg = update.Message
-    if msg == nil { return }
-    var chat = msg.Chat.ID
-    if msg.From != nil && msg.From.LanguageCode != "" {
-        SetChatLanguage(chat, msg.From.LanguageCode)
-    }
-    var from = "unknown"
-    if msg.From != nil { from = msg.From.name() }
-    logMessage(bot, chat, from, msg.Text)
-    dispatch(bot, chat, msg.Text)
+// started answers the bot being started in a chat — MAX tells of it as an
+// update of its own, where Telegram sends /start as a message — with the start
+// message.
+func started(platform string, chat int64, name, lang string) {
+    if lang != "" { SetChatLanguage(chat, lang) }
+    logMessage(platform, chat, name, "/start")
+    start(platform, chat)
 }
 
 // dispatch runs one incoming message as a command — or, for plain text, as the
@@ -664,35 +620,35 @@ func update(bot *bot, update Update) {
 // MAX both come through here, so a command behaves the same on either; the
 // pending state is keyed by platform as well as chat, since a Telegram chat and a
 // MAX chat may share a number.
-func dispatch(bot messenger, chat int64, text string) {
-    var key = chatKey{bot.platform(), chat}
+func dispatch(platform string, chat int64, text string) {
+    var key = chatKey{platform, chat}
     var command, arg = parseCommand(text)
     switch command {
     case "/start":
-        start(bot, chat)
+        start(platform, chat)
     case "/info":
-        info(bot, chat, arg)
+        info(platform, chat, arg)
     case "/watch":
-        watchCmd(bot, chat, arg)
+        watchCmd(platform, chat, arg)
     case "/unwatch":
-        unwatch(bot, chat, arg)
+        unwatch(platform, chat, arg)
     case "/watches":
-        watchesCmd(bot, chat)
+        watchesCmd(platform, chat)
     case "/fees":
-        fees(bot, chat)
+        fees(platform, chat)
     case "/mempool":
-        mempoolCmd(bot, chat)
+        mempoolCmd(platform, chat)
     case "/miners":
-        minersCmd(bot, chat)
+        minersCmd(platform, chat)
     case "/market":
-        marketCmd(bot, chat)
+        marketCmd(platform, chat)
     case "":
         pendingInfoMu.Lock()
         var pending = pendingInfoChats[key]
         delete(pendingInfoChats, key)
         pendingInfoMu.Unlock()
         if pending {
-            info(bot, chat, text)
+            info(platform, chat, text)
             return
         }
         pendingWatchMu.Lock()
@@ -700,7 +656,7 @@ func dispatch(bot messenger, chat int64, text string) {
         delete(pendingWatchChats, key)
         pendingWatchMu.Unlock()
         if pending {
-            watchCmd(bot, chat, text)
+            watchCmd(platform, chat, text)
             return
         }
         pendingUnwatchMu.Lock()
@@ -708,7 +664,7 @@ func dispatch(bot messenger, chat int64, text string) {
         delete(pendingUnwatchChats, key)
         pendingUnwatchMu.Unlock()
         if pending {
-            unwatch(bot, chat, text)
+            unwatch(platform, chat, text)
         }
     }
 }
@@ -723,17 +679,17 @@ const logLimit = 100
 
 // logMessage logs a message received in chat from name, and remembers the name
 // for what is sent back (logSent).
-func logMessage(bot messenger, chat int64, name, text string) {
-    chatNames.Put(chatKey{bot.platform(), chat}, name)
-    logging.Info("bot (%s) <-- %s (%d): %s", bot.platform(), name, chat, logText(text))
+func logMessage(platform string, chat int64, name, text string) {
+    chatNames.Put(chatKey{platform, chat}, name)
+    logging.Info("bot (%s) <-- %s (%d): %s", platform, name, chat, logText(text))
 }
 
 // logSent logs a message sent to chat, under the name the chat was last heard
 // from as, "unknown" when it has not been since the bot started.
-func logSent(bot messenger, chat int64, text string) {
-    var name, ok = chatNames.Get(chatKey{bot.platform(), chat})
+func logSent(platform string, chat int64, text string) {
+    var name, ok = chatNames.Get(chatKey{platform, chat})
     if !ok { name = "unknown" }
-    logging.Info("bot (%s) --> %s (%d): %s", bot.platform(), name, chat, logText(text))
+    logging.Info("bot (%s) --> %s (%d): %s", platform, name, chat, logText(text))
 }
 
 // logText is a message as one log line: its HTML tags dropped and entities
@@ -775,8 +731,8 @@ var commands = []struct{ name, line string }{
     {"start", "• <b>/start</b> — show this message\n"},
 }
 
-func start(bot messenger, chat int64) {
-    send(bot, chat, startText(chatLang(chat)), nil)
+func start(platform string, chat int64) {
+    send(platform, chat, startText(chatLang(chat)), nil)
 }
 
 // startText is the /start reply in a language, shared by Telegram and MAX.
@@ -795,29 +751,20 @@ func menuDescription(line string) string {
     return strings.TrimSuffix(desc, "\n")
 }
 
-// registerMenu publishes the command menu, once per language. Telegram stores a
-// separate list per language_code and falls back to the list registered without
-// one, so English goes up with an empty code. A failure is logged and skipped —
-// the menu is a convenience and the bot works fine without it.
-func registerMenu(bot *bot) {
+// menus is the command menu Telegram shows beside the input field, one list
+// per language. Telegram stores a separate list per language_code and falls back
+// to the list registered without one, so English goes in under an empty code.
+func menus() map[string][]telegram.Command {
     var langs = []string{""}
     for lang := range langTrans { langs = append(langs, lang) }
-    sort.Strings(langs)
+    var out = map[string][]telegram.Command{}
     for _, lang := range langs {
-        var cmds []map[string]string
         for _, c := range commands {
-            cmds = append(cmds, map[string]string{"command": c.name,
-                "description": menuDescription(langTrans[lang].String(c.line))})
+            out[lang] = append(out[lang], telegram.Command{Command: c.name,
+                Description: menuDescription(langTrans[lang].String(c.line))})
         }
-        var ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
-        var err = bot.setCommands(ctx, cmds, lang)
-        cancel()
-        if err != nil {
-            logging.Err("register command menu (language %q): %v", lang, err)
-            continue
-        }
-        logging.Status("command menu registered: %d commands, language %q", len(cmds), lang)
     }
+    return out
 }
 
 // chatKey names a chat on a platform: the pending-argument maps are keyed by it,
@@ -848,15 +795,15 @@ func atWatchLimit(platform string, chat int64) (bool, error) {
 // or the in-memory list, the notifier goroutine, and the local script/outpoint
 // matcher. /watch and the Mini App's bell both go through here, so a watch added
 // either way behaves identically.
-func addWatch(b messenger, chat int64, target, alias string) error {
+func addWatch(platform string, chat int64, target, alias string) error {
     if app.IsTxID(target) {
-        txwatches.Add(target, b.platform(), chat, alias)
+        txwatches.Add(target, platform, chat, alias)
     } else {
-        if err := watches.Add(b.platform(), chat, target, alias); err != nil { return err }
-        startNotifyChat(b, chat, target, alias)
+        if err := watches.Add(platform, chat, target, alias); err != nil { return err }
+        startNotifyChat(platform, chat, target, alias)
         if core.Enabled() { seedOutpoints([]string{target}) }
     }
-    logging.Info("added subscription %s for %s chat %d (alias %q)", target, b.platform(), chat, alias)
+    logging.Info("added subscription %s for %s chat %d (alias %q)", target, platform, chat, alias)
     return nil
 }
 
@@ -883,14 +830,14 @@ func removeWatch(platform string, chat int64, target string) (bool, error) {
 // restarted rather than only rewritten — otherwise notifications would keep
 // announcing the old name until the next restart. Pending confirmations are
 // renamed too, so one already in flight arrives under the new name.
-func setAlias(b messenger, chat int64, target, alias string) (bool, error) {
-    if app.IsTxID(target) { return txwatches.SetAlias(target, b.platform(), chat, alias) > 0, nil }
-    var renamed, err = watches.SetAlias(b.platform(), chat, target, alias)
+func setAlias(platform string, chat int64, target, alias string) (bool, error) {
+    if app.IsTxID(target) { return txwatches.SetAlias(target, platform, chat, alias) > 0, nil }
+    var renamed, err = watches.SetAlias(platform, chat, target, alias)
     if err != nil { return false, err }
     if renamed == 0 { return false, nil }
-    stopNotifyChat(b.platform(), chat, target)
-    startNotifyChat(b, chat, target, alias)
-    txwatches.SetAddrAlias(target, b.platform(), chat, alias)
+    stopNotifyChat(platform, chat, target)
+    startNotifyChat(platform, chat, target, alias)
+    txwatches.SetAddrAlias(target, platform, chat, alias)
     logging.Info("renamed subscription %s for chat %d (alias %q)", target, chat, alias)
     return true, nil
 }
@@ -915,35 +862,35 @@ func watching(platform string, chat int64, target string) bool {
     return false
 }
 
-func watchCmd(bot messenger, chat int64, arg string) {
+func watchCmd(platform string, chat int64, arg string) {
     if arg == "" {
         pendingWatchMu.Lock()
-        pendingWatchChats[chatKey{bot.platform(), chat}] = true
+        pendingWatchChats[chatKey{platform, chat}] = true
         pendingWatchMu.Unlock()
-        send(bot, chat, i18n(chat).String("Send an address or transaction to watch, optionally followed by an alias — all in one message, e.g. bc1q… John"), nil)
+        send(platform, chat, i18n(chat).String("Send an address or transaction to watch, optionally followed by an alias — all in one message, e.g. bc1q… John"), nil)
         return
     }
     pendingWatchMu.Lock()
-    delete(pendingWatchChats, chatKey{bot.platform(), chat})
+    delete(pendingWatchChats, chatKey{platform, chat})
     pendingWatchMu.Unlock()
     var fields = strings.SplitN(arg, " ", 2)
     var watch = fields[0]
     var alias string
     if len(fields) > 1 { alias = strings.TrimSpace(fields[1]) }
-    var full, err = atWatchLimit(bot.platform(), chat)
+    var full, err = atWatchLimit(platform, chat)
     if err != nil {
         logging.Err("count watches: %v", err)
-        send(bot, chat, i18n(chat).String("Sorry, something went wrong saving that watch"), nil)
+        send(platform, chat, i18n(chat).String("Sorry, something went wrong saving that watch"), nil)
         return
     }
     if full {
         logging.Info("rejected subscription for chat %d: at the limit of %d", chat, maxSubscriptionsPerChat)
-        send(bot, chat, i18n(chat).Sprintf("Sorry, this chat has reached the limit of %d subscriptions. Unwatch something first to add a new one.", maxSubscriptionsPerChat), nil)
+        send(platform, chat, i18n(chat).Sprintf("Sorry, this chat has reached the limit of %d subscriptions. Unwatch something first to add a new one.", maxSubscriptionsPerChat), nil)
         return
     }
-    if err := addWatch(bot, chat, watch, alias); err != nil {
+    if err := addWatch(platform, chat, watch, alias); err != nil {
         logging.Err("add watch: %v", err)
-        send(bot, chat, i18n(chat).String("Sorry, something went wrong saving that watch"), nil)
+        send(platform, chat, i18n(chat).String("Sorry, something went wrong saving that watch"), nil)
         return
     }
     var msg string
@@ -952,59 +899,59 @@ func watchCmd(bot messenger, chat int64, arg string) {
     } else {
         msg = i18n(chat).Sprintf("Watching %s", html.EscapeString(watch))
     }
-    send(bot, chat, msg, nil)
+    send(platform, chat, msg, nil)
 }
 
 var pendingUnwatchMu sync.Mutex
 var pendingUnwatchChats = make(map[chatKey]bool)
 
-func unwatch(bot messenger, chat int64, arg string) {
+func unwatch(platform string, chat int64, arg string) {
     if arg == "" {
         pendingUnwatchMu.Lock()
-        pendingUnwatchChats[chatKey{bot.platform(), chat}] = true
+        pendingUnwatchChats[chatKey{platform, chat}] = true
         pendingUnwatchMu.Unlock()
-        send(bot, chat, i18n(chat).String("Send the watch you'd like to stop in a separate message"), nil)
+        send(platform, chat, i18n(chat).String("Send the watch you'd like to stop in a separate message"), nil)
         return
     }
     pendingUnwatchMu.Lock()
-    delete(pendingUnwatchChats, chatKey{bot.platform(), chat})
+    delete(pendingUnwatchChats, chatKey{platform, chat})
     pendingUnwatchMu.Unlock()
-    var removed, err = removeWatch(bot.platform(), chat, arg)
+    var removed, err = removeWatch(platform, chat, arg)
     if err != nil {
         logging.Err("remove watch: %v", err)
-        send(bot, chat, i18n(chat).String("Sorry, something went wrong removing that watch"), nil)
+        send(platform, chat, i18n(chat).String("Sorry, something went wrong removing that watch"), nil)
         return
     }
     if !removed {
-        send(bot, chat, i18n(chat).Sprintf("You're not watching %s", html.EscapeString(arg)), nil)
+        send(platform, chat, i18n(chat).Sprintf("You're not watching %s", html.EscapeString(arg)), nil)
         return
     }
-    send(bot, chat, i18n(chat).Sprintf("Stopped watching %s", html.EscapeString(arg)), nil)
+    send(platform, chat, i18n(chat).Sprintf("Stopped watching %s", html.EscapeString(arg)), nil)
 }
 
-func watchesCmd(bot messenger, chat int64) {
+func watchesCmd(platform string, chat int64) {
     var records, err = watches.List()
     if err != nil {
         logging.Err("list watches: %v", err)
-        send(bot, chat, i18n(chat).String("Sorry, something went wrong listing your watches"), nil)
+        send(platform, chat, i18n(chat).String("Sorry, something went wrong listing your watches"), nil)
         return
     }
     var addresses, transactions, ids []string
     for _, r := range records {
-        if r.Platform != bot.platform() || r.Chat != chat { continue }
+        if r.Platform != platform || r.Chat != chat { continue }
         ids = append(ids, r.Address)
         var line = "<code>" + html.EscapeString(r.Address) + "</code>"
         if r.Alias != "" { line += " (" + html.EscapeString(r.Alias) + ")" }
         addresses = append(addresses, line)
     }
-    for _, e := range txwatches.For(bot.platform(), chat) {
+    for _, e := range txwatches.For(platform, chat) {
         ids = append(ids, e.Txid)
         var line = "<code>" + html.EscapeString(e.Txid) + "</code>"
         if e.Alias != "" { line += " (" + html.EscapeString(e.Alias) + ")" }
         transactions = append(transactions, line)
     }
     if len(addresses) == 0 && len(transactions) == 0 {
-        send(bot, chat, i18n(chat).String("You're not watching anything yet"), nil)
+        send(platform, chat, i18n(chat).String("You're not watching anything yet"), nil)
         return
     }
     var lines = []string{i18n(chat).String("Your watches:")}
@@ -1016,21 +963,21 @@ func watchesCmd(bot messenger, chat int64) {
         lines = append(lines, "", i18n(chat).String("Transactions:"))
         lines = append(lines, transactions...)
     }
-    send(bot, chat, strings.Join(lines, "\n"), ids)
+    send(platform, chat, strings.Join(lines, "\n"), ids)
 }
 
 const typicalTxVsize = 140
 
-func fees(bot messenger, chat int64) {
+func fees(platform string, chat int64) {
     if !core.Enabled() {
-        send(bot, chat, i18n(chat).String("Bitcoin node connection is not configured"), nil)
+        send(platform, chat, i18n(chat).String("Bitcoin node connection is not configured"), nil)
         return
     }
     feesMu.Lock()
     var rec, ok, count = cachedFees, cachedFeesOK, cachedFeesCount
     feesMu.Unlock()
     if !ok {
-        send(bot, chat, i18n(chat).String("Fee estimates aren't available right now — couldn't read the mempool"), nil)
+        send(platform, chat, i18n(chat).String("Fee estimates aren't available right now — couldn't read the mempool"), nil)
         return
     }
     var tiers = []struct {
@@ -1042,7 +989,9 @@ func fees(bot messenger, chat int64) {
         {i18n(chat).String("Minimum (2+ h):"),      rec.minimum},
     }
     var pad int
-    for _, t := range tiers { pad = max(pad, utf8.RuneCountInString(t.label)+1) }
+    for _, t := range tiers {
+        if n := utf8.RuneCountInString(t.label) + 1; n > pad { pad = n }
+    }
     var price, havePrice = rates.Last()
     var lines []string
     for _, t := range tiers {
@@ -1056,7 +1005,7 @@ func fees(bot messenger, chat int64) {
     if havePrice {
         msg += ". " + i18n(chat).Sprintf("USD for a typical %d vB transaction", typicalTxVsize)
     }
-    send(bot, chat, msg + "\n\n<pre>" + strings.Join(lines, "\n") + "</pre>", nil)
+    send(platform, chat, msg + "\n\n<pre>" + strings.Join(lines, "\n") + "</pre>", nil)
 }
 
 // mempool summary values — total output amount and total fees across the whole
@@ -1345,9 +1294,9 @@ var mempoolSummaryLimit int64 = 20000
 // mempoolCmd replies with the current mempool size and transaction count, plus —
 // when the mempool is small enough to total up in reasonable time — the summed
 // output amount and summed fees of every mempool transaction, in sats and USD.
-func mempoolCmd(bot messenger, chat int64) {
+func mempoolCmd(platform string, chat int64) {
     if !core.Enabled() {
-        send(bot, chat, i18n(chat).String("Bitcoin node connection is not configured"), nil)
+        send(platform, chat, i18n(chat).String("Bitcoin node connection is not configured"), nil)
         return
     }
     var ctx, cancel = context.WithTimeout(context.Background(), 30*time.Second)
@@ -1355,7 +1304,7 @@ func mempoolCmd(bot messenger, chat int64) {
     var info, err = core.GetMempoolInfo(ctx)
     if err != nil {
         logging.Err("get mempool info: %v", err)
-        send(bot, chat, i18n(chat).String("Sorry, something went wrong reading the mempool"), nil)
+        send(platform, chat, i18n(chat).String("Sorry, something went wrong reading the mempool"), nil)
         return
     }
     var pairs = [][2]string{
@@ -1381,7 +1330,7 @@ func mempoolCmd(bot messenger, chat int64) {
             )
         }
     }
-    send(bot, chat, i18n(chat).Sprintf("Mempool\n\n<pre>%s</pre>", joinAlign(pairs)), nil)
+    send(platform, chat, i18n(chat).Sprintf("Mempool\n\n<pre>%s</pre>", joinAlign(pairs)), nil)
 }
 
 // mempoolTotals sums the fee (from the verbose mempool) and the output amount
@@ -1423,10 +1372,10 @@ func mempoolTotals(ctx context.Context) (amount, fee int64, ok bool) {
 // minersCmd replies with the top 10 mining pools by blocks mined over the window
 // the stats collector has processed, each with its total reward, fees, and an
 // estimated power draw (see the miners package).
-func minersCmd(bot messenger, chat int64) {
+func minersCmd(platform string, chat int64) {
     var top = miners.Top(10)
     if len(top) == 0 {
-        send(bot, chat, i18n(chat).String("No miner statistics yet — still collecting"), nil)
+        send(platform, chat, i18n(chat).String("No miner statistics yet — still collecting"), nil)
         return
     }
     var lines []string
@@ -1436,7 +1385,7 @@ func minersCmd(bot messenger, chat int64) {
         lines = append(lines, i18n(chat).Sprintf("%d. %s. %s mined, reward %s BTC, fees %s BTC, consumption %s GW",
             i+1, m.Name, blocks, trimNum(toBTC(m.Reward), 2), trimNum(toBTC(m.Fees), 2), trimNum(m.ConsumptionGW, 1)))
     }
-    send(bot, chat, i18n(chat).String("Top miners by blocks mined:") + "\n\n" + strings.Join(lines, "\n"), nil)
+    send(platform, chat, i18n(chat).String("Top miners by blocks mined:") + "\n\n" + strings.Join(lines, "\n"), nil)
 }
 
 // marketCmd reports the current price, market capitalisation and 24h volume,
@@ -1452,14 +1401,14 @@ func minersCmd(bot messenger, chat int64) {
 // 2009 plus live 5-minute samples — so any period can be answered without
 // another dependency, and the figures stay consistent with the USD values shown
 // elsewhere.
-func marketCmd(bot messenger, chat int64) {
+func marketCmd(platform string, chat int64) {
     var now, haveNow = rates.Last()
     var snapshot, haveSnapshot = rates.LastMarket()
     if haveSnapshot && snapshot.Price > 0 {
         now, haveNow = snapshot.Price, true
     }
     if !haveNow {
-        send(bot, chat, i18n(chat).String("No price data yet — still fetching"), nil)
+        send(platform, chat, i18n(chat).String("No price data yet — still fetching"), nil)
         return
     }
     var pairs = [][2]string{{i18n(chat).String("Price"), price(now)}}
@@ -1494,15 +1443,47 @@ func marketCmd(bot messenger, chat int64) {
         pairs = append(pairs, [2]string{i18n(chat).String("Changes"), ""})
         for _, c := range changes { pairs = append(pairs, c) }
     }
-    send(bot, chat, i18n(chat).Sprintf("Bitcoin market\n\n<pre>%s</pre>", joinAlign(pairs)), nil)
+    send(platform, chat, i18n(chat).Sprintf("Bitcoin market\n\n<pre>%s</pre>", joinAlign(pairs)), nil)
 }
 
-func send(bot messenger, chat int64, text string, ids []string) {
+// send replies in a chat on its platform, with a button for each id the text
+// shows, and logs it. Which ids get a button is decided here, so a message
+// carries the same keyboard on either platform.
+func send(platform string, chat int64, text string, ids []string) {
     var ctx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
     defer cancel()
-    if err := bot.sendWithButtons(ctx, chat, text, ids); err != nil {
+    var buttons = buttonIDs(ids)
+    var err error
+    switch platform {
+    case telegram.Platform:
+        err = telegram.Send(ctx, chat, text, buttons)
+    case max.Platform:
+        err = max.Send(ctx, chat, text, buttons)
+    default:
+        err = fmt.Errorf("unknown platform %q", platform)
+    }
+    if err != nil {
         logging.Err("send message: %v", err)
         return
     }
-    logSent(bot, chat, text)
+    logSent(platform, chat, text)
+}
+
+// maxButtons bounds how many buttons one message carries, so an /info on a
+// transaction with many addresses doesn't bury the message under a keyboard.
+const maxButtons = 8
+
+// buttonIDs picks the ids that get a button, in order: duplicates, empties, the
+// "(non-standard)" placeholder outputs use, and anything over Telegram's
+// 64-byte callback_data are dropped, and at most maxButtons are kept.
+func buttonIDs(ids []string) []string {
+    var seen = map[string]bool{}
+    var out []string
+    for _, id := range ids {
+        if id == "" || id == "(non-standard)" || seen[id] || len(id) > 64 { continue }
+        seen[id] = true
+        out = append(out, id)
+        if len(out) == maxButtons { break }
+    }
+    return out
 }

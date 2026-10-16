@@ -6,7 +6,7 @@
 // renamed a class or dropped a {{template}} call fails the check; one that only
 // rewrote the words passes.
 //
-//	i18n-html ../app/
+//	i18n-html ../telegram/
 //
 // It is the HTML half of what i18n-vet does for the Go string tables: nothing
 // else notices when a copy drifts, because a translated page is a whole second

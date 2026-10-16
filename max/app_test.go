@@ -177,9 +177,9 @@ func serveApp(t *testing.T) (*recorder, *httptest.Server, chan struct{}) {
     return r, srv, closing
 }
 
-// call makes one request with the given launch data and returns the status and
+// request makes one request with the given launch data and returns the status and
 // body.
-func call(t *testing.T, srv *httptest.Server, method, path, initData string, form url.Values) (int, string) {
+func request(t *testing.T, srv *httptest.Server, method, path, initData string, form url.Values) (int, string) {
     t.Helper()
     var body io.Reader
     if form != nil { body = strings.NewReader(form.Encode()) }
@@ -199,15 +199,15 @@ func call(t *testing.T, srv *httptest.Server, method, path, initData string, for
 // that data signed with this bot's token.
 func TestPageIsPublicAndDataIsNot(t *testing.T) {
     var _, srv, _ = serveApp(t)
-    var code, body = call(t, srv, "GET", "/", "", nil)
+    var code, body = request(t, srv, "GET", "/", "", nil)
     if code != http.StatusOK || !strings.Contains(body, `"@maxhub/max-ui": "https://cdn.jsdelivr.net/npm/@maxhub/max-ui@0.6.0/dist/index.js"`) {
         t.Fatalf("page: %d", code)
     }
-    if code, _ = call(t, srv, "GET", "/nothing", "", nil); code != http.StatusNotFound { t.Errorf("/nothing answered %d", code) }
+    if code, _ = request(t, srv, "GET", "/nothing", "", nil); code != http.StatusNotFound { t.Errorf("/nothing answered %d", code) }
     for _, path := range []string{"/api/fees", "/api/blocks", "/api/watches", "/api/tx?id=" + strings.Repeat("a", 64)} {
-        if code, _ = call(t, srv, "GET", path, "", nil); code != http.StatusUnauthorized { t.Errorf("%s without launch data: %d", path, code) }
+        if code, _ = request(t, srv, "GET", path, "", nil); code != http.StatusUnauthorized { t.Errorf("%s without launch data: %d", path, code) }
         var forged = sign("OTHER", map[string]string{"auth_date": strconv.FormatInt(time.Now().Unix(), 10)})
-        if code, _ = call(t, srv, "GET", path, forged, nil); code != http.StatusUnauthorized { t.Errorf("%s with forged launch data: %d", path, code) }
+        if code, _ = request(t, srv, "GET", path, forged, nil); code != http.StatusUnauthorized { t.Errorf("%s with forged launch data: %d", path, code) }
     }
 }
 
@@ -216,13 +216,13 @@ func TestPageIsPublicAndDataIsNot(t *testing.T) {
 func TestAPIAnswersInRussian(t *testing.T) {
     var r, srv, _ = serveApp(t)
     var ld = launch(1)
-    var code, body = call(t, srv, "GET", "/api/fees", ld, nil)
+    var code, body = request(t, srv, "GET", "/api/fees", ld, nil)
     var fees app.Fees
     if code != http.StatusOK || json.Unmarshal([]byte(body), &fees) != nil || !fees.OK || fees.TxCount != "42" { t.Fatalf("fees: %d %s", code, body) }
     for _, path := range []string{"/api/market", "/api/blocks?before=10", "/api/addresses?kind=active&from=15",
         "/api/block?height=5", "/api/address?a=bc1q", "/api/addrtxs?a=bc1q&from=3", "/api/miner?name=Foundry+USA",
         "/api/minerchart?name=Foundry+USA&data=consumption&period=year", "/api/mempool"} {
-        if code, body = call(t, srv, "GET", path, ld, nil); code != http.StatusOK || !strings.HasPrefix(body, "{") { t.Errorf("%s: %d %s", path, code, body) }
+        if code, body = request(t, srv, "GET", path, ld, nil); code != http.StatusOK || !strings.HasPrefix(body, "{") { t.Errorf("%s: %d %s", path, code, body) }
     }
     for name, lang := range r.langs {
         if lang != "ru" { t.Errorf("%s was asked in %q", name, lang) }
@@ -231,8 +231,8 @@ func TestAPIAnswersInRussian(t *testing.T) {
         if r.count(name) != 1 { t.Errorf("%s called %d times", name, r.count(name)) }
     }
     var miner app.Info
-    call(t, srv, "GET", "/api/miner?name=Foundry+USA", ld, nil)
-    _, body = call(t, srv, "GET", "/api/miner?name=Foundry+USA", ld, nil)
+    request(t, srv, "GET", "/api/miner?name=Foundry+USA", ld, nil)
+    _, body = request(t, srv, "GET", "/api/miner?name=Foundry+USA", ld, nil)
     if json.Unmarshal([]byte(body), &miner) != nil || miner.Chart == nil || miner.Chart.Name != "Foundry USA" { t.Errorf("miner page %s", body) }
 }
 
@@ -243,10 +243,10 @@ func TestAPIRefusesNonsense(t *testing.T) {
     var ld = launch(1)
     for _, path := range []string{"/api/block?height=-1", "/api/block?height=x", "/api/tx?id=abc", "/api/tx?id=" + strings.Repeat("g", 64),
         "/api/address?a=", "/api/addrtxs?a=bc1q&from=0", "/api/miner?name=", "/api/minerchart?name="} {
-        if code, _ := call(t, srv, "GET", path, ld, nil); code != http.StatusBadRequest { t.Errorf("%s answered %d", path, code) }
+        if code, _ := request(t, srv, "GET", path, ld, nil); code != http.StatusBadRequest { t.Errorf("%s answered %d", path, code) }
     }
-    call(t, srv, "GET", "/api/addresses?kind=everyone", ld, nil)
-    call(t, srv, "GET", "/api/minerchart?name=x&data=power&period=decade", ld, nil)
+    request(t, srv, "GET", "/api/addresses?kind=everyone", ld, nil)
+    request(t, srv, "GET", "/api/minerchart?name=x&data=power&period=decade", ld, nil)
     if r.count("addresses rich 0") != 1 || r.count("chart blocks month") != 1 { t.Errorf("calls %v", r.calls) }
 }
 
@@ -257,7 +257,7 @@ func TestDetailsCarryTheirWatchKind(t *testing.T) {
     var _, srv, _ = serveApp(t)
     var ld = launch(1)
     var get = func(path string) app.Info {
-        var _, body = call(t, srv, "GET", path, ld, nil)
+        var _, body = request(t, srv, "GET", path, ld, nil)
         var info app.Info
         if err := json.Unmarshal([]byte(body), &info); err != nil { t.Fatalf("%s: %v", path, err) }
         return info
@@ -278,21 +278,21 @@ func TestCacheIsClearedByEvents(t *testing.T) {
     var r, srv, _ = serveApp(t)
     var ld = launch(1)
     for i := 0; i < 2; i++ {
-        call(t, srv, "GET", "/api/fees", ld, nil)
-        call(t, srv, "GET", "/api/block?height=5", ld, nil)
-        call(t, srv, "GET", "/api/blocks?after=9", ld, nil)
-        call(t, srv, "GET", "/api/mempool?after=3", ld, nil)
-        call(t, srv, "GET", "/api/watches", ld, nil)
+        request(t, srv, "GET", "/api/fees", ld, nil)
+        request(t, srv, "GET", "/api/block?height=5", ld, nil)
+        request(t, srv, "GET", "/api/blocks?after=9", ld, nil)
+        request(t, srv, "GET", "/api/mempool?after=3", ld, nil)
+        request(t, srv, "GET", "/api/watches", ld, nil)
     }
     if r.count("fees") != 1 || r.count("block") != 1 { t.Fatalf("cached calls %v", r.calls) }
     if r.count("blocks") != 2 || r.count("mempool 3") != 2 || len(r.chats) != 2 { t.Fatalf("uncached calls %v, watches %d", r.calls, len(r.chats)) }
-    Notify("fees")
-    call(t, srv, "GET", "/api/fees", ld, nil)
-    call(t, srv, "GET", "/api/block?height=5", ld, nil)
+    notify("fees")
+    request(t, srv, "GET", "/api/fees", ld, nil)
+    request(t, srv, "GET", "/api/block?height=5", ld, nil)
     if r.count("fees") != 2 || r.count("block") != 1 { t.Fatalf("after a fees event %v", r.calls) }
-    Notify("blocks")
-    call(t, srv, "GET", "/api/fees", ld, nil)
-    call(t, srv, "GET", "/api/block?height=5", ld, nil)
+    notify("blocks")
+    request(t, srv, "GET", "/api/fees", ld, nil)
+    request(t, srv, "GET", "/api/block?height=5", ld, nil)
     if r.count("fees") != 3 || r.count("block") != 2 { t.Fatalf("after a block %v", r.calls) }
 }
 
@@ -302,19 +302,19 @@ func TestCacheIsClearedByEvents(t *testing.T) {
 func TestWatchesActOnTheDialog(t *testing.T) {
     var r, srv, _ = serveApp(t)
     var ld = launch(376690654)
-    var code, body = call(t, srv, "GET", "/api/watches", ld, nil)
+    var code, body = request(t, srv, "GET", "/api/watches", ld, nil)
     if code != http.StatusOK || !strings.Contains(body, "bc1q376690654") { t.Fatalf("watches: %d %s", code, body) }
-    if _, body = call(t, srv, "GET", "/api/watch?kind=address&id=bc1qon", ld, nil); body != `{"On":true,"Error":false}` { t.Errorf("watching: %s", body) }
-    if _, body = call(t, srv, "GET", "/api/watch?kind=address&id=bc1qoff", ld, nil); body != `{"On":false,"Error":false}` { t.Errorf("not watching: %s", body) }
-    if _, body = call(t, srv, "POST", "/api/watch?kind=tx&id=abc&on=1", ld, nil); body != `{"On":true,"Error":false}` { t.Errorf("set: %s", body) }
-    call(t, srv, "POST", "/api/watch?kind=address&id=bc1qx&on=0", ld, nil)
+    if _, body = request(t, srv, "GET", "/api/watch?kind=address&id=bc1qon", ld, nil); body != `{"On":true,"Error":false}` { t.Errorf("watching: %s", body) }
+    if _, body = request(t, srv, "GET", "/api/watch?kind=address&id=bc1qoff", ld, nil); body != `{"On":false,"Error":false}` { t.Errorf("not watching: %s", body) }
+    if _, body = request(t, srv, "POST", "/api/watch?kind=tx&id=abc&on=1", ld, nil); body != `{"On":true,"Error":false}` { t.Errorf("set: %s", body) }
+    request(t, srv, "POST", "/api/watch?kind=address&id=bc1qx&on=0", ld, nil)
     if strings.Join(r.set, "|") != "376690654 tx abc true|376690654 address bc1qx false" { t.Errorf("SetWatch got %q", r.set) }
-    if code, _ = call(t, srv, "GET", "/api/watch?kind=block&id=5", ld, nil); code != http.StatusBadRequest { t.Errorf("a block was watchable: %d", code) }
+    if code, _ = request(t, srv, "GET", "/api/watch?kind=block&id=5", ld, nil); code != http.StatusBadRequest { t.Errorf("a block was watchable: %d", code) }
     var group = sign(testToken, map[string]string{"auth_date": strconv.FormatInt(time.Now().Unix(), 10), "chat": `{"id":5,"type":"CHAT"}`})
     for _, path := range []string{"/api/watches", "/api/watch?kind=address&id=bc1qon"} {
-        if code, _ = call(t, srv, "GET", path, group, nil); code != http.StatusForbidden { t.Errorf("%s from a group: %d", path, code) }
+        if code, _ = request(t, srv, "GET", path, group, nil); code != http.StatusForbidden { t.Errorf("%s from a group: %d", path, code) }
     }
-    if code, _ = call(t, srv, "POST", "/api/alias", group, url.Values{"kind": {"address"}, "id": {"bc1qx"}, "alias": {"a"}}); code != http.StatusForbidden {
+    if code, _ = request(t, srv, "POST", "/api/alias", group, url.Values{"kind": {"address"}, "id": {"bc1qx"}, "alias": {"a"}}); code != http.StatusForbidden {
         t.Errorf("alias from a group: %d", code)
     }
 }
@@ -324,12 +324,12 @@ func TestWatchesActOnTheDialog(t *testing.T) {
 func TestAlias(t *testing.T) {
     var r, srv, _ = serveApp(t)
     var ld = launch(7)
-    if code, _ := call(t, srv, "GET", "/api/alias", ld, nil); code != http.StatusMethodNotAllowed { t.Errorf("GET answered %d", code) }
-    if code, _ := call(t, srv, "POST", "/api/alias", ld, url.Values{"kind": {"address"}, "id": {"bc1qx"}, "alias": {"  "}}); code != http.StatusNoContent {
+    if code, _ := request(t, srv, "GET", "/api/alias", ld, nil); code != http.StatusMethodNotAllowed { t.Errorf("GET answered %d", code) }
+    if code, _ := request(t, srv, "POST", "/api/alias", ld, url.Values{"kind": {"address"}, "id": {"bc1qx"}, "alias": {"  "}}); code != http.StatusNoContent {
         t.Errorf("empty alias answered %d", code)
     }
     var long = strings.Repeat("я", 70)
-    if code, _ := call(t, srv, "POST", "/api/alias", ld, url.Values{"kind": {"address"}, "id": {"bc1qx"}, "alias": {long}}); code != http.StatusNoContent {
+    if code, _ := request(t, srv, "POST", "/api/alias", ld, url.Values{"kind": {"address"}, "id": {"bc1qx"}, "alias": {long}}); code != http.StatusNoContent {
         t.Errorf("alias answered %d", code)
     }
     if len(r.aliases) != 1 || r.aliases[0] != "7 address bc1qx "+strings.Repeat("я", aliasMax) { t.Errorf("SetAlias got %q", r.aliases) }
@@ -350,7 +350,7 @@ func TestEventStream(t *testing.T) {
         if n > 0 { break }
         if time.Now().After(deadline) { t.Fatal("the stream never subscribed") }
     }
-    Notify("blocks")
+    notify("blocks")
     var lines = bufio.NewReader(resp.Body)
     var first, _ = lines.ReadString('\n')
     var second, _ = lines.ReadString('\n')

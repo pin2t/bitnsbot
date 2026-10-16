@@ -191,11 +191,11 @@ func TestRunOverADirectory(t *testing.T) {
 
 // The repo's own pages are what this exists for.
 func TestAppPagesMatch(t *testing.T) {
-    var want, err = skeleton("../../app/app.html")
+    var want, err = skeleton("../../telegram/app.html")
     if err != nil { t.Fatal(err) }
     var found int
     for _, lang := range []string{"ru", "es"} {
-        var got, err = skeleton("../../app/app." + lang + ".html")
+        var got, err = skeleton("../../telegram/app." + lang + ".html")
         if err != nil { t.Fatal(err) }
         if d := diff(want, got); d != "" {
             t.Errorf("app.%s.html has drifted from app.html:\n%s", lang, d)

@@ -15,7 +15,7 @@ import "bitnsbot/txwatches"
 import "bitnsbot/watches"
 
 // The Mini App's Watches tab is the only per-user thing the app serves, and this
-// is the line that scopes it. The app package's tests run against a fake Options,
+// is the line that scopes it. The Mini App's own tests run against a fake app.Options,
 // so without this one nothing would catch the filter being dropped.
 //
 // the short form is what the row shows, the full id is what its link carries
@@ -61,8 +61,8 @@ func TestAppWatchesAreScopedToTheChat(t *testing.T) {
 // The Mini App's block, transaction, address and miner sections are the bot's
 // own lines, and the reader's language reaches them as an argument rather than
 // through a chat — a page opened from the webview has no chat behind it. Only
-// main can catch a regression here: the app package's tests run against a fake
-// Options, which has no words of its own to translate.
+// main can catch a regression here: the Mini App's own tests run against a fake
+// app.Options, which has no words of its own to translate.
 //
 // the values are translated too, not only the labels: a size carries its
 // unit and an unknown fee distribution says so in words
@@ -397,7 +397,7 @@ func seedAddrList(t *testing.T, kind string, rows map[string]int64) {
 
 // The three lists are ranked by their value, which the bucket is not ordered by
 // — it is keyed by address. This is the line that does the ranking, and it is
-// only reachable from main: the app package's tests page a list that is already
+// only reachable from main: the Mini App's own tests page a list that is already
 // in order.
 //
 // deliberately in an order the bucket's own key order would not produce

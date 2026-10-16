@@ -1,23 +1,24 @@
-package app
+package telegram
 
 import "html"
 import "strconv"
 import "strings"
 import "testing"
+import "bitnsbot/app"
 
 // liveChart mirrors what main's minerChart builds: a bar per day, week or month,
 // the figures formatted, the heights already scaled, and ticks under the first,
 // middle and last bars only. The second bar is zero, so a test can see that an
 // empty bucket is still drawn.
-func liveChart(name, data, period string) Chart {
+func liveChart(name, data, period string) app.Chart {
     var n = 30
     if period == "quarter" { n = 13 }
     if period == "year" { n = 12 }
-    var c = Chart{OK: true, Name: name, Data: data, Period: period, Value: "412 blocks", Label: "last 30 days",
+    var c = app.Chart{OK: true, Name: name, Data: data, Period: period, Value: "412 blocks", Label: "last 30 days",
         Top: "60", Mid: "30"}
     if data == "consumption" { c.Value, c.Top, c.Mid = "2.83 GW", "4", "2" }
     for i := 0; i < n; i++ {
-        var bar = Bar{Height: 71.7, Value: "43 blocks", Label: strconv.Itoa(i+1) + " sep 2026"}
+        var bar = app.Bar{Height: 71.7, Value: "43 blocks", Label: strconv.Itoa(i+1) + " sep 2026"}
         if i == 1 { bar.Height, bar.Value = 0, "0 blocks" }
         if i == 0 || i == n/2 || i == n-1 { bar.Tick = strconv.Itoa(i+1) + " sep" }
         c.Bars = append(c.Bars, bar)

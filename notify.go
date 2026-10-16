@@ -38,13 +38,13 @@ type notifyChans struct {
 var notifyMu sync.Mutex
 var notifies = make(map[notifyKey]notifyChans)
 
-func startNotifyChat(b messenger, chat int64, watch, alias string) {
+func startNotifyChat(platform string, chat int64, watch, alias string) {
     var ch = make(chan notification)
     var stop = make(chan struct{})
     notifyMu.Lock()
-    notifies[notifyKey{b.platform(), chat, watch}] = notifyChans{ch, stop}
+    notifies[notifyKey{platform, chat, watch}] = notifyChans{ch, stop}
     notifyMu.Unlock()
-    go func(b messenger, chat int64, watch, alias string, ch <-chan notification, stop chan struct{}) {
+    go func(platform string, chat int64, watch, alias string, ch <-chan notification, stop chan struct{}) {
         for {
             select {
             case <-stop:
@@ -52,11 +52,11 @@ func startNotifyChat(b messenger, chat int64, watch, alias string) {
             case n := <-ch:
                 var msg, ids, summary, ok = addressNotification(chat, n, watch, alias)
                 if !ok { continue }
-                send(b, chat, msg, ids)
-                txwatches.AddAddrConfirm(n.txid, b.platform(), chat, watch, alias, summary)
+                send(platform, chat, msg, ids)
+                txwatches.AddAddrConfirm(n.txid, platform, chat, watch, alias, summary)
             }
         }
-    }(b, chat, watch, alias, ch, stop)
+    }(platform, chat, watch, alias, ch, stop)
 }
 
 // addressNotification renders the mempool message for a transaction touching a
@@ -327,19 +327,18 @@ func confEstimate(feeRate float64) string {
 
 // startNotify turns every persisted watchCmd back into a live watcher goroutine
 // on startup and, if core is connected, loads the watched addresses into core's
-// transaction filter so notifications resume across restarts. A watch goes to
-// the messenger of its own platform; one whose platform is not running this time
-// (MAX without -maxToken) is left in the store, untouched, for a start that is.
-func startNotify(ms ...messenger) {
+// transaction filter so notifications resume across restarts. Only the watches
+// of the platforms running are started; one whose platform is not running this
+// time (MAX without -maxToken) is left in the store, untouched, for a start
+// that is.
+func startNotify(platforms ...string) {
     var records, err = watches.List()
     if err != nil {
         logging.Err("list watches: %v", err)
         return
     }
     for _, w := range records {
-        for _, m := range ms {
-            if m.platform() == w.Platform { startNotifyChat(m, w.Chat, w.Address, w.Alias) }
-        }
+        if slices.Contains(platforms, w.Platform) { startNotifyChat(w.Platform, w.Chat, w.Address, w.Alias) }
     }
     var addrs = notifyAddresses()
     if core.Enabled() && len(addrs) > 0 {
@@ -405,9 +404,9 @@ func confirmationMessage(chat int64, c txwatches.Confirmed, height int64) (strin
 // getblock (verbosity 1); the fetch is skipped entirely when nothing is watched,
 // so an idle bot pays nothing per block. Runs off core's read-loop goroutine
 // (spawned by notifier.Handle) since it calls back into core. Each confirmation
-// goes out on the messenger of the platform its watch was made on.
-func processConfirms(hash string, ms ...messenger) {
-    if len(ms) == 0 || !core.Enabled() { return }
+// goes out on the platform its watch was made on.
+func processConfirms(hash string) {
+    if !core.Enabled() { return }
     if !txwatches.Any() { return }
     var ctx, cancel = context.WithTimeout(context.Background(), 30*time.Second)
     defer cancel()
@@ -418,9 +417,7 @@ func processConfirms(hash string, ms ...messenger) {
     }
     for _, c := range txwatches.Confirms(blk.Tx) {
         var msg, ids = confirmationMessage(c.ChatID, c, blk.Height)
-        for _, m := range ms {
-            if m.platform() == c.Platform { send(m, c.ChatID, msg, ids) }
-        }
+        send(c.Platform, c.ChatID, msg, ids)
         logging.Info("confirmed watch %s for %s chat %d in block %d", short(c.Txid), c.Platform, c.ChatID, blk.Height)
     }
 }

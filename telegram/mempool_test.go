@@ -1,11 +1,9 @@
-package app
+package telegram
 
-import "context"
 import "net/http/httptest"
 import "strings"
-import "sync"
 import "testing"
-import "time"
+import "bitnsbot/app"
 
 const mpTx1 = "aa000000000000000000000000000000000000000000000000000000000000a1"
 const mpTx2 = "bb000000000000000000000000000000000000000000000000000000000000b2"
@@ -14,23 +12,23 @@ const mpTx3 = "cc000000000000000000000000000000000000000000000000000000000000c3"
 // liveMempool is the page with two arrivals, and what an open page at sequence
 // 7 prepends: one more arrival, one of the listed two mined since, and the
 // fields as they stand now.
-func liveMempool(after int64) Mempool {
+func liveMempool(after int64) app.Mempool {
     if after >= 0 {
-        return Mempool{OK: true, Top: 9, Gone: []string{mpTx1},
-            Rows: []Field{{Label: "Transactions", Value: "36 553"}, {Label: "Flow rate", Value: "4.3 tx/sec"}},
-            Txs: []MempoolTx{{Id: mpTx3, Short: "cc0000...0000c3", Amount: "7 000 sats", At: 1700000009, Ago: "just now"}}}
+        return app.Mempool{OK: true, Top: 9, Gone: []string{mpTx1},
+            Rows: []app.Field{{Label: "Transactions", Value: "36 553"}, {Label: "Flow rate", Value: "4.3 tx/sec"}},
+            Txs: []app.MempoolTx{{Id: mpTx3, Short: "cc0000...0000c3", Amount: "7 000 sats", At: 1700000009, Ago: "just now"}}}
     }
-    return Mempool{OK: true, Top: 7,
-        Rows: []Field{{Label: "Size", Value: "12.5 MB"}, {Label: "Transactions", Value: "36 552"},
+    return app.Mempool{OK: true, Top: 7,
+        Rows: []app.Field{{Label: "Size", Value: "12.5 MB"}, {Label: "Transactions", Value: "36 552"},
             {Label: "Flow rate", Value: "4.2 tx/sec"}, {Label: "Total flow", Value: "~1 234.5 BTC"}},
-        Txs: []MempoolTx{
+        Txs: []app.MempoolTx{
             {Id: mpTx2, Short: "bb0000...0000b2", Amount: "0.25 BTC", At: 1700000005, Ago: "just now"},
             {Id: mpTx1, Short: "aa0000...0000a1", Amount: "12 000 sats", At: 1700000001, Ago: "just now"},
         }}
 }
 
 func mempoolSource() fakeSource {
-    return fakeSource{f: liveFees(), mp: map[int64]Mempool{-1: liveMempool(-1), 7: liveMempool(7)}}
+    return fakeSource{f: liveFees(), mp: map[int64]app.Mempool{-1: liveMempool(-1), 7: liveMempool(7)}}
 }
 
 // The mempool count on the fee card is what opens the page, in every language.
@@ -164,69 +162,5 @@ func TestTxFromMempoolGoesBackToIt(t *testing.T) {
     var w = get(handler(t, "TESTTOKEN", mempoolSource().options()), "/tx?id="+mpTx2+"&from=mempool", freshInitData("TESTTOKEN"))
     if !strings.Contains(w.Body.String(), `<button hx-get="mempool" hx-target="#blocklist" hx-swap="outerHTML">`) {
         t.Errorf("Back does not return to the mempool: %s", w.Body.String())
-    }
-}
-
-// However often the list changes, the stream carries one mempool event per
-// interval — the first at once, the rest folded into one when it is up.
-func TestNotifyThrottlesMempool(t *testing.T) {
-    var saved = throttled["mempool"]
-    throttled["mempool"] = 200 * time.Millisecond
-    t.Cleanup(func() { throttled["mempool"] = saved })
-    throttleMu.Lock()
-    throttleLast, throttlePending = map[string]time.Time{}, map[string]bool{}
-    throttleMu.Unlock()
-    var h = handler(t, "TESTTOKEN", fakeSource{}.options())
-    var r = httptest.NewRequest("GET", "/events", nil)
-    var ctx, cancel = context.WithCancel(r.Context())
-    r = r.WithContext(ctx)
-    var w = httptest.NewRecorder()
-    var done = make(chan struct{})
-    go func() { h.ServeHTTP(w, r); close(done) }()
-    var deadline = time.Now().Add(2 * time.Second)
-    for subscribes() == 0 && time.Now().Before(deadline) {
-        time.Sleep(5 * time.Millisecond)
-    }
-    for i := 0; i < 10; i++ {
-        Notify("mempool")
-        time.Sleep(10 * time.Millisecond)
-    }
-    time.Sleep(350 * time.Millisecond)
-    cancel()
-    <-done
-    if n := strings.Count(w.Body.String(), "event: mempool\n"); n != 2 {
-        t.Errorf("%d mempool events for ten changes inside one interval, want 2: %q", n, w.Body.String())
-    }
-}
-
-// A listener hears what the stream carries — every event, the mempool's
-// throttled the same way — which is what keeps the MAX Mini App's stream in
-// step with this one.
-func TestListenHearsAnnouncedEvents(t *testing.T) {
-    var saved = throttled["mempool"]
-    throttled["mempool"] = 200 * time.Millisecond
-    t.Cleanup(func() { throttled["mempool"] = saved })
-    throttleMu.Lock()
-    throttleLast, throttlePending = map[string]time.Time{}, map[string]bool{}
-    throttleMu.Unlock()
-    var mu sync.Mutex
-    var heard []string
-    var on = true
-    t.Cleanup(func() { mu.Lock(); on = false; mu.Unlock() })
-    Listen(func(event string) {
-        mu.Lock()
-        defer mu.Unlock()
-        if on { heard = append(heard, event) }
-    })
-    Notify("fees")
-    for i := 0; i < 10; i++ {
-        Notify("mempool")
-        time.Sleep(10 * time.Millisecond)
-    }
-    time.Sleep(350 * time.Millisecond)
-    mu.Lock()
-    defer mu.Unlock()
-    if strings.Join(heard, " ") != "fees mempool mempool" {
-        t.Errorf("heard %q, want fees and two mempool events", heard)
     }
 }
