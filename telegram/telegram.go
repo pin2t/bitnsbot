@@ -3,8 +3,8 @@
 //
 // Start is the one way in. Running a command is package main's business, so
 // the webhook hands each update to the handlers main passes in Options, and
-// main replies through Send. The package holds the process's one client, the
-// way core holds its one node.
+// main replies through Send. The package holds the process's one Bot API
+// connection in package variables, the way core holds its one node.
 //
 // The bot runs behind a self-hosted telegram-bot-api server on localhost, which
 // owns the HTTPS conversation with Telegram, so the webhook server here is
@@ -23,7 +23,6 @@ import "net/http"
 import "sort"
 import "strings"
 import "sync"
-import "sync/atomic"
 import "time"
 import "bitnsbot/logging"
 
@@ -71,38 +70,37 @@ type Options struct {
     Callback func(platform string, chat int64, name, data, lang string)
 }
 
-type client struct {
-    token      string
-    baseURL    string
-    httpClient *http.Client
-}
+// mu guards token, baseURL and server: Start sets them while a notifier left
+// over from an earlier start, in the tests, may still be sending.
+var mu sync.Mutex
 
-// current is the client Send posts through, swapped whole by Start so a send
-// already in flight finishes on the client it began with.
-var current atomic.Pointer[client]
+// token authenticates every Bot API call; empty until Start.
+var token string
 
-var serverMu sync.Mutex
+// baseURL is the Bot API server called.
+var baseURL string
+
+// server is the webhook server Start started, nil without one.
 var server *http.Server
 
-// Start makes the client every Send uses, registers the webhook and the menu
-// when asked to, and serves the webhook on Listen. A menu that fails to
+var httpClient = &http.Client{Timeout: 15 * time.Second}
+
+// Start sets the token and the server every call goes to, registers the
+// webhook and the menu when asked to, and serves the webhook on Listen. A menu that fails to
 // register is logged and skipped — the bot works fine without one — and every
 // other failure is returned. An empty WebhookURL would remove the webhook
 // rather than set one, so registering without one is refused. The menu goes up
 // one list per language, in a fixed order.
 func Start(opt Options) error {
-    var c = &client{
-        token:      opt.Token,
-        baseURL:    strings.TrimRight(opt.APIBaseURL, "/"),
-        httpClient: &http.Client{Timeout: 15 * time.Second},
-    }
-    current.Store(c)
+    mu.Lock()
+    token, baseURL = opt.Token, strings.TrimRight(opt.APIBaseURL, "/")
+    mu.Unlock()
     if opt.Register {
         if opt.WebhookURL == "" { return errors.New("registering the webhook needs its URL") }
         var payload = map[string]any{"url": opt.WebhookURL}
         if opt.Secret != "" { payload["secret_token"] = opt.Secret }
         var ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
-        var _, err = c.call(ctx, "setWebhook", payload)
+        var _, err = call(ctx, "setWebhook", payload)
         cancel()
         if err != nil { return fmt.Errorf("set webhook: %w", err) }
         logging.Status("webhook registered at %s", opt.WebhookURL)
@@ -113,7 +111,7 @@ func Start(opt Options) error {
             var menu = map[string]any{"commands": opt.Menus[lang]}
             if lang != "" { menu["language_code"] = lang }
             var mctx, mcancel = context.WithTimeout(context.Background(), 15*time.Second)
-            var _, merr = c.call(mctx, "setMyCommands", menu)
+            var _, merr = call(mctx, "setMyCommands", menu)
             mcancel()
             if merr != nil {
                 logging.Err("register command menu (language %q): %v", lang, merr)
@@ -128,11 +126,11 @@ func Start(opt Options) error {
     var path = opt.WebhookPath
     if path == "" { path = "/" }
     var mux = http.NewServeMux()
-    mux.HandleFunc(path, webhook(c, opt))
+    mux.HandleFunc(path, webhook(opt))
     var srv = &http.Server{Handler: mux}
-    serverMu.Lock()
+    mu.Lock()
     server = srv
-    serverMu.Unlock()
+    mu.Unlock()
     go func() {
         logging.Status("listening on %s", opt.Listen)
         if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
@@ -146,10 +144,10 @@ func Start(opt Options) error {
 // caller can close what those handlers use once it returns. Without a server
 // it does nothing.
 func Shutdown(ctx context.Context) error {
-    serverMu.Lock()
+    mu.Lock()
     var srv = server
     server = nil
-    serverMu.Unlock()
+    mu.Unlock()
     if srv == nil { return nil }
     return srv.Shutdown(ctx)
 }
@@ -165,8 +163,6 @@ func Shutdown(ctx context.Context) error {
 // travels bare: no type prefix, and a tap simply runs /info on it, which
 // classifies it anyway. Choosing which ids get a button is the caller's.
 func Send(ctx context.Context, chat int64, text string, ids []string) error {
-    var c = current.Load()
-    if c == nil { return errors.New("telegram is not started") }
     var payload = map[string]any{"chat_id": chat, "text": text, "parse_mode": "HTML",
         "link_preview_options": map[string]any{"is_disabled": true}}
     var rows [][]map[string]string
@@ -179,7 +175,7 @@ func Send(ctx context.Context, chat int64, text string, ids []string) error {
         }
     }
     if len(rows) > 0 { payload["reply_markup"] = map[string]any{"inline_keyboard": rows} }
-    var _, err = c.call(ctx, "sendMessage", payload)
+    var _, err = call(ctx, "sendMessage", payload)
     return err
 }
 
@@ -190,9 +186,15 @@ func short(s string) string {
     return s[:6] + "..." + s[len(s)-6:]
 }
 
-// call sends one Bot API request. The token is in the URL, so the URL is never
-// logged, and the setWebhook body carries the secret, so it is left out too.
-func (c *client) call(ctx context.Context, method string, payload any) (json.RawMessage, error) {
+// call sends one Bot API request, and fails before Start has set a token. The
+// token is in the URL, so the URL is never logged, and the setWebhook body
+// carries the secret, so it is left out too.
+func call(ctx context.Context, method string, payload any) (json.RawMessage, error) {
+    mu.Lock()
+    var url = fmt.Sprintf("%s/bot%s/%s", baseURL, token, method)
+    var started = token != ""
+    mu.Unlock()
+    if !started { return nil, errors.New("telegram is not started") }
     var buf, err = json.Marshal(payload)
     if err != nil { return nil, err }
     if method == "setWebhook" {
@@ -200,11 +202,10 @@ func (c *client) call(ctx context.Context, method string, payload any) (json.Raw
     } else {
         logging.Net("telegram → %s %s", method, buf)
     }
-    var url = fmt.Sprintf("%s/bot%s/%s", c.baseURL, c.token, method)
     var req, reqErr = http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(buf))
     if reqErr != nil { return nil, reqErr }
     req.Header.Set("Content-Type", "application/json")
-    var resp, doErr = c.httpClient.Do(req)
+    var resp, doErr = httpClient.Do(req)
     if doErr != nil { return nil, doErr }
     defer resp.Body.Close()
     var body, readErr = io.ReadAll(resp.Body)
@@ -280,7 +281,7 @@ type chat struct {
 // carry it, compared in constant time. A tapped button is acknowledged before
 // anything else — Telegram leaves it spinning until the query is answered — and
 // then handed to Callback; a message is handed to Message.
-func webhook(c *client, opt Options) http.HandlerFunc {
+func webhook(opt Options) http.HandlerFunc {
     return func(w http.ResponseWriter, r *http.Request) {
         if r.Method != http.MethodPost {
             http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -302,7 +303,7 @@ func webhook(c *client, opt Options) http.HandlerFunc {
         }
         if q := u.CallbackQuery; q != nil {
             var ctx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
-            if _, err := c.call(ctx, "answerCallbackQuery", map[string]any{"callback_query_id": q.ID}); err != nil {
+            if _, err := call(ctx, "answerCallbackQuery", map[string]any{"callback_query_id": q.ID}); err != nil {
                 logging.Warn("answer callback: %v", err)
             }
             cancel()

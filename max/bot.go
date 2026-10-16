@@ -2,28 +2,18 @@ package max
 
 import "bytes"
 import "context"
+import "errors"
 import "crypto/subtle"
 import "encoding/json"
 import "fmt"
 import "io"
 import "net/http"
-import "net/url"
 import "strings"
-import "time"
 import "bitnsbot/logging"
 
 // updateTypes are the updates the bot subscribes to: a message, a tapped
 // button, and the two events it answers with the start message.
 var updateTypes = []string{"message_created", "message_callback", "bot_started", "bot_added"}
-
-// client is the MAX Bot API client. The token travels in the Authorization
-// header — MAX no longer accepts it as a query parameter — so, unlike the
-// Telegram client, no URL it builds carries a secret.
-type client struct {
-    token      string
-    baseURL    string
-    httpClient *http.Client
-}
 
 // update is MAX's Update object. Which fields are set depends on update_type: a
 // message_created carries Message, a message_callback carries Callback and the
@@ -89,17 +79,14 @@ type body struct {
     Text string `json:"text"`
 }
 
-func newClient(token, baseURL string) *client {
-    return &client{
-        token:      token,
-        baseURL:    strings.TrimRight(baseURL, "/"),
-        httpClient: &http.Client{Timeout: 15 * time.Second},
-    }
-}
-
-// call sends one request to the MAX Bot API and decodes the reply into out.
-// The subscription body carries the secret, so it is never logged.
-func (c *client) call(ctx context.Context, method, path string, payload, out any) error {
+// call sends one request to the MAX Bot API and decodes the reply into out, and
+// fails before Start has set a token. The subscription body carries the secret,
+// so it is never logged.
+func call(ctx context.Context, method, path string, payload, out any) error {
+    mu.Lock()
+    var auth, base = token, baseURL
+    mu.Unlock()
+    if auth == "" { return errors.New("MAX is not started") }
     var buf, err = json.Marshal(payload)
     if err != nil { return err }
     if path == "/subscriptions" {
@@ -107,11 +94,11 @@ func (c *client) call(ctx context.Context, method, path string, payload, out any
     } else {
         logging.Net("max → %s %s %s", method, path, buf)
     }
-    var req, reqErr = http.NewRequestWithContext(ctx, method, c.baseURL+path, bytes.NewReader(buf))
+    var req, reqErr = http.NewRequestWithContext(ctx, method, base+path, bytes.NewReader(buf))
     if reqErr != nil { return reqErr }
     req.Header.Set("Content-Type", "application/json")
-    req.Header.Set("Authorization", c.token)
-    var resp, doErr = c.httpClient.Do(req)
+    req.Header.Set("Authorization", auth)
+    var resp, doErr = httpClient.Do(req)
     if doErr != nil { return doErr }
     defer resp.Body.Close()
     var raw, readErr = io.ReadAll(resp.Body)
@@ -124,36 +111,16 @@ func (c *client) call(ctx context.Context, method, path string, payload, out any
 
 // subscribe registers the webhook with POST /subscriptions. MAX answers 200
 // either way and reports a refusal in the body, so success is read from there.
-func (c *client) subscribe(ctx context.Context, webhookURL, secret string) error {
+func subscribe(ctx context.Context, webhookURL, secret string) error {
     var payload = map[string]any{"url": webhookURL, "update_types": updateTypes}
     if secret != "" { payload["secret"] = secret }
     var res struct {
         Success bool   `json:"success"`
         Message string `json:"message"`
     }
-    if err := c.call(ctx, http.MethodPost, "/subscriptions", payload, &res); err != nil { return err }
+    if err := call(ctx, http.MethodPost, "/subscriptions", payload, &res); err != nil { return err }
     if !res.Success { return fmt.Errorf("subscription refused: %s", res.Message) }
     return nil
-}
-
-// send posts a message with its ids as an inline keyboard of callback buttons,
-// two to a row; see Send.
-func (c *client) send(ctx context.Context, chat int64, text string, ids []string) error {
-    var path = "/messages?" + url.Values{"chat_id": {fmt.Sprint(chat)}}.Encode()
-    var payload = map[string]any{"text": text, "format": "html", "disable_link_preview": true}
-    var keyboard [][]map[string]string
-    for i, id := range ids {
-        var btn = map[string]string{"type": "callback", "text": short(id), "payload": id}
-        if i%2 == 0 {
-            keyboard = append(keyboard, []map[string]string{btn})
-        } else {
-            keyboard[len(keyboard)-1] = append(keyboard[len(keyboard)-1], btn)
-        }
-    }
-    if len(keyboard) > 0 {
-        payload["attachments"] = []any{map[string]any{"type": "inline_keyboard", "payload": map[string]any{"buttons": keyboard}}}
-    }
-    return c.call(ctx, http.MethodPost, path, payload, nil)
 }
 
 // short is an id as the bot's messages print it: the first and last six

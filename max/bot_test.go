@@ -38,26 +38,27 @@ func (f *fakeAPI) server(t *testing.T) *httptest.Server {
 
 func TestSubscribe(t *testing.T) {
     var f = &fakeAPI{response: `{"success":true}`}
-    var c = newClient("MAXTOKEN", f.server(t).URL)
-    if err := c.subscribe(t.Context(), "https://example.org/webhook", "s3cret"); err != nil { t.Fatal(err) }
+    if err := Start(Options{Token: "MAXTOKEN", APIBaseURL: f.server(t).URL}); err != nil { t.Fatal(err) }
+    if err := subscribe(t.Context(), "https://example.org/webhook", "s3cret"); err != nil { t.Fatal(err) }
     if f.paths[0] != "/subscriptions" || f.auths[0] != "MAXTOKEN" { t.Fatalf("got %s with auth %q", f.paths[0], f.auths[0]) }
     if f.bodies[0]["url"] != "https://example.org/webhook" || f.bodies[0]["secret"] != "s3cret" { t.Fatalf("body %v", f.bodies[0]) }
     var types, _ = json.Marshal(f.bodies[0]["update_types"])
     if string(types) != `["message_created","message_callback","bot_started","bot_added"]` { t.Fatalf("update_types %s", types) }
-    if err := c.subscribe(t.Context(), "https://example.org/webhook", ""); err != nil { t.Fatal(err) }
+    if err := subscribe(t.Context(), "https://example.org/webhook", ""); err != nil { t.Fatal(err) }
     if _, ok := f.bodies[1]["secret"]; ok { t.Fatalf("secret sent although none is set: %v", f.bodies[1]) }
 }
 
 func TestSubscribeRefused(t *testing.T) {
     var f = &fakeAPI{response: `{"success":false,"message":"bad url"}`}
-    var err = newClient("MAXTOKEN", f.server(t).URL).subscribe(t.Context(), "http://x", "")
+    if err := Start(Options{Token: "MAXTOKEN", APIBaseURL: f.server(t).URL}); err != nil { t.Fatal(err) }
+    var err = subscribe(t.Context(), "http://x", "")
     if err == nil || !strings.Contains(err.Error(), "bad url") { t.Fatalf("got %v", err) }
 }
 
 // The ids become one inline keyboard of callback buttons, two to a row, each
 // labelled with the shortened id and carrying the full id as its payload, and a
-// message with none carries no keyboard at all. Send goes through the client
-// Start made.
+// message with none carries no keyboard at all. Send goes to the API and with
+// the token Start set.
 func TestSendButtons(t *testing.T) {
     var f = &fakeAPI{}
     if err := Start(Options{Token: "MAXTOKEN", APIBaseURL: f.server(t).URL}); err != nil { t.Fatal(err) }

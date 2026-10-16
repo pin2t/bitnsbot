@@ -6,7 +6,8 @@
 // the webhook hands each update to the handlers main passes in Options, the
 // Mini App reads its chain data through the same app.Options functions the
 // Telegram Mini App does, and main replies through Send. The package holds the
-// process's one client, the way core holds its one node.
+// process's one Bot API connection in package variables, the way core holds
+// its one node.
 package max
 
 import "context"
@@ -15,8 +16,8 @@ import "fmt"
 import "net"
 import "net/http"
 import "net/url"
+import "strings"
 import "sync"
-import "sync/atomic"
 import "time"
 import "bitnsbot/app"
 import "bitnsbot/logging"
@@ -60,26 +61,37 @@ type Options struct {
     Started func(platform string, chat int64, name, lang string)
 }
 
-// current is the client Send posts through, swapped whole by Start so a send
-// already in flight finishes on the client it began with.
-var current atomic.Pointer[client]
+// mu guards token, baseURL, hookSrv and appSrv: Start sets them while a
+// notifier left over from an earlier start, in the tests, may still be sending.
+var mu sync.Mutex
 
-var serversMu sync.Mutex
+// token authenticates every Bot API call; empty until Start. It travels in the
+// Authorization header, so no URL carries it.
+var token string
+
+// baseURL is the Bot API called.
+var baseURL string
+
+// hookSrv and appSrv are the webhook server and the Mini App Start started,
+// nil for one it did not.
 var hookSrv *http.Server
 var appSrv *http.Server
 
-// Start makes the client every Send uses, serves the webhook on Listen,
-// subscribes WebhookURL, and starts the Mini App on AppListen. A failed
+var httpClient = &http.Client{Timeout: 15 * time.Second}
+
+// Start sets the token and the API every call goes to, serves the webhook on
+// Listen, subscribes WebhookURL, and starts the Mini App on AppListen. A failed
 // subscription is logged rather than returned: the bot still runs on Telegram,
 // and a restart retries it.
 //
 // The Mini App shows what the Telegram one does, so it hears of the same
 // changes the moment that one does.
 func Start(opt Options) error {
-    var base = opt.APIBaseURL
+    var base = strings.TrimRight(opt.APIBaseURL, "/")
     if base == "" { base = apiURL }
-    var c = newClient(opt.Token, base)
-    current.Store(c)
+    mu.Lock()
+    token, baseURL = opt.Token, base
+    mu.Unlock()
     if opt.Listen != "" {
         var hookURL, err = url.Parse(opt.WebhookURL)
         if err != nil { return fmt.Errorf("webhook URL: %w", err) }
@@ -90,9 +102,9 @@ func Start(opt Options) error {
         var mux = http.NewServeMux()
         mux.HandleFunc(path, webhook(opt))
         var srv = &http.Server{Handler: mux}
-        serversMu.Lock()
+        mu.Lock()
         hookSrv = srv
-        serversMu.Unlock()
+        mu.Unlock()
         go func() {
             logging.Status("MAX webhook listening on %s%s", opt.Listen, path)
             if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
@@ -102,7 +114,7 @@ func Start(opt Options) error {
     }
     if opt.WebhookURL != "" {
         var ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
-        var err = c.subscribe(ctx, opt.WebhookURL, opt.Secret)
+        var err = subscribe(ctx, opt.WebhookURL, opt.Secret)
         cancel()
         if err != nil {
             logging.Err("MAX subscribe: %v", err)
@@ -113,9 +125,9 @@ func Start(opt Options) error {
     if opt.AppListen != "" {
         app.Listen(notify)
         var srv = startApp(opt.AppListen, opt.Token, opt.App)
-        serversMu.Lock()
+        mu.Lock()
         appSrv = srv
-        serversMu.Unlock()
+        mu.Unlock()
     }
     return nil
 }
@@ -124,10 +136,10 @@ func Start(opt Options) error {
 // requests in flight, so a caller can close what they use once it returns. A
 // server Start did not start is skipped.
 func Shutdown(ctx context.Context) error {
-    serversMu.Lock()
+    mu.Lock()
     var hook, page = hookSrv, appSrv
     hookSrv, appSrv = nil, nil
-    serversMu.Unlock()
+    mu.Unlock()
     var errs []error
     if hook != nil {
         if err := hook.Shutdown(ctx); err != nil { errs = append(errs, fmt.Errorf("webhook: %w", err)) }
@@ -146,7 +158,19 @@ func Shutdown(ctx context.Context) error {
 // with no ids carries no keyboard at all. Choosing which ids get a button is the
 // caller's.
 func Send(ctx context.Context, chat int64, text string, ids []string) error {
-    var c = current.Load()
-    if c == nil { return errors.New("MAX is not started") }
-    return c.send(ctx, chat, text, ids)
+    var path = "/messages?" + url.Values{"chat_id": {fmt.Sprint(chat)}}.Encode()
+    var payload = map[string]any{"text": text, "format": "html", "disable_link_preview": true}
+    var keyboard [][]map[string]string
+    for i, id := range ids {
+        var btn = map[string]string{"type": "callback", "text": short(id), "payload": id}
+        if i%2 == 0 {
+            keyboard = append(keyboard, []map[string]string{btn})
+        } else {
+            keyboard[len(keyboard)-1] = append(keyboard[len(keyboard)-1], btn)
+        }
+    }
+    if len(keyboard) > 0 {
+        payload["attachments"] = []any{map[string]any{"type": "inline_keyboard", "payload": map[string]any{"buttons": keyboard}}}
+    }
+    return call(ctx, http.MethodPost, path, payload, nil)
 }

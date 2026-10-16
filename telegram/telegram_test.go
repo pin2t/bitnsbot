@@ -66,7 +66,8 @@ func post(t *testing.T, h http.HandlerFunc, secret, update string) int {
 func TestWebhookRoutesUpdates(t *testing.T) {
     var f = &fakeAPI{}
     var c = &called{}
-    var h = webhook(&client{token: "T", baseURL: f.server(t).URL, httpClient: http.DefaultClient}, c.options(""))
+    if err := Start(Options{Token: "T", APIBaseURL: f.server(t).URL}); err != nil { t.Fatal(err) }
+    var h = webhook(c.options(""))
     var updates = []string{
         `{"message":{"chat":{"id":42},"from":{"username":"alice","first_name":"Alice","language_code":"ru"},"text":"/start"}}`,
         `{"message":{"chat":{"id":7},"from":{"first_name":"Bob"},"text":"hi"}}`,
@@ -88,7 +89,7 @@ func TestWebhookRoutesUpdates(t *testing.T) {
 
 func TestWebhookChecksSecret(t *testing.T) {
     var c = &called{}
-    var h = webhook(&client{}, c.options("s3cret"))
+    var h = webhook(c.options("s3cret"))
     var update = `{"message":{"chat":{"id":1},"text":"/fees"}}`
     for _, tc := range []struct{ secret string; code, handled int }{{"", 401, 0}, {"wrong", 401, 0}, {"s3cret", 200, 1}} {
         if code := post(t, h, tc.secret, update); code != tc.code || len(c.what) != tc.handled {
