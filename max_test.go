@@ -61,7 +61,7 @@ func (f *fakeMax) lastText(t *testing.T) string {
 func TestMaxBotStartedSendsStart(t *testing.T) {
     var f = &fakeMax{}
     useMax(t, f)
-    started("max", 376690654, "Илья", "ru")
+    started("max", 376690654, "Илья", "ru", nil)
     if len(f.paths) != 1 || f.paths[0] != "/messages?chat_id=376690654" { t.Fatalf("requests %v", f.paths) }
     if f.bodies[0]["text"] != startText("ru") || f.bodies[0]["format"] != "html" { t.Fatalf("body %v", f.bodies[0]) }
     if startText("ru") == startText("") { t.Fatal("start text is not translated") }
@@ -126,22 +126,22 @@ func TestMaxWatchesAreScopedToThePlatform(t *testing.T) {
     useMax(t, f)
     var addr = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
     var txid = strings.Repeat("c", 64)
-    message("max", 5, "", "/watch "+addr+" Genesis", "en")
+    message("max", 5, "", "/watch "+addr+" Genesis", "en", nil)
     if !strings.Contains(f.lastText(t), "Watching "+addr+" (Genesis)") { t.Fatalf("reply %q", f.lastText(t)) }
-    message("max", 5, "", "/watch", "en")
+    message("max", 5, "", "/watch", "en", nil)
     if !pendingWatchChats[chatKey{"max", 5}] || pendingWatchChats[chatKey{"tg", 5}] { t.Fatal("pending is not MAX's") }
-    message("max", 5, "", txid, "en")
+    message("max", 5, "", txid, "en", nil)
     var list, err = watches.List()
     if err != nil { t.Fatal(err) }
     if len(list) != 1 || list[0].Platform != "max" || list[0].Chat != 5 { t.Fatalf("stored %+v", list) }
     if e := txwatches.For("max", 5); len(e) != 1 || e[0].Txid != txid { t.Fatalf("tx watches %+v", e) }
-    message("tg", 5, "", "/watches", "")
+    message("tg", 5, "", "/watches", "", nil)
     if tgSent[len(tgSent)-1] != "You're not watching anything yet" { t.Fatalf("Telegram listed %q", tgSent[len(tgSent)-1]) }
-    message("tg", 5, "", "/unwatch "+addr, "")
+    message("tg", 5, "", "/unwatch "+addr, "", nil)
     if !strings.Contains(tgSent[len(tgSent)-1], "not watching") { t.Fatalf("Telegram unwatched: %q", tgSent[len(tgSent)-1]) }
-    message("max", 5, "", "/watches", "en")
+    message("max", 5, "", "/watches", "en", nil)
     if !strings.Contains(f.lastText(t), addr) || !strings.Contains(f.lastText(t), txid) { t.Fatalf("MAX listed %q", f.lastText(t)) }
-    message("max", 5, "", "/unwatch "+addr, "en")
+    message("max", 5, "", "/unwatch "+addr, "en", nil)
     if !strings.Contains(f.lastText(t), "Stopped watching") { t.Fatalf("MAX unwatched: %q", f.lastText(t)) }
     if list, _ = watches.List(); len(list) != 0 { t.Fatalf("left %+v", list) }
 }

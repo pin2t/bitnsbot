@@ -182,12 +182,12 @@ func TestUnwatchFlow(t *testing.T) {
     openDB(filepath.Join(t.TempDir(), "watches.db"))
     defer closeDB()
     var addr = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
-    message("tg", 1, "", "/watch " + addr, "")
-    message("tg", 2, "", "/watch " + addr, "")
+    message("tg", 1, "", "/watch " + addr, "", nil)
+    message("tg", 2, "", "/watch " + addr, "", nil)
     if countWatchers(addr) != 2 {
         t.Fatalf("expected 2 watchers, got %d", countWatchers(addr))
     }
-    message("tg", 2, "", "/unwatch " + addr, "")
+    message("tg", 2, "", "/unwatch " + addr, "", nil)
     if sent[len(sent)-1] != "Stopped watching "+addr {
         t.Fatalf("unexpected unwatch reply: %#v", sent)
     }
@@ -198,15 +198,15 @@ func TestUnwatchFlow(t *testing.T) {
     if len(records) != 1 || records[0].Chat != 1 {
         t.Fatalf("expected only chat 1's record in store, got %#v", records)
     }
-    message("tg", 1, "", "/unwatch bogusaddr", "")
+    message("tg", 1, "", "/unwatch bogusaddr", "", nil)
     if sent[len(sent)-1] != "You're not watching bogusaddr" {
         t.Fatalf("unexpected not-watching reply: %q", sent[len(sent)-1])
     }
-    message("tg", 1, "", "/unwatch", "")
+    message("tg", 1, "", "/unwatch", "", nil)
     if !pendingUnwatchChats[chatKey{"tg", 1}] {
         t.Fatalf("expected chat 1 pending for unwatch")
     }
-    message("tg", 1, "", addr, "")
+    message("tg", 1, "", addr, "", nil)
     if sent[len(sent)-1] != "Stopped watching "+addr {
         t.Fatalf("expected follow-up to remove chat 1's watch, got: %q", sent[len(sent)-1])
     }
@@ -241,7 +241,7 @@ func TestWatchesFlow(t *testing.T) {
     defer closeDB()
     stopNotify()
     defer stopNotify()
-    message("tg", 1, "", "/watches", "")
+    message("tg", 1, "", "/watches", "", nil)
     if sent[len(sent)-1] != "You're not watching anything yet" {
         t.Fatalf("unexpected empty reply: %q", sent[len(sent)-1])
     }
@@ -250,7 +250,7 @@ func TestWatchesFlow(t *testing.T) {
     watches.Add("tg", 1, addr, "")
     txwatches.Add(txid, "tg", 1, "")
     watches.Add("tg", 2, "someoneElsesAddress", "")
-    message("tg", 1, "", "/watches", "")
+    message("tg", 1, "", "/watches", "", nil)
     var msg = sent[len(sent)-1]
     if !strings.Contains(msg, "<code>"+addr+"</code>") {
         t.Fatalf("expected full address in <code>, got: %q", msg)
@@ -265,7 +265,7 @@ func TestWatchesFlow(t *testing.T) {
         t.Fatalf("must not list another chat's watch: %q", msg)
     }
     watches.Add("tg", 3, "a<b>c", "")
-    message("tg", 3, "", "/watches", "")
+    message("tg", 3, "", "/watches", "", nil)
     if last := sent[len(sent)-1]; !strings.Contains(last, "a&lt;b&gt;c") {
         t.Fatalf("expected HTML-escaped watch id, got: %q", last)
     }

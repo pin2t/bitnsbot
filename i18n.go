@@ -3,7 +3,7 @@ package main
 import "fmt"
 import "strings"
 import "time"
-import "bitnsbot/lru"
+import "bitnsbot/chats"
 
 // trans holds translations for a single language, mapping English source strings
 // to translated strings. A nil or empty trans is valid and falls back to the
@@ -455,26 +455,13 @@ var langTrans = map[string]trans{
 	// i18n-vet:end translation
 }
 
-// chatLangs is an LRU cache of chat ID → language code, bounded to prevent
-// unbounded growth from one-off chats.
-var chatLangs = lru.New[int64, string](10000)
+// chatLang is the language a chat's client last reported, "" when it never has
+// — kept by the chats package, so it survives a restart.
+func chatLang(platform string, chat int64) string { return chats.Language(platform, chat) }
 
-// SetChatLanguage sets the language for a specific chat.
-func SetChatLanguage(chatID int64, lang string) {
-	chatLangs.Put(chatID, lang)
-}
-
-// chatLang is the language Telegram last reported for a chat, "" when it has
-// never sent one.
-func chatLang(chatID int64) string {
-    var lang, _ = chatLangs.Get(chatID)
-    return lang
-}
-
-// i18n returns the trans for the given chat's language, or nil when the
-// language is "en" (the default). Sprintf and String fall back to the original
-// English string when trans is nil or the key is missing.
-func i18n(chatID int64) trans { return i18nl(chatLang(chatID)) }
+// i18n returns the trans for a chat's language. Sprintf and String fall back to
+// the original English string when the key is missing.
+func i18n(platform string, chat int64) trans { return i18nl(chatLang(platform, chat)) }
 
 // i18nl is the same lookup by language code rather than by chat, and is what the
 // Mini App translates through: its reader's language arrives with the request

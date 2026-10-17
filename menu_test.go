@@ -21,7 +21,7 @@ func TestMenuMatchesStart(t *testing.T) {
     }))
     defer server.Close()
     useTelegram(t, server.URL)
-    message("tg", 1, "", "/start", "")
+    message("tg", 1, "", "/start", "", nil)
     if len(sent) != 1 {
         t.Fatalf("expected one /start reply, got %#v", sent)
     }

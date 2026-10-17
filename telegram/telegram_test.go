@@ -39,18 +39,20 @@ func (f *fakeAPI) server(t *testing.T) *httptest.Server {
 type called struct {
     mu   sync.Mutex
     what []string
+    bodies []string
 }
 
 func (c *called) options(secret string) Options {
-    var add = func(s string) {
+    var add = func(s string, body []byte) {
         c.mu.Lock()
         c.what = append(c.what, s)
+        c.bodies = append(c.bodies, string(body))
         c.mu.Unlock()
     }
     return Options{
         Secret:   secret,
-        Message:  func(platform string, chat int64, name, text, lang string) { add(platform + " message " + strconv.FormatInt(chat, 10) + " " + name + " " + text + " " + lang) },
-        Callback: func(platform string, chat int64, name, data, lang string) { add(platform + " callback " + strconv.FormatInt(chat, 10) + " " + name + " " + data + " " + lang) },
+        Message:  func(platform string, chat int64, name, text, lang string, body []byte) { add(platform + " message " + strconv.FormatInt(chat, 10) + " " + name + " " + text + " " + lang, body) },
+        Callback: func(platform string, chat int64, name, data, lang string, body []byte) { add(platform + " callback " + strconv.FormatInt(chat, 10) + " " + name + " " + data + " " + lang, body) },
     }
 }
 
@@ -66,7 +68,8 @@ func postUpdate(t *testing.T, h http.HandlerFunc, secret, update string) int {
 // A message reaches Message with its chat, the sender named by username, else
 // first name, else "unknown", and their client's language. A tapped button is
 // answered before anything else and then reaches Callback; one with no message
-// or no data is answered and goes no further.
+// or no data is answered and goes no further. Each handler is given the update
+// exactly as it was posted.
 func TestWebhookRoutesUpdates(t *testing.T) {
     var f = &fakeAPI{}
     var c = &called{}
@@ -85,6 +88,7 @@ func TestWebhookRoutesUpdates(t *testing.T) {
     }
     var want = []string{"tg message 42 alice /start ru", "tg message 7 Bob hi ", "tg message 9 unknown anon ", "tg callback 5 carol 100 es"}
     if strings.Join(c.what, "|") != strings.Join(want, "|") { t.Fatalf("handled\n %q\nwant %q", c.what, want) }
+    if strings.Join(c.bodies, "|") != strings.Join(updates[:4], "|") { t.Fatalf("bodies\n %q\nwant %q", c.bodies, updates[:4]) }
     if len(f.methods) != 2 || f.methods[0] != "/botT/answerCallbackQuery" || f.bodies[0]["callback_query_id"] != "q1" || f.bodies[1]["callback_query_id"] != "q2" {
         t.Fatalf("answered %v %v", f.methods, f.bodies)
     }
