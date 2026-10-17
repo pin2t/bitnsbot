@@ -219,7 +219,6 @@ func invalidateAll() {
 // its own; two concurrent misses simply render the same bytes twice, which is
 // cheaper than serialising every request behind one mutex.
 func cached(c *lru.Cache[string, []byte], w http.ResponseWriter, r *http.Request, render func(string) []byte) {
-    var started = time.Now().UnixNano()
     var lang = language(r)
     cacheMu.Lock()
     var b, hit = c.Get(key(lang, r.RequestURI))
@@ -236,10 +235,8 @@ func cached(c *lru.Cache[string, []byte], w http.ResponseWriter, r *http.Request
     }
     w.Header().Set("Content-Type", "text/html; charset=utf-8")
     w.Header().Set("Content-Language", lang)
+    if hit { app.Hit(w) }
     w.Write(b)
-    var m = ""
-    if hit { m = "[cached]" }
-    logging.Info("mini app: %s %s [%s] [%.2f ms] %s", r.Method, r.RequestURI, lang, float64(time.Now().UnixNano() - started) / 1e6, m)
 }
 
 func render(lang, name string, data any) []byte {
@@ -536,7 +533,8 @@ func chatOf(initData string) int64 {
 // drain it before the caller closes anything it depends on. token is the bot
 // token, used only to verify initData. Bind addr to localhost: the page reaches
 // the outside world through the Cloudflare tunnel, which is what faces the
-// network — nothing here should be exposed directly.
+// network — nothing here should be exposed directly. Every request is logged
+// through app.Log, in the language it is answered in.
 //
 // Closed when the server begins shutting down, which is what lets the open
 // event streams return. Per-server rather than package-level: a second
@@ -680,7 +678,6 @@ func startApp(addr, token string, opt app.Options) *http.Server {
         cached(blocksCache, w, r, func(lang string) []byte { return render(lang, "blockrows", opt.Blocks(lang, app.Range{Before: before})) })
     }))
     mux.HandleFunc("/newblocks", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
-        var started = time.Now().UnixNano()
         var after = heightOf(r, "after")
         if after <= 0 {
             http.Error(w, "no such block", http.StatusBadRequest)
@@ -699,7 +696,6 @@ func startApp(addr, token string, opt app.Options) *http.Server {
         }
         w.Header().Set("Content-Type", "text/html; charset=utf-8")
         w.Write(b)
-        logging.Info("mini app: %s %s [%.2f ms]", r.Method, r.RequestURI, float64(time.Now().UnixNano() - started) / 1e6)
     }))
     mux.HandleFunc("/block", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
         var height, err = strconv.ParseInt(r.URL.Query().Get("height"), 10, 64)
@@ -727,7 +723,6 @@ func startApp(addr, token string, opt app.Options) *http.Server {
         details(w, r, blocksSlot, back, swap, "tx", id, func(lang string) app.Info { return opt.TxInfo(lang, id) })
     }))
     mux.HandleFunc("/mempool", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
-        var started = time.Now().UnixNano()
         var lang = language(r)
         var to = r.URL.Query().Get("from")
         if !isPanel(to) { to = "home" }
@@ -735,10 +730,9 @@ func startApp(addr, token string, opt app.Options) *http.Server {
         mp.Lang, mp.Back = lang, "blocks?to="+to
         w.Header().Set("HX-Retarget", "#"+blocksSlot)
         w.Header().Set("HX-Trigger", showtab(tabOf(blocksSlot)))
-        uncached(w, r, started, lang, "mempool", mp)
+        uncached(w, lang, "mempool", mp)
     }))
     mux.HandleFunc("/newmempool", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
-        var started = time.Now().UnixNano()
         var after, err = strconv.ParseInt(r.URL.Query().Get("after"), 10, 64)
         if err != nil || after < 0 {
             http.Error(w, "no such transaction", http.StatusBadRequest)
@@ -751,7 +745,7 @@ func startApp(addr, token string, opt app.Options) *http.Server {
             w.Header().Set("HX-Retarget", "#mplist")
             w.Header().Set("HX-Reswap", "innerHTML")
         }
-        uncached(w, r, started, lang, "newmempool", mp)
+        uncached(w, lang, "newmempool", mp)
     }))
     mux.HandleFunc("/miner", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
         var name = strings.TrimSpace(r.URL.Query().Get("name"))
@@ -822,7 +816,6 @@ func startApp(addr, token string, opt app.Options) *http.Server {
         })
     }))
     mux.HandleFunc("/watches", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
-        var started = time.Now().UnixNano()
         var b = render(language(r), "watches", opt.Watches(chatOf(r.Header.Get("X-Telegram-Init-Data"))))
         if b == nil {
             http.Error(w, "internal server error", http.StatusInternalServerError)
@@ -830,10 +823,8 @@ func startApp(addr, token string, opt app.Options) *http.Server {
         }
         w.Header().Set("Content-Type", "text/html; charset=utf-8")
         w.Write(b)
-        logging.Info("mini app: %s %s [%.2f ms]", r.Method, r.RequestURI, float64(time.Now().UnixNano() - started) / 1e6)
     }))
     mux.HandleFunc("/watch", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
-        var started = time.Now().UnixNano()
         var kind = r.URL.Query().Get("kind")
         var id = strings.TrimSpace(r.URL.Query().Get("id"))
         if kind == "" { kind = r.PostFormValue("kind") }
@@ -864,10 +855,8 @@ func startApp(addr, token string, opt app.Options) *http.Server {
         }
         w.Header().Set("Content-Type", "text/html; charset=utf-8")
         w.Write(b)
-        logging.Info("mini app: %s %s [%.2f ms]", r.Method, r.RequestURI, float64(time.Now().UnixNano() - started) / 1e6)
     }))
     mux.HandleFunc("/alias", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
-        var started = time.Now().UnixNano()
         if r.Method != http.MethodPost {
             http.Error(w, "post an alias", http.StatusMethodNotAllowed)
             return
@@ -891,7 +880,6 @@ func startApp(addr, token string, opt app.Options) *http.Server {
         }
         w.Header().Set("HX-Trigger", trigger(map[string]any{"watchtab": ""}))
         w.WriteHeader(http.StatusNoContent)
-        logging.Info("mini app: %s %s [%.2f ms]", r.Method, r.RequestURI, float64(time.Now().UnixNano() - started) / 1e6)
     }))
     mux.HandleFunc("/search", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
         var q = strings.TrimSpace(r.URL.Query().Get("q"))
@@ -910,7 +898,7 @@ func startApp(addr, token string, opt app.Options) *http.Server {
             http.Redirect(w, r, "address?a="+url.QueryEscape(q)+"&from="+from, http.StatusSeeOther)
         }
     }))
-    var srv = &http.Server{Addr: addr, Handler: mux}
+    var srv = &http.Server{Addr: addr, Handler: app.Log("mini app", mux, language)}
     srv.RegisterOnShutdown(func() { close(closing) })
     go func() {
         logging.Status("mini app listening on %s", addr)
@@ -923,7 +911,7 @@ func startApp(addr, token string, opt app.Options) *http.Server {
 
 // uncached renders a page that must not be served from memory — the mempool
 // changes every few seconds, faster than any entry here would live.
-func uncached(w http.ResponseWriter, r *http.Request, started int64, lang, name string, data any) {
+func uncached(w http.ResponseWriter, lang, name string, data any) {
     var b = render(lang, name, data)
     if b == nil {
         http.Error(w, "internal server error", http.StatusInternalServerError)
@@ -932,7 +920,6 @@ func uncached(w http.ResponseWriter, r *http.Request, started int64, lang, name 
     w.Header().Set("Content-Type", "text/html; charset=utf-8")
     w.Header().Set("Content-Language", lang)
     w.Write(b)
-    logging.Info("mini app: %s %s [%s] [%.2f ms]", r.Method, r.RequestURI, lang, float64(time.Now().UnixNano() - started) / 1e6)
 }
 
 // requireInitData rejects anything without a currently-valid signature on the
