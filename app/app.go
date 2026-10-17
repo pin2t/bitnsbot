@@ -16,11 +16,8 @@ import "time"
 // every open page fetch; one every two seconds keeps the list live without
 // that.
 var throttled = map[string]time.Duration{"mempool": 2 * time.Second}
-
 var throttleMu sync.Mutex
-
 var throttleLast = map[string]time.Time{}
-
 var throttlePending = map[string]bool{}
 
 // throttle reports whether event may go out now. When it may not, it arranges
@@ -67,7 +64,6 @@ func announce(event string) {
 }
 
 var listenMu sync.Mutex
-
 var listeners []func(string)
 
 // Listen has fn told of every event Notify announces, once it is past the

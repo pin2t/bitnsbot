@@ -139,7 +139,6 @@ func events(w http.ResponseWriter, r *http.Request, closing <-chan struct{}) {
 // copy. load runs outside cacheMu, since it reaches into main's Options
 // functions and their locks; two concurrent misses just marshal twice.
 func serve(w http.ResponseWriter, r *http.Request, load func() any) {
-    var started = time.Now()
     var key = r.URL.RequestURI()
     cacheMu.Lock()
     var b, hit = cache.Get(key)
@@ -156,28 +155,25 @@ func serve(w http.ResponseWriter, r *http.Request, load func() any) {
         cache.PutTTL(key, b, cacheTTL)
         cacheMu.Unlock()
     }
-    write(w, r, started, b, hit)
+    if hit { app.Hit(w) }
+    write(w, b)
 }
 
 // fresh answers with v as JSON, never from the cache and never into it.
 func fresh(w http.ResponseWriter, r *http.Request, v any) {
-    var started = time.Now()
     var b, err = json.Marshal(v)
     if err != nil {
         logging.Err("max app: encode %s: %v", r.URL.RequestURI(), err)
         http.Error(w, "internal server error", http.StatusInternalServerError)
         return
     }
-    write(w, r, started, b, false)
+    write(w, b)
 }
 
-func write(w http.ResponseWriter, r *http.Request, started time.Time, b []byte, hit bool) {
+func write(w http.ResponseWriter, b []byte) {
     w.Header().Set("Content-Type", "application/json; charset=utf-8")
     w.Header().Set("Cache-Control", "no-store")
     w.Write(b)
-    var mark = ""
-    if hit { mark = " [cached]" }
-    logging.Info("max app: %s %s [%.2f ms]%s", r.Method, r.URL.RequestURI(), float64(time.Since(started).Microseconds())/1000, mark)
 }
 
 // requireInitData rejects anything without a currently valid signature on the
@@ -332,7 +328,8 @@ func startApp(addr, token string, opt app.Options) *http.Server {
 // routes is the Mini App's handler. The data comes from opt, the same functions
 // the Telegram Mini App renders from, asked in Russian. Every endpoint under
 // /api/ answers JSON and needs signed launch data; the page and the event
-// stream need none. closing ends the event streams.
+// stream need none. closing ends the event streams. Every request is logged
+// through app.Log, always in the one language the app speaks.
 //
 // The block list: the newest batch, the next one below a height as the reader
 // scrolls, or what a new block put above the top one. That last is never
@@ -353,7 +350,7 @@ func startApp(addr, token string, opt app.Options) *http.Server {
 //
 // An empty alias leaves the watch alone, since Save on an empty field is how
 // a reader dismisses the dialog; a long one is cut rather than refused.
-func routes(token string, opt app.Options, closing <-chan struct{}) *http.ServeMux {
+func routes(token string, opt app.Options, closing <-chan struct{}) http.Handler {
     var mux = http.NewServeMux()
     mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
         if r.URL.Path != "/" {
@@ -497,5 +494,5 @@ func routes(token string, opt app.Options, closing <-chan struct{}) *http.ServeM
         }
         w.WriteHeader(http.StatusNoContent)
     })
-    return mux
+    return app.Log("max app", mux, func(*http.Request) string { return lang })
 }
