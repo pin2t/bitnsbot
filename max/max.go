@@ -53,12 +53,13 @@ type Options struct {
     // App is the chain data the Mini App renders, asked in Russian.
     App app.Options
     // Message is a message somebody typed: a command, or the argument a bare
-    // command asked for.
-    Message func(platform string, chat int64, name, text, lang string)
+    // command asked for. body is the whole update, as it arrived; every handler
+    // gets it.
+    Message func(platform string, chat int64, name, text, lang string, body []byte)
     // Callback is a tapped id button, payload the full id it carried.
-    Callback func(platform string, chat int64, name, payload, lang string)
+    Callback func(platform string, chat int64, name, payload, lang string, body []byte)
     // Started is the bot being started or added to a chat.
-    Started func(platform string, chat int64, name, lang string)
+    Started func(platform string, chat int64, name, lang string, body []byte)
 }
 
 // mu guards token, baseURL, hookSrv and appSrv: Start sets them while a

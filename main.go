@@ -20,6 +20,7 @@ import "bitnsbot/blocks"
 import "bitnsbot/addrbal"
 import "bitnsbot/app"
 import "bitnsbot/core"
+import "bitnsbot/chats"
 import "bitnsbot/logging"
 import "bitnsbot/max"
 import "bitnsbot/miners"
@@ -589,19 +590,20 @@ func shutdown() {
 }
 
 // message runs a message typed in a chat on a platform — Telegram and MAX both
-// hand theirs here, so a command behaves the same on either. The chat's
-// language is set from the sender's client first, since every reply is
-// translated through it.
-func message(platform string, chat int64, name, text, lang string) {
-    if lang != "" { SetChatLanguage(chat, lang) }
+// hand theirs here, so a command behaves the same on either. The chat is
+// recorded first (chats.Seen) — its language among the rest, since every reply
+// is translated through it — with body, the update as the platform sent it,
+// kept if this is the chat's first.
+func message(platform string, chat int64, name, text, lang string, body []byte) {
+    if err := chats.Seen(platform, chat, lang, body); err != nil { logging.Err("record chat %d: %v", chat, err) }
     logMessage(platform, chat, name, text)
     dispatch(platform, chat, text)
 }
 
 // callback runs a tapped id button. The button carries the full id, so the
 // lookup is just /info on it.
-func callback(platform string, chat int64, name, id, lang string) {
-    if lang != "" { SetChatLanguage(chat, lang) }
+func callback(platform string, chat int64, name, id, lang string, body []byte) {
+    if err := chats.Seen(platform, chat, lang, body); err != nil { logging.Err("record chat %d: %v", chat, err) }
     logMessage(platform, chat, name, id)
     info(platform, chat, id)
 }
@@ -609,8 +611,8 @@ func callback(platform string, chat int64, name, id, lang string) {
 // started answers the bot being started in a chat — MAX tells of it as an
 // update of its own, where Telegram sends /start as a message — with the start
 // message.
-func started(platform string, chat int64, name, lang string) {
-    if lang != "" { SetChatLanguage(chat, lang) }
+func started(platform string, chat int64, name, lang string, body []byte) {
+    if err := chats.Seen(platform, chat, lang, body); err != nil { logging.Err("record chat %d: %v", chat, err) }
     logMessage(platform, chat, name, "/start")
     start(platform, chat)
 }
@@ -619,7 +621,8 @@ func started(platform string, chat int64, name, lang string) {
 // argument a bare /info, /watch or /unwatch asked this chat for. Telegram and
 // MAX both come through here, so a command behaves the same on either; the
 // pending state is keyed by platform as well as chat, since a Telegram chat and a
-// MAX chat may share a number.
+// MAX chat may share a number. A bare /info's is the chat's state in the chats
+// table, so it survives a restart; /watch's and /unwatch's are still maps here.
 func dispatch(platform string, chat int64, text string) {
     var key = chatKey{platform, chat}
     var command, arg = parseCommand(text)
@@ -643,10 +646,8 @@ func dispatch(platform string, chat int64, text string) {
     case "/market":
         marketCmd(platform, chat)
     case "":
-        pendingInfoMu.Lock()
-        var pending = pendingInfoChats[key]
-        delete(pendingInfoChats, key)
-        pendingInfoMu.Unlock()
+        var pending, err = chats.Take(platform, chat, chats.Info)
+        if err != nil { logging.Err("chat %d state: %v", chat, err) }
         if pending {
             info(platform, chat, text)
             return
@@ -732,7 +733,7 @@ var commands = []struct{ name, line string }{
 }
 
 func start(platform string, chat int64) {
-    send(platform, chat, startText(chatLang(chat)), nil)
+    send(platform, chat, startText(chatLang(platform, chat)), nil)
 }
 
 // startText is the /start reply in a language, shared by Telegram and MAX.
@@ -867,7 +868,7 @@ func watchCmd(platform string, chat int64, arg string) {
         pendingWatchMu.Lock()
         pendingWatchChats[chatKey{platform, chat}] = true
         pendingWatchMu.Unlock()
-        send(platform, chat, i18n(chat).String("Send an address or transaction to watch, optionally followed by an alias — all in one message, e.g. bc1q… John"), nil)
+        send(platform, chat, i18n(platform, chat).String("Send an address or transaction to watch, optionally followed by an alias — all in one message, e.g. bc1q… John"), nil)
         return
     }
     pendingWatchMu.Lock()
@@ -880,24 +881,24 @@ func watchCmd(platform string, chat int64, arg string) {
     var full, err = atWatchLimit(platform, chat)
     if err != nil {
         logging.Err("count watches: %v", err)
-        send(platform, chat, i18n(chat).String("Sorry, something went wrong saving that watch"), nil)
+        send(platform, chat, i18n(platform, chat).String("Sorry, something went wrong saving that watch"), nil)
         return
     }
     if full {
         logging.Info("rejected subscription for chat %d: at the limit of %d", chat, maxSubscriptionsPerChat)
-        send(platform, chat, i18n(chat).Sprintf("Sorry, this chat has reached the limit of %d subscriptions. Unwatch something first to add a new one.", maxSubscriptionsPerChat), nil)
+        send(platform, chat, i18n(platform, chat).Sprintf("Sorry, this chat has reached the limit of %d subscriptions. Unwatch something first to add a new one.", maxSubscriptionsPerChat), nil)
         return
     }
     if err := addWatch(platform, chat, watch, alias); err != nil {
         logging.Err("add watch: %v", err)
-        send(platform, chat, i18n(chat).String("Sorry, something went wrong saving that watch"), nil)
+        send(platform, chat, i18n(platform, chat).String("Sorry, something went wrong saving that watch"), nil)
         return
     }
     var msg string
     if alias != "" {
-        msg = i18n(chat).Sprintf("Watching %s (%s)", html.EscapeString(watch), html.EscapeString(alias))
+        msg = i18n(platform, chat).Sprintf("Watching %s (%s)", html.EscapeString(watch), html.EscapeString(alias))
     } else {
-        msg = i18n(chat).Sprintf("Watching %s", html.EscapeString(watch))
+        msg = i18n(platform, chat).Sprintf("Watching %s", html.EscapeString(watch))
     }
     send(platform, chat, msg, nil)
 }
@@ -910,7 +911,7 @@ func unwatch(platform string, chat int64, arg string) {
         pendingUnwatchMu.Lock()
         pendingUnwatchChats[chatKey{platform, chat}] = true
         pendingUnwatchMu.Unlock()
-        send(platform, chat, i18n(chat).String("Send the watch you'd like to stop in a separate message"), nil)
+        send(platform, chat, i18n(platform, chat).String("Send the watch you'd like to stop in a separate message"), nil)
         return
     }
     pendingUnwatchMu.Lock()
@@ -919,21 +920,21 @@ func unwatch(platform string, chat int64, arg string) {
     var removed, err = removeWatch(platform, chat, arg)
     if err != nil {
         logging.Err("remove watch: %v", err)
-        send(platform, chat, i18n(chat).String("Sorry, something went wrong removing that watch"), nil)
+        send(platform, chat, i18n(platform, chat).String("Sorry, something went wrong removing that watch"), nil)
         return
     }
     if !removed {
-        send(platform, chat, i18n(chat).Sprintf("You're not watching %s", html.EscapeString(arg)), nil)
+        send(platform, chat, i18n(platform, chat).Sprintf("You're not watching %s", html.EscapeString(arg)), nil)
         return
     }
-    send(platform, chat, i18n(chat).Sprintf("Stopped watching %s", html.EscapeString(arg)), nil)
+    send(platform, chat, i18n(platform, chat).Sprintf("Stopped watching %s", html.EscapeString(arg)), nil)
 }
 
 func watchesCmd(platform string, chat int64) {
     var records, err = watches.List()
     if err != nil {
         logging.Err("list watches: %v", err)
-        send(platform, chat, i18n(chat).String("Sorry, something went wrong listing your watches"), nil)
+        send(platform, chat, i18n(platform, chat).String("Sorry, something went wrong listing your watches"), nil)
         return
     }
     var addresses, transactions, ids []string
@@ -951,16 +952,16 @@ func watchesCmd(platform string, chat int64) {
         transactions = append(transactions, line)
     }
     if len(addresses) == 0 && len(transactions) == 0 {
-        send(platform, chat, i18n(chat).String("You're not watching anything yet"), nil)
+        send(platform, chat, i18n(platform, chat).String("You're not watching anything yet"), nil)
         return
     }
-    var lines = []string{i18n(chat).String("Your watches:")}
+    var lines = []string{i18n(platform, chat).String("Your watches:")}
     if len(addresses) > 0 {
-        lines = append(lines, "", i18n(chat).String("Addresses:"))
+        lines = append(lines, "", i18n(platform, chat).String("Addresses:"))
         lines = append(lines, addresses...)
     }
     if len(transactions) > 0 {
-        lines = append(lines, "", i18n(chat).String("Transactions:"))
+        lines = append(lines, "", i18n(platform, chat).String("Transactions:"))
         lines = append(lines, transactions...)
     }
     send(platform, chat, strings.Join(lines, "\n"), ids)
@@ -970,23 +971,23 @@ const typicalTxVsize = 140
 
 func fees(platform string, chat int64) {
     if !core.Enabled() {
-        send(platform, chat, i18n(chat).String("Bitcoin node connection is not configured"), nil)
+        send(platform, chat, i18n(platform, chat).String("Bitcoin node connection is not configured"), nil)
         return
     }
     feesMu.Lock()
     var rec, ok, count = cachedFees, cachedFeesOK, cachedFeesCount
     feesMu.Unlock()
     if !ok {
-        send(platform, chat, i18n(chat).String("Fee estimates aren't available right now — couldn't read the mempool"), nil)
+        send(platform, chat, i18n(platform, chat).String("Fee estimates aren't available right now — couldn't read the mempool"), nil)
         return
     }
     var tiers = []struct {
         label string
         rate  float64
     }{
-        {i18n(chat).String("Fastest (10-20 min):"), rec.fastest},
-        {i18n(chat).String("Medium (~1 h):"),       rec.hour},
-        {i18n(chat).String("Minimum (2+ h):"),      rec.minimum},
+        {i18n(platform, chat).String("Fastest (10-20 min):"), rec.fastest},
+        {i18n(platform, chat).String("Medium (~1 h):"),       rec.hour},
+        {i18n(platform, chat).String("Minimum (2+ h):"),      rec.minimum},
     }
     var pad int
     for _, t := range tiers {
@@ -995,15 +996,15 @@ func fees(platform string, chat int64) {
     var price, havePrice = rates.Last()
     var lines []string
     for _, t := range tiers {
-        var cell = trimNum(t.rate, 2) + i18n(chat).String(" sat/vB")
+        var cell = trimNum(t.rate, 2) + i18n(platform, chat).String(" sat/vB")
         if havePrice {
             cell += "  (≈ " + usd(int64(math.Round(t.rate*typicalTxVsize)), price) + ")"
         }
         lines = append(lines, fmt.Sprintf("%-*s %s", pad, t.label, cell))
     }
-    var msg = i18n(chat).Sprintf("Network fees projected from %s mempool transactions", group(int64(count)))
+    var msg = i18n(platform, chat).Sprintf("Network fees projected from %s mempool transactions", group(int64(count)))
     if havePrice {
-        msg += ". " + i18n(chat).Sprintf("USD for a typical %d vB transaction", typicalTxVsize)
+        msg += ". " + i18n(platform, chat).Sprintf("USD for a typical %d vB transaction", typicalTxVsize)
     }
     send(platform, chat, msg + "\n\n<pre>" + strings.Join(lines, "\n") + "</pre>", nil)
 }
@@ -1296,7 +1297,7 @@ var mempoolSummaryLimit int64 = 20000
 // output amount and summed fees of every mempool transaction, in sats and USD.
 func mempoolCmd(platform string, chat int64) {
     if !core.Enabled() {
-        send(platform, chat, i18n(chat).String("Bitcoin node connection is not configured"), nil)
+        send(platform, chat, i18n(platform, chat).String("Bitcoin node connection is not configured"), nil)
         return
     }
     var ctx, cancel = context.WithTimeout(context.Background(), 30*time.Second)
@@ -1304,20 +1305,20 @@ func mempoolCmd(platform string, chat int64) {
     var info, err = core.GetMempoolInfo(ctx)
     if err != nil {
         logging.Err("get mempool info: %v", err)
-        send(platform, chat, i18n(chat).String("Sorry, something went wrong reading the mempool"), nil)
+        send(platform, chat, i18n(platform, chat).String("Sorry, something went wrong reading the mempool"), nil)
         return
     }
     var pairs = [][2]string{
-        {i18n(chat).String("Size"),         humSize(info.Bytes, 2, chatLang(chat))},
-        {i18n(chat).String("Transactions"), group(int64(info.Size))},
+        {i18n(platform, chat).String("Size"),         humSize(info.Bytes, 2, chatLang(platform, chat))},
+        {i18n(platform, chat).String("Transactions"), group(int64(info.Size))},
     }
     var rate, rateOK, change, changeOK = mempoolFlow(time.Now())
     if rateOK {
-        var fr = i18n(chat).Sprintf("%.1f tx/sec", rate)
+        var fr = i18n(platform, chat).Sprintf("%.1f tx/sec", rate)
         if changeOK {
             fr += fmt.Sprintf(" (%+.1f)", change)
         }
-        pairs = append(pairs, [2]string{i18n(chat).String("Flow rate"), fr})
+        pairs = append(pairs, [2]string{i18n(platform, chat).String("Flow rate"), fr})
     }
     if info.Size > 0 {
         summaryMu.Lock()
@@ -1325,12 +1326,12 @@ func mempoolCmd(platform string, chat int64) {
         summaryMu.Unlock()
         if ok {
             pairs = append(pairs,
-                [2]string{i18n(chat).String("Total flow"), "~" + btcAmount(amount)},
-                [2]string{i18n(chat).String("Total fees"), "~" + btcAmount(fee)},
+                [2]string{i18n(platform, chat).String("Total flow"), "~" + btcAmount(amount)},
+                [2]string{i18n(platform, chat).String("Total fees"), "~" + btcAmount(fee)},
             )
         }
     }
-    send(platform, chat, i18n(chat).Sprintf("Mempool\n\n<pre>%s</pre>", joinAlign(pairs)), nil)
+    send(platform, chat, i18n(platform, chat).Sprintf("Mempool\n\n<pre>%s</pre>", joinAlign(pairs)), nil)
 }
 
 // mempoolTotals sums the fee (from the verbose mempool) and the output amount
@@ -1375,17 +1376,17 @@ func mempoolTotals(ctx context.Context) (amount, fee int64, ok bool) {
 func minersCmd(platform string, chat int64) {
     var top = miners.Top(10)
     if len(top) == 0 {
-        send(platform, chat, i18n(chat).String("No miner statistics yet — still collecting"), nil)
+        send(platform, chat, i18n(platform, chat).String("No miner statistics yet — still collecting"), nil)
         return
     }
     var lines []string
     for i, m := range top {
-        var blocks = i18n(chat).Sprintf("%d blocks", m.Blocks)
-        if m.Blocks == 1 { blocks = i18n(chat).String("1 block") }
-        lines = append(lines, i18n(chat).Sprintf("%d. %s. %s mined, reward %s BTC, fees %s BTC, consumption %s GW",
+        var blocks = i18n(platform, chat).Sprintf("%d blocks", m.Blocks)
+        if m.Blocks == 1 { blocks = i18n(platform, chat).String("1 block") }
+        lines = append(lines, i18n(platform, chat).Sprintf("%d. %s. %s mined, reward %s BTC, fees %s BTC, consumption %s GW",
             i+1, m.Name, blocks, trimNum(toBTC(m.Reward), 2), trimNum(toBTC(m.Fees), 2), trimNum(m.ConsumptionGW, 1)))
     }
-    send(platform, chat, i18n(chat).String("Top miners by blocks mined:") + "\n\n" + strings.Join(lines, "\n"), nil)
+    send(platform, chat, i18n(platform, chat).String("Top miners by blocks mined:") + "\n\n" + strings.Join(lines, "\n"), nil)
 }
 
 // marketCmd reports the current price, market capitalisation and 24h volume,
@@ -1408,30 +1409,30 @@ func marketCmd(platform string, chat int64) {
         now, haveNow = snapshot.Price, true
     }
     if !haveNow {
-        send(platform, chat, i18n(chat).String("No price data yet — still fetching"), nil)
+        send(platform, chat, i18n(platform, chat).String("No price data yet — still fetching"), nil)
         return
     }
-    var pairs = [][2]string{{i18n(chat).String("Price"), price(now)}}
+    var pairs = [][2]string{{i18n(platform, chat).String("Price"), price(now)}}
     if haveSnapshot && snapshot.MarketCap > 0 {
-        pairs = append(pairs, [2]string{i18n(chat).String("Market cap"), money(snapshot.MarketCap, chatLang(chat))})
+        pairs = append(pairs, [2]string{i18n(platform, chat).String("Market cap"), money(snapshot.MarketCap, chatLang(platform, chat))})
     } else {
-        pairs = append(pairs, [2]string{i18n(chat).String("Market cap"), i18n(chat).String("unavailable")})
+        pairs = append(pairs, [2]string{i18n(platform, chat).String("Market cap"), i18n(platform, chat).String("unavailable")})
     }
     if haveSnapshot && snapshot.Volume24h > 0 {
-        pairs = append(pairs, [2]string{i18n(chat).String("Volume 24h"), money(snapshot.Volume24h, chatLang(chat))})
+        pairs = append(pairs, [2]string{i18n(platform, chat).String("Volume 24h"), money(snapshot.Volume24h, chatLang(platform, chat))})
     } else {
-        pairs = append(pairs, [2]string{i18n(chat).String("Volume 24h"), i18n(chat).String("unavailable")})
+        pairs = append(pairs, [2]string{i18n(platform, chat).String("Volume 24h"), i18n(platform, chat).String("unavailable")})
     }
     var periods = []struct {
         label string
         back  time.Duration
     }{
-        {i18n(chat).String("1 day"),    24 * time.Hour},
-        {i18n(chat).String("1 week"),   7 * 24 * time.Hour},
-        {i18n(chat).String("1 month"),  30 * 24 * time.Hour},
-        {i18n(chat).String("3 months"), 90 * 24 * time.Hour},
-        {i18n(chat).String("1 year"),   365 * 24 * time.Hour},
-        {i18n(chat).String("5 years"),  5 * 365 * 24 * time.Hour},
+        {i18n(platform, chat).String("1 day"),    24 * time.Hour},
+        {i18n(platform, chat).String("1 week"),   7 * 24 * time.Hour},
+        {i18n(platform, chat).String("1 month"),  30 * 24 * time.Hour},
+        {i18n(platform, chat).String("3 months"), 90 * 24 * time.Hour},
+        {i18n(platform, chat).String("1 year"),   365 * 24 * time.Hour},
+        {i18n(platform, chat).String("5 years"),  5 * 365 * 24 * time.Hour},
     }
     var changes [][2]string
     for _, p := range periods {
@@ -1440,10 +1441,10 @@ func marketCmd(platform string, chat int64) {
         }
     }
     if len(changes) > 0 {
-        pairs = append(pairs, [2]string{i18n(chat).String("Changes"), ""})
+        pairs = append(pairs, [2]string{i18n(platform, chat).String("Changes"), ""})
         for _, c := range changes { pairs = append(pairs, c) }
     }
-    send(platform, chat, i18n(chat).Sprintf("Bitcoin market\n\n<pre>%s</pre>", joinAlign(pairs)), nil)
+    send(platform, chat, i18n(platform, chat).Sprintf("Bitcoin market\n\n<pre>%s</pre>", joinAlign(pairs)), nil)
 }
 
 // send replies in a chat on its platform, with a button for each id the text

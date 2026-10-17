@@ -21,7 +21,7 @@ func TestMessageLogging(t *testing.T) {
     var buf bytes.Buffer
     log.SetOutput(&buf)
     defer log.SetOutput(os.Stderr)
-    message("tg", 42, "alice", "/start", "")
+    message("tg", 42, "alice", "/start", "", nil)
     if !strings.Contains(buf.String(), "bot (tg) <-- alice (42): /start") {
         t.Fatalf("expected log line for the sender's name, got: %q", buf.String())
     }
@@ -29,7 +29,7 @@ func TestMessageLogging(t *testing.T) {
         t.Fatalf("expected the reply logged under the sender's name, got: %q", buf.String())
     }
     buf.Reset()
-    message("max", 7, "Bob", "hi", "")
+    message("max", 7, "Bob", "hi", "", nil)
     if !strings.Contains(buf.String(), "bot (max) <-- Bob (7): hi") {
         t.Fatalf("expected log line naming the platform, got: %q", buf.String())
     }

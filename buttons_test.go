@@ -83,7 +83,7 @@ func TestCallbackLooksUp(t *testing.T) {
     defer tg.Close()
     useTelegram(t, tg.URL)
     core.Reset()
-    callback("tg", 42, "alice", "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa", "")
+    callback("tg", 42, "alice", "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa", "", nil)
     if len(sent) != 1 || sent[0] != "/botTESTTOKEN/sendMessage 42 Bitcoin node connection is not configured" {
         t.Fatalf("tapping a button replied %q", sent)
     }

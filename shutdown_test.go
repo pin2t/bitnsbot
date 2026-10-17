@@ -34,7 +34,7 @@ func TestShutdownDrainsHandlersBeforeClosingStore(t *testing.T) {
     }
     var addr = ln.Addr().String()
     ln.Close()
-    var slow = func(platform string, chat int64, name, text, lang string) {
+    var slow = func(platform string, chat int64, name, text, lang string, body []byte) {
         close(started)
         time.Sleep(200 * time.Millisecond)
         var _, listErr = watches.List()

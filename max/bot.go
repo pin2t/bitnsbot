@@ -173,13 +173,13 @@ func webhook(opt Options) http.HandlerFunc {
         switch u.UpdateType {
         case "message_created":
             if u.Message == nil || (u.Message.Sender != nil && u.Message.Sender.IsBot) || opt.Message == nil { break }
-            opt.Message(Platform, u.Message.Recipient.ChatID, u.Message.Sender.name(), u.Message.Body.Text, lang)
+            opt.Message(Platform, u.Message.Recipient.ChatID, u.Message.Sender.name(), u.Message.Body.Text, lang, raw)
         case "message_callback":
             if u.Message == nil || u.Callback == nil || u.Callback.Payload == "" || opt.Callback == nil { break }
-            opt.Callback(Platform, u.Message.Recipient.ChatID, u.Callback.User.name(), u.Callback.Payload, lang)
+            opt.Callback(Platform, u.Message.Recipient.ChatID, u.Callback.User.name(), u.Callback.Payload, lang, raw)
         case "bot_started", "bot_added":
             if opt.Started == nil { break }
-            opt.Started(Platform, u.ChatID, u.User.name(), lang)
+            opt.Started(Platform, u.ChatID, u.User.name(), lang, raw)
         }
         w.WriteHeader(http.StatusOK)
     }

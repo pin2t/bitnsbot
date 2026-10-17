@@ -78,19 +78,21 @@ func TestSendButtons(t *testing.T) {
 type called struct {
     mu   sync.Mutex
     what []string
+    bodies []string
 }
 
 func (c *called) handlers(secret string) Options {
-    var add = func(s string) {
+    var add = func(s string, body []byte) {
         c.mu.Lock()
         c.what = append(c.what, s)
+        c.bodies = append(c.bodies, string(body))
         c.mu.Unlock()
     }
     return Options{
         Secret:   secret,
-        Message:  func(platform string, chat int64, name, text, lang string) { add(platform + " message " + strconv.FormatInt(chat, 10) + " " + name + " " + text + " " + lang) },
-        Callback: func(platform string, chat int64, name, payload, lang string) { add(platform + " callback " + strconv.FormatInt(chat, 10) + " " + name + " " + payload + " " + lang) },
-        Started:  func(platform string, chat int64, name, lang string) { add(platform + " started " + strconv.FormatInt(chat, 10) + " " + name + " " + lang) },
+        Message:  func(platform string, chat int64, name, text, lang string, body []byte) { add(platform + " message " + strconv.FormatInt(chat, 10) + " " + name + " " + text + " " + lang, body) },
+        Callback: func(platform string, chat int64, name, payload, lang string, body []byte) { add(platform + " callback " + strconv.FormatInt(chat, 10) + " " + name + " " + payload + " " + lang, body) },
+        Started:  func(platform string, chat int64, name, lang string, body []byte) { add(platform + " started " + strconv.FormatInt(chat, 10) + " " + name + " " + lang, body) },
     }
 }
 
@@ -106,7 +108,7 @@ func post(t *testing.T, h http.HandlerFunc, secret, update string) int {
 // Each update reaches the handler for its type, with the chat a reply belongs in
 // and the locale reduced to a language. A message from a bot reaches none, so
 // the bot never answers itself, and an update of any other type is acknowledged
-// and ignored.
+// and ignored. Each handler is given the update exactly as it was posted.
 func TestWebhookRoutesUpdates(t *testing.T) {
     var c = &called{}
     var h = webhook(c.handlers(""))
@@ -123,6 +125,8 @@ func TestWebhookRoutesUpdates(t *testing.T) {
     }
     var want = []string{"max message 376690654 Илья /start ru", "max callback 77 unknown 100 es", "max started 5 unknown en", "max started 8 unknown "}
     if strings.Join(c.what, "|") != strings.Join(want, "|") { t.Fatalf("handled\n %q\nwant %q", c.what, want) }
+    var bodies = []string{updates[0], updates[2], updates[3], updates[4]}
+    if strings.Join(c.bodies, "|") != strings.Join(bodies, "|") { t.Fatalf("bodies\n %q\nwant %q", c.bodies, bodies) }
     if code := post(t, h, "", "not json"); code != http.StatusBadRequest { t.Fatalf("garbage answered %d", code) }
 }
 

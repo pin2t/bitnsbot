@@ -44,6 +44,7 @@ func TestOpenDBTables(t *testing.T) {
         "miners", "mineraddr", "minertag",
         "addrstat",
         "cursors",
+        "chats",
         "addrindex",
         "addrbal",
     }

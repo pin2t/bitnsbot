@@ -14,6 +14,7 @@ import "bitnsbot/blocks"
 import "bitnsbot/addrbal"
 import "bitnsbot/addrindex"
 import "bitnsbot/addrstat"
+import "bitnsbot/chats"
 import "bitnsbot/cursors"
 import "bitnsbot/logging"
 import "bitnsbot/miners"
@@ -71,6 +72,7 @@ func openDB(path string) error {
     if err := opened.Ping(); err != nil { return err }
     db = opened
     if err := cursors.Init(db); err != nil { return err }
+    if err := chats.Init(db); err != nil { return err }
     if err := blocks.Init(db); err != nil { return err }
     if err := rates.Init(db); err != nil { return err }
     if err := watches.Init(db); err != nil { return err }

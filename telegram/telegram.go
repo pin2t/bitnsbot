@@ -68,10 +68,11 @@ type Options struct {
     // list registered without one, so "" is the default.
     Menus map[string][]Command
     // Message is a message somebody typed: a command, or the argument a bare
-    // command asked for.
-    Message func(platform string, chat int64, name, text, lang string)
+    // command asked for. body is the whole update, as it arrived; every handler
+    // gets it.
+    Message func(platform string, chat int64, name, text, lang string, body []byte)
     // Callback is a tapped inline-keyboard button, data the full id it carried.
-    Callback func(platform string, chat int64, name, data, lang string)
+    Callback func(platform string, chat int64, name, data, lang string, body []byte)
     // AppListen is the address the Mini App binds to; empty starts none. Bind
     // it to localhost: the Cloudflare tunnel is what faces the network.
     AppListen string
@@ -325,8 +326,13 @@ func webhook(opt Options) http.HandlerFunc {
             }
         }
         defer r.Body.Close()
+        var raw, readErr = io.ReadAll(r.Body)
+        if readErr != nil {
+            http.Error(w, "bad request", http.StatusBadRequest)
+            return
+        }
         var u update
-        if err := json.NewDecoder(r.Body).Decode(&u); err != nil {
+        if err := json.Unmarshal(raw, &u); err != nil {
             logging.Err("decode update: %v", err)
             http.Error(w, "bad request", http.StatusBadRequest)
             return
@@ -338,10 +344,10 @@ func webhook(opt Options) http.HandlerFunc {
             }
             cancel()
             if q.Message != nil && q.Data != "" && opt.Callback != nil {
-                opt.Callback(Platform, q.Message.Chat.ID, q.From.name(), q.Data, q.From.lang())
+                opt.Callback(Platform, q.Message.Chat.ID, q.From.name(), q.Data, q.From.lang(), raw)
             }
         } else if m := u.Message; m != nil && opt.Message != nil {
-            opt.Message(Platform, m.Chat.ID, m.From.name(), m.Text, m.From.lang())
+            opt.Message(Platform, m.Chat.ID, m.From.name(), m.Text, m.From.lang(), raw)
         }
         w.WriteHeader(http.StatusOK)
     }
