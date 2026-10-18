@@ -15,6 +15,7 @@ import "bitnsbot/core/coretest"
 import "bitnsbot/cursors"
 import "bitnsbot/chats"
 import "bitnsbot/telegram"
+import "bitnsbot/watches"
 
 // useTelegram points the telegram package at a fake Bot API at url, which is
 // where every reply the test provokes is then sent.
@@ -279,14 +280,14 @@ func TestWatchFlow(t *testing.T) {
     if len(sent) != 1 || !strings.Contains(sent[0], "alias") {
         t.Fatalf("unexpected first reply: %#v", sent)
     }
-    if !pendingWatchChats[chatKey{"tg", 1}] {
+    if c, _, _ := chats.Get("tg", 1); c.State != chats.Watch {
         t.Fatalf("expected chat 1 to be pending")
     }
     message("tg", 1, "", "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa", "", nil)
     if len(sent) != 2 || sent[1] != "Watching 1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa" {
         t.Fatalf("unexpected second reply: %#v", sent)
     }
-    if pendingWatchChats[chatKey{"tg", 1}] {
+    if c, _, _ := chats.Get("tg", 1); c.State != "" {
         t.Fatalf("expected chat 1 pending flag cleared")
     }
     var txid = "f21b47a9143a23e80cc59e81588d21558b394005580b285961957cb3bed5b3e0"
@@ -618,7 +619,7 @@ func TestI18nSetLanguage(t *testing.T) {
 	if len(sent) != 1 || !strings.Contains(sent[0], "Watching bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4 (Test)") {
 		t.Fatalf("expected English watch reply, got: %#v", sent)
 	}
-	chats.Seen("tg", 2, "ru", nil)
+	chats.Update("tg", 2, "ru", nil)
 	message("tg", 2, "", "/watch bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4 Тест", "", nil)
 	if len(sent) != 2 || !strings.Contains(sent[1], "Отслеживаю ") {
 		t.Fatalf("expected Russian watch reply, got: %#v", sent)
@@ -627,7 +628,7 @@ func TestI18nSetLanguage(t *testing.T) {
 	if len(sent) != 3 || !strings.Contains(sent[2], "Прекращено отслеживание") {
 		t.Fatalf("expected Russian unwatch reply, got: %#v", sent)
 	}
-	chats.Seen("tg", 3, "es", nil)
+	chats.Update("tg", 3, "es", nil)
 	message("tg", 3, "", "/watch bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4 Prueba", "", nil)
 	if len(sent) != 4 || !strings.Contains(sent[3], "Observando ") {
 		t.Fatalf("expected Spanish watch reply, got: %#v", sent)
@@ -808,4 +809,41 @@ func TestInfoArgumentExpires(t *testing.T) {
     message("tg", 6, "bob", "100", "", nil)
     if len(sent) != 1 { t.Fatalf("an expired /info was answered: %q", sent) }
     if c, _, _ := chats.Get("tg", 6); c.State != "" { t.Fatalf("expired state left %q", c.State) }
+}
+
+// /watch and /unwatch wait for their argument in the chats table the way /info
+// does: a chat holds one state, so a bare /watch after a bare /info is what the
+// next message answers, and a state older than ten minutes is dropped unanswered
+// rather than read as an address to watch.
+func TestWatchArgumentExpires(t *testing.T) {
+    var sent []string
+    var server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        var body struct {
+            Text string `json:"text"`
+        }
+        json.NewDecoder(r.Body).Decode(&body)
+        sent = append(sent, body.Text)
+        json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": true})
+    }))
+    defer server.Close()
+    useTelegram(t, server.URL)
+    core.Reset()
+    if err := openDB(filepath.Join(t.TempDir(), "bitnsbot.sqlite")); err != nil { t.Fatalf("openDB: %v", err) }
+    defer closeDB()
+    stopNotify()
+    defer stopNotify()
+    var addr = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
+    message("tg", 6, "bob", "/info", "", nil)
+    message("tg", 6, "bob", "/watch", "", nil)
+    if c, _, _ := chats.Get("tg", 6); c.State != chats.Watch { t.Fatalf("state %q after a bare /watch", c.State) }
+    message("tg", 6, "bob", addr, "", nil)
+    if sent[len(sent)-1] != "Watching "+addr { t.Fatalf("the follow-up was not watched: %q", sent) }
+    message("tg", 6, "bob", "/unwatch", "", nil)
+    var old = time.Now().Add(-11 * time.Minute).Unix()
+    if _, err := db.Exec("update chats set stateAt = ? where platform = 'tg' and chat = 6", old); err != nil { t.Fatal(err) }
+    var before = len(sent)
+    message("tg", 6, "bob", addr, "", nil)
+    if len(sent) != before { t.Fatalf("an expired /unwatch was answered: %q", sent[before:]) }
+    if c, _, _ := chats.Get("tg", 6); c.State != "" { t.Fatalf("expired state left %q", c.State) }
+    if n, _ := watches.Count("tg", 6); n != 1 { t.Fatalf("an expired /unwatch removed the watch: %d left", n) }
 }

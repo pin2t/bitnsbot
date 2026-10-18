@@ -9,6 +9,7 @@ import "strings"
 import "sync"
 import "testing"
 import "time"
+import "bitnsbot/chats"
 import "bitnsbot/core"
 import "bitnsbot/core/coretest"
 import "bitnsbot/txwatches"
@@ -203,14 +204,14 @@ func TestUnwatchFlow(t *testing.T) {
         t.Fatalf("unexpected not-watching reply: %q", sent[len(sent)-1])
     }
     message("tg", 1, "", "/unwatch", "", nil)
-    if !pendingUnwatchChats[chatKey{"tg", 1}] {
+    if c, _, _ := chats.Get("tg", 1); c.State != chats.Unwatch {
         t.Fatalf("expected chat 1 pending for unwatch")
     }
     message("tg", 1, "", addr, "", nil)
     if sent[len(sent)-1] != "Stopped watching "+addr {
         t.Fatalf("expected follow-up to remove chat 1's watch, got: %q", sent[len(sent)-1])
     }
-    if pendingUnwatchChats[chatKey{"tg", 1}] {
+    if c, _, _ := chats.Get("tg", 1); c.State != "" {
         t.Fatalf("expected pending cleared")
     }
     if countWatchers(addr) != 0 {

@@ -19,11 +19,11 @@ func open(t *testing.T) *sql.DB {
 // A chat's first update makes its row and is the only body it ever keeps; later
 // ones move the last time and the count, and change the language only when they
 // report one. The same number on the other platform is another chat.
-func TestSeenRecordsChat(t *testing.T) {
+func TestUpdateRecordsChat(t *testing.T) {
     open(t)
     var before = time.Now().Unix()
-    if err := Seen("tg", 42, "ru", []byte(`{"update_id":1}`)); err != nil { t.Fatal(err) }
-    if err := Seen("tg", 42, "", []byte(`{"update_id":2}`)); err != nil { t.Fatal(err) }
+    if err := Update("tg", 42, "ru", []byte(`{"update_id":1}`)); err != nil { t.Fatal(err) }
+    if err := Update("tg", 42, "", []byte(`{"update_id":2}`)); err != nil { t.Fatal(err) }
     var c, ok, err = Get("tg", 42)
     if err != nil || !ok { t.Fatalf("get: %v %v", ok, err) }
     if c.Lang != "ru" || c.Messages != 2 || c.Body != `{"update_id":1}` || c.State != "" {
@@ -32,11 +32,11 @@ func TestSeenRecordsChat(t *testing.T) {
     if c.First.Unix() < before || c.Last.Before(c.First) || c.Last.Unix() > time.Now().Unix() {
         t.Fatalf("times: first %v, last %v", c.First, c.Last)
     }
-    if err := Seen("tg", 42, "es", nil); err != nil { t.Fatal(err) }
+    if err := Update("tg", 42, "es", nil); err != nil { t.Fatal(err) }
     if c, _, _ = Get("tg", 42); c.Lang != "es" || c.Messages != 3 || c.Body != `{"update_id":1}` {
         t.Fatalf("after a new language: %+v", c)
     }
-    if err := Seen("max", 42, "", []byte(`{"update_type":"bot_started"}`)); err != nil { t.Fatal(err) }
+    if err := Update("max", 42, "", []byte(`{"update_type":"bot_started"}`)); err != nil { t.Fatal(err) }
     var other, _, _ = Get("max", 42)
     if other.Lang != "" || other.Messages != 1 || other.Body != `{"update_type":"bot_started"}` {
         t.Fatalf("the MAX chat: %+v", other)
@@ -50,7 +50,7 @@ func TestSeenRecordsChat(t *testing.T) {
 // reader's language.
 func TestLanguageSurvivesRestart(t *testing.T) {
     var handle = open(t)
-    if err := Seen("tg", 1, "ru", nil); err != nil { t.Fatal(err) }
+    if err := Update("tg", 1, "ru", nil); err != nil { t.Fatal(err) }
     if err := Init(handle); err != nil { t.Fatal(err) }
     if got := Language("tg", 1); got != "ru" { t.Fatalf("language after restart %q", got) }
     if got := Language("tg", 2); got != "" { t.Fatalf("unknown chat's language %q", got) }
@@ -60,7 +60,7 @@ func TestLanguageSurvivesRestart(t *testing.T) {
 // updates handled at once.
 func TestTakeState(t *testing.T) {
     open(t)
-    if err := Seen("tg", 1, "", nil); err != nil { t.Fatal(err) }
+    if err := Update("tg", 1, "", nil); err != nil { t.Fatal(err) }
     if err := SetState("tg", 1, Info); err != nil { t.Fatal(err) }
     if ok, err := Take("tg", 1, "watch"); ok || err != nil { t.Fatalf("took another state: %v %v", ok, err) }
     if ok, err := Take("max", 1, Info); ok || err != nil { t.Fatalf("took the other platform's: %v %v", ok, err) }
@@ -88,7 +88,7 @@ func TestTakeState(t *testing.T) {
 // SetState stamps stateAt, and taking or expiring a state stamps it again.
 func TestTakeExpires(t *testing.T) {
     var handle = open(t)
-    if err := Seen("tg", 1, "", nil); err != nil { t.Fatal(err) }
+    if err := Update("tg", 1, "", nil); err != nil { t.Fatal(err) }
     var before = time.Now().Unix()
     if err := SetState("tg", 1, Info); err != nil { t.Fatal(err) }
     var c, _, _ = Get("tg", 1)

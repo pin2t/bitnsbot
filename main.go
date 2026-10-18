@@ -591,40 +591,12 @@ func shutdown() {
 
 // message runs a message typed in a chat on a platform — Telegram and MAX both
 // hand theirs here, so a command behaves the same on either. The chat is
-// recorded first (chats.Seen) — its language among the rest, since every reply
+// recorded first (chats.Update) — its language among the rest, since every reply
 // is translated through it — with body, the update as the platform sent it,
 // kept if this is the chat's first.
 func message(platform string, chat int64, name, text, lang string, body []byte) {
-    if err := chats.Seen(platform, chat, lang, body); err != nil { logging.Err("record chat %d: %v", chat, err) }
+    if err := chats.Update(platform, chat, lang, body); err != nil { logging.Err("record chat %d: %v", chat, err) }
     logMessage(platform, chat, name, text)
-    dispatch(platform, chat, text)
-}
-
-// callback runs a tapped id button. The button carries the full id, so the
-// lookup is just /info on it.
-func callback(platform string, chat int64, name, id, lang string, body []byte) {
-    if err := chats.Seen(platform, chat, lang, body); err != nil { logging.Err("record chat %d: %v", chat, err) }
-    logMessage(platform, chat, name, id)
-    info(platform, chat, id)
-}
-
-// started answers the bot being started in a chat — MAX tells of it as an
-// update of its own, where Telegram sends /start as a message — with the start
-// message.
-func started(platform string, chat int64, name, lang string, body []byte) {
-    if err := chats.Seen(platform, chat, lang, body); err != nil { logging.Err("record chat %d: %v", chat, err) }
-    logMessage(platform, chat, name, "/start")
-    start(platform, chat)
-}
-
-// dispatch runs one incoming message as a command — or, for plain text, as the
-// argument a bare /info, /watch or /unwatch asked this chat for. Telegram and
-// MAX both come through here, so a command behaves the same on either; the
-// pending state is keyed by platform as well as chat, since a Telegram chat and a
-// MAX chat may share a number. A bare /info's is the chat's state in the chats
-// table, so it survives a restart; /watch's and /unwatch's are still maps here.
-func dispatch(platform string, chat int64, text string) {
-    var key = chatKey{platform, chat}
     var command, arg = parseCommand(text)
     switch command {
     case "/start":
@@ -652,22 +624,33 @@ func dispatch(platform string, chat int64, text string) {
             info(platform, chat, text)
             return
         }
-        pendingWatchMu.Lock()
-        pending = pendingWatchChats[key]
-        delete(pendingWatchChats, key)
-        pendingWatchMu.Unlock()
+        if pending, err = chats.Take(platform, chat, chats.Watch); err != nil { logging.Err("chat %d state: %v", chat, err) }
         if pending {
             watchCmd(platform, chat, text)
             return
         }
-        pendingUnwatchMu.Lock()
-        pending = pendingUnwatchChats[key]
-        delete(pendingUnwatchChats, key)
-        pendingUnwatchMu.Unlock()
+        if pending, err = chats.Take(platform, chat, chats.Unwatch); err != nil { logging.Err("chat %d state: %v", chat, err) }
         if pending {
             unwatch(platform, chat, text)
         }
     }
+}
+
+// callback runs a tapped id button. The button carries the full id, so the
+// lookup is just /info on it.
+func callback(platform string, chat int64, name, id, lang string, body []byte) {
+    if err := chats.Update(platform, chat, lang, body); err != nil { logging.Err("record chat %d: %v", chat, err) }
+    logMessage(platform, chat, name, id)
+    info(platform, chat, id)
+}
+
+// started answers the bot being started in a chat — MAX tells of it as an
+// update of its own, where Telegram sends /start as a message — with the start
+// message.
+func started(platform string, chat int64, name, lang string, body []byte) {
+    if err := chats.Update(platform, chat, lang, body); err != nil { logging.Err("record chat %d: %v", chat, err) }
+    logMessage(platform, chat, name, "/start")
+    start(platform, chat)
 }
 
 // chatNames remembers who each chat last heard from, so a message sent to it —
@@ -768,15 +751,12 @@ func menus() map[string][]telegram.Command {
     return out
 }
 
-// chatKey names a chat on a platform: the pending-argument maps are keyed by it,
-// since a chat number alone is ambiguous between Telegram and MAX.
+// chatKey names a chat on a platform: chatNames is keyed by it, since a chat
+// number alone is ambiguous between Telegram and MAX.
 type chatKey struct {
     platform string
     chat     int64
 }
-
-var pendingWatchMu sync.Mutex
-var pendingWatchChats = make(map[chatKey]bool)
 
 // maxSubscriptionsPerChat bounds how many subscriptions (address and transaction
 // watches) a single chat may hold at once. watchCmd rejects a new watch once the
@@ -863,17 +843,16 @@ func watching(platform string, chat int64, target string) bool {
     return false
 }
 
+// watchCmd watches what arg names. A bare /watch puts the chat in the
+// chats.Watch state, so the next plain message it sends is the argument; one
+// with an argument takes the state away.
 func watchCmd(platform string, chat int64, arg string) {
     if arg == "" {
-        pendingWatchMu.Lock()
-        pendingWatchChats[chatKey{platform, chat}] = true
-        pendingWatchMu.Unlock()
+        if err := chats.SetState(platform, chat, chats.Watch); err != nil { logging.Err("chat %d state: %v", chat, err) }
         send(platform, chat, i18n(platform, chat).String("Send an address or transaction to watch, optionally followed by an alias — all in one message, e.g. bc1q… John"), nil)
         return
     }
-    pendingWatchMu.Lock()
-    delete(pendingWatchChats, chatKey{platform, chat})
-    pendingWatchMu.Unlock()
+    if _, err := chats.Take(platform, chat, chats.Watch); err != nil { logging.Err("chat %d state: %v", chat, err) }
     var fields = strings.SplitN(arg, " ", 2)
     var watch = fields[0]
     var alias string
@@ -903,20 +882,16 @@ func watchCmd(platform string, chat int64, arg string) {
     send(platform, chat, msg, nil)
 }
 
-var pendingUnwatchMu sync.Mutex
-var pendingUnwatchChats = make(map[chatKey]bool)
-
+// unwatch stops watching what arg names. A bare /unwatch puts the chat in the
+// chats.Unwatch state, so the next plain message it sends is the argument; one
+// with an argument takes the state away.
 func unwatch(platform string, chat int64, arg string) {
     if arg == "" {
-        pendingUnwatchMu.Lock()
-        pendingUnwatchChats[chatKey{platform, chat}] = true
-        pendingUnwatchMu.Unlock()
+        if err := chats.SetState(platform, chat, chats.Unwatch); err != nil { logging.Err("chat %d state: %v", chat, err) }
         send(platform, chat, i18n(platform, chat).String("Send the watch you'd like to stop in a separate message"), nil)
         return
     }
-    pendingUnwatchMu.Lock()
-    delete(pendingUnwatchChats, chatKey{platform, chat})
-    pendingUnwatchMu.Unlock()
+    if _, err := chats.Take(platform, chat, chats.Unwatch); err != nil { logging.Err("chat %d state: %v", chat, err) }
     var removed, err = removeWatch(platform, chat, arg)
     if err != nil {
         logging.Err("remove watch: %v", err)
