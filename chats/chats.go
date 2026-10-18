@@ -1,7 +1,7 @@
 // Package chats keeps a row for every chat the bot has heard from, on either
 // platform: the language its client reports, when it first and last wrote, how
-// many updates it has sent, the state it is in — a bare /info waiting for its
-// argument — and the whole first update it sent, exactly as the platform
+// many updates it has sent, the state it is in — a bare /info, /watch or
+// /unwatch waiting for its argument — and the whole first update it sent, exactly as the platform
 // delivered it.
 //
 // The table is keyed (platform, chat), since a Telegram chat and a MAX chat may
@@ -19,6 +19,14 @@ var db *sql.DB
 // Info is the state of a chat that sent a bare /info and owes it the address,
 // transaction or block to look up.
 const Info = "info"
+
+// Watch is the state of a chat that sent a bare /watch and owes it the address
+// or transaction to watch, with an optional alias.
+const Watch = "watch"
+
+// Unwatch is the state of a chat that sent a bare /unwatch and owes it the
+// watch to stop.
+const Unwatch = "unwatch"
 
 // stateTTL is how long a state waits for the message it asks for. A chat that
 // sent a bare /info and wrote again an hour later is not answering it, so past
@@ -44,13 +52,13 @@ type key struct {
 }
 
 // langs fronts the lang column, because every translated string in a reply asks
-// for its chat's language — a dozen lookups for one /info — and Seen is the only
+// for its chat's language — a dozen lookups for one /info — and Update is the only
 // writer. Bounded, since anyone can message the bot.
 var langs = lru.New[key, string](10000)
 
-// langMu guards langs, and is held across a miss's query as well: Seen writes
+// langMu guards langs, and is held across a miss's query as well: Update writes
 // the row before it takes the lock to cache the new language, so a lookup that
-// read the old value cannot cache it after Seen has cached the new one.
+// read the old value cannot cache it after Update has cached the new one.
 var langMu sync.Mutex
 
 // Init stores the shared handle and creates the table when it is missing. The
@@ -70,13 +78,13 @@ func Init(handle *sql.DB) error {
     return err
 }
 
-// Seen records an update from a chat: a message, a tapped button or the bot
+// Update records an update from a chat: a message, a tapped button or the bot
 // being started. A new chat's row keeps body — the update as received — and is
 // never given another; a known chat's last time and count move. lang is what
 // the sender's client reports, and an update without one leaves the stored
 // language alone.
-func Seen(platform string, chat int64, lang string, body []byte) error {
-    logging.Db("seen platform=%s chat=%d lang=%s", platform, chat, lang)
+func Update(platform string, chat int64, lang string, body []byte) error {
+    logging.Db("update platform=%s chat=%d lang=%s", platform, chat, lang)
     var err error
     if db != nil {
         var now = time.Now().Unix()
@@ -113,8 +121,8 @@ func Language(platform string, chat int64) string {
 }
 
 // SetState puts a chat in state, "" clearing it, and stamps stateAt with now.
-// Only a chat Seen has recorded has a row to hold one, and every update reaches
-// Seen before it is handled.
+// Only a chat Update has recorded has a row to hold one, and every update reaches
+// Update before it is handled.
 func SetState(platform string, chat int64, state string) error {
     logging.Db("set state platform=%s chat=%d state=%s", platform, chat, state)
     if db == nil { return nil }

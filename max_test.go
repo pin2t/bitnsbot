@@ -9,6 +9,7 @@ import "path/filepath"
 import "strings"
 import "sync"
 import "testing"
+import "bitnsbot/chats"
 import "bitnsbot/core"
 import "bitnsbot/core/coretest"
 import "bitnsbot/max"
@@ -129,7 +130,8 @@ func TestMaxWatchesAreScopedToThePlatform(t *testing.T) {
     message("max", 5, "", "/watch "+addr+" Genesis", "en", nil)
     if !strings.Contains(f.lastText(t), "Watching "+addr+" (Genesis)") { t.Fatalf("reply %q", f.lastText(t)) }
     message("max", 5, "", "/watch", "en", nil)
-    if !pendingWatchChats[chatKey{"max", 5}] || pendingWatchChats[chatKey{"tg", 5}] { t.Fatal("pending is not MAX's") }
+    if c, _, _ := chats.Get("max", 5); c.State != chats.Watch { t.Fatalf("MAX chat state %q", c.State) }
+    if c, _, _ := chats.Get("tg", 5); c.State != "" { t.Fatalf("Telegram chat state %q", c.State) }
     message("max", 5, "", txid, "en", nil)
     var list, err = watches.List()
     if err != nil { t.Fatal(err) }
