@@ -13,6 +13,7 @@ import "bitnsbot/chats"
 import "bitnsbot/core"
 import "bitnsbot/core/coretest"
 import "bitnsbot/max"
+import "bitnsbot/rates"
 import "bitnsbot/txwatches"
 import "bitnsbot/watches"
 
@@ -218,4 +219,30 @@ func TestMaxAppOptionsActOnMaxWatches(t *testing.T) {
     if tg := appWatches("tg", 5); len(tg.Addresses) != 1 || tg.Addresses[0].Id != "bc1qtelegram" { t.Fatalf("Telegram listed %+v", tg) }
     if on, err := opt.SetWatch(5, "address", "bc1qmax", false); err != nil || on { t.Fatalf("unwatch = %v, %v", on, err) }
     if list = opt.Watches(5); len(list.Addresses) != 0 { t.Fatalf("left %+v", list) }
+}
+
+// A field block keeps its <pre> and its aligned labels on Telegram, and reaches
+// MAX as plain lines with one space after each label.
+func TestMaxFieldsAreNotAligned(t *testing.T) {
+    var tgSent []string
+    var tg = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        var body struct {
+            Text string `json:"text"`
+        }
+        json.NewDecoder(r.Body).Decode(&body)
+        tgSent = append(tgSent, body.Text)
+        io.WriteString(w, `{"ok":true,"result":true}`)
+    }))
+    defer tg.Close()
+    useTelegram(t, tg.URL)
+    var f = &fakeMax{}
+    useMax(t, f)
+    if err := openDB(filepath.Join(t.TempDir(), "bitnsbot.sqlite")); err != nil { t.Fatal(err) }
+    defer closeDB()
+    if err := rates.Add(66223); err != nil { t.Fatal(err) }
+    message("tg", 4, "", "/market", "en", nil)
+    message("max", 4, "", "/market", "en", nil)
+    if len(tgSent) != 1 || !strings.Contains(tgSent[0], "<pre>") || !strings.Contains(tgSent[0], ":  ") { t.Fatalf("Telegram got %q", tgSent) }
+    var text = f.lastText(t)
+    if strings.Contains(text, "<pre>") || strings.Contains(text, "  ") { t.Fatalf("MAX got %q", text) }
 }

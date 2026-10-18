@@ -16,6 +16,7 @@ import "fmt"
 import "net"
 import "net/http"
 import "net/url"
+import "regexp"
 import "strings"
 import "sync"
 import "time"
@@ -79,6 +80,12 @@ var hookSrv *http.Server
 var appSrv *http.Server
 
 var httpClient = &http.Client{Timeout: 15 * time.Second}
+
+// preBlock is a <pre> block of a message, and padding the spaces its lines are
+// aligned with — see Send.
+var preBlock = regexp.MustCompile(`(?s)<pre>(.*?)</pre>`)
+
+var padding = regexp.MustCompile(` {2,}`)
 
 // Start sets the token and the API every call goes to, serves the webhook on
 // Listen, subscribes WebhookURL, and starts the Mini App on AppListen. A failed
@@ -151,14 +158,23 @@ func Shutdown(ctx context.Context) error {
     return errors.Join(errs...)
 }
 
-// Send posts an HTML-formatted message to a chat. The text is the Telegram one:
-// MAX's html format understands the same <b>, <a>, <code> and <pre>. Each id
+// Send posts an HTML-formatted message to a chat. The text is the Telegram one,
+// MAX's html format understanding the same <b>, <a> and <code>, with one
+// change: the field blocks are not <pre>. Telegram's are, so their labels pad
+// out to one column in monospace; MAX shows the block as plain text instead, a
+// line reading "Размер: 31.5 МБ" rather than with the label's padding, so each
+// run of spaces in a <pre> block is made one and the tags are dropped. Each id
 // becomes a callback button, two to a row as Telegram lays them out, labelled
 // with the shortened id as the text shows it and carrying the full id as its
 // payload, so a tap comes back as a message_callback that runs /info. A message
 // with no ids carries no keyboard at all. Choosing which ids get a button is the
 // caller's.
 func Send(ctx context.Context, chat int64, text string, ids []string) error {
+    text = preBlock.ReplaceAllStringFunc(text, func(block string) string {
+        var lines = strings.Split(preBlock.FindStringSubmatch(block)[1], "\n")
+        for i, line := range lines { lines[i] = strings.TrimRight(padding.ReplaceAllString(line, " "), " ") }
+        return strings.Join(lines, "\n")
+    })
     var path = "/messages?" + url.Values{"chat_id": {fmt.Sprint(chat)}}.Encode()
     var payload = map[string]any{"text": text, "format": "html", "disable_link_preview": true}
     var keyboard [][]map[string]string

@@ -174,3 +174,16 @@ func TestStartServesAndSubscribes(t *testing.T) {
     if err := Shutdown(t.Context()); err != nil { t.Fatal(err) }
     if _, err := http.Post("http://"+addr+"/max/hook", "application/json", strings.NewReader(`{}`)); err == nil { t.Fatal("the webhook still answers after Shutdown") }
 }
+
+// A field block reaches MAX as plain lines, a label and its value one space
+// apart: the <pre> tags go, and so does the padding that aligns the labels in
+// Telegram's monospace, along with what a heading's empty value leaves at the
+// end of its line. Text outside a block is sent as it was.
+func TestSendDropsFieldAlignment(t *testing.T) {
+    var f = &fakeAPI{}
+    if err := Start(Options{Token: "MAXTOKEN", APIBaseURL: f.server(t).URL}); err != nil { t.Fatal(err) }
+    var text = "Блок <code>1</code>  #1\n\n<pre>Размер:               31.5 МБ\nКомиссии:            \nсредняя:              5 сат  (1 сат/vB)</pre>\n\n<pre>Fee:  1 sat</pre>"
+    if err := Send(t.Context(), 3, text, nil); err != nil { t.Fatal(err) }
+    var want = "Блок <code>1</code>  #1\n\nРазмер: 31.5 МБ\nКомиссии:\nсредняя: 5 сат (1 сат/vB)\n\nFee: 1 sat"
+    if got := f.bodies[0]["text"]; got != want { t.Fatalf("sent\n%q\nwant\n%q", got, want) }
+}
