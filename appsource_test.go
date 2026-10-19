@@ -27,8 +27,8 @@ func TestAppWatchesAreScopedToTheChat(t *testing.T) {
     }
     defer closeDB()
     txwatches.Reset()
-    if err := watches.Add("tg", 42, "bc1qmine", "John"); err != nil { t.Fatalf("add: %v", err) }
-    if err := watches.Add("tg", 99, "bc1qtheirs", ""); err != nil { t.Fatalf("add: %v", err) }
+    if err := watches.Add("tg", 42, "bc1qmine", "John", nil); err != nil { t.Fatalf("add: %v", err) }
+    if err := watches.Add("tg", 99, "bc1qtheirs", "", nil); err != nil { t.Fatalf("add: %v", err) }
     txwatches.Add(strings.Repeat("a", 64), "tg", 42, "mine")
     txwatches.Add(strings.Repeat("b", 64), "tg", 99, "theirs")
     var mine = appWatches("tg", 42)

@@ -43,7 +43,7 @@ type Chat struct {
     Messages int64
     State    string
     StateAt  time.Time
-    Body     string
+    CreateMsg string
 }
 
 type key struct {
@@ -64,8 +64,10 @@ var langMu sync.Mutex
 // Init stores the shared handle and creates the table when it is missing. The
 // language cache is emptied, since a new handle is a new database.
 //
-// `body` is the first update's JSON, kept as text; `state` is "" for a chat
-// owing nothing, and `stateAt` the unix time it was last set or cleared.
+// `createMsg` is the update that created the row — the chat's first — as JSON
+// text; `state` is "" for a chat owing nothing, and `stateAt` the unix time it
+// was last set or cleared. A table from before the column was renamed still
+// calls it `body`, and is renamed here.
 func Init(handle *sql.DB) error {
     db = handle
     langMu.Lock()
@@ -74,13 +76,19 @@ func Init(handle *sql.DB) error {
     if db == nil { return nil }
     var _, err = db.Exec(`create table if not exists chats (platform TEXT NOT NULL, chat INTEGER NOT NULL,
         lang TEXT NOT NULL, first INTEGER NOT NULL, last INTEGER NOT NULL, messages INTEGER NOT NULL,
-        state TEXT NOT NULL, stateAt INTEGER NOT NULL, body TEXT NOT NULL, PRIMARY KEY (platform, chat))`)
-    return err
+        state TEXT NOT NULL, stateAt INTEGER NOT NULL, createMsg TEXT NOT NULL, PRIMARY KEY (platform, chat))`)
+    if err != nil { return err }
+    var old int
+    if err := db.QueryRow("select count(*) from pragma_table_info('chats') where name = 'body'").Scan(&old); err != nil { return err }
+    if old == 0 { return nil }
+    var _, renameErr = db.Exec("alter table chats rename column body to createMsg")
+    return renameErr
 }
 
 // Update records an update from a chat: a message, a tapped button or the bot
-// being started. A new chat's row keeps body — the update as received — and is
-// never given another; a known chat's last time and count move. lang is what
+// being started. A new chat's row keeps body — the update as received — as its
+// createMsg, and is never given another: a known chat's last time and count
+// move, and its createMsg is left alone. lang is what
 // the sender's client reports, and an update without one leaves the stored
 // language alone.
 func Update(platform string, chat int64, lang string, body []byte) error {
@@ -88,7 +96,7 @@ func Update(platform string, chat int64, lang string, body []byte) error {
     var err error
     if db != nil {
         var now = time.Now().Unix()
-        _, err = db.Exec(`insert into chats (platform, chat, lang, first, last, messages, state, stateAt, body)
+        _, err = db.Exec(`insert into chats (platform, chat, lang, first, last, messages, state, stateAt, createMsg)
             values (?, ?, ?, ?, ?, 1, '', ?, ?)
             on conflict(platform, chat) do update set last = excluded.last, messages = chats.messages + 1,
             lang = case when excluded.lang = '' then chats.lang else excluded.lang end`,
@@ -155,8 +163,8 @@ func Get(platform string, chat int64) (Chat, bool, error) {
     var c = Chat{Platform: platform, ID: chat}
     if db == nil { return c, false, nil }
     var first, last, stateAt int64
-    var err = db.QueryRow("select lang, first, last, messages, state, stateAt, body from chats where platform = ? and chat = ?",
-        platform, chat).Scan(&c.Lang, &first, &last, &c.Messages, &c.State, &stateAt, &c.Body)
+    var err = db.QueryRow("select lang, first, last, messages, state, stateAt, createMsg from chats where platform = ? and chat = ?",
+        platform, chat).Scan(&c.Lang, &first, &last, &c.Messages, &c.State, &stateAt, &c.CreateMsg)
     if err == sql.ErrNoRows { return c, false, nil }
     if err != nil { return c, false, err }
     c.First, c.Last, c.StateAt = time.Unix(first, 0), time.Unix(last, 0), time.Unix(stateAt, 0)

@@ -70,7 +70,7 @@ func TestSetAliasRenamesALiveWatch(t *testing.T) {
     stopNotify()
     resetWatched()
     defer stopNotify()
-    if err := addWatch("tg", 42, watchedAddr, ""); err != nil { t.Fatalf("add watch: %v", err) }
+    if err := addWatch("tg", 42, watchedAddr, "", nil); err != nil { t.Fatalf("add watch: %v", err) }
     var renamed, err = setAlias("tg", 42, watchedAddr, "John")
     if err != nil || !renamed { t.Fatalf("setAlias = %v, %v; want it to rename the watch", renamed, err) }
     var list, lerr = watches.List()
@@ -110,7 +110,7 @@ func TestSetAliasIsScopedToTheChat(t *testing.T) {
     resetWatched()
     defer stopNotify()
     var addr = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
-    if err := addWatch("tg", 42, addr, "Mine"); err != nil { t.Fatalf("add watch: %v", err) }
+    if err := addWatch("tg", 42, addr, "Mine", nil); err != nil { t.Fatalf("add watch: %v", err) }
     if renamed, err := setAlias("tg", 99, addr, "Theirs"); err != nil || renamed {
         t.Errorf("setAlias for another chat = %v, %v; want it to rename nothing", renamed, err)
     }
@@ -131,7 +131,7 @@ func TestSetAliasOnATransactionWatch(t *testing.T) {
     stopNotify()
     defer stopNotify()
     var txid = "f21b47a9143a23e80cc59e81588d21558b394005580b285961957cb3bed5b3e0"
-    if err := addWatch("tg", 42, txid, ""); err != nil { t.Fatalf("add watch: %v", err) }
+    if err := addWatch("tg", 42, txid, "", nil); err != nil { t.Fatalf("add watch: %v", err) }
     if renamed, err := setAlias("tg", 42, txid, "Payout"); err != nil || !renamed {
         t.Fatalf("setAlias = %v, %v; want it renamed", renamed, err)
     }

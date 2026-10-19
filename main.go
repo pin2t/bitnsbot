@@ -285,7 +285,7 @@ func appSetWatch(platform string, chat int64, kind, id string, on bool) (bool, e
         logging.Info("mini app: rejected watch for %s chat %d: at the limit of %d", platform, chat, maxSubscriptionsPerChat)
         return false, nil
     }
-    if err := addWatch(platform, chat, id, ""); err != nil { return false, err }
+    if err := addWatch(platform, chat, id, "", nil); err != nil { return false, err }
     return true, nil
 }
 
@@ -604,7 +604,7 @@ func message(platform string, chat int64, name, text, lang string, body []byte) 
     case "/info":
         info(platform, chat, arg)
     case "/watch":
-        watchCmd(platform, chat, arg)
+        watchCmd(platform, chat, arg, body)
     case "/unwatch":
         unwatch(platform, chat, arg)
     case "/watches":
@@ -626,7 +626,7 @@ func message(platform string, chat int64, name, text, lang string, body []byte) 
         }
         if pending, err = chats.Take(platform, chat, chats.Watch); err != nil { logging.Err("chat %d state: %v", chat, err) }
         if pending {
-            watchCmd(platform, chat, text)
+            watchCmd(platform, chat, text, body)
             return
         }
         if pending, err = chats.Take(platform, chat, chats.Unwatch); err != nil { logging.Err("chat %d state: %v", chat, err) }
@@ -775,12 +775,13 @@ func atWatchLimit(platform string, chat int64) (bool, error) {
 // addWatch records a watch and starts everything that makes it fire: the store
 // or the in-memory list, the notifier goroutine, and the local script/outpoint
 // matcher. /watch and the Mini App's bell both go through here, so a watch added
-// either way behaves identically.
-func addWatch(platform string, chat int64, target, alias string) error {
+// either way behaves identically. msg is the update the watch is made by, which
+// an address watch keeps; the Mini App has none and passes nil.
+func addWatch(platform string, chat int64, target, alias string, msg []byte) error {
     if app.IsTxID(target) {
         txwatches.Add(target, platform, chat, alias)
     } else {
-        if err := watches.Add(platform, chat, target, alias); err != nil { return err }
+        if err := watches.Add(platform, chat, target, alias, msg); err != nil { return err }
         startNotifyChat(platform, chat, target, alias)
         if core.Enabled() { seedOutpoints([]string{target}) }
     }
@@ -845,8 +846,9 @@ func watching(platform string, chat int64, target string) bool {
 
 // watchCmd watches what arg names. A bare /watch puts the chat in the
 // chats.Watch state, so the next plain message it sends is the argument; one
-// with an argument takes the state away.
-func watchCmd(platform string, chat int64, arg string) {
+// with an argument takes the state away. body is the update the watch is made
+// by — the one carrying the argument — which an address watch keeps.
+func watchCmd(platform string, chat int64, arg string, body []byte) {
     if arg == "" {
         if err := chats.SetState(platform, chat, chats.Watch); err != nil { logging.Err("chat %d state: %v", chat, err) }
         send(platform, chat, i18n(platform, chat).String("Send an address or transaction to watch, optionally followed by an alias — all in one message, e.g. bc1q… John"), nil)
@@ -868,7 +870,7 @@ func watchCmd(platform string, chat int64, arg string) {
         send(platform, chat, i18n(platform, chat).Sprintf("Sorry, this chat has reached the limit of %d subscriptions. Unwatch something first to add a new one.", maxSubscriptionsPerChat), nil)
         return
     }
-    if err := addWatch(platform, chat, watch, alias); err != nil {
+    if err := addWatch(platform, chat, watch, alias, body); err != nil {
         logging.Err("add watch: %v", err)
         send(platform, chat, i18n(platform, chat).String("Sorry, something went wrong saving that watch"), nil)
         return

@@ -16,7 +16,7 @@ func open(t *testing.T) *sql.DB {
     return handle
 }
 
-// A chat's first update makes its row and is the only body it ever keeps; later
+// A chat's first update makes its row and is the only createMsg it ever keeps; later
 // ones move the last time and the count, and change the language only when they
 // report one. The same number on the other platform is another chat.
 func TestUpdateRecordsChat(t *testing.T) {
@@ -26,19 +26,19 @@ func TestUpdateRecordsChat(t *testing.T) {
     if err := Update("tg", 42, "", []byte(`{"update_id":2}`)); err != nil { t.Fatal(err) }
     var c, ok, err = Get("tg", 42)
     if err != nil || !ok { t.Fatalf("get: %v %v", ok, err) }
-    if c.Lang != "ru" || c.Messages != 2 || c.Body != `{"update_id":1}` || c.State != "" {
+    if c.Lang != "ru" || c.Messages != 2 || c.CreateMsg != `{"update_id":1}` || c.State != "" {
         t.Fatalf("after two updates: %+v", c)
     }
     if c.First.Unix() < before || c.Last.Before(c.First) || c.Last.Unix() > time.Now().Unix() {
         t.Fatalf("times: first %v, last %v", c.First, c.Last)
     }
     if err := Update("tg", 42, "es", nil); err != nil { t.Fatal(err) }
-    if c, _, _ = Get("tg", 42); c.Lang != "es" || c.Messages != 3 || c.Body != `{"update_id":1}` {
+    if c, _, _ = Get("tg", 42); c.Lang != "es" || c.Messages != 3 || c.CreateMsg != `{"update_id":1}` {
         t.Fatalf("after a new language: %+v", c)
     }
     if err := Update("max", 42, "", []byte(`{"update_type":"bot_started"}`)); err != nil { t.Fatal(err) }
     var other, _, _ = Get("max", 42)
-    if other.Lang != "" || other.Messages != 1 || other.Body != `{"update_type":"bot_started"}` {
+    if other.Lang != "" || other.Messages != 1 || other.CreateMsg != `{"update_type":"bot_started"}` {
         t.Fatalf("the MAX chat: %+v", other)
     }
     if Language("max", 42) != "" || Language("tg", 42) != "es" { t.Fatalf("languages %q %q", Language("max", 42), Language("tg", 42)) }
@@ -102,4 +102,21 @@ func TestTakeExpires(t *testing.T) {
     var edge = time.Now().Add(-stateTTL + time.Minute).Unix()
     if _, err := handle.Exec("update chats set stateAt = ? where platform = 'tg' and chat = 1", edge); err != nil { t.Fatal(err) }
     if ok, err := Take("tg", 1, Info); !ok || err != nil { t.Fatalf("did not take a state inside the TTL: %v %v", ok, err) }
+}
+
+// A table from before the rename still calls createMsg body: Init renames the
+// column, keeping what it holds, and a second Init leaves it as it is.
+func TestInitRenamesBody(t *testing.T) {
+    var handle, err = sql.Open("sqlite", filepath.Join(t.TempDir(), "chats.db"))
+    if err != nil { t.Fatal(err) }
+    t.Cleanup(func() { handle.Close(); Init(nil) })
+    if _, err := handle.Exec(`create table chats (platform TEXT NOT NULL, chat INTEGER NOT NULL,
+        lang TEXT NOT NULL, first INTEGER NOT NULL, last INTEGER NOT NULL, messages INTEGER NOT NULL,
+        state TEXT NOT NULL, stateAt INTEGER NOT NULL, body TEXT NOT NULL, PRIMARY KEY (platform, chat))`); err != nil { t.Fatal(err) }
+    if _, err := handle.Exec(`insert into chats values ('tg', 1, 'ru', 5, 6, 2, '', 5, '{"update_id":1}')`); err != nil { t.Fatal(err) }
+    if err := Init(handle); err != nil { t.Fatal(err) }
+    if err := Init(handle); err != nil { t.Fatalf("second init: %v", err) }
+    if err := Update("tg", 1, "", []byte(`{"update_id":2}`)); err != nil { t.Fatal(err) }
+    var c, ok, getErr = Get("tg", 1)
+    if getErr != nil || !ok || c.CreateMsg != `{"update_id":1}` || c.Messages != 3 { t.Fatalf("after the rename: %+v %v %v", c, ok, getErr) }
 }
