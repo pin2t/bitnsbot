@@ -114,7 +114,7 @@ func TestWatchNotification(t *testing.T) {
     stopNotify()
     resetWatched()
     defer stopNotify()
-    watchCmd("tg", 42, watchedAddr+" John")
+    watchCmd("tg", 42, watchedAddr+" John", nil)
     broadcast("deadbeefrawtxhex")
     var deadline = time.Now().Add(3 * time.Second)
     for time.Now().Before(deadline) {
@@ -248,9 +248,9 @@ func TestWatchesFlow(t *testing.T) {
     }
     var addr = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
     var txid = "f21b47a9143a23e80cc59e81588d21558b394005580b285961957cb3bed5b3e0"
-    watches.Add("tg", 1, addr, "")
+    watches.Add("tg", 1, addr, "", nil)
     txwatches.Add(txid, "tg", 1, "")
-    watches.Add("tg", 2, "someoneElsesAddress", "")
+    watches.Add("tg", 2, "someoneElsesAddress", "", nil)
     message("tg", 1, "", "/watches", "", nil)
     var msg = sent[len(sent)-1]
     if !strings.Contains(msg, "<code>"+addr+"</code>") {
@@ -265,7 +265,7 @@ func TestWatchesFlow(t *testing.T) {
     if strings.Contains(msg, "someoneElsesAddress") {
         t.Fatalf("must not list another chat's watch: %q", msg)
     }
-    watches.Add("tg", 3, "a<b>c", "")
+    watches.Add("tg", 3, "a<b>c", "", nil)
     message("tg", 3, "", "/watches", "", nil)
     if last := sent[len(sent)-1]; !strings.Contains(last, "a&lt;b&gt;c") {
         t.Fatalf("expected HTML-escaped watch id, got: %q", last)
@@ -298,12 +298,12 @@ func TestWatchLimit(t *testing.T) {
     openDB(filepath.Join(t.TempDir(), "watches.db"))
     defer closeDB()
     for i := 0; i < maxSubscriptionsPerChat; i++ {
-        if err := watches.Add("tg", 42, fmt.Sprintf("addr%d", i), ""); err != nil {
+        if err := watches.Add("tg", 42, fmt.Sprintf("addr%d", i), "", nil); err != nil {
             t.Fatalf("seed watch %d: %v", i, err)
         }
     }
     var addr = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
-    watchCmd("tg", 42, addr)
+    watchCmd("tg", 42, addr, nil)
     if last := sent[len(sent)-1]; !strings.Contains(last, "limit") {
         t.Fatalf("expected a limit rejection, got %q", last)
     }
@@ -549,7 +549,7 @@ func awaitNotification(t *testing.T, btcdSrv *httptest.Server, watchedAddr strin
     t.Cleanup(func() { closeDB() })
     t.Cleanup(stopNotify)
     t.Cleanup(resetWatched)
-    watchCmd("tg", 42, watchedAddr+" John")
+    watchCmd("tg", 42, watchedAddr+" John", nil)
     broadcast("deadbeefrawtxhex")
     var deadline = time.Now().Add(3 * time.Second)
     for time.Now().Before(deadline) {

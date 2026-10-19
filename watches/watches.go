@@ -20,28 +20,50 @@ type Watch struct {
 // what stops one chat holding the same address twice, and what makes a chat's own
 // watches a range of the primary key rather than a walk of the table decoding
 // every row to find out whose it is. `created` is the one fact about a watch that
-// is otherwise unrecoverable; nothing reads it but List's ordering.
+// is otherwise unrecoverable; nothing reads it but List's ordering. `createMsg`
+// is the update the watch was made by, as JSON text — "" for one made from the
+// Mini App, which has no message.
 //
-// Init stores the shared handle and creates the table when it is missing.
+// Init stores the shared handle and creates the table when it is missing, and
+// adds createMsg to a table from before it, its rows reading "".
 func Init(handle *sql.DB) error {
     db = handle
     if db == nil { return nil }
     var _, err = db.Exec(`create table if not exists watches (platform TEXT NOT NULL, chat INTEGER NOT NULL,
-        addr TEXT NOT NULL, alias TEXT NOT NULL, created INTEGER NOT NULL, PRIMARY KEY (platform, chat, addr))`)
-    return err
+        addr TEXT NOT NULL, alias TEXT NOT NULL, created INTEGER NOT NULL, createMsg TEXT NOT NULL DEFAULT '',
+        PRIMARY KEY (platform, chat, addr))`)
+    if err != nil { return err }
+    var has int
+    if err := db.QueryRow("select count(*) from pragma_table_info('watches') where name = 'createMsg'").Scan(&has); err != nil { return err }
+    if has == 1 { return nil }
+    var _, alterErr = db.Exec("alter table watches add column createMsg TEXT NOT NULL DEFAULT ''")
+    return alterErr
 }
 
 // Add stores an address watch for a chat. Watching an address the chat already
 // watches replaces the row rather than adding a second one, and **keeps the
 // original `created`** — it is the same watch, and resetting its age would be a
-// lie. That is the `do update` clause: an upsert that leaves one column alone.
-func Add(platform string, chatID int64, address, alias string) error {
+// lie. That is the `do update` clause: an upsert that leaves those columns
+// alone. msg, the update the watch is made by, is likewise kept only by the
+// insert that creates the row, as its createMsg.
+func Add(platform string, chatID int64, address, alias string, msg []byte) error {
     logging.Db("add platform=%s chat=%d address=%s alias=%s", platform, chatID, address, alias)
     if db == nil { return nil }
-    var _, err = db.Exec(`insert into watches (platform, chat, addr, alias, created) values (?, ?, ?, ?, ?)
+    var _, err = db.Exec(`insert into watches (platform, chat, addr, alias, created, createMsg) values (?, ?, ?, ?, ?, ?)
         on conflict(platform, chat, addr) do update set alias = excluded.alias`,
-        platform, chatID, address, alias, time.Now().Unix())
+        platform, chatID, address, alias, time.Now().Unix(), string(msg))
     return err
+}
+
+// CreateMsg is the update chatID's watch on address was made by, and whether
+// there is such a watch.
+func CreateMsg(platform string, chatID int64, address string) (string, bool, error) {
+    if db == nil { return "", false, nil }
+    var msg string
+    var err = db.QueryRow("select createMsg from watches where platform = ? and chat = ? and addr = ?", platform, chatID, address).Scan(&msg)
+    if err == sql.ErrNoRows { return "", false, nil }
+    if err != nil { return "", false, err }
+    return msg, true, nil
 }
 
 // Count returns how many address watches chatID currently has on platform.

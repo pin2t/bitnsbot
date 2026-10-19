@@ -770,7 +770,7 @@ func TestChatsRecordMessages(t *testing.T) {
     var first = `{"update_id":1,"message":{"chat":{"id":5},"text":"/info"}}`
     message("tg", 5, "alice", "/info", "ru", []byte(first))
     var c, ok, err = chats.Get("tg", 5)
-    if err != nil || !ok || c.Body != first || c.Lang != "ru" || c.Messages != 1 || c.State != chats.Info {
+    if err != nil || !ok || c.CreateMsg != first || c.Lang != "ru" || c.Messages != 1 || c.State != chats.Info {
         t.Fatalf("after /info: %+v %v %v", c, ok, err)
     }
     closeDB()
@@ -780,7 +780,7 @@ func TestChatsRecordMessages(t *testing.T) {
     if len(sent) != 2 || sent[1] != "Нет соединения с сетью Bitcoin" {
         t.Fatalf("replies %q", sent)
     }
-    if c, _, _ = chats.Get("tg", 5); c.State != "" || c.Messages != 2 || c.Body != first || c.Lang != "ru" {
+    if c, _, _ = chats.Get("tg", 5); c.State != "" || c.Messages != 2 || c.CreateMsg != first || c.Lang != "ru" {
         t.Fatalf("after the argument: %+v", c)
     }
 }
@@ -846,4 +846,31 @@ func TestWatchArgumentExpires(t *testing.T) {
     if len(sent) != before { t.Fatalf("an expired /unwatch was answered: %q", sent[before:]) }
     if c, _, _ := chats.Get("tg", 6); c.State != "" { t.Fatalf("expired state left %q", c.State) }
     if n, _ := watches.Count("tg", 6); n != 1 { t.Fatalf("an expired /unwatch removed the watch: %d left", n) }
+}
+
+// An address watch keeps the update it was made by: the /watch message when the
+// address came with it, the follow-up when a bare /watch asked for it. Watching
+// the address again only renames it.
+func TestWatchKeepsItsCreateMsg(t *testing.T) {
+    var server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": true})
+    }))
+    defer server.Close()
+    useTelegram(t, server.URL)
+    core.Reset()
+    if err := openDB(filepath.Join(t.TempDir(), "bitnsbot.sqlite")); err != nil { t.Fatalf("openDB: %v", err) }
+    defer closeDB()
+    stopNotify()
+    defer stopNotify()
+    var addr = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
+    var other = "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq"
+    var direct = `{"update_id":1,"message":{"text":"/watch ` + addr + `"}}`
+    message("tg", 8, "", "/watch "+addr, "", []byte(direct))
+    message("tg", 8, "", "/watch "+addr+" Genesis", "", []byte(`{"update_id":2}`))
+    if msg, ok, err := watches.CreateMsg("tg", 8, addr); err != nil || !ok || msg != direct { t.Fatalf("createMsg %q %v %v", msg, ok, err) }
+    if list, _ := watches.List(); len(list) != 1 || list[0].Alias != "Genesis" { t.Fatalf("watches %+v", list) }
+    message("tg", 8, "", "/watch", "", []byte(`{"update_id":3}`))
+    var followUp = `{"update_id":4,"message":{"text":"` + other + `"}}`
+    message("tg", 8, "", other, "", []byte(followUp))
+    if msg, ok, err := watches.CreateMsg("tg", 8, other); err != nil || !ok || msg != followUp { t.Fatalf("follow-up createMsg %q %v %v", msg, ok, err) }
 }

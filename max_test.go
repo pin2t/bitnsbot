@@ -203,7 +203,7 @@ func TestMaxAppOptionsActOnMaxWatches(t *testing.T) {
     stopNotify()
     defer stopNotify()
     var opt = appOptions("max")
-    if err := watches.Add("tg", 5, "bc1qtelegram", "tg"); err != nil { t.Fatal(err) }
+    if err := watches.Add("tg", 5, "bc1qtelegram", "tg", nil); err != nil { t.Fatal(err) }
     var on, err = opt.SetWatch(5, "address", "bc1qmax", true)
     if err != nil || !on { t.Fatalf("SetWatch = %v, %v", on, err) }
     if _, err := opt.SetAlias(5, "address", "bc1qmax", "Cold"); err != nil { t.Fatal(err) }
