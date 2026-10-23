@@ -11,6 +11,7 @@ import "time"
 import "github.com/go-zeromq/zmq4"
 import "bitnsbot/core"
 import "bitnsbot/logging"
+import "bitnsbot/mp"
 import "bitnsbot/signals"
 
 // Bitcoin Core has no server-side address filter — nothing like btcd's
@@ -170,6 +171,16 @@ func parseTx(raw []byte) (*parsedTx, bool) {
     return tx, true
 }
 
+// vsize is a transaction's virtual size, which is what getmempoolinfo's bytes
+// sums: its weight — the non-witness bytes four times, the witness once — over
+// four, rounded up. A segwit transaction's non-witness bytes are all but its
+// marker and flag and the witness between its outputs and its locktime.
+func vsize(raw []byte, tx *parsedTx) int64 {
+    var base = len(raw)
+    if tx.segwit { base = tx.outputsEnd + 2 }
+    return int64((base*3 + len(raw) + 3) / 4)
+}
+
 // txid is the double SHA-256 of a transaction's non-witness serialization,
 // printed the way Bitcoin displays a hash. A segwit transaction drops the
 // two-byte marker and flag and everything between its outputs and the
@@ -315,7 +326,7 @@ func startZMQ(ctx context.Context, endpoints []string) error {
                         logging.Warn("zmq: could not parse a %d-byte transaction", len(msg.Frames[1]))
                         continue
                     }
-                    recordMempoolTx(msg.Frames[1], tx)
+                    mp.Record(txid(msg.Frames[1], tx), tx.amount, vsize(msg.Frames[1], tx), tx.coinbase)
                     if !anyWatched() || !matches(tx) { continue }
                     go broadcast(hex.EncodeToString(msg.Frames[1]))
                 }

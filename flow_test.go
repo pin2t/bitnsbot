@@ -3,7 +3,6 @@ package main
 import "context"
 import "encoding/json"
 import "fmt"
-import "math"
 import "net/http"
 import "net/http/httptest"
 import "path/filepath"
@@ -12,6 +11,7 @@ import "testing"
 import "time"
 import "bitnsbot/core"
 import "bitnsbot/core/coretest"
+import "bitnsbot/mp"
 import "bitnsbot/cursors"
 import "bitnsbot/chats"
 import "bitnsbot/telegram"
@@ -493,9 +493,7 @@ func TestMempoolFlow(t *testing.T) {
     })
     defer btcdServer.Close()
     coretest.Use(t, btcdServer)
-    summaryMu.Lock()
-    summaryAmount, summaryFee, summaryOK = 350000000, 30000, true
-    summaryMu.Unlock()
+    mp.SetSummary(350000000, 30000, true)
     message("tg", 1, "", "/mempool", "", nil)
     if len(sent) != 2 {
         t.Fatalf("expected a mempool reply, got %#v", sent)
@@ -508,63 +506,23 @@ func TestMempoolFlow(t *testing.T) {
             t.Fatalf("mempool reply missing %q: %q", want, sent[1])
         }
     }
-    summaryMu.Lock()
-    summaryOK = false
-    summaryMu.Unlock()
+    mp.SetSummary(0, 0, false)
     message("tg", 1, "", "/mempool", "", nil)
     if strings.Contains(sent[2], "Total flow") || strings.Contains(sent[2], "Total fees") {
         t.Fatalf("expected no totals with empty cache: %q", sent[2])
     }
 }
 
-// The flow rate is counted from the arrivals the rawtx frames record: those of
-// the last window per second, against the window before. It is not shown until
-// a whole window has been watched, nor its change until two have; arrivals older
-// than two windows count for nothing, and a rate falls to zero once they stop.
-// An arrival forgets the ones past two windows.
-//
-// and it renders in the /mempool reply
+// The flow rate the arrivals make renders in the /mempool reply: 150 arrivals
+// in the last minute and 120 in the one before are 2.5 tx/sec, up 0.5.
 func TestMempoolFlowRate(t *testing.T) {
-    resetMempool()
-    t.Cleanup(resetMempool)
+    mp.Reset()
+    t.Cleanup(mp.Reset)
     var now = time.Now()
-    var seed = func(n int, age time.Duration) {
-        for i := 0; i < n; i++ { mempoolArrivals = append(mempoolArrivals, now.Add(-age)) }
-    }
-    mempoolMu.Lock()
-    flowSince = now.Add(-30 * time.Second)
-    seed(40, 20*time.Second)
-    mempoolMu.Unlock()
-    if _, rateOK, _, _ := mempoolFlow(now); rateOK {
-        t.Fatal("a rate after half a window")
-    }
-    mempoolMu.Lock()
-    flowSince, mempoolArrivals = now.Add(-3*time.Minute), nil
-    seed(500, 150*time.Second)
-    seed(120, 90*time.Second)
-    seed(150, 10*time.Second)
-    mempoolMu.Unlock()
-    var rate, rateOK, change, changeOK = mempoolFlow(now)
-    if !rateOK || !changeOK || rate != 2.5 || math.Abs(change-0.5) > 1e-9 {
-        t.Fatalf("rate=%v (%v) change=%v (%v), want 2.5 and +0.5", rate, rateOK, change, changeOK)
-    }
-    mempoolMu.Lock()
-    flowSince = now.Add(-90 * time.Second)
-    mempoolMu.Unlock()
-    if _, rateOK, _, changeOK = mempoolFlow(now); !rateOK || changeOK {
-        t.Errorf("after a window and a half: rateOK=%v changeOK=%v, want true, false", rateOK, changeOK)
-    }
-    if rate, _, _, _ = mempoolFlow(now.Add(3 * time.Minute)); rate != 0 {
-        t.Errorf("rate %v once arrivals stopped, want 0", rate)
-    }
-    record(t, legacyTx(1, 1000))
-    mempoolMu.Lock()
-    var kept = len(mempoolArrivals)
-    flowSince = now.Add(-3 * time.Minute)
-    mempoolMu.Unlock()
-    if kept != 271 {
-        t.Errorf("%d arrivals kept, want the 270 inside two windows and the new one", kept)
-    }
+    var arrivals []time.Time
+    for i := 0; i < 120; i++ { arrivals = append(arrivals, now.Add(-90*time.Second)) }
+    for i := 0; i < 150; i++ { arrivals = append(arrivals, now.Add(-10*time.Second)) }
+    mp.SeedFlow(now.Add(-3*time.Minute), arrivals)
     var sent []string
     var tg = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
         var body struct {

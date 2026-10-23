@@ -259,42 +259,6 @@ func money(usd float64, lang string) string {
     return sign + "$" + trimNum(usd, 2)
 }
 
-// price renders an exact dollar amount with cents and comma-grouped thousands:
-// "$66,202.00". `usd` drops cents from $100 up, which is right for transaction
-// amounts where they are noise, but wrong on a price quote where they are the
-// point.
-func price(usd float64) string {
-    var sign = ""
-    if usd < 0 { sign, usd = "-", -usd }
-    var whole = int64(usd)
-    var cents = int64(math.Round((usd - float64(whole)) * 100))
-    if cents == 100 { whole, cents = whole+1, 0 }
-    return fmt.Sprintf("%s$%s.%02d", sign, comma(whole), cents)
-}
-
-func comma(n int64) string {
-    var s = strconv.FormatInt(n, 10)
-    for i := len(s) - 3; i > 0; i -= 3 {
-        s = s[:i] + "," + s[i:]
-    }
-    return s
-}
-
-// change renders a move against an earlier price as both an absolute amount and
-// a percentage, always signed so a glance shows direction: "+$1,608.42 (+2.49%)".
-//
-// price() carries the minus itself
-func change(now, then float64) string {
-    var delta = now - then
-    var sign = "+"
-    if delta < 0 { sign = "" }
-    var pct = ""
-    if then > 0 {
-        pct = fmt.Sprintf(" (%s%s%%)", sign, trimNum(delta/then*100, 2))
-    }
-    return sign + price(delta) + pct
-}
-
 // BTCThreshold is where a notification headline switches from sats to
 // BTC. From five million sats up the sats figure stops being readable at a
 // glance — "5 000 000 sats" versus "0.05 BTC", which is the same amount.

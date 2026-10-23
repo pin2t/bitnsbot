@@ -446,3 +446,42 @@ func LastMarket() (Market, bool) {
     }
     return Market{Price: float64(price) / 100, MarketCap: float64(cap_) / 100, Volume24h: float64(volume) / 100}, true
 }
+
+// Price renders an exact dollar amount with cents and comma-grouped thousands:
+// "$66,202.00". main's `usd` drops cents from $100 up, which is right for
+// transaction amounts where they are noise, but wrong on a price quote where
+// they are the point.
+func Price(usd float64) string {
+    var sign = ""
+    if usd < 0 { sign, usd = "-", -usd }
+    var whole = int64(usd)
+    var frac = int64(math.Round((usd - float64(whole)) * 100))
+    if frac == 100 { whole, frac = whole+1, 0 }
+    return fmt.Sprintf("%s$%s.%02d", sign, comma(whole), frac)
+}
+
+func comma(n int64) string {
+    var s = strconv.FormatInt(n, 10)
+    for i := len(s) - 3; i > 0; i -= 3 {
+        s = s[:i] + "," + s[i:]
+    }
+    return s
+}
+
+// Change renders a move against an earlier price as both an absolute amount and
+// a percentage, always signed so a glance shows direction: "+$1,608.42 (+2.49%)".
+// The percentage has at most two decimals, trailing zeros trimmed.
+//
+// Price() carries the minus itself
+func Change(now, then float64) string {
+    var delta = now - then
+    var sign = "+"
+    if delta < 0 { sign = "" }
+    var pct = ""
+    if then > 0 {
+        var p = strconv.FormatFloat(delta/then*100, 'f', 2, 64)
+        p = strings.TrimRight(strings.TrimRight(p, "0"), ".")
+        pct = fmt.Sprintf(" (%s%s%%)", sign, p)
+    }
+    return sign + Price(delta) + pct
+}
