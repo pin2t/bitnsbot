@@ -7,6 +7,7 @@ import "testing"
 import "time"
 import "bitnsbot/app"
 import "bitnsbot/core/coretest"
+import "bitnsbot/mp"
 
 // The zmq fixtures are named after their txids, so the local hash has to land
 // on the name Core gave each — a segwit spend, a three-output send and a
@@ -65,100 +66,69 @@ func record(t *testing.T, raw []byte) string {
     t.Helper()
     var tx, ok = parseTx(raw)
     if !ok { t.Fatalf("parseTx failed on %x", raw) }
-    recordMempoolTx(raw, tx)
+    mp.Record(txid(raw, tx), tx.amount, vsize(raw, tx), tx.coinbase)
     return txid(raw, tx)
 }
 
 func TestMempoolListRecordsArrivals(t *testing.T) {
-    resetMempool()
-    t.Cleanup(resetMempool)
+    mp.Reset()
+    t.Cleanup(mp.Reset)
     var first = record(t, legacyTx(1, 12000))
     var second = record(t, legacyTx(2, 25_000_000))
-    var mp = appMempool("", 0)
-    if len(mp.Txs) != 2 || mp.Txs[0].Id != second || mp.Txs[1].Id != first {
-        t.Fatalf("list = %+v, want the two arrivals newest first", mp.Txs)
+    var page = appMempool("", 0)
+    if len(page.Txs) != 2 || page.Txs[0].Id != second || page.Txs[1].Id != first {
+        t.Fatalf("list = %+v, want the two arrivals newest first", page.Txs)
     }
-    if mp.Txs[1].Amount != "12 000 sats" || mp.Txs[0].Amount != "0.25 BTC" {
-        t.Errorf("amounts = %q, %q", mp.Txs[1].Amount, mp.Txs[0].Amount)
+    if page.Txs[1].Amount != "12 000 sats" || page.Txs[0].Amount != "0.25 BTC" {
+        t.Errorf("amounts = %q, %q", page.Txs[1].Amount, page.Txs[0].Amount)
     }
-    if mp.Txs[0].Short != short(second) {
-        t.Errorf("short = %q", mp.Txs[0].Short)
+    if page.Txs[0].Short != short(second) {
+        t.Errorf("short = %q", page.Txs[0].Short)
     }
-    if mp.Top != 2 {
-        t.Errorf("Top = %d, want 2", mp.Top)
+    if page.Top != 2 {
+        t.Errorf("Top = %d, want 2", page.Top)
     }
     var newer = appMempool("", 1)
     if len(newer.Txs) != 1 || newer.Txs[0].Id != second || newer.More {
         t.Errorf("after 1 = %+v, want the second arrival alone", newer)
     }
-    for i := 3; i <= mempoolKept+5; i++ { record(t, legacyTx(i, 1000)) }
-    if mp = appMempool("", 0); len(mp.Txs) != mempoolKept {
-        t.Errorf("list holds %d, want %d", len(mp.Txs), mempoolKept)
-    }
-}
-
-// A coinbase starts a block's republished transactions: they come off the list
-// rather than going on it, and an open page is told which rows to drop.
-func TestMempoolListDropsMinedTransactions(t *testing.T) {
-    resetMempool()
-    t.Cleanup(resetMempool)
-    var first = record(t, legacyTx(1, 1000))
-    var second = record(t, legacyTx(2, 2000))
-    var coinbase, _ = hex.DecodeString("01000000010000000000000000000000000000000000000000000000000000000000000000ffffffff0100ffffffff0100f2052a01000000016a00000000")
-    record(t, coinbase)
-    record(t, legacyTx(1, 1000))
-    record(t, legacyTx(99, 1000))
-    var mp = appMempool("", 0)
-    if len(mp.Txs) != 1 || mp.Txs[0].Id != second {
-        t.Fatalf("list = %+v, want only the unmined arrival", mp.Txs)
-    }
-    if len(mp.Gone) != 1 || mp.Gone[0] != first {
-        t.Errorf("gone = %v, want %s", mp.Gone, first)
-    }
-    if gone := appMempool("", mp.Top).Gone; len(gone) != 0 {
-        t.Errorf("gone after the page caught up = %v", gone)
-    }
-    mempoolMu.Lock()
-    mempoolMinedUntil = time.Time{}
-    mempoolMu.Unlock()
-    var third = record(t, legacyTx(3, 1000))
-    if mp = appMempool("", 0); mp.Txs[0].Id != third {
-        t.Errorf("an arrival after the block's burst is not listed")
+    for i := 3; i <= mp.Kept+5; i++ { record(t, legacyTx(i, 1000)) }
+    if page = appMempool("", 0); len(page.Txs) != mp.Kept {
+        t.Errorf("list holds %d, want %d", len(page.Txs), mp.Kept)
     }
 }
 
 // A page that fell further behind than the list keeps is handed the whole list.
 func TestMempoolOverflowIsTheWholeList(t *testing.T) {
-    resetMempool()
-    t.Cleanup(resetMempool)
-    for i := 1; i <= mempoolKept+10; i++ { record(t, legacyTx(i, 1000)) }
-    var mp = appMempool("", 3)
-    if !mp.More || len(mp.Txs) != mempoolKept {
-        t.Errorf("More = %v with %d rows, want the whole list", mp.More, len(mp.Txs))
+    mp.Reset()
+    t.Cleanup(mp.Reset)
+    for i := 1; i <= mp.Kept+10; i++ { record(t, legacyTx(i, 1000)) }
+    var page = appMempool("", 3)
+    if !page.More || len(page.Txs) != mp.Kept {
+        t.Errorf("More = %v with %d rows, want the whole list", page.More, len(page.Txs))
     }
 }
 
 // The page's fields are read from memory: the counts the node last reported,
 // and the flow rate the arrivals make.
 func TestMempoolFields(t *testing.T) {
-    resetMempool()
-    t.Cleanup(resetMempool)
+    mp.Reset()
+    t.Cleanup(mp.Reset)
     coretest.Start(t, func(method string, params []any) (any, error) {
         return map[string]any{"size": 36552, "bytes": 12500000}, nil
     })
-    if mp := appMempool("", -1); mp.OK {
-        t.Errorf("fields before the node was asked: %+v", mp.Rows)
+    if page := appMempool("", -1); page.OK {
+        t.Errorf("fields before the node was asked: %+v", page.Rows)
     }
-    refreshMempoolStats()
-    mempoolMu.Lock()
-    flowSince = time.Now().Add(-90 * time.Second)
-    for i := 0; i < 252; i++ { mempoolArrivals = append(mempoolArrivals, time.Now()) }
-    mempoolMu.Unlock()
-    var mp = appMempool("ru", -1)
-    if !mp.OK {
-        t.Fatalf("page not OK: %+v", mp)
+    mp.Refresh()
+    var arrivals []time.Time
+    for i := 0; i < 252; i++ { arrivals = append(arrivals, time.Now()) }
+    mp.SeedFlow(time.Now().Add(-90*time.Second), arrivals)
+    var page = appMempool("ru", -1)
+    if !page.OK {
+        t.Fatalf("page not OK: %+v", page)
     }
-    var got = fieldMap(mp.Rows)
+    var got = fieldMap(page.Rows)
     if got["Размер"] != "12.5 МБ" || got["Транзакций"] != "36 552" || got["Скорость поступления"] != "4.2 тр/сек" {
         t.Errorf("fields = %v", got)
     }
@@ -175,13 +145,13 @@ func fieldMap(rows []app.Field) map[string]string {
 // carries them to the open page. Asking the node replaces the counts outright,
 // and the total is only shown once it has been summed.
 func TestMempoolCountsFollowRawtx(t *testing.T) {
-    resetMempool()
-    t.Cleanup(resetMempool)
+    mp.Reset()
+    t.Cleanup(mp.Reset)
     var size = 100
     coretest.Start(t, func(method string, params []any) (any, error) {
         return map[string]any{"size": size, "bytes": 50000}, nil
     })
-    refreshMempoolStats()
+    mp.Refresh()
     var arrival = legacyTx(1, 150_000_000)
     record(t, arrival)
     var got = fieldMap(appMempool("", 0).Rows)
@@ -191,9 +161,7 @@ func TestMempoolCountsFollowRawtx(t *testing.T) {
     if _, ok := got["Total flow"]; ok {
         t.Errorf("a total before one was summed: %v", got)
     }
-    summaryMu.Lock()
-    summaryAmount, summaryOK = 100_000_000, true
-    summaryMu.Unlock()
+    mp.SetSummary(100_000_000, 0, true)
     record(t, legacyTx(2, 50_000_000))
     if got = fieldMap(appMempool("", 0).Rows); got["Transactions"] != "102" || got["Total flow"] != "~1.50 BTC" {
         t.Errorf("after a second arrival: %v", got)
@@ -205,7 +173,7 @@ func TestMempoolCountsFollowRawtx(t *testing.T) {
         t.Errorf("after a block mined the first: %v", got)
     }
     size = 3000
-    refreshMempoolStats()
+    mp.Refresh()
     if got = fieldMap(appMempool("", 0).Rows); got["Transactions"] != "3 000" || got["Size"] != "50 KB" {
         t.Errorf("after asking the node: %v", got)
     }

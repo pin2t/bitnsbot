@@ -220,3 +220,22 @@ func TestDateTranslatesTheMonth(t *testing.T) {
         t.Errorf("Date %q still carries the time", short)
     }
 }
+
+// Market figures use finance's suffixes, not SI's: a capitalisation quoted in
+// "gigadollars" would read as a units error, which is why this is not `metric`.
+func TestMoney(t *testing.T) {
+    var cases = map[float64]string{
+        1327983664334: "$1.33 T",
+        31914279096:   "$31.91 B",
+        1500000:       "$1.5 M",
+        2500:          "$2500",
+        999:           "$999",
+        0:             "$0",
+        -31914279096:  "-$31.91 B",
+    }
+    for in, want := range cases {
+        if got := money(in, ""); got != want {
+            t.Errorf("money(%v) = %q, want %q", in, got, want)
+        }
+    }
+}
