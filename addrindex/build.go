@@ -5,6 +5,7 @@ import "fmt"
 import "time"
 import "bitnsbot/core"
 import "bitnsbot/logging"
+import "bitnsbot/progress"
 
 // chunkSize bounds how many blocks are merged into the index per
 // transaction, the same reasoning as the miners collector: catching up hundreds
@@ -36,6 +37,7 @@ func Update(tip int64) error {
     var height, ok = Cursor()
     var from int
     if ok { from = height + 1 }
+    var prog = progress.New("addrindex", int64(from), tip)
     for from <= int(tip) {
         var to = from + chunkSize - 1
         if to > int(tip) { to = int(tip) }
@@ -49,6 +51,7 @@ func Update(tip int64) error {
         var bm = fmt.Sprintf("blocks %d..%d", from, to)
         if from == to { bm = fmt.Sprintf("block %d", from) }
         logging.Info("addrindex: built from " + bm)
+        prog.Chunk(int64(from), int64(to))
         from = to + 1
     }
     return nil

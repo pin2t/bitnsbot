@@ -42,6 +42,7 @@ import "bitnsbot/addrindex"
 import "bitnsbot/core"
 import "bitnsbot/cursors"
 import "bitnsbot/logging"
+import "bitnsbot/progress"
 import "bitnsbot/signals"
 
 var db *sql.DB
@@ -139,9 +140,10 @@ func Update(tip int64) error {
     var from int
     if ok { from = int(last) + 1 }
     var began = from
+    var prog = progress.New("addrbal", int64(from), int64(target))
     for from <= target {
         var to = min(from+chunkSize-1, target)
-        if err := scan(ctx, from, to); err != nil { return err }
+        if err := scan(ctx, from, to, prog); err != nil { return err }
         from = to + 1
         if from <= target { time.Sleep(chunkPause) }
     }
@@ -167,7 +169,7 @@ type move struct {
 // height order, so a merge always stops at a height with nothing above it
 // applied, and the cursor can be that height. Returning cancels the fetches still
 // running.
-func scan(ctx context.Context, from, to int) error {
+func scan(ctx context.Context, from, to int, prog *progress.Progress) error {
     var sctx, cancel = context.WithCancel(ctx)
     defer cancel()
     var slots = make(chan chan fetched, fetchers)
@@ -206,6 +208,7 @@ func scan(ctx context.Context, from, to int) error {
             logging.Info("addrbal: collected from %s in %s, %d addresses merged in %s, %d with a balance",
                 bm, merging.Sub(began).Round(time.Millisecond), len(deltas),
                 time.Since(merging).Round(time.Millisecond), count.Load())
+            prog.Chunk(int64(start), int64(height))
             deltas = map[uint64]int64{}
             start = height + 1
             began = time.Now()

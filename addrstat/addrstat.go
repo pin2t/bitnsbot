@@ -1,40 +1,54 @@
-// Package addrstat keeps on-chain statistics for a fixed set of addresses, so
-// /info and the Mini App answer for them without resolving a history per
-// request. The set is the three ranked lists the Addresses tab shows — active,
-// rich and abandoned — because those are the addresses a reader can reach by
-// tapping, and they are exactly the ones whose histories are too long to walk:
-// the busiest holds millions of transactions, where the live path caps at ten
-// thousand and marks the answer with a "+".
+// Package addrstat keeps on-chain statistics for every funded address, so /info
+// and the Mini App answer for one without resolving its history per request —
+// the busiest address on the chain holds millions of transactions, where the
+// live path caps at ten thousand and marks the answer with a "+". The three
+// ranked lists the Addresses tab shows are three readings of the same records.
 //
-// One bucket, addrstat, keyed by address, holding one JSON record each. The
-// bot's one index catch-up goroutine walks the chain from genesis filling them
-// in, resuming from its place in the shared cursors bucket exactly as the block
-// cache and the miner statistics do.
+// One table, addrstat, keyed by address, holding one row each. The bot's one
+// index catch-up goroutine walks the chain from genesis filling them in,
+// resuming from its place in the shared cursors table exactly as the block cache
+// and the miner statistics do.
+//
+// **The scan writes the addresses it finds**, rather than gathering for a set
+// somebody put there: a chunk inserts a row for every address it saw and had
+// none for, and deletes the row of every address it saw whose balance has
+// reached zero — so the table holds the addresses that hold coins, the way
+// addrbal's entries do, rather than growing to the billion-odd an address a
+// chain-wide history would keep. The consequence to know is that an address
+// emptied and later paid again starts a fresh row: its row was deleted while it
+// held nothing, so the transactions and the first date from before that are gone.
 package addrstat
 
 import "context"
 import "fmt"
-import "sync"
 import "time"
 import "database/sql"
 import "bitnsbot/addrindex"
 import "bitnsbot/core"
 import "bitnsbot/cursors"
 import "bitnsbot/logging"
+import "bitnsbot/progress"
 import "bitnsbot/signals"
 
 var db *sql.DB
 
-// chunkSize bounds how many blocks are accumulated in memory before one
-// database flush, the same reasoning as the miners collector: catching up the
-// whole chain must not build one giant transaction, and a crash mid-catch-up
-// resumes from the last flushed chunk.
+// chunkSize bounds how many blocks are read before one database flush, the same
+// reasoning as the miners collector: catching up the whole chain must not build
+// one giant transaction, and a crash mid-catch-up resumes from the last flushed
+// chunk.
 var chunkSize int64 = 1000
+
+// flushKeys is the most addresses a chunk lets pile up before it merges what it
+// has and advances the cursor to the block it had reached. A chunk of a thousand
+// modern blocks touches millions of addresses, each a row's worth of sums held in
+// memory, so the chunk alone is not a bound the Pi can keep to. A package var so
+// tests shrink it.
+var flushKeys = 500_000
 
 // Stat is one address's record. Balance and Flow are derived from Recv and Sent
 // rather than accumulated on their own, so they cannot drift out of step with
-// them; they are stored because a reader of the bucket should not have to know
-// which fields are sums and which are arithmetic.
+// them; they are stored because a reader of the table should not have to know
+// which columns are sums and which are arithmetic.
 type Stat struct {
     Type    string `json:"type"`
     Balance int64  `json:"balance"`
@@ -47,25 +61,16 @@ type Stat struct {
     Last    int64  `json:"last"`
 }
 
-// watched maps the key a script matches by (see addrindex.Key) to the address
-// the record is under. It is built once from the bucket and read by the scan for
-// every output and every spent prevout on the chain, so the match is a map
-// lookup on a short byte string rather than an address encoding.
-var watchedMu sync.RWMutex
-var watched = map[string]string{}
-
-// Init stores the shared handle, creates the table and the three indexes the
-// rankings are read through when they are missing, and builds the lookup the
-// scan matches scripts against.
+// Init stores the shared handle and creates the table and the three indexes the
+// rankings are read through when they are missing. The scan's place is a row of
+// the shared cursors table under cursors.AddrStat.
 //
-// **The set is whatever the addrstat table holds.** A row's key is an address and
-// the rest of it is what the scan has gathered, so inserting an address is what
-// adds it to the set — a `where txs = 0` is what asks which of them the scan has
-// still to reach. An address added after the scan has passed its history gathers
-// nothing until the scan runs again, which means clearing this scan's place in the
-// cursors table by hand. That is an operator's job because the alternative is an
-// automatic rescan of the whole chain, hours of it, triggered by a signal nothing
-// can tell apart from an address the chain has simply never seen.
+// The table is the scan's to fill, so there is nothing for an operator to seed
+// and nothing here that reads it into memory. An address added by hand gathers
+// nothing until the scan passes it again, which means clearing the cursor by hand
+// — an operator's job, the alternative being hours of automatic rescanning
+// triggered by a signal nothing can tell apart from an address the chain has
+// never seen.
 func Init(handle *sql.DB) error {
     db = handle
     if db == nil { return nil }
@@ -79,38 +84,15 @@ func Init(handle *sql.DB) error {
     } {
         if _, err := db.Exec(s); err != nil { return err }
     }
-    return load()
-}
-
-// load builds the script lookup from the bucket.
-func load() error {
-    if db == nil { return nil }
-    var index = map[string]string{}
-    var rows, err = db.Query("select addr from addrstat")
-    if err != nil { return err }
-    for rows.Next() {
-        var addr string
-        if err := rows.Scan(&addr); err != nil {
-            rows.Close()
-            return err
-        }
-        if key, _, ok := addrindex.Decode(addr); ok { index[key] = addr }
-    }
-    rows.Close()
-    if err := rows.Err(); err != nil { return err }
-    watchedMu.Lock()
-    watched = index
-    watchedMu.Unlock()
     return nil
 }
 
 // Get returns an address's statistics, and false when there are none to give:
-// the address is not in the set, or the scan has not reached it yet. A record
-// with no transactions in it is the second of those — an address is in the set
-// because somebody expects it to have a history, so answering with the empty
-// record would present "0 transactions" as a fact about an address the scan has
-// simply not got to. The live path answers it instead, as it does for every
-// address outside the set.
+// the scan has not reached the address, or it holds nothing and so has no row.
+// A row with no transactions in it is answered with false as well — it is a row
+// an earlier version seeded and this scan has not been past, so answering with it
+// would present "0 transactions" as a fact. The live path answers those instead,
+// as it does for every address with no row at all.
 func Get(addr string) (Stat, bool) {
     if db == nil { return Stat{}, false }
     var s Stat
@@ -121,18 +103,19 @@ func Get(addr string) (Stat, bool) {
     return s, s.Txs > 0
 }
 
-// Count is how many addresses are watched.
+// Count is how many addresses the table holds, which is how many are known to
+// hold coins as of the cursor. It counts the rows rather than keeping a total, so
+// it cannot drift from what it counts, and the scan does not call it per chunk.
 func Count() int {
-    watchedMu.RLock()
-    defer watchedMu.RUnlock()
-    return len(watched)
+    if db == nil { return 0 }
+    var n int
+    if err := db.QueryRow("select count(*) from addrstat").Scan(&n); err != nil { return 0 }
+    return n
 }
 
 // Collect walks the chain from the cursor to the current tip once and returns.
 // It is exported so a caller that wants one pass can have one — the bot itself
 // goes through Update, whose tip its caller has already fetched.
-//
-// no addresses to gather for
 func Collect() error {
     var ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
     defer cancel()
@@ -145,33 +128,50 @@ func Collect() error {
 // blocks are the ones the address index is built from — core.BlockAt, one
 // getblock at verbosity 3 a block, whose prevouts are where a spend's script and
 // amount, and so a transaction's fee, are written down.
+//
+// A chunk merges when it reaches flushKeys addresses as well as at its last
+// block, and the cursor goes to the height it had read: blocks are read in order,
+// so a merge always stops at a height with nothing above it applied.
 func Update(tip int64) error {
-    if Count() == 0 { return nil }
     var ctx, cancel = context.WithTimeout(context.Background(), 6*time.Hour)
     defer cancel()
     var last, ok = cursors.Get(cursors.AddrStat)
     var curr int64
     if ok { curr = last + 1 }
     var began = curr
+    var prog = progress.New("addrstat", curr, tip)
     for curr <= tip {
         var to = curr + chunkSize - 1
         if to > tip { to = tip }
         var deltas = map[string]*Stat{}
+        var start = curr
         for h := curr; h <= to; h++ {
             var blk, berr = core.BlockAt(ctx, int(h))
             if berr != nil { return berr }
             apply(deltas, blk)
+            if len(deltas) < flushKeys && h < to { continue }
+            var kept, ferr = flush(deltas, h)
+            if ferr != nil { return ferr }
+            logging.Info("addrstat: collected from %s, %d addresses merged, %d of them emptied",
+                blocksOf(start, h), len(deltas), len(deltas) - kept)
+            prog.Chunk(start, h)
+            deltas = map[string]*Stat{}
+            start = h + 1
         }
-        if err := flush(deltas, to); err != nil { return err }
         curr = to + 1
     }
     if curr > began {
-        var bm = fmt.Sprintf("blocks %d..%d", began, curr - 1)
-        if curr - 1 == began { bm = fmt.Sprintf("block %d", began) }
-        logging.Info("addrstat: collected from %s for %d addresses", bm, Count())
+        logging.Info("addrstat: caught up with %s, %d addresses hold coins", blocksOf(began, curr - 1), Count())
         signals.Send(signals.AddrStat)
     }
     return nil
+}
+
+// blocksOf names a range of heights the way every collector's line does, in the
+// singular when it is one block.
+func blocksOf(from, to int64) string {
+    if from == to { return fmt.Sprintf("block %d", from) }
+    return fmt.Sprintf("blocks %d..%d", from, to)
 }
 
 // apply adds one block's movements to the running chunk. A transaction is
@@ -185,8 +185,6 @@ func Update(tip int64) error {
 //
 // a coinbase spends nothing and pays no fee
 func apply(deltas map[string]*Stat, blk core.Block) {
-    watchedMu.RLock()
-    defer watchedMu.RUnlock()
     for _, tx := range blk.Txs {
         var fee int64
         if len(tx.Spent) > 0 {
@@ -214,17 +212,19 @@ func apply(deltas map[string]*Stat, blk core.Block) {
     }
 }
 
-// at is the watched record a script belongs to, or nil when the script pays an
-// address this does not follow — which is nearly every script on the chain, so
-// it is the one lookup that has to stay cheap.
+// at is the running record for the address a script pays, or nil when it pays no
+// address at all — an OP_RETURN, a bare multisig, anything nonstandard, which is
+// what addrbal leaves out of its count for the same reason. The address is
+// encoded from the script, and its form named from the address, once per chunk
+// rather than once per touch: a busy address appears thousands of times in a
+// chunk, and base58 and bech32 are the expensive part of this scan.
 func at(deltas map[string]*Stat, script []byte) (*Stat, string) {
-    var key, ok = addrindex.Key(script)
-    if !ok { return nil, "" }
-    var addr = watched[key]
+    var addr = addrindex.Address(script)
     if addr == "" { return nil, "" }
     var s = deltas[addr]
     if s == nil {
-        s = &Stat{}
+        var _, kind, _ = addrindex.Decode(addr)
+        s = &Stat{Type: kind}
         deltas[addr] = s
     }
     return s, addr
@@ -244,50 +244,59 @@ func touch(s *Stat, seen map[string]bool, addr string, when int64) {
     if when > s.Last { s.Last = when }
 }
 
-// flush merges a chunk into the records and advances the cursor in one
+// flush merges a chunk into the table and advances the cursor in one
 // transaction, so an interrupted catch-up resumes from the last flushed chunk
-// rather than counting a block twice.
+// rather than counting a block twice. It returns how many of the chunk's
+// addresses still hold coins, which is what the line above it reports.
+//
 // The delta is added to the row in SQL rather than read, added to in Go and
 // written back: one statement per address instead of a query and an update, and
 // the arithmetic is where the row is. Balance and Flow are derived in the same
 // statement from the sums they follow from, so they cannot drift out of step with
 // them. `first` takes the earlier of the two only when there is one — a fresh row
-// has 0 there, which is not earlier than anything.
+// has 0 there, which is not earlier than anything — and `type` is only ever
+// written by the insert, so a form named by hand is left as it is.
 //
-// An address is only ever here because a row exists for it, so this updates and
-// never inserts: a delta for an address the table does not hold is one the scan
-// should not have gathered, and creating a row for it would quietly add it to the
-// set.
-func flush(deltas map[string]*Stat, last int64) error {
-    if db == nil { return nil }
+// An address with no row gets one, and one whose balance has reached zero loses
+// the row it had: the table is the addresses that hold coins, so the delete is
+// what keeps it from growing to every address the chain has ever had. It is one
+// statement per address of the chunk, by primary key, rather than a sweep of the
+// balance index, which would also take rows this chunk never touched.
+func flush(deltas map[string]*Stat, last int64) (int, error) {
+    if db == nil { return 0, nil }
     var tx, err = db.Begin()
-    if err != nil { return err }
-    var stmt, perr = tx.Prepare(`update addrstat set
-        recv = recv + ?, sent = sent + ?, fees = fees + ?, txs = txs + ?,
-        first = case when ? > 0 and (first = 0 or ? < first) then ? else first end,
-        last = max(last, ?),
-        balance = recv + ? - (sent + ?), flow = recv + ? + sent + ?
-        where addr = ?`)
-    if perr != nil {
-        tx.Rollback()
-        return perr
-    }
+    if err != nil { return 0, err }
+    defer tx.Rollback()
+    var stmt, perr = tx.Prepare(`insert into addrstat
+        (addr, type, balance, recv, sent, flow, fees, txs, first, last)
+        values (?, ?, ? - ?, ?, ?, ? + ?, ?, ?, ?, ?)
+        on conflict(addr) do update set
+            recv = addrstat.recv + excluded.recv,
+            sent = addrstat.sent + excluded.sent,
+            fees = addrstat.fees + excluded.fees,
+            txs = addrstat.txs + excluded.txs,
+            first = case when excluded.first > 0 and (addrstat.first = 0 or excluded.first < addrstat.first)
+                then excluded.first else addrstat.first end,
+            last = max(addrstat.last, excluded.last),
+            balance = addrstat.recv + excluded.recv - (addrstat.sent + excluded.sent),
+            flow = addrstat.recv + excluded.recv + addrstat.sent + excluded.sent`)
+    if perr != nil { return 0, perr }
+    defer stmt.Close()
+    var empty, eerr = tx.Prepare(`delete from addrstat where addr = ? and balance = 0`)
+    if eerr != nil { return 0, eerr }
+    defer empty.Close()
+    var kept int
     for addr, d := range deltas {
-        if _, err := stmt.Exec(d.Recv, d.Sent, d.Fees, d.Txs,
-            d.First, d.First, d.First, d.Last,
-            d.Recv, d.Sent, d.Recv, d.Sent, addr); err != nil {
-            stmt.Close()
-            tx.Rollback()
-            return err
+        if _, err := stmt.Exec(addr, d.Type, d.Recv, d.Sent, d.Recv, d.Sent, d.Recv, d.Sent,
+            d.Fees, d.Txs, d.First, d.Last); err != nil {
+            return 0, err
         }
+        var res, derr = empty.Exec(addr)
+        if derr != nil { return 0, derr }
+        var gone, rerr = res.RowsAffected()
+        if rerr != nil { return 0, rerr }
+        if gone == 0 { kept++ }
     }
-    if err := stmt.Close(); err != nil {
-        tx.Rollback()
-        return err
-    }
-    if err := cursors.Set(tx, cursors.AddrStat, last); err != nil {
-        tx.Rollback()
-        return err
-    }
-    return tx.Commit()
+    if err := cursors.Set(tx, cursors.AddrStat, last); err != nil { return 0, err }
+    return kept, tx.Commit()
 }

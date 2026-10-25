@@ -83,31 +83,17 @@ func (c *chain) respond(method string, params []any) (any, error) {
     return nil, fmt.Errorf("unexpected call %s %v", method, params)
 }
 
-// open puts a row under each address and runs Init over them, which is how the
-// set is filled: the table's keys are the set, and inserting one is what adds an
-// address to it. A first Init on the empty database creates the table the rows
-// go into.
-func open(t *testing.T, addrs ...string) *sql.DB {
+// open creates the tables the scan writes into and points the package at them.
+// There is nothing to seed: a row is an address the scan has found holding
+// coins, so the table starts empty whatever the chain holds.
+func open(t *testing.T) *sql.DB {
     t.Helper()
     var handle, err = sql.Open("sqlite", filepath.Join(t.TempDir(), "t.db"))
     if err != nil { t.Fatalf("open: %v", err) }
     if err := cursors.Init(handle); err != nil { t.Fatalf("cursors: %v", err) }
     if err := Init(handle); err != nil { t.Fatalf("init: %v", err) }
-    t.Cleanup(func() { handle.Close(); db = nil; watched = map[string]string{} })
-    add(t, handle, addrs...)
-    if err := Init(handle); err != nil { t.Fatalf("init: %v", err) }
+    t.Cleanup(func() { handle.Close(); db = nil })
     return handle
-}
-
-func add(t *testing.T, handle *sql.DB, addrs ...string) {
-    t.Helper()
-    for _, a := range addrs {
-        var _, kind, _ = addrindex.Decode(a)
-        var _, err = handle.Exec(`insert into addrstat (addr, type, balance, recv, sent, flow, fees,
-            txs, first, last) values (?, ?, 0, 0, 0, 0, 0, 0, 0, 0)
-            on conflict(addr) do nothing`, a, kind)
-        if err != nil { t.Fatalf("add %s: %v", a, err) }
-    }
 }
 
 func statOf(t *testing.T, addr string) Stat {
@@ -120,30 +106,41 @@ func statOf(t *testing.T, addr string) Stat {
     return s
 }
 
-// The chain pays addrA twice and then spends from it, paying part back to addrB
-// and leaving the rest as a fee. Everything the record holds is asserted against
-// what those blocks actually moved.
+// rows is how many rows the table holds under addr — 0 or 1, since the address
+// is the primary key.
+func rows(t *testing.T, addr string) int {
+    t.Helper()
+    var n int
+    if err := db.QueryRow("select count(*) from addrstat where addr = ?", addr).Scan(&n); err != nil {
+        t.Fatal(err)
+    }
+    return n
+}
+
+// The chain pays addrA twice and then spends from it, paying part to addrB and
+// part back to addrA and leaving the rest as a fee. Everything the records hold
+// is asserted against what those blocks actually moved — and every one of the
+// three addresses is a row the scan wrote itself, nothing having been seeded.
 //
-// spends both of addrA's outputs, pays 7000 to addrB, so the fee is 1000
+// spends both of addrA's outputs, pays 3000 to addrB and 4000 back, so the fee
+// is 1000
 //
 // the fee is charged once, though the transaction spends two of its outputs
 //
-// three transactions: two paying it, one spending from it
-//
-// an address nobody asked about is not stored, which is the whole point of
-// gathering for a set rather than for the chain
+// three transactions: two paying it, one both spending from it and paying it
 func TestCollectGathersStatistics(t *testing.T) {
-    open(t, addrA, addrB)
+    open(t)
     serve(t, &chain{tip: 2, blocks: map[int]core.Block{
         0: blockOf(1000, tx{outs: []core.Payment{pay(scriptA, 5000)}}),
         1: blockOf(2000, tx{outs: []core.Payment{pay(scriptA, 3000), pay(scriptC, 100)}}),
         2: blockOf(3000,
             tx{outs: []core.Payment{pay(scriptC, 50)}},
-            tx{outs: []core.Payment{pay(scriptB, 7000)}, spent: []core.Payment{pay(scriptA, 5000), pay(scriptA, 3000)}}),
+            tx{outs: []core.Payment{pay(scriptB, 3000), pay(scriptA, 4000)},
+                spent: []core.Payment{pay(scriptA, 5000), pay(scriptA, 3000)}}),
     }})
     if err := Collect(); err != nil { t.Fatalf("Collect: %v", err) }
     var a = statOf(t, addrA)
-    if a.Recv != 8000 || a.Sent != 8000 || a.Balance != 0 || a.Flow != 16000 {
+    if a.Recv != 12000 || a.Sent != 8000 || a.Balance != 4000 || a.Flow != 20000 {
         t.Errorf("addrA amounts = %+v", a)
     }
     if a.Fees != 1000 { t.Errorf("addrA fees = %d, want 1000", a.Fees) }
@@ -151,21 +148,66 @@ func TestCollectGathersStatistics(t *testing.T) {
     if a.First != 1000 || a.Last != 3000 { t.Errorf("addrA dates = %d..%d, want 1000..3000", a.First, a.Last) }
     if a.Type != "segwit" { t.Errorf("addrA type = %q, want segwit", a.Type) }
     var b = statOf(t, addrB)
-    if b.Recv != 7000 || b.Sent != 0 || b.Balance != 7000 || b.Txs != 1 || b.Fees != 0 {
+    if b.Recv != 3000 || b.Sent != 0 || b.Balance != 3000 || b.Txs != 1 || b.Fees != 0 {
         t.Errorf("addrB = %+v", b)
     }
     if b.Type != "p2pkh" { t.Errorf("addrB type = %q, want p2pkh", b.Type) }
-    var n int
-    if err := db.QueryRow("select count(*) from addrstat where addr = ?", addrC).Scan(&n); err != nil {
-        t.Fatal(err)
-    }
-    if n != 0 { t.Error("an unwatched address was stored") }
+    var c = statOf(t, addrC)
+    if c.Recv != 150 || c.Balance != 150 || c.Txs != 2 { t.Errorf("addrC = %+v", c) }
+    if c.Type != "taproot" { t.Errorf("addrC type = %q, want taproot", c.Type) }
+    if Count() != 3 { t.Errorf("Count = %d, want the three addresses the chain paid", Count()) }
+}
+
+// An address the chunk emptied loses its row: the table is the addresses that
+// hold coins, so what a spent-out change address leaves behind is nothing.
+func TestEmptiedAddressIsRemoved(t *testing.T) {
+    open(t)
+    serve(t, &chain{tip: 1, blocks: map[int]core.Block{
+        0: blockOf(1000, tx{outs: []core.Payment{pay(scriptA, 5000)}}),
+        1: blockOf(2000, tx{outs: []core.Payment{pay(scriptB, 4000)}, spent: []core.Payment{pay(scriptA, 5000)}}),
+    }})
+    if err := Collect(); err != nil { t.Fatalf("Collect: %v", err) }
+    if rows(t, addrA) != 0 { t.Errorf("addrA kept a row holding nothing: %+v", statOf(t, addrA)) }
+    if b := statOf(t, addrB); b.Balance != 4000 { t.Errorf("addrB = %+v", b) }
+}
+
+// An address emptied by a later chunk loses the row an earlier one gave it, so
+// the delete has to reach a row the chunk did not insert.
+func TestEmptiedAcrossChunksIsRemoved(t *testing.T) {
+    open(t)
+    var src = serve(t, &chain{tip: 0, blocks: map[int]core.Block{
+        0: blockOf(1000, tx{outs: []core.Payment{pay(scriptA, 5000)}}),
+        1: blockOf(2000, tx{outs: []core.Payment{pay(scriptB, 4000)}, spent: []core.Payment{pay(scriptA, 5000)}}),
+    }})
+    if err := Collect(); err != nil { t.Fatalf("Collect: %v", err) }
+    if a := statOf(t, addrA); a.Balance != 5000 { t.Errorf("addrA = %+v", a) }
+    src.tip = 1
+    if err := Collect(); err != nil { t.Fatalf("Collect: %v", err) }
+    if rows(t, addrA) != 0 { t.Error("addrA kept a row after a later chunk emptied it") }
+}
+
+// A chunk that reaches flushKeys addresses merges what it has and takes the
+// cursor to the block it had read, so a scan of the modern chain is bounded by
+// the addresses it holds rather than by its thousand blocks.
+func TestChunkFlushesOnKeys(t *testing.T) {
+    open(t)
+    var keys, size = flushKeys, chunkSize
+    flushKeys, chunkSize = 1, 1000
+    defer func() { flushKeys, chunkSize = keys, size }()
+    serve(t, &chain{tip: 2, blocks: map[int]core.Block{
+        0: blockOf(1000, tx{outs: []core.Payment{pay(scriptA, 5000)}}),
+        1: blockOf(2000, tx{outs: []core.Payment{pay(scriptB, 3000)}}),
+        2: blockOf(3000, tx{outs: []core.Payment{pay(scriptC, 2000)}}),
+    }})
+    if err := Collect(); err != nil { t.Fatalf("Collect: %v", err) }
+    if h, ok := cursors.Get(cursors.AddrStat); !ok || h != 2 { t.Errorf("cursor = %d ok=%v, want 2", h, ok) }
+    if Count() != 3 { t.Errorf("Count = %d, want 3", Count()) }
 }
 
 // A transaction that both pays an address and spends from it is one transaction
 // for it, not two.
 func TestTransactionCountedOncePerAddress(t *testing.T) {
-    open(t, addrA)
+    open(t)
     serve(t, &chain{tip: 0, blocks: map[int]core.Block{
         0: blockOf(1000, tx{
             outs:  []core.Payment{pay(scriptA, 400), pay(scriptA, 100)},
@@ -182,7 +224,7 @@ func TestTransactionCountedOncePerAddress(t *testing.T) {
 // The scan resumes from its cursor: a second pass fetches only what is new and
 // adds to what is stored rather than counting a block twice.
 func TestCollectResumes(t *testing.T) {
-    open(t, addrA)
+    open(t)
     var src = serve(t, &chain{tip: 0, blocks: map[int]core.Block{
         0: blockOf(1000, tx{outs: []core.Payment{pay(scriptA, 500)}}),
         1: blockOf(2000, tx{outs: []core.Payment{pay(scriptA, 700)}}),
@@ -205,7 +247,7 @@ func TestCollectResumes(t *testing.T) {
 //
 // nothing new: the cursor is at the tip, so there is nothing to announce
 func TestCollectSignalsWhenItHasCaughtUp(t *testing.T) {
-    open(t, addrA)
+    open(t)
     signals.Reset()
     var wake = signals.Subscribe(signals.AddrStat)
     serve(t, &chain{tip: 0, blocks: map[int]core.Block{
@@ -225,41 +267,23 @@ func TestCollectSignalsWhenItHasCaughtUp(t *testing.T) {
     }
 }
 
-// A record with nothing gathered in it is not an answer: an address is in the
-// set because somebody expects it to have a history, so the live path answers it
-// until the scan has been past it.
+// An address the scan has not been past has no row, so there is nothing for Get
+// to answer with and the live path answers it instead.
 func TestGetWaitsForSomethingToReport(t *testing.T) {
-    open(t, addrA)
-    if _, ok := Get(addrA); ok { t.Fatal("answered from an empty record") }
+    open(t)
+    if _, ok := Get(addrA); ok { t.Fatal("answered before the scan had been past the address") }
     serve(t, &chain{tip: 0, blocks: map[int]core.Block{
         0: blockOf(1000, tx{outs: []core.Payment{pay(scriptA, 500)}}),
     }})
     if err := Collect(); err != nil { t.Fatalf("Collect: %v", err) }
     var s, ok = Get(addrA)
     if !ok || s.Recv != 500 { t.Fatalf("Get = %+v ok=%v", s, ok) }
-    if _, ok := Get(addrC); ok { t.Error("answered for an address nobody follows") }
-}
-
-// An address put into the bucket is in the set from the next Init, which is what
-// makes the bucket itself the set — and the scan's place is left alone, since
-// restarting the bot cannot mean rescanning the chain. Gathering that address's
-// history means clearing the cursor by hand; nothing here does it.
-func TestAnAddedRecordJoinsTheSet(t *testing.T) {
-    var handle = open(t, addrA)
-    serve(t, &chain{tip: 0, blocks: map[int]core.Block{
-        0: blockOf(1000, tx{outs: []core.Payment{pay(scriptA, 500)}}),
-    }})
-    if err := Collect(); err != nil { t.Fatalf("Collect: %v", err) }
-    add(t, handle, addrB)
-    if err := Init(handle); err != nil { t.Fatalf("re-init: %v", err) }
-    if Count() != 2 { t.Errorf("watched %d addresses, want 2", Count()) }
-    if h, ok := cursors.Get(cursors.AddrStat); !ok || h != 0 { t.Errorf("cursor = %d ok=%v, want 0", h, ok) }
-    if a := statOf(t, addrA); a.Recv != 500 { t.Errorf("the gathered record was disturbed: %+v", a) }
+    if _, ok := Get(addrC); ok { t.Error("answered for an address the chain never paid") }
 }
 
 // Init is run on every start, so one must leave the scan's place alone.
 func TestRepeatedInitKeepsTheCursor(t *testing.T) {
-    var handle = open(t, addrA)
+    var handle = open(t)
     serve(t, &chain{tip: 0, blocks: map[int]core.Block{
         0: blockOf(1000, tx{outs: []core.Payment{pay(scriptA, 500)}}),
     }})
