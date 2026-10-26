@@ -7,6 +7,7 @@ import "sort"
 import "time"
 import "bitnsbot/core"
 import "bitnsbot/logging"
+import "bitnsbot/progress"
 import "bitnsbot/cursors"
 
 // cooldownPeriod is how long a catch-up rests after each chunk of a long
@@ -45,6 +46,7 @@ func Update(tip int64) {
         from = last + 1
     }
     var first = from
+    var prog = progress.New("miners stats", from, tip)
     for from <= tip {
         var to = from + chunkSize - 1
         if to > tip { to = tip }
@@ -114,6 +116,7 @@ func Update(tip int64) {
             return
         }
         last = to
+        prog.Chunk(from, to)
         from = to + 1
         if from < tip { time.Sleep(cooldownPeriod) }
     }

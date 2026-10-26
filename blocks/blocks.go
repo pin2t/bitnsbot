@@ -13,6 +13,7 @@ import "database/sql"
 import "bitnsbot/app"
 import "bitnsbot/core"
 import "bitnsbot/logging"
+import "bitnsbot/progress"
 import "bitnsbot/miners"
 
 var db *sql.DB
@@ -237,6 +238,7 @@ func Update(tip int64) {
     var from int64
     if last.Valid { from = last.Int64 + 1 }
     var first = from
+    var prog = progress.New("blocks", from, tip)
     for from <= tip {
         var to = from + chunkSize - 1
         if to > tip { to = tip }
@@ -263,6 +265,7 @@ func Update(tip int64) {
             return
         }
         if len(infos) > 0 { app.Notify("blocks") }
+        prog.Chunk(from, to)
         if to < tip { time.Sleep(chunkPause) }
         from = to + 1
     }
