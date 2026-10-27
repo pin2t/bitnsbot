@@ -49,7 +49,8 @@ type Info struct {
 
 // Init is called once by openDB before any goroutine reads or writes the
 // blocks table, and creates it, with the blocks_ts index the miner chart reads a
-// period through, when it is missing. A miner stored as the literal "Unknown" by
+// period through and the blocks_hash index Rollback finds a disconnected block
+// through, when they are missing. A miner stored as the literal "Unknown" by
 // an earlier version is made empty, the placeholder being applied at render.
 func Init(handle *sql.DB) error {
     db = handle
@@ -61,6 +62,7 @@ func Init(handle *sql.DB) error {
             txSizeMin INTEGER NOT NULL, txSizeAvg INTEGER NOT NULL, txSizeMax INTEGER NOT NULL,
             reward INTEGER NOT NULL, fees INTEGER NOT NULL, difficulty REAL NOT NULL)`,
         `create index if not exists blocks_ts on blocks (ts)`,
+        `create index if not exists blocks_hash on blocks (hash)`,
     } {
         if _, err := db.Exec(s); err != nil { return err }
     }
@@ -207,6 +209,21 @@ func Compute(ctx context.Context, hash string) (*Info, error) {
         TxSizeMin: szMin, TxSizeAvg: int32(szSum / int64(len(blk.Tx))), TxSizeMax: szMax,
         Reward: Subsidy(blk.Height), Total: coinbaseOut, Difficulty: blk.Difficulty,
     }, nil
+}
+
+// Rollback removes the block with this hash and every block above it — what a
+// block disconnected by a reorg leaves stale. Everything above goes too, since
+// it was built on the disconnected block, and the highest height stored is
+// where Update resumes, so the replacement chain is cached by the next
+// catch-up. A hash the table does not hold removes nothing. It reports how
+// many blocks it removed.
+func Rollback(hash string) (int64, error) {
+    if db == nil { return 0, nil }
+    var res, err = db.Exec("delete from blocks where height >= (select height from blocks where hash = ?)", hash)
+    if err != nil { return 0, err }
+    var n, _ = res.RowsAffected()
+    if n > 0 { app.Notify("blocks") }
+    return n, nil
 }
 
 // Update catches the block cache up from the last processed block to tip,

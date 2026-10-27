@@ -9,6 +9,7 @@ import "strings"
 import "sync"
 import "time"
 import "github.com/go-zeromq/zmq4"
+import "bitnsbot/blocks"
 import "bitnsbot/core"
 import "bitnsbot/logging"
 import "bitnsbot/mp"
@@ -294,7 +295,7 @@ func startZMQ(ctx context.Context, endpoints []string) error {
                 return nil, fmt.Errorf("dial %s: %w", endpoint, err)
             }
         }
-        for _, topic := range []string{"hashblock", "rawtx"} {
+        for _, topic := range []string{"hashblock", "rawtx", "sequence"} {
             if err := sub.SetOption(zmq4.OptionSubscribe, topic); err != nil {
                 sub.Close()
                 return nil, err
@@ -320,6 +321,9 @@ func startZMQ(ctx context.Context, endpoints []string) error {
                     logging.Info("zmq: new block hash %s", hash)
                     go processConfirms(hash)
                     signals.Send(signals.Block)
+                case "sequence":
+                    if len(msg.Frames[1]) < 33 || msg.Frames[1][32] != 'D' { continue }
+                    onDisconnect(hex.EncodeToString(msg.Frames[1][:32]))
                 case "rawtx":
                     var tx, ok = parseTx(msg.Frames[1])
                     if !ok {
@@ -349,6 +353,20 @@ func startZMQ(ctx context.Context, endpoints []string) error {
     }()
     logging.Status("zmq: subscribed to Bitcoin Core notifications at %s", strings.Join(endpoints, ", "))
     return nil
+}
+
+// onDisconnect rolls the block cache back past a block Core disconnected —
+// the `D` event of the sequence topic, which Core publishes for every block a
+// reorg takes off the chain, where hashblock names only the new tip. The hash
+// is in display order, as hashblock's is.
+func onDisconnect(hash string) {
+    logging.Info("zmq: block %s disconnected", hash)
+    var n, err = blocks.Rollback(hash)
+    if err != nil {
+        logging.Err("zmq: roll back block %s: %v", hash, err)
+        return
+    }
+    if n > 0 { logging.Status("zmq: block %s disconnected, %d cached blocks removed", hash, n) }
 }
 
 // zmqRetry is how long the read loop waits before dialling the publishers

@@ -36,6 +36,7 @@ scripts build there, as the checkout's owner, and only copy the binary into
   ```
   txindex=1                                # /info on any transaction
   zmqpubhashblock=tcp://127.0.0.1:28332    # new-block notifications
+  zmqpubsequence=tcp://127.0.0.1:28332     # disconnected blocks, after a reorg
   zmqpubrawtx=tcp://127.0.0.1:28333        # mempool notifications for watches
   ```
 

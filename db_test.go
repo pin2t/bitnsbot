@@ -81,6 +81,13 @@ func TestOpenDBTables(t *testing.T) {
     if !strings.Contains(plan, "blocks_ts") {
         t.Errorf("the miner chart's query does not use blocks_ts: %s", plan)
     }
+    if err := db.QueryRow("explain query plan select height from blocks where hash = ?", "").Scan(
+        new(int), new(int), new(int), &plan); err != nil {
+        t.Fatal(err)
+    }
+    if !strings.Contains(plan, "blocks_hash") {
+        t.Errorf("a block lookup by hash does not use blocks_hash: %s", plan)
+    }
 }
 
 // Every start runs the schema, so it has to be safe to repeat against a database

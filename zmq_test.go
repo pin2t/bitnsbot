@@ -1,12 +1,15 @@
 package main
 
 import "context"
+import "bytes"
 import "encoding/hex"
 import "net"
+import "path/filepath"
 import "reflect"
 import "testing"
 import "time"
 import "github.com/go-zeromq/zmq4"
+import "bitnsbot/blocks"
 import "bitnsbot/signals"
 
 // Real transactions captured from a Bitcoin Core regtest node, with the inputs
@@ -141,4 +144,39 @@ func TestZMQReconnects(t *testing.T) {
     var restarted = publishBlocks(t, endpoint, restart)
     t.Cleanup(func() { close(restart); <-restarted })
     awaitBlock(t, blocks, "after the publisher restarted")
+}
+
+// A block Core disconnects arrives as a sequence message, the hash then `D`,
+// and rolls the block cache back past it; a connected block's `C` removes
+// nothing. The publisher repeats both, since a subscriber that has just dialled
+// misses whatever went out before its subscription arrived.
+func TestZMQDisconnectRollsBack(t *testing.T) {
+    if err := openDB(filepath.Join(t.TempDir(), "zmq.db")); err != nil { t.Fatal(err) }
+    defer closeDB()
+    var hash = func(b byte) []byte { return bytes.Repeat([]byte{b}, 32) }
+    var bis []*blocks.Info
+    for h := int64(1); h <= 3; h++ {
+        bis = append(bis, &blocks.Info{Height: h, Hash: hex.EncodeToString(hash(byte(h)))})
+    }
+    if err := blocks.Flush(bis); err != nil { t.Fatal(err) }
+    var ln, err = net.Listen("tcp", "127.0.0.1:0")
+    if err != nil { t.Fatal(err) }
+    var endpoint = "tcp://" + ln.Addr().String()
+    ln.Close()
+    var pub = zmq4.NewPub(context.Background())
+    if err := pub.Listen(endpoint); err != nil { t.Fatal(err) }
+    defer pub.Close()
+    var ctx, cancel = context.WithCancel(context.Background())
+    defer cancel()
+    if err := startZMQ(ctx, []string{endpoint}); err != nil { t.Fatal(err) }
+    var deadline = time.Now().Add(5 * time.Second)
+    for {
+        pub.Send(zmq4.NewMsgFrom([]byte("sequence"), append(hash(1), 'C'), []byte{0, 0, 0, 0}))
+        pub.Send(zmq4.NewMsgFrom([]byte("sequence"), append(hash(2), 'D'), []byte{0, 0, 0, 0}))
+        if _, ok := blocks.Load(2); !ok { break }
+        if time.Now().After(deadline) { t.Fatal("block 2 was never rolled back") }
+        time.Sleep(5 * time.Millisecond)
+    }
+    if _, ok := blocks.Load(3); ok { t.Error("block 3, above the disconnected one, is still cached") }
+    if _, ok := blocks.Load(1); !ok { t.Error("block 1, below the disconnected one, was removed") }
 }
