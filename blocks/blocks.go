@@ -222,7 +222,6 @@ func Rollback(hash string) (int64, error) {
     var res, err = db.Exec("delete from blocks where height >= (select height from blocks where hash = ?)", hash)
     if err != nil { return 0, err }
     var n, _ = res.RowsAffected()
-    if n > 0 { app.Notify("blocks") }
     return n, nil
 }
 
