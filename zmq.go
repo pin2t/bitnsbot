@@ -9,6 +9,8 @@ import "strings"
 import "sync"
 import "time"
 import "github.com/go-zeromq/zmq4"
+import "bitnsbot/app"
+import "bitnsbot/blocks"
 import "bitnsbot/core"
 import "bitnsbot/logging"
 import "bitnsbot/mp"
@@ -284,6 +286,11 @@ func (r *reader) varInt() (uint64, bool) {
 // were already going to do it. The confirmation messages are the
 // exception: they are per-block by nature, matching this block's
 // transactions against the watch list.
+//
+// The sequence topic is read for its D event alone — the hash, in display
+// order as hashblock's is, then the byte D — which Core publishes for every
+// block a reorg disconnects, where hashblock names only the new tip. The block
+// cache is rolled back past it.
 func startZMQ(ctx context.Context, endpoints []string) error {
     if len(endpoints) == 0 { return fmt.Errorf("no ZMQ endpoints configured") }
     var subscribe = func() (zmq4.Socket, error) {
@@ -294,7 +301,7 @@ func startZMQ(ctx context.Context, endpoints []string) error {
                 return nil, fmt.Errorf("dial %s: %w", endpoint, err)
             }
         }
-        for _, topic := range []string{"hashblock", "rawtx"} {
+        for _, topic := range []string{"hashblock", "rawtx", "sequence"} {
             if err := sub.SetOption(zmq4.OptionSubscribe, topic); err != nil {
                 sub.Close()
                 return nil, err
@@ -320,6 +327,19 @@ func startZMQ(ctx context.Context, endpoints []string) error {
                     logging.Info("zmq: new block hash %s", hash)
                     go processConfirms(hash)
                     signals.Send(signals.Block)
+                case "sequence":
+                    if len(msg.Frames[1]) < 33 || msg.Frames[1][32] != 'D' { continue }
+                    var hash = hex.EncodeToString(msg.Frames[1][:32])
+                    logging.Info("zmq: block %s disconnected", hash)
+                    var n, rbErr = blocks.Rollback(hash)
+                    if rbErr != nil {
+                        logging.Err("zmq: roll back block %s: %v", hash, rbErr)
+                        continue
+                    }
+                    if n > 0 {
+                        logging.Status("zmq: block %s disconnected, %d cached blocks removed", hash, n)
+                        app.Notify("blocks")
+                    }
                 case "rawtx":
                     var tx, ok = parseTx(msg.Frames[1])
                     if !ok {

@@ -111,9 +111,11 @@ coreCookie=/home/pi/.bitcoin/.cookie
 
 # ZeroMQ endpoints for block and mempool notifications. Core publishes each
 # topic on whatever address its own -zmqpub* option names, so this is a
-# comma-separated list; the bot needs hashblock and rawtx. The matching
-# bitcoin.conf side is:
+# comma-separated list; the bot needs hashblock and rawtx, and sequence to
+# drop blocks a reorg disconnected from its cache. The matching bitcoin.conf
+# side is:
 #     zmqpubhashblock=tcp://127.0.0.1:28332
+#     zmqpubsequence=tcp://127.0.0.1:28332
 #     zmqpubrawtx=tcp://127.0.0.1:28333
 # Without this the bot still answers commands but never sends notifications.
 coreZMQ=tcp://127.0.0.1:28332,tcp://127.0.0.1:28333

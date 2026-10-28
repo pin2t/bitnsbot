@@ -85,6 +85,28 @@ func TestFlushLoad(t *testing.T) {
     }
 }
 
+// Rollback removes the disconnected block and everything built on it, leaves
+// the blocks below alone, and does nothing for a hash it does not hold.
+func TestRollback(t *testing.T) {
+    open(t)
+    var bis []*Info
+    for h := int64(100); h <= 104; h++ { bis = append(bis, &Info{Height: h, Hash: fmt.Sprintf("hash%d", h)}) }
+    if err := Flush(bis); err != nil { t.Fatal(err) }
+    var n, err = Rollback("unknown")
+    if err != nil || n != 0 { t.Fatalf("unknown hash: removed %d, %v", n, err) }
+    n, err = Rollback("hash102")
+    if err != nil || n != 3 { t.Fatalf("removed %d, %v; want 3", n, err) }
+    for h := int64(100); h <= 104; h++ {
+        if _, ok := Load(h); ok != (h < 102) { t.Errorf("block %d cached = %v", h, ok) }
+    }
+    var plan string
+    if err := db.QueryRow("explain query plan select height from blocks where hash = ?", "x").Scan(
+        new(int), new(int), new(int), &plan); err != nil {
+        t.Fatal(err)
+    }
+    if !strings.Contains(plan, "blocks_hash") { t.Errorf("a lookup by hash does not use blocks_hash: %s", plan) }
+}
+
 // a pool record the way the definitions are stored, then a second Init so the
 // package rebuilds the address→pool mapping it attributes from
 //
