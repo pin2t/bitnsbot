@@ -469,13 +469,10 @@ var commit = ""
 // the index says which transactions an address is in, where this says
 // what they did to it, and the two advance at different rates.
 //
-// With neither -botToken nor -maxToken given the bot runs in index-building
-// mode: it opens the database, connects to the node and runs the one index
-// catch-up goroutine, and starts no webhook server, no Mini App, no notifier and
-// none of the caches a request would read — so a first build of the chain-derived
-// indexes, which is hours of work, can be run on its own, against the same
-// database file the bot then serves from. A node is what that mode needs instead
-// of a token, so -coreURL is required there.
+// At least one of -botToken and -maxToken is required, and each messenger is
+// started only if its token is given. A first build of the chain-derived
+// indexes, which is hours of work, is the tools' job (tools/addrindex,
+// tools/addrstat), run against the same database file the bot then serves from.
 func main() {
     var b, _ = debug.ReadBuildInfo()
     if b != nil {
@@ -494,18 +491,18 @@ func main() {
         }
     }
     logging.SetVerbose(*verbose)
-    var indexing = *botToken == "" && *maxToken == ""
-    if indexing && *coreURL == "" {
-        logging.Fatal("-botToken or -maxToken is required to serve a messenger, and -coreURL to build the indexes without one")
+    if *botToken == "" && *maxToken == "" {
+        logging.Fatal("-botToken or -maxToken is required")
+    }
+    if *registerHook && *webhookURL == "" {
+        logging.Fatal("-webhookURL is required when -registerWebhook=true")
     }
     var err error
     if err = openDB(*dbPath); err != nil {
         logging.Fatal("open database: %v", err)
     }
-    if !indexing {
-        rates.SetHistoryFile(*historyFile)
-        rates.Start()
-    }
+    rates.SetHistoryFile(*historyFile)
+    rates.Start()
     if *dbuiListen != "" {
         logging.Warn("database UI not started: it speaks bbolt, and the bot's database is SQLite now — run github.com/pin2t/bboltwui against a bbolt file instead")
     }
@@ -525,58 +522,49 @@ func main() {
         logging.Status("connected to Bitcoin Core at %s (height %d)", *coreURL, height)
     }
     var platforms []string
-    if indexing {
-        logging.Status("index-building mode: neither -botToken nor -maxToken given, so no messenger is served")
-    } else {
-        if *registerHook && *webhookURL == "" {
-            logging.Fatal("-webhookURL is required when -registerWebhook=true")
+    if *botToken != "" {
+        if err := telegram.Start(telegram.Options{
+            Token:       *botToken,
+            APIBaseURL:  *apiBaseURL,
+            Listen:      *listenAddr,
+            WebhookPath: *webhookPath,
+            WebhookURL:  *webhookURL,
+            Secret:      *secretToken,
+            Register:    *registerHook,
+            Menus:       menus(),
+            Message:     message,
+            Callback:    callback,
+            AppListen:   *appListen,
+            App:         appOptions(telegram.Platform),
+        }); err != nil {
+            logging.Fatal("Telegram: %v", err)
         }
-        if *botToken != "" {
-            if err := telegram.Start(telegram.Options{
-                Token:       *botToken,
-                APIBaseURL:  *apiBaseURL,
-                Listen:      *listenAddr,
-                WebhookPath: *webhookPath,
-                WebhookURL:  *webhookURL,
-                Secret:      *secretToken,
-                Register:    *registerHook,
-                Menus:       menus(),
-                Message:     message,
-                Callback:    callback,
-                AppListen:   *appListen,
-                App:         appOptions(telegram.Platform),
-            }); err != nil {
-                logging.Fatal("Telegram: %v", err)
-            }
-            platforms = append(platforms, telegram.Platform)
+        platforms = append(platforms, telegram.Platform)
+    }
+    if *maxToken != "" {
+        if err := max.Start(max.Options{
+            Token:      *maxToken,
+            Listen:     *maxListen,
+            WebhookURL: *maxWebhookURL,
+            Secret:     *maxSecret,
+            AppListen:  *maxAppListen,
+            App:        appOptions(max.Platform),
+            Message:    message,
+            Callback:   callback,
+            Started:    started,
+        }); err != nil {
+            logging.Fatal("MAX: %v", err)
         }
-        if *maxToken != "" {
-            if err := max.Start(max.Options{
-                Token:      *maxToken,
-                Listen:     *maxListen,
-                WebhookURL: *maxWebhookURL,
-                Secret:     *maxSecret,
-                AppListen:  *maxAppListen,
-                App:        appOptions(max.Platform),
-                Message:    message,
-                Callback:   callback,
-                Started:    started,
-            }); err != nil {
-                logging.Fatal("MAX: %v", err)
-            }
-            platforms = append(platforms, max.Platform)
-        }
+        platforms = append(platforms, max.Platform)
     }
     miners.Start()
     startIndexUpdates()
-    if !indexing {
-        startNotify(platforms...)
-        mp.Start()
-        startMempoolSummary()
-        startMempoolFees()
-        startNetworkStats()
-        startMarketUpdates()
-    }
+    startNotify(platforms...)
+    mp.Start()
+    startMempoolSummary()
+    startMempoolFees()
+    startNetworkStats()
+    startMarketUpdates()
     if core.Enabled() && *coreZMQ != "" {
         if err := startZMQ(context.Background(), strings.Split(*coreZMQ, ",")); err != nil {
             logging.Fatal("subscribe to Bitcoin Core ZMQ: %v", err)
