@@ -21,6 +21,9 @@ package addrstat
 
 import "context"
 import "fmt"
+import "runtime"
+import "sync"
+import "sync/atomic"
 import "time"
 import "database/sql"
 import "bitnsbot/addrindex"
@@ -44,6 +47,11 @@ var chunkSize int64 = 1000
 // memory, so the chunk alone is not a bound the Pi can keep to. A package var so
 // tests shrink it.
 var flushKeys = 500_000
+
+// workers is how many goroutines read a chunk's blocks at once: half the
+// processors, so the node — on the Pi, the same machine — keeps the other half,
+// and at least one. A package var so tests can raise it on a machine with few.
+var workers = max(1, runtime.GOMAXPROCS(0)/2)
 
 // Stat is one address's record. Balance and Flow are derived from Recv and Sent
 // rather than accumulated on their own, so they cannot drift out of step with
@@ -129,9 +137,9 @@ func Collect() error {
 // getblock at verbosity 3 a block, whose prevouts are where a spend's script and
 // amount, and so a transaction's fee, are written down.
 //
-// A chunk merges when it reaches flushKeys addresses as well as at its last
-// block, and the cursor goes to the height it had read: blocks are read in order,
-// so a merge always stops at a height with nothing above it applied.
+// A chunk's blocks are read in parallel by collect, which returns once the chunk
+// is done or flushKeys addresses have piled up; what it returns is merged and the
+// cursor goes to the last height it covers, and the chunk carries on from there.
 func Update(tip int64) error {
     var ctx, cancel = context.WithTimeout(context.Background(), 6*time.Hour)
     defer cancel()
@@ -143,28 +151,95 @@ func Update(tip int64) error {
     for curr <= tip {
         var to = curr + chunkSize - 1
         if to > tip { to = tip }
-        var deltas = map[string]*Stat{}
-        var start = curr
-        for h := curr; h <= to; h++ {
-            var blk, berr = core.BlockAt(ctx, int(h))
-            if berr != nil { return berr }
-            apply(deltas, blk)
-            if len(deltas) < flushKeys && h < to { continue }
-            var kept, ferr = flush(deltas, h)
+        for curr <= to {
+            var deltas, reached, cerr = collect(ctx, curr, to)
+            if cerr != nil { return cerr }
+            var kept, ferr = flush(deltas, reached)
             if ferr != nil { return ferr }
             logging.Info("addrstat: collected from %s, %d addresses merged, %d of them emptied",
-                blocksOf(start, h), len(deltas), len(deltas) - kept)
-            prog.Chunk(start, h)
-            deltas = map[string]*Stat{}
-            start = h + 1
+                blocksOf(curr, reached), len(deltas), len(deltas) - kept)
+            prog.Chunk(curr, reached)
+            curr = reached + 1
         }
-        curr = to + 1
     }
     if curr > began {
         logging.Info("addrstat: caught up with %s, %d addresses hold coins", blocksOf(began, curr - 1), Count())
         signals.Send(signals.AddrStat)
     }
     return nil
+}
+
+// collect reads blocks from..to on workers goroutines and returns their movements
+// merged, with the last height they cover. Each goroutine takes the next height
+// off a shared counter, applies its block to a map of its own with no lock held —
+// the address encoding, which is the scan's expensive step, included — and only
+// then takes the lock to merge that map into the chunk's.
+//
+// Heights are handed out in order, so the blocks read are always a run from
+// `from` with nothing missing: a goroutine stops taking new ones once the merged
+// chunk reaches flushKeys addresses, the ones already taken are finished and
+// merged, and the run ends at the highest height handed out. That is what lets
+// the cursor go to it, exactly as when the blocks were read one at a time.
+//
+// The first failed block cancels the rest and is returned, and nothing is merged
+// into the table, so the next pass retries the same heights.
+func collect(parent context.Context, from, to int64) (map[string]*Stat, int64, error) {
+    var ctx, cancel = context.WithCancel(parent)
+    defer cancel()
+    var next atomic.Int64
+    next.Store(from)
+    var stop atomic.Bool
+    var mu sync.Mutex
+    var deltas = map[string]*Stat{}
+    var failure error
+    var wg sync.WaitGroup
+    for range workers {
+        wg.Go(func() {
+            for !stop.Load() {
+                var h = next.Add(1) - 1
+                if h > to { return }
+                var blk, err = core.BlockAt(ctx, int(h))
+                if err != nil {
+                    mu.Lock()
+                    if failure == nil { failure = fmt.Errorf("block %d: %w", h, err) }
+                    mu.Unlock()
+                    stop.Store(true)
+                    cancel()
+                    return
+                }
+                var local = map[string]*Stat{}
+                apply(local, blk)
+                mu.Lock()
+                merge(deltas, local)
+                var full = len(deltas) >= flushKeys
+                mu.Unlock()
+                if full { stop.Store(true) }
+            }
+        })
+    }
+    wg.Wait()
+    if failure != nil { return nil, 0, failure }
+    return deltas, min(next.Load() - 1, to), nil
+}
+
+// merge adds one block's records to the chunk's. A record the chunk does not hold
+// yet is moved across rather than copied, the block's map being thrown away
+// after. Transactions are summed: a transaction is in one block, so the per-block
+// dedup apply does is the whole of it.
+func merge(into, from map[string]*Stat) {
+    for addr, d := range from {
+        var s = into[addr]
+        if s == nil {
+            into[addr] = d
+            continue
+        }
+        s.Recv += d.Recv
+        s.Sent += d.Sent
+        s.Fees += d.Fees
+        s.Txs += d.Txs
+        if d.First > 0 && (s.First == 0 || d.First < s.First) { s.First = d.First }
+        if d.Last > s.Last { s.Last = d.Last }
+    }
 }
 
 // blocksOf names a range of heights the way every collector's line does, in the
@@ -215,9 +290,10 @@ func apply(deltas map[string]*Stat, blk core.Block) {
 // at is the running record for the address a script pays, or nil when it pays no
 // address at all — an OP_RETURN, a bare multisig, anything nonstandard, which is
 // what addrbal leaves out of its count for the same reason. The address is
-// encoded from the script, and its form named from the address, once per chunk
-// rather than once per touch: a busy address appears thousands of times in a
-// chunk, and base58 and bech32 are the expensive part of this scan.
+// encoded from the script, and its form named from the address, once per block
+// rather than once per touch: a busy address appears many times in a block, and
+// base58 and bech32 are the expensive part of this scan — which is why each
+// block is applied on a goroutine of its own, outside the chunk's lock.
 func at(deltas map[string]*Stat, script []byte) (*Stat, string) {
     var addr = addrindex.Address(script)
     if addr == "" { return nil, "" }

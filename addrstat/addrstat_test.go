@@ -4,7 +4,10 @@ import "bytes"
 import "encoding/hex"
 import "fmt"
 import "path/filepath"
+import "encoding/binary"
+import "errors"
 import "strconv"
+import "sync"
 import "testing"
 import "database/sql"
 import _ "modernc.org/sqlite"
@@ -42,11 +45,16 @@ func blockOf(when int64, txs ...tx) core.Block {
 }
 
 // chain is a node holding blocks, which the scan reads over RPC the way it reads
-// a real one. Every getblock is recorded in fetched.
+// a real one. Every getblock is recorded in fetched, under mu, since a chunk's
+// blocks are read on several goroutines at once; a height in fail answers with
+// an error, and onFetch, when set, is called with each height asked for.
 type chain struct {
     tip     int
     blocks  map[int]core.Block
     fetched []int
+    fail    map[int]bool
+    onFetch func(int)
+    mu      sync.Mutex
 }
 
 // serve points core at the chain for the rest of the test.
@@ -66,7 +74,12 @@ func (c *chain) respond(method string, params []any) (any, error) {
         return fmt.Sprint(params[0]), nil
     case "getblock":
         var height, _ = strconv.Atoi(params[0].(string))
+        c.mu.Lock()
         c.fetched = append(c.fetched, height)
+        var failed = c.fail[height]
+        c.mu.Unlock()
+        if c.onFetch != nil { c.onFetch(height) }
+        if failed { return nil, errors.New("block unavailable") }
         var amount = func(p core.Payment) map[string]any {
             return map[string]any{"value": float64(p.Sat) / 1e8, "scriptPubKey": map[string]string{"hex": hex.EncodeToString(p.Script)}}
         }
@@ -293,4 +306,108 @@ func TestRepeatedInitKeepsTheCursor(t *testing.T) {
     }
     if h, ok := cursors.Get(cursors.AddrStat); !ok || h != 0 { t.Errorf("cursor = %d ok=%v, want 0", h, ok) }
     if a := statOf(t, addrA); a.Recv != 500 { t.Errorf("a repeated Init changed the record: %+v", a) }
+}
+
+// scriptOf is a distinct segwit script for each n, so a test can pay as many
+// addresses as it likes.
+func scriptOf(n int) []byte {
+    var hash = make([]byte, 20)
+    binary.BigEndian.PutUint32(hash, uint32(n)+1)
+    return append([]byte{0x00, 20}, hash...)
+}
+
+// busyChain is blocks 0..tip, each paying a few addresses old and new and
+// spending what an earlier block paid, so addresses run across blocks — paid in
+// one, spent in another, some emptied — which is what a merge of per-block
+// records has to get right.
+func busyChain(tip int) *chain {
+    var c = &chain{tip: tip, blocks: map[int]core.Block{}}
+    for h := 0; h <= tip; h++ {
+        var outs = []core.Payment{pay(scriptOf(h), 1000), pay(scriptOf(h%7), 300), pay(scriptOf(h+1000), 50)}
+        var t = tx{outs: outs}
+        if h > 0 { t.spent = []core.Payment{pay(scriptOf(h-1), 1000)} }
+        c.blocks[h] = blockOf(int64(10_000-h*3+(h%5)*7), t)
+    }
+    return c
+}
+
+// table is every row, keyed by address, for comparing two scans' results.
+func table(t *testing.T) map[string]Stat {
+    t.Helper()
+    var out = map[string]Stat{}
+    var rs, err = db.Query(`select addr, type, balance, recv, sent, flow, fees, txs, first, last from addrstat`)
+    if err != nil { t.Fatal(err) }
+    defer rs.Close()
+    for rs.Next() {
+        var addr string
+        var s Stat
+        if err := rs.Scan(&addr, &s.Type, &s.Balance, &s.Recv, &s.Sent, &s.Flow, &s.Fees, &s.Txs, &s.First, &s.Last); err != nil {
+            t.Fatal(err)
+        }
+        out[addr] = s
+    }
+    return out
+}
+
+// Reading a chunk's blocks on several goroutines writes exactly the table one
+// goroutine does, chunks and mid-chunk merges included.
+func TestParallelMatchesSequential(t *testing.T) {
+    var saved, size, keys = workers, chunkSize, flushKeys
+    defer func() { workers, chunkSize, flushKeys = saved, size, keys }()
+    chunkSize, flushKeys = 40, 25
+    var results []map[string]Stat
+    for _, n := range []int{1, 8} {
+        workers = n
+        open(t)
+        serve(t, busyChain(150))
+        if err := Collect(); err != nil { t.Fatalf("Collect with %d workers: %v", n, err) }
+        if h, ok := cursors.Get(cursors.AddrStat); !ok || h != 150 { t.Errorf("%d workers: cursor = %d ok=%v", n, h, ok) }
+        results = append(results, table(t))
+    }
+    if len(results[0]) == 0 { t.Fatal("the sequential scan wrote nothing") }
+    if len(results[0]) != len(results[1]) { t.Fatalf("%d rows sequentially, %d in parallel", len(results[0]), len(results[1])) }
+    for addr, want := range results[0] {
+        if got := results[1][addr]; got != want { t.Errorf("%s: parallel %+v, sequential %+v", addr, got, want) }
+    }
+}
+
+// A merge taken on flushKeys covers a run of blocks with nothing missing, so the
+// cursor never passes a block that has not been applied: no block is asked for
+// at or below the cursor, and none is asked for twice.
+func TestParallelFlushLeavesNoGap(t *testing.T) {
+    var saved, keys = workers, flushKeys
+    defer func() { workers, flushKeys = saved, keys }()
+    workers, flushKeys = 8, 3
+    open(t)
+    var c = busyChain(120)
+    c.onFetch = func(h int) {
+        if at, ok := cursors.Get(cursors.AddrStat); ok && int64(h) <= at { t.Errorf("block %d asked for with the cursor at %d", h, at) }
+    }
+    serve(t, c)
+    if err := Collect(); err != nil { t.Fatalf("Collect: %v", err) }
+    var seen = map[int]int{}
+    for _, h := range c.fetched { seen[h]++ }
+    for h := 0; h <= 120; h++ {
+        if seen[h] != 1 { t.Errorf("block %d fetched %d times", h, seen[h]) }
+    }
+}
+
+// A block that cannot be read fails the pass and merges nothing of the chunk it
+// is in, so the next pass reads the same heights again.
+func TestParallelFailureMergesNothing(t *testing.T) {
+    var saved = workers
+    defer func() { workers = saved }()
+    workers = 4
+    open(t)
+    var c = busyChain(30)
+    c.fail = map[int]bool{17: true}
+    serve(t, c)
+    if err := Collect(); err == nil { t.Fatal("a pass with an unreadable block succeeded") }
+    if _, ok := cursors.Get(cursors.AddrStat); ok { t.Error("the cursor moved past a failed chunk") }
+    if Count() != 0 { t.Errorf("Count = %d after a failed chunk, want 0", Count()) }
+    c.mu.Lock()
+    c.fail = nil
+    c.mu.Unlock()
+    if err := Collect(); err != nil { t.Fatalf("retry: %v", err) }
+    if h, ok := cursors.Get(cursors.AddrStat); !ok || h != 30 { t.Errorf("cursor = %d ok=%v after the retry", h, ok) }
 }
