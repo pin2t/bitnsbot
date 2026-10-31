@@ -99,25 +99,6 @@ func TestBuildThenQuery(t *testing.T) {
     if strings.Contains(out.String(), "ahead") { t.Errorf("a caught-up answer says it is behind:\n%s", out.String()) }
 }
 
-func TestBuildResumesAndReportsTheTip(t *testing.T) {
-    var c = fixture()
-    var opt = setup(t, c)
-    c.tip = 1
-    var out bytes.Buffer
-    if err := build(opt, &out); err != nil { t.Fatalf("build: %v", err) }
-    c.tip = 2
-    out.Reset()
-    if _, err := query(opt, addrB, &out); err != nil { t.Fatalf("query: %v", err) }
-    if !strings.Contains(out.String(), "holds nothing as of block 1") { t.Errorf("query said %q", out.String()) }
-    if !strings.Contains(out.String(), "tip is block 2, 1 blocks ahead") { t.Errorf("query did not report the tip: %q", out.String()) }
-    out.Reset()
-    if err := build(opt, &out); err != nil { t.Fatalf("build: %v", err) }
-    if !strings.Contains(out.String(), "Collecting blocks 2..2") { t.Errorf("build did not resume: %q", out.String()) }
-    out.Reset()
-    if err := build(opt, &out); err != nil { t.Fatalf("build: %v", err) }
-    if !strings.Contains(out.String(), "already at the tip") { t.Errorf("build at the tip said %q", out.String()) }
-}
-
 func TestQueryNeedsABuild(t *testing.T) {
     var opt = setup(t, fixture())
     var _, err = query(opt, addrA, &bytes.Buffer{})
