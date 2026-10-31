@@ -58,15 +58,15 @@ var workers = max(1, runtime.GOMAXPROCS(0)/2)
 // them; they are stored because a reader of the table should not have to know
 // which columns are sums and which are arithmetic.
 type Stat struct {
-    Type    string `json:"type"`
-    Balance int64  `json:"balance"`
-    Recv    int64  `json:"recv"`
-    Sent    int64  `json:"sent"`
-    Flow    int64  `json:"flow"`
-    Fees    int64  `json:"fees"`
-    Txs     int64  `json:"txs"`
-    First   int64  `json:"first"`
-    Last    int64  `json:"last"`
+    Type    string
+    Balance int64
+    Recv    int64
+    Sent    int64
+    Flow    int64
+    Fees    int64
+    Txs     int64
+    First   int64
+    Last    int64
 }
 
 // Init stores the shared handle and creates the table and the three indexes the
@@ -157,13 +157,13 @@ func Update(tip int64) error {
             var kept, ferr = flush(deltas, reached)
             if ferr != nil { return ferr }
             logging.Info("addrstat: collected from %s, %d addresses merged, %d of them emptied",
-                blocksOf(curr, reached), len(deltas), len(deltas) - kept)
+                blocksMsg(curr, reached), len(deltas), len(deltas) - kept)
             prog.Chunk(curr, reached)
             curr = reached + 1
         }
     }
     if curr > began {
-        logging.Info("addrstat: caught up with %s, %d addresses hold coins", blocksOf(began, curr - 1), Count())
+        logging.Info("addrstat: caught up with %s, %d addresses hold coins", blocksMsg(began, curr - 1), Count())
         signals.Send(signals.AddrStat)
     }
     return nil
@@ -207,10 +207,8 @@ func collect(parent context.Context, from, to int64) (map[string]*Stat, int64, e
                     cancel()
                     return
                 }
-                var local = map[string]*Stat{}
-                apply(local, blk)
                 mu.Lock()
-                merge(deltas, local)
+                apply(deltas, blk)
                 var full = len(deltas) >= flushKeys
                 mu.Unlock()
                 if full { stop.Store(true) }
@@ -222,29 +220,9 @@ func collect(parent context.Context, from, to int64) (map[string]*Stat, int64, e
     return deltas, min(next.Load() - 1, to), nil
 }
 
-// merge adds one block's records to the chunk's. A record the chunk does not hold
-// yet is moved across rather than copied, the block's map being thrown away
-// after. Transactions are summed: a transaction is in one block, so the per-block
-// dedup apply does is the whole of it.
-func merge(into, from map[string]*Stat) {
-    for addr, d := range from {
-        var s = into[addr]
-        if s == nil {
-            into[addr] = d
-            continue
-        }
-        s.Recv += d.Recv
-        s.Sent += d.Sent
-        s.Fees += d.Fees
-        s.Txs += d.Txs
-        if d.First > 0 && (s.First == 0 || d.First < s.First) { s.First = d.First }
-        if d.Last > s.Last { s.Last = d.Last }
-    }
-}
-
-// blocksOf names a range of heights the way every collector's line does, in the
+// blocksMsg names a range of heights the way every collector's line does, in the
 // singular when it is one block.
-func blocksOf(from, to int64) string {
+func blocksMsg(from, to int64) string {
     if from == to { return fmt.Sprintf("block %d", from) }
     return fmt.Sprintf("blocks %d..%d", from, to)
 }
