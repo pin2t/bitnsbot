@@ -138,14 +138,14 @@ func build(opt *options, out io.Writer) error {
         return nil
     }
     fmt.Fprintf(out, "Collecting blocks %d..%d\n", from, tip)
-    var started, nop = time.Now(), 0
-    for from < tip && nop < 3 {
+    var started, nop, hh = time.Now(), 0, from
+    for hh < tip && nop < 3 {
         if uerr := addrstat.Update(tip); uerr != nil {
             fmt.Fprint(out, "Error updating index: ", uerr)
         }
         if h, ok := cursors.Get(cursors.AddrStat); ok {
-            if from == h + 1 { nop++ } else { nop = 0 }
-            from = h + 1
+            if hh == h + 1 { nop++ } else { nop = 0 }
+            hh = h + 1
         }
     }
     fmt.Fprintf(out, "Collected %d blocks up to %d in %s, %d addresses hold coins\n",
