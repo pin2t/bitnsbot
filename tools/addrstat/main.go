@@ -141,7 +141,7 @@ func build(opt *options, out io.Writer) error {
     var started, nop = time.Now(), 0
     for from < tip && nop < 3 {
         if uerr := addrstat.Update(tip); uerr != nil {
-            fmt.Fprintf(out, "Error updating index: ", uerr)
+            fmt.Fprint(out, "Error updating index: ", uerr)
         }
         if h, ok := cursors.Get(cursors.AddrStat); ok {
             if from == h + 1 { nop++ } else { nop = 0 }
