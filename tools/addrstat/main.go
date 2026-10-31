@@ -109,8 +109,7 @@ func openDB(path string, existing bool) (*sql.DB, error) {
     if existing {
         if _, err := os.Stat(path); err != nil { return nil, err }
     }
-    var handle, err = sql.Open("sqlite", "file:"+path+
-        "?_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=busy_timeout(10000)")
+    var handle, err = sql.Open("sqlite", "file:" + path + "?_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=busy_timeout(10000)")
     if err != nil { return nil, err }
     if cerr := cursors.Init(handle); cerr != nil {
         handle.Close()
@@ -139,8 +138,16 @@ func build(opt *options, out io.Writer) error {
         return nil
     }
     fmt.Fprintf(out, "Collecting blocks %d..%d\n", from, tip)
-    var started = time.Now()
-    if uerr := addrstat.Update(tip); uerr != nil { return uerr }
+    var started, nop = time.Now(), 0
+    for from < tip && nop < 3 {
+        if uerr := addrstat.Update(tip); uerr != nil {
+            fmt.Fprintf(out, "Error updating index: ", uerr)
+        }
+        if h, ok := cursors.Get(cursors.AddrStat); ok {
+            if from == h + 1 { nop++ } else { nop = 0 }
+            from = h + 1
+        }
+    }
     fmt.Fprintf(out, "Collected %d blocks up to %d in %s, %d addresses hold coins\n",
         tip-from+1, tip, took(time.Since(started)), addrstat.Count())
     return nil
