@@ -1,6 +1,7 @@
 package main
 
 import "bytes"
+import "database/sql"
 import "encoding/hex"
 import "fmt"
 import "path/filepath"
@@ -8,8 +9,10 @@ import "strconv"
 import "strings"
 import "testing"
 import "bitnsbot/addrindex"
+import "bitnsbot/addrstat"
 import "bitnsbot/core"
 import "bitnsbot/core/coretest"
+import "bitnsbot/cursors"
 
 var scriptA = append([]byte{0x00, 20}, bytes.Repeat([]byte{0xa1}, 20)...)
 var scriptB = append([]byte{0x76, 0xa9, 20}, append(bytes.Repeat([]byte{0xb2}, 20), 0x88, 0xac)...)
@@ -114,4 +117,110 @@ func TestGroup(t *testing.T) {
     for n, want := range map[int64]string{0: "0", 999: "999", 1000: "1 000", -1234567: "-1 234 567"} {
         if got := group(n); got != want { t.Errorf("group(%d) = %q, want %q", n, got, want) }
     }
+}
+
+// tableOf reads the file at path on a handle of its own, every row and the cursor
+// as text, so a comparison sees the file and not whatever the packages point at.
+func tableOf(t *testing.T, path string) (rows []string, cursor int64) {
+    t.Helper()
+    var handle, err = sql.Open("sqlite", "file:"+path)
+    if err != nil { t.Fatal(err) }
+    defer handle.Close()
+    var res, qerr = handle.Query(`select addr || '|' || type || '|' || balance || '|' || recv || '|' || sent || '|' ||
+        flow || '|' || fees || '|' || txs || '|' || first || '|' || last from addrstat order by addr`)
+    if qerr != nil { t.Fatal(qerr) }
+    defer res.Close()
+    for res.Next() {
+        var row string
+        if serr := res.Scan(&row); serr != nil { t.Fatal(serr) }
+        rows = append(rows, row)
+    }
+    if rerr := handle.QueryRow("select place from cursors where name = ?", cursors.AddrStat).Scan(&cursor); rerr != nil { t.Fatal(rerr) }
+    return rows, cursor
+}
+
+// setupMemory is setup plus the handle buildMemory hands the file back to.
+func setupMemory(t *testing.T, c *chain) (*options, *sql.DB) {
+    t.Helper()
+    var opt = setup(t, c)
+    var handle, err = openDB(opt.db, false)
+    if err != nil { t.Fatalf("open: %v", err) }
+    t.Cleanup(func() { handle.Close() })
+    return opt, handle
+}
+
+func TestMemoryBuildWritesWhatADiskBuildWrites(t *testing.T) {
+    var disk = setup(t, fixture())
+    if err := build(disk, &bytes.Buffer{}); err != nil { t.Fatalf("build: %v", err) }
+    var want, wantAt = tableOf(t, disk.db)
+    if len(want) != 2 || wantAt != 2 { t.Fatalf("disk build: %v at %d", want, wantAt) }
+    var opt, handle = setupMemory(t, fixture())
+    var out bytes.Buffer
+    if err := buildMemory(opt, handle, &out); err != nil { t.Fatalf("buildMemory: %v", err) }
+    var got, gotAt = tableOf(t, opt.db)
+    if strings.Join(got, "\n") != strings.Join(want, "\n") || gotAt != wantAt {
+        t.Errorf("memory build wrote %v at %d, disk build %v at %d", got, gotAt, want, wantAt)
+    }
+    if !strings.Contains(out.String(), "Wrote 2 addresses") { t.Errorf("build said %q", out.String()) }
+    out.Reset()
+    var found, err = query(opt, addrA, &out)
+    if err != nil || !found { t.Fatalf("query after a memory build: found %v, %v", found, err) }
+    if !strings.Contains(out.String(), "Balance:       1 999 990 000 sat") { t.Errorf("query said %q", out.String()) }
+}
+
+// A run resumes from what the file holds, and the row of an address emptied in
+// memory has to be gone from the file, which a merge of the table would leave.
+func TestMemoryBuildResumesAndDropsEmptied(t *testing.T) {
+    var c = fixture()
+    c.tip = 1
+    var opt, handle = setupMemory(t, c)
+    if err := build(opt, &bytes.Buffer{}); err != nil { t.Fatalf("build: %v", err) }
+    c.tip = 3
+    c.blocks[2].Txs[0].Outputs[1] = core.Payment{Script: scriptB, Sat: 1_999_990_000}
+    c.blocks[3] = core.Block{Time: 1231470100}
+    var calls = map[string]int{}
+    var server = coretest.Server(t, func(method string, params []any) (any, error) {
+        if method == "getblock" { calls[params[0].(string)]++ }
+        return c.respond(method, params)
+    })
+    opt.url = server.URL
+    if err := buildMemory(opt, handle, &bytes.Buffer{}); err != nil { t.Fatalf("buildMemory: %v", err) }
+    if calls["0"] != 0 || calls["1"] != 0 || calls["2"] != 1 { t.Errorf("blocks read: %v", calls) }
+    var rows, at = tableOf(t, opt.db)
+    if at != 3 || len(rows) != 1 || !strings.HasPrefix(rows[0], addrB + "|") { t.Errorf("file holds %v at %d", rows, at) }
+    if !strings.Contains(rows[0], "|4999990000|") { t.Errorf("the row was not carried over from the file: %v", rows) }
+}
+
+func TestMemoryBuildLeavesTheRestOfTheFile(t *testing.T) {
+    var opt, handle = setupMemory(t, fixture())
+    for _, s := range []string{
+        "create table other (k text)",
+        "insert into other values ('kept')",
+        "insert into cursors (name, place) values ('addrindex', 77)",
+    } {
+        if _, err := handle.Exec(s); err != nil { t.Fatal(err) }
+    }
+    if err := buildMemory(opt, handle, &bytes.Buffer{}); err != nil { t.Fatalf("buildMemory: %v", err) }
+    var kept string
+    var place int64
+    if err := handle.QueryRow("select k from other").Scan(&kept); err != nil || kept != "kept" { t.Errorf("other: %q, %v", kept, err) }
+    if err := handle.QueryRow("select place from cursors where name = 'addrindex'").Scan(&place); err != nil || place != 77 { t.Errorf("addrindex cursor: %d, %v", place, err) }
+    var indexes int
+    if err := handle.QueryRow("select count(*) from sqlite_master where type = 'index' and tbl_name = 'addrstat' and sql is not null").Scan(&indexes); err != nil { t.Fatal(err) }
+    if indexes != 3 { t.Errorf("the file has %d addrstat indexes, want 3", indexes) }
+    if at, ok := cursors.Get(cursors.AddrStat); !ok || at != 2 { t.Errorf("the packages do not read the file: %d, %v", at, ok) }
+    if addrstat.Count() != 2 { t.Errorf("Count = %d after the build, want 2", addrstat.Count()) }
+}
+
+// A node that never answers fails before anything moves, and the file is untouched.
+func TestMemoryBuildFailureLeavesTheFile(t *testing.T) {
+    var c = fixture()
+    c.tip = 1
+    var opt, handle = setupMemory(t, c)
+    if err := build(opt, &bytes.Buffer{}); err != nil { t.Fatalf("build: %v", err) }
+    var want, wantAt = tableOf(t, opt.db)
+    opt.url = "http://127.0.0.1:1"
+    if err := buildMemory(opt, handle, &bytes.Buffer{}); err == nil { t.Fatal("a build against no node succeeded") }
+    var got, gotAt = tableOf(t, opt.db)
+    if strings.Join(got, "\n") != strings.Join(want, "\n") || gotAt != wantAt { t.Errorf("file changed: %v at %d", got, gotAt) }
 }
