@@ -15,8 +15,9 @@
 // table holds for one address. query reads only the database — the node is asked
 // for its tip, best effort, so the answer can say how far behind it stands.
 //
-// build -memory does the same work in an in-memory SQLite database and writes the
-// table to -db once, at the end. See buildMemory for what that trades away.
+// build -memory does the same work on several goroutines in an in-memory SQLite
+// database and writes the table to -db once, at the end. See buildMemory for what
+// that trades away.
 package main
 
 import "context"
@@ -27,14 +28,33 @@ import "fmt"
 import "io"
 import "os"
 import "path/filepath"
+import "runtime"
 import "strconv"
 import "strings"
+import "sync"
+import "sync/atomic"
 import "time"
 import _ "modernc.org/sqlite"
+import "bitnsbot/addrindex"
 import "bitnsbot/addrstat"
 import "bitnsbot/core"
 import "bitnsbot/cursors"
 import "bitnsbot/logging"
+import "bitnsbot/progress"
+
+// scanWorkers is how many goroutines a -memory build reads blocks on: every core
+// but the two left for Bitcoin Core, and at least one. A var so tests can set it.
+var scanWorkers = max(1, runtime.NumCPU()-2)
+
+// blockTries is how many times a -memory build asks for a block before giving up,
+// retryWait the rest between tries. A failed block loses the whole run, so a node
+// busy or restarting for a moment should not cost one; the wait outlasts the two
+// failed pings after which the core package redials. A var so tests shrink it.
+const blockTries = 3
+var retryWait = 5 * time.Second
+
+// progressBlocks is how many blocks a -memory build finishes between progress lines.
+const progressBlocks = 1000
 
 // options are the flags both commands share, named as the bot's own are, so a
 // line of the bot's config file reads the same here.
@@ -133,10 +153,28 @@ func openDB(path string, existing bool) (*sql.DB, error) {
     return handle, nil
 }
 
-// build catches the statistics up to the tip and exits. It asks the node for the
-// tip itself, so an unreachable node is reported as that rather than as the
-// first block failing.
+// build catches the statistics up to the tip and exits, through the package's own
+// chunked Update.
 func build(opt *options, out io.Writer) error {
+    return catchUp(opt, out, func(from, tip int64) error {
+        var nop, hh = 0, from
+        for hh < tip && nop < 3 {
+            if uerr := addrstat.Update(tip); uerr != nil {
+                fmt.Fprint(out, "Error updating index: ", uerr)
+            }
+            if h, ok := cursors.Get(cursors.AddrStat); ok {
+                if hh == h + 1 { nop++ } else { nop = 0 }
+                hh = h + 1
+            }
+        }
+        return nil
+    })
+}
+
+// catchUp hands collect the blocks between the cursor and the tip, and says what
+// came of it. It asks the node for the tip itself, so an unreachable node is
+// reported as that rather than as the first block failing.
+func catchUp(opt *options, out io.Writer, collect func(from, tip int64) error) error {
     if err := core.Init(opt.url, opt.user, opt.pass, opt.cookie); err != nil { return err }
     var ctx, cancel = context.WithTimeout(context.Background(), 30*time.Second)
     var tip, err = core.GetBlockCount(ctx)
@@ -149,33 +187,22 @@ func build(opt *options, out io.Writer) error {
         return nil
     }
     fmt.Fprintf(out, "Collecting blocks %d..%d\n", from, tip)
-    var started, nop, hh = time.Now(), 0, from
-    for hh < tip && nop < 3 {
-        if uerr := addrstat.Update(tip); uerr != nil {
-            fmt.Fprint(out, "Error updating index: ", uerr)
-        }
-        if h, ok := cursors.Get(cursors.AddrStat); ok {
-            if hh == h + 1 { nop++ } else { nop = 0 }
-            hh = h + 1
-        }
-    }
+    var started = time.Now()
+    if cerr := collect(from, tip); cerr != nil { return cerr }
     fmt.Fprintf(out, "Collected %d blocks up to %d in %s, %d addresses hold coins\n",
         tip-from+1, tip, took(time.Since(started)), addrstat.Count())
     return nil
 }
 
-// buildMemory runs build against an in-memory database, and writes the table and
-// its cursor to the database at dest when it is done. Nothing touches dest until
-// then, so a run that dies loses all of its work and leaves dest as it was. It
-// starts from what dest already holds, as build does: starting empty would answer
-// a run that stopped early by replacing a further-along table with a shorter one.
+// buildMemory scans the blocks into an in-memory database, and writes the table
+// and its cursor to the database at dest when it is done. Nothing touches dest
+// until then, so a run that dies loses all of its work and leaves dest as it was.
+// It starts from what dest already holds, as build does: starting empty would
+// answer a run that stopped early by replacing a further-along table with a
+// shorter one.
 //
 // Nothing is written when the cursor did not move, a dump of a chain-sized table
 // being too much to do for nothing.
-//
-// The journal is off, so a flush that failed partway could not be rolled back and
-// build's retry would count its rows twice. Nothing a flush does can fail in memory
-// short of running out of it, which ends the process.
 //
 // dest is handed back to the packages afterwards, and addrstat.Init is what puts
 // back the indexes dump left off.
@@ -184,7 +211,7 @@ func buildMemory(opt *options, dest *sql.DB, out io.Writer) error {
     if err != nil { return err }
     defer mem.Close()
     var before, had = cursors.Get(cursors.AddrStat)
-    if berr := build(opt, out); berr != nil { return berr }
+    if berr := catchUp(opt, out, func(from, tip int64) error { return scan(mem, from, tip) }); berr != nil { return berr }
     var after, has = cursors.Get(cursors.AddrStat)
     if has && (!had || after != before) {
         if derr := dump(mem, opt.db, out); derr != nil { return derr }
@@ -192,6 +219,165 @@ func buildMemory(opt *options, dest *sql.DB, out io.Writer) error {
     if cerr := mem.Close(); cerr != nil { return cerr }
     if cerr := cursors.Init(dest); cerr != nil { return cerr }
     return addrstat.Init(dest)
+}
+
+// scan reads blocks from..tip on scanWorkers goroutines. Each takes the next
+// height off a shared counter, reads the block, adds it up on its own and flushes
+// that into the table, with nothing shared but the database's one connection,
+// which is where the flushes queue.
+//
+// Blocks therefore reach the table out of order, so the cursor cannot follow them:
+// it moves once, to the tip, after every block is in. A block that still fails
+// after its retries stops the run with no cursor at all, and since the table may
+// then hold blocks above the one that failed, buildMemory writes nothing.
+//
+// A balance is a sum, so neither the order nor the flushing can change it, nor
+// which addresses end up with a row. What they can change is the history in a row
+// whose balance touches zero, since the delete starts that address afresh: a block
+// at a time sees zeros a thousand-block chunk sums past, and which of the blocks
+// being read at once landed first decides some more. So recv, sent, flow, fees, txs
+// and first may read lower than a plain build's, and differ from one run to the
+// next. Over 120 mainnet blocks and 407 963 addresses, 1 701 rows differed from a
+// plain build on one worker, and eight workers differed from one on another 151.
+//
+// The progress line counts blocks finished, so the range it names is approximate.
+func scan(mem *sql.DB, from, tip int64) error {
+    var ctx, cancel = context.WithCancel(context.Background())
+    defer cancel()
+    var next, done atomic.Int64
+    next.Store(from)
+    var prog = progress.New("addrstat", from, tip)
+    var mu sync.Mutex
+    var failure error
+    var wg sync.WaitGroup
+    for range scanWorkers {
+        wg.Go(func() {
+            for ctx.Err() == nil {
+                var h = next.Add(1) - 1
+                if h > tip { return }
+                var blk, err = core.BlockAt(ctx, int(h))
+                for try := 1; err != nil && try < blockTries && ctx.Err() == nil; try++ {
+                    logging.Warn("addrstat: block %d, try %d of %d: %v", h, try, blockTries, err)
+                    time.Sleep(retryWait)
+                    blk, err = core.BlockAt(ctx, int(h))
+                }
+                if err == nil { err = flush(mem, deltasOf(blk)) }
+                if err != nil {
+                    mu.Lock()
+                    if failure == nil { failure = fmt.Errorf("block %d: %w", h, err) }
+                    mu.Unlock()
+                    cancel()
+                    return
+                }
+                var n = done.Add(1)
+                if n % progressBlocks == 0 { prog.Chunk(from + n - progressBlocks, from + n - 1) }
+            }
+        })
+    }
+    wg.Wait()
+    if failure != nil { return failure }
+    var tx, err = mem.Begin()
+    if err != nil { return err }
+    defer tx.Rollback()
+    if cerr := cursors.Set(tx, cursors.AddrStat, tip); cerr != nil { return cerr }
+    return tx.Commit()
+}
+
+// deltasOf adds up what one block moved for each address it touches. These are the
+// rules addrstat's own apply follows, which the package keeps unexported: a
+// transaction counts once per address however many of its outputs or inputs name
+// it, its whole fee is charged to every address spending in it, and first and last
+// are a min and a max since block times are not strictly ordered. A script paying
+// no address is skipped. TestMemoryBuildWritesWhatADiskBuildWrites holds the two
+// to the same answer.
+func deltasOf(blk core.Block) map[string]*addrstat.Stat {
+    var deltas = map[string]*addrstat.Stat{}
+    var at = func(script []byte) (*addrstat.Stat, string) {
+        var addr = addrindex.Address(script)
+        if addr == "" { return nil, "" }
+        var s = deltas[addr]
+        if s == nil {
+            var _, kind, _ = addrindex.Decode(addr)
+            s = &addrstat.Stat{Type: kind}
+            deltas[addr] = s
+        }
+        return s, addr
+    }
+    for _, tx := range blk.Txs {
+        var fee int64
+        if len(tx.Spent) > 0 {
+            for _, p := range tx.Spent { fee += p.Sat }
+            for _, p := range tx.Outputs { fee -= p.Sat }
+        }
+        var seen = map[string]bool{}
+        var touch = func(s *addrstat.Stat, addr string) {
+            if !seen[addr] {
+                seen[addr] = true
+                s.Txs++
+            }
+            if blk.Time <= 0 { return }
+            if s.First == 0 || blk.Time < s.First { s.First = blk.Time }
+            if blk.Time > s.Last { s.Last = blk.Time }
+        }
+        var paid = map[string]bool{}
+        for _, p := range tx.Outputs {
+            var s, addr = at(p.Script)
+            if s == nil { continue }
+            s.Recv += p.Sat
+            touch(s, addr)
+        }
+        for _, p := range tx.Spent {
+            var s, addr = at(p.Script)
+            if s == nil { continue }
+            s.Sent += p.Sat
+            if fee > 0 && !paid[addr] {
+                paid[addr] = true
+                s.Fees += fee
+            }
+            touch(s, addr)
+        }
+    }
+    return deltas
+}
+
+// flush adds one block's deltas to the table in one transaction: the upsert and
+// the delete addrstat's own flush runs, without its cursor, which scan keeps. A row
+// may go negative in passing, a spend landing before the block that paid it, and
+// comes right when that block lands.
+//
+// The journal is off, so a transaction that failed partway cannot be rolled back.
+// Nothing here can fail in memory short of running out of it, and a failure ends
+// the run with nothing written.
+func flush(mem *sql.DB, deltas map[string]*addrstat.Stat) error {
+    var tx, err = mem.Begin()
+    if err != nil { return err }
+    defer tx.Rollback()
+    var stmt, perr = tx.Prepare(`insert into addrstat
+        (addr, type, balance, recv, sent, flow, fees, txs, first, last)
+        values (?, ?, ? - ?, ?, ?, ? + ?, ?, ?, ?, ?)
+        on conflict(addr) do update set
+            recv = addrstat.recv + excluded.recv,
+            sent = addrstat.sent + excluded.sent,
+            fees = addrstat.fees + excluded.fees,
+            txs = addrstat.txs + excluded.txs,
+            first = case when excluded.first > 0 and (addrstat.first = 0 or excluded.first < addrstat.first)
+                then excluded.first else addrstat.first end,
+            last = max(addrstat.last, excluded.last),
+            balance = addrstat.recv + excluded.recv - (addrstat.sent + excluded.sent),
+            flow = addrstat.recv + excluded.recv + addrstat.sent + excluded.sent`)
+    if perr != nil { return perr }
+    defer stmt.Close()
+    var empty, eerr = tx.Prepare(`delete from addrstat where addr = ? and balance = 0`)
+    if eerr != nil { return eerr }
+    defer empty.Close()
+    for addr, d := range deltas {
+        if _, serr := stmt.Exec(addr, d.Type, d.Recv, d.Sent, d.Recv, d.Sent, d.Recv, d.Sent,
+            d.Fees, d.Txs, d.First, d.Last); serr != nil {
+            return serr
+        }
+        if _, derr := empty.Exec(addr); derr != nil { return derr }
+    }
+    return tx.Commit()
 }
 
 // openMemory opens the in-memory database with path attached as disk, and loads

@@ -7,7 +7,10 @@ import "fmt"
 import "path/filepath"
 import "strconv"
 import "strings"
+import "sync"
+import "sync/atomic"
 import "testing"
+import "time"
 import "bitnsbot/addrindex"
 import "bitnsbot/addrstat"
 import "bitnsbot/core"
@@ -178,9 +181,12 @@ func TestMemoryBuildResumesAndDropsEmptied(t *testing.T) {
     c.tip = 3
     c.blocks[2].Txs[0].Outputs[1] = core.Payment{Script: scriptB, Sat: 1_999_990_000}
     c.blocks[3] = core.Block{Time: 1231470100}
+    var mu sync.Mutex
     var calls = map[string]int{}
     var server = coretest.Server(t, func(method string, params []any) (any, error) {
+        mu.Lock()
         if method == "getblock" { calls[params[0].(string)]++ }
+        mu.Unlock()
         return c.respond(method, params)
     })
     opt.url = server.URL
@@ -223,4 +229,90 @@ func TestMemoryBuildFailureLeavesTheFile(t *testing.T) {
     if err := buildMemory(opt, handle, &bytes.Buffer{}); err == nil { t.Fatal("a build against no node succeeded") }
     var got, gotAt = tableOf(t, opt.db)
     if strings.Join(got, "\n") != strings.Join(want, "\n") || gotAt != wantAt { t.Errorf("file changed: %v at %d", got, gotAt) }
+}
+
+// busyChain pays and spends across many blocks, with no address ever reaching zero,
+// so any order of its blocks has one right answer, every field of it.
+func busyChain() *chain {
+    var pay = func(script []byte, sat int64) core.Payment { return core.Payment{Script: script, Sat: sat} }
+    var c = &chain{tip: 200, blocks: map[int]core.Block{0: {Time: 1231006505}}}
+    for h := 1; h <= c.tip; h++ {
+        c.blocks[h] = core.Block{Time: 1231006505 + int64(h)*600, Txs: []core.Tx{
+            {Outputs: []core.Payment{pay(scriptA, 5_000_000_000), pay(scriptB, 7)}},
+            {Spent: []core.Payment{pay(scriptA, 1_000)}, Outputs: []core.Payment{pay(scriptB, 900)}},
+        }}
+    }
+    return c
+}
+
+func TestMemoryBuildIsTheSameOnManyWorkers(t *testing.T) {
+    var disk = setup(t, busyChain())
+    if err := build(disk, &bytes.Buffer{}); err != nil { t.Fatalf("build: %v", err) }
+    var want, _ = tableOf(t, disk.db)
+    defer func(n int) { scanWorkers = n }(scanWorkers)
+    scanWorkers = 8
+    var opt, handle = setupMemory(t, busyChain())
+    if err := buildMemory(opt, handle, &bytes.Buffer{}); err != nil { t.Fatalf("buildMemory: %v", err) }
+    var got, at = tableOf(t, opt.db)
+    if strings.Join(got, "\n") != strings.Join(want, "\n") || at != 200 { t.Errorf("wrote %v at %d, want %v", got, at, want) }
+}
+
+// A spend flushed before the payment it spends leaves a negative row in passing,
+// which the payment has to put right, and the two must not be read as an emptied
+// address.
+func TestMemoryBuildTakesASpendBeforeItsPayment(t *testing.T) {
+    defer func(n int) { scanWorkers = n }(scanWorkers)
+    scanWorkers = 2
+    var c = fixture()
+    var server = coretest.Server(t, func(method string, params []any) (any, error) {
+        if method == "getblock" && params[0] == "1" { time.Sleep(100 * time.Millisecond) }
+        return c.respond(method, params)
+    })
+    var opt, handle = setupMemory(t, c)
+    opt.url = server.URL
+    if err := buildMemory(opt, handle, &bytes.Buffer{}); err != nil { t.Fatalf("buildMemory: %v", err) }
+    var rows, _ = tableOf(t, opt.db)
+    if len(rows) != 2 { t.Fatalf("file holds %v", rows) }
+    for _, want := range []string{addrB + "|", "|1999990000|6999990000|5000000000|"} {
+        if !strings.Contains(strings.Join(rows, "\n"), want) { t.Errorf("no %q in %v", want, rows) }
+    }
+}
+
+// failing serves c with block 1 failing its first calls requests.
+func failing(t *testing.T, c *chain, calls int64) string {
+    t.Helper()
+    var left atomic.Int64
+    left.Store(calls)
+    return coretest.Server(t, func(method string, params []any) (any, error) {
+        if method == "getblock" && params[0] == "1" && left.Add(-1) >= 0 {
+            return nil, fmt.Errorf("the node is busy")
+        }
+        return c.respond(method, params)
+    }).URL
+}
+
+func TestMemoryBuildRetriesABlock(t *testing.T) {
+    defer func(d time.Duration) { retryWait = d }(retryWait)
+    retryWait = time.Millisecond
+    var c = fixture()
+    var opt, handle = setupMemory(t, c)
+    opt.url = failing(t, c, blockTries - 1)
+    if err := buildMemory(opt, handle, &bytes.Buffer{}); err != nil { t.Fatalf("buildMemory: %v", err) }
+    var rows, at = tableOf(t, opt.db)
+    if len(rows) != 2 || at != 2 { t.Errorf("file holds %v at %d", rows, at) }
+}
+
+// Blocks above the one that failed may be in memory already, so the run has no
+// height it could write them at: nothing reaches the file.
+func TestMemoryBuildWritesNothingWhenABlockFails(t *testing.T) {
+    defer func(d time.Duration) { retryWait = d }(retryWait)
+    retryWait = time.Millisecond
+    var c = fixture()
+    var opt, handle = setupMemory(t, c)
+    if _, err := handle.Exec("insert into cursors (name, place) values (?, 0)", cursors.AddrStat); err != nil { t.Fatal(err) }
+    var want, wantAt = tableOf(t, opt.db)
+    opt.url = failing(t, c, 1000)
+    if err := buildMemory(opt, handle, &bytes.Buffer{}); err == nil { t.Fatal("a build missing a block succeeded") }
+    var got, gotAt = tableOf(t, opt.db)
+    if len(got) != len(want) || gotAt != wantAt { t.Errorf("file changed: %v at %d", got, gotAt) }
 }
