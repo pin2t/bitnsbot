@@ -11,6 +11,7 @@ import "time"
 import "github.com/go-zeromq/zmq4"
 import "bitnsbot/app"
 import "bitnsbot/blocks"
+import "bitnsbot/addrstat"
 import "bitnsbot/core"
 import "bitnsbot/logging"
 import "bitnsbot/mp"
@@ -331,15 +332,7 @@ func startZMQ(ctx context.Context, endpoints []string) error {
                     if len(msg.Frames[1]) < 33 || msg.Frames[1][32] != 'D' { continue }
                     var hash = hex.EncodeToString(msg.Frames[1][:32])
                     logging.Info("zmq: block %s disconnected", hash)
-                    var n, rbErr = blocks.Rollback(hash)
-                    if rbErr != nil {
-                        logging.Err("zmq: roll back block %s: %v", hash, rbErr)
-                        continue
-                    }
-                    if n > 0 {
-                        logging.Status("zmq: block %s disconnected, %d cached blocks removed", hash, n)
-                        app.Notify("blocks")
-                    }
+                    go rollback(hash)
                 case "rawtx":
                     var tx, ok = parseTx(msg.Frames[1])
                     if !ok {
@@ -376,3 +369,23 @@ func startZMQ(ctx context.Context, endpoints []string) error {
 // variable so a test need not wait; startZMQ reads it once.
 var zmqRetry = 5 * time.Second
 
+// rollback takes a block a reorg disconnected out of the block cache and the
+// address statistics. It runs on a goroutine of its own, since both ask the
+// database and the second the node, and the ZMQ read loop that hears of the
+// disconnect must not stall on either. The two run in order, the block cache
+// first, and a failure of one does not keep the other from running.
+func rollback(hash string) {
+    var n, rbErr = blocks.Rollback(hash)
+    if rbErr != nil {
+        logging.Err("zmq: roll back block %s: %v", hash, rbErr)
+    } else if n > 0 {
+        logging.Status("zmq: block %s disconnected, %d cached blocks removed", hash, n)
+        app.Notify("blocks")
+    }
+    var rows, asErr = addrstat.Rollback(hash)
+    if asErr != nil {
+        logging.Err("zmq: roll back address statistics of block %s: %v", hash, asErr)
+    } else if rows > 0 {
+        logging.Status("zmq: block %s disconnected, %d recent address statistics removed", hash, rows)
+    }
+}
