@@ -1,6 +1,7 @@
 package addrstat
 
 import "bytes"
+import "context"
 import "encoding/hex"
 import "fmt"
 import "path/filepath"
@@ -9,6 +10,7 @@ import "errors"
 import "strconv"
 import "sync"
 import "testing"
+import "time"
 import "database/sql"
 import _ "modernc.org/sqlite"
 import "bitnsbot/addrindex"
@@ -98,10 +100,15 @@ func (c *chain) respond(method string, params []any) (any, error) {
 
 // open creates the tables the scan writes into and points the package at them.
 // There is nothing to seed: a row is an address the scan has found holding
-// coins, so the table starts empty whatever the chain holds.
+// coins, so the table starts empty whatever the chain holds. recent is 0, so a
+// pass folds every block it reads into addrstat and the tests of what the
+// statistics hold can read that table alone; the staging tests raise it.
 func open(t *testing.T) *sql.DB {
     t.Helper()
-    var handle, err = sql.Open("sqlite", filepath.Join(t.TempDir(), "t.db"))
+    var saved = recent
+    recent = 0
+    t.Cleanup(func() { recent = saved })
+    var handle, err = sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "t.db")+"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(10000)")
     if err != nil { t.Fatalf("open: %v", err) }
     if err := cursors.Init(handle); err != nil { t.Fatalf("cursors: %v", err) }
     if err := Init(handle); err != nil { t.Fatalf("init: %v", err) }
@@ -197,24 +204,6 @@ func TestEmptiedAcrossChunksIsRemoved(t *testing.T) {
     src.tip = 1
     if err := Collect(); err != nil { t.Fatalf("Collect: %v", err) }
     if rows(t, addrA) != 0 { t.Error("addrA kept a row after a later chunk emptied it") }
-}
-
-// A chunk that reaches flushKeys addresses merges what it has and takes the
-// cursor to the block it had read, so a scan of the modern chain is bounded by
-// the addresses it holds rather than by its thousand blocks.
-func TestChunkFlushesOnKeys(t *testing.T) {
-    open(t)
-    var keys, size = flushKeys, chunkSize
-    flushKeys, chunkSize = 1, 1000
-    defer func() { flushKeys, chunkSize = keys, size }()
-    serve(t, &chain{tip: 2, blocks: map[int]core.Block{
-        0: blockOf(1000, tx{outs: []core.Payment{pay(scriptA, 5000)}}),
-        1: blockOf(2000, tx{outs: []core.Payment{pay(scriptB, 3000)}}),
-        2: blockOf(3000, tx{outs: []core.Payment{pay(scriptC, 2000)}}),
-    }})
-    if err := Collect(); err != nil { t.Fatalf("Collect: %v", err) }
-    if h, ok := cursors.Get(cursors.AddrStat); !ok || h != 2 { t.Errorf("cursor = %d ok=%v, want 2", h, ok) }
-    if Count() != 3 { t.Errorf("Count = %d, want 3", Count()) }
 }
 
 // A transaction that both pays an address and spends from it is one transaction
@@ -349,12 +338,12 @@ func table(t *testing.T) map[string]Stat {
     return out
 }
 
-// Reading a chunk's blocks on several goroutines writes exactly the table one
-// goroutine does, chunks and mid-chunk merges included.
+// Reading blocks on several goroutines writes exactly the table one goroutine
+// does, folds of a few blocks at a time included.
 func TestParallelMatchesSequential(t *testing.T) {
-    var saved, size, keys = workers, chunkSize, flushKeys
-    defer func() { workers, chunkSize, flushKeys = saved, size, keys }()
-    chunkSize, flushKeys = 40, 25
+    var saved, rowsMax = workers, aggregateRows
+    defer func() { workers, aggregateRows = saved, rowsMax }()
+    aggregateRows = 25
     var results []map[string]Stat
     for _, n := range []int{1, 8} {
         workers = n
@@ -371,13 +360,13 @@ func TestParallelMatchesSequential(t *testing.T) {
     }
 }
 
-// A merge taken on flushKeys covers a run of blocks with nothing missing, so the
-// cursor never passes a block that has not been applied: no block is asked for
-// at or below the cursor, and none is asked for twice.
-func TestParallelFlushLeavesNoGap(t *testing.T) {
-    var saved, keys = workers, flushKeys
-    defer func() { workers, flushKeys = saved, keys }()
-    workers, flushKeys = 8, 3
+// A fold covers a run of blocks with nothing missing, so the cursor never passes
+// a block that has not been applied: no block is asked for at or below the
+// cursor, and none is asked for twice.
+func TestParallelFoldLeavesNoGap(t *testing.T) {
+    var saved, rowsMax = workers, aggregateRows
+    defer func() { workers, aggregateRows = saved, rowsMax }()
+    workers, aggregateRows = 8, 3
     open(t)
     var c = busyChain(120)
     c.onFetch = func(h int) {
@@ -392,22 +381,162 @@ func TestParallelFlushLeavesNoGap(t *testing.T) {
     }
 }
 
-// A block that cannot be read fails the pass and merges nothing of the chunk it
-// is in, so the next pass reads the same heights again.
-func TestParallelFailureMergesNothing(t *testing.T) {
+// A block that cannot be read fails the pass, and the cursor stays below it. The
+// blocks written before the failure are kept, and the retry reads what is missing
+// and ends with the table a pass with no failure writes.
+func TestParallelFailureResumes(t *testing.T) {
     var saved = workers
     defer func() { workers = saved }()
     workers = 4
+    open(t)
+    serve(t, busyChain(30))
+    if err := Collect(); err != nil { t.Fatalf("Collect: %v", err) }
+    var want = table(t)
     open(t)
     var c = busyChain(30)
     c.fail = map[int]bool{17: true}
     serve(t, c)
     if err := Collect(); err == nil { t.Fatal("a pass with an unreadable block succeeded") }
-    if _, ok := cursors.Get(cursors.AddrStat); ok { t.Error("the cursor moved past a failed chunk") }
-    if Count() != 0 { t.Errorf("Count = %d after a failed chunk, want 0", Count()) }
+    if h, ok := cursors.Get(cursors.AddrStat); ok && h >= 17 { t.Errorf("the cursor moved to %d, past the failed block", h) }
     c.mu.Lock()
     c.fail = nil
+    c.fetched = nil
     c.mu.Unlock()
     if err := Collect(); err != nil { t.Fatalf("retry: %v", err) }
     if h, ok := cursors.Get(cursors.AddrStat); !ok || h != 30 { t.Errorf("cursor = %d ok=%v after the retry", h, ok) }
+    for _, h := range c.fetched {
+        if h < 10 { t.Errorf("the retry read block %d again", h) }
+    }
+    var got = table(t)
+    if len(got) != len(want) { t.Fatalf("%d rows after the retry, want %d", len(got), len(want)) }
+    for addr, w := range want {
+        if got[addr] != w { t.Errorf("%s: %+v after the retry, want %+v", addr, got[addr], w) }
+    }
+}
+
+// staged is how many distinct blocks recaddrstat holds.
+func staged(t *testing.T) int {
+    t.Helper()
+    var n int
+    if err := db.QueryRow("select count(distinct block) from recaddrstat").Scan(&n); err != nil { t.Fatal(err) }
+    return n
+}
+
+// A pass leaves the newest `recent` blocks in recaddrstat and folds the rest, and
+// the readers see the two together: Get, Count and Height answer as if every
+// block read were folded.
+func TestRecentBlocksStayStaged(t *testing.T) {
+    open(t)
+    recent = 2
+    serve(t, &chain{tip: 3, blocks: map[int]core.Block{
+        0: blockOf(1000, tx{outs: []core.Payment{pay(scriptA, 5000)}}),
+        1: blockOf(2000, tx{outs: []core.Payment{pay(scriptB, 3000)}}),
+        2: blockOf(3000, tx{outs: []core.Payment{pay(scriptA, 700)}}),
+        3: blockOf(4000, tx{outs: []core.Payment{pay(scriptC, 2000), pay(scriptA, 1000)}, spent: []core.Payment{pay(scriptB, 3000)}}),
+    }})
+    if err := Collect(); err != nil { t.Fatalf("Collect: %v", err) }
+    if h, ok := cursors.Get(cursors.AddrStat); !ok || h != 1 { t.Errorf("cursor = %d ok=%v, want 1", h, ok) }
+    if n := staged(t); n != 2 { t.Errorf("recaddrstat holds %d blocks, want 2", n) }
+    if h, ok := Height(); !ok || h != 3 { t.Errorf("Height = %d ok=%v, want 3", h, ok) }
+    if a := statOf(t, addrA); a.Recv != 5000 || a.Txs != 1 { t.Errorf("addrA folded = %+v, want only block 0", a) }
+    var a, ok = Get(addrA)
+    if !ok || a.Recv != 6700 || a.Balance != 6700 || a.Txs != 3 || a.First != 1000 || a.Last != 4000 || a.Type != "segwit" {
+        t.Errorf("Get(addrA) = %+v ok=%v", a, ok)
+    }
+    if _, ok := Get(addrB); ok { t.Error("Get answered for addrB, which a staged block emptied") }
+    if c, ok := Get(addrC); !ok || c.Balance != 2000 || c.Txs != 1 { t.Errorf("Get(addrC) = %+v ok=%v", c, ok) }
+    if Count() != 2 { t.Errorf("Count = %d, want 2: addrA and addrC hold coins, addrB was emptied", Count()) }
+}
+
+// Rollback deletes the disconnected block's staged rows and those above it, and
+// the next pass reads those heights again from the chain that replaced them.
+func TestRollbackRereadsDisconnectedBlocks(t *testing.T) {
+    open(t)
+    recent = 3
+    var c = &chain{tip: 3, blocks: map[int]core.Block{
+        0: blockOf(1000, tx{outs: []core.Payment{pay(scriptA, 5000)}}),
+        1: blockOf(2000, tx{outs: []core.Payment{pay(scriptA, 100)}}),
+        2: blockOf(3000, tx{outs: []core.Payment{pay(scriptB, 3000)}}),
+        3: blockOf(4000, tx{outs: []core.Payment{pay(scriptC, 2000)}}),
+    }}
+    coretest.Start(t, func(method string, params []any) (any, error) {
+        if method == "getblockheader" {
+            var h, _ = strconv.Atoi(params[0].(string))
+            return map[string]any{"hash": params[0], "height": h}, nil
+        }
+        return c.respond(method, params)
+    })
+    if err := Collect(); err != nil { t.Fatalf("Collect: %v", err) }
+    if n, err := Rollback("0"); err == nil { t.Errorf("rolled back a folded block: %d rows", n) }
+    var n, err = Rollback("2")
+    if err != nil || n != 4 { t.Fatalf("Rollback = %d, %v, want the 4 rows of blocks 2 and 3", n, err) }
+    if _, ok := Get(addrB); ok { t.Error("addrB still answered after its block was disconnected") }
+    if h, _ := Height(); h != 1 { t.Errorf("Height = %d after the rollback, want 1", h) }
+    c.blocks[2] = blockOf(3000, tx{outs: []core.Payment{pay(scriptA, 900)}})
+    c.blocks[3] = blockOf(4000)
+    c.fetched = nil
+    if err := Collect(); err != nil { t.Fatalf("Collect: %v", err) }
+    if len(c.fetched) != 2 { t.Errorf("fetched %v after the rollback, want blocks 2 and 3", c.fetched) }
+    if a, _ := Get(addrA); a.Recv != 6000 || a.Txs != 3 { t.Errorf("Get(addrA) = %+v, want the replacement block counted", a) }
+    if _, ok := Get(addrC); ok { t.Error("addrC still answered, paid only by a disconnected block") }
+}
+
+// A block that hangs right after the cursor holds every fold up, so once more
+// than gapBlocks blocks are staged behind it the aggregator reads it again on a
+// goroutine of its own. The stuck read here is released only by that second
+// read, so a pass that never makes it hangs until the test fails it; and the
+// stuck read finishing after the cursor has moved past its block writes nothing.
+func TestAggregatorReadsTheMissingBlock(t *testing.T) {
+    var saved, gaps = workers, gapBlocks
+    defer func() { workers, gapBlocks = saved, gaps }()
+    workers, gapBlocks = 2, 5
+    open(t)
+    serve(t, busyChain(40))
+    if err := Collect(); err != nil { t.Fatalf("Collect: %v", err) }
+    var want = table(t)
+    open(t)
+    var c = busyChain(40)
+    var release = make(chan struct{})
+    var reads int
+    c.onFetch = func(h int) {
+        if h != 0 { return }
+        c.mu.Lock()
+        reads++
+        var first = reads == 1
+        c.mu.Unlock()
+        if !first {
+            close(release)
+            return
+        }
+        select {
+        case <-release:
+        case <-time.After(5 * time.Second):
+            t.Error("block 0 was never read again while the staged blocks piled up behind it")
+        }
+    }
+    serve(t, c)
+    if err := Collect(); err != nil { t.Fatalf("Collect: %v", err) }
+    if reads != 2 { t.Errorf("block 0 read %d times, want 2", reads) }
+    if h, ok := cursors.Get(cursors.AddrStat); !ok || h != 40 { t.Errorf("cursor = %d ok=%v, want 40", h, ok) }
+    if n := staged(t); n != 0 { t.Errorf("recaddrstat holds %d blocks, want none below the cursor", n) }
+    var got = table(t)
+    if len(got) != len(want) { t.Fatalf("%d rows, want %d", len(got), len(want)) }
+    for addr, w := range want {
+        if got[addr] != w { t.Errorf("%s: %+v, want %+v", addr, got[addr], w) }
+    }
+}
+
+// A block written after the cursor has passed it — a slow reader finishing a
+// block the aggregator already read again and folded — writes nothing, or every
+// read would count it twice until the next fold.
+func TestRecordSkipsFoldedBlocks(t *testing.T) {
+    open(t)
+    serve(t, busyChain(5))
+    if err := Collect(); err != nil { t.Fatalf("Collect: %v", err) }
+    var before = table(t)
+    var a, _ = Get(addrindex.Address(scriptOf(5)))
+    if err := record(context.Background(), 3); err != nil { t.Fatalf("record: %v", err) }
+    if n := staged(t); n != 0 { t.Errorf("recaddrstat holds %d blocks after writing a folded one", n) }
+    if got, _ := Get(addrindex.Address(scriptOf(5))); got != a { t.Errorf("Get = %+v after, %+v before", got, a) }
+    if len(table(t)) != len(before) { t.Error("addrstat changed") }
 }
