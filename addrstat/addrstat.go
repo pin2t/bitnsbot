@@ -182,23 +182,31 @@ func Height() (int64, bool) {
 // the next Update reads those heights again from the chain that replaced them.
 // The height comes from the node, which keeps the header of a block it has
 // disconnected. A block already folded into addrstat cannot be taken out — that
-// is deeper than `recent` — and is reported as an error. It returns how many rows
-// it removed.
-func Rollback(hash string) (int64, error) {
-    if db == nil || !core.Enabled() { return 0, nil }
+// is deeper than `recent` — and is logged as an error, as is any failure.
+// Removing rows is logged as a status line; nothing is reported to the caller.
+func Rollback(hash string) {
+    if db == nil || !core.Enabled() { return }
     var ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
     defer cancel()
     var header, err = core.GetBlockHeader(ctx, hash)
-    if err != nil { return 0, err }
+    if err != nil {
+        logging.Err("addrstat: roll back block %s: %v", hash, err)
+        return
+    }
     mu.Lock()
     defer mu.Unlock()
     if at, ok := cursors.Get(cursors.AddrStat); ok && header.Height <= at {
-        return 0, fmt.Errorf("block %d is already folded into the statistics (cursor %d)", header.Height, at)
+        logging.Err("addrstat: roll back block %s: block %d is already folded into the statistics (cursor %d)", hash, header.Height, at)
+        return
     }
     var res, derr = db.Exec("delete from recaddrstat where block >= ?", header.Height)
-    if derr != nil { return 0, derr }
-    var n, _ = res.RowsAffected()
-    return n, nil
+    if derr != nil {
+        logging.Err("addrstat: roll back block %s: %v", hash, derr)
+        return
+    }
+    if n, _ := res.RowsAffected(); n > 0 {
+        logging.Status("addrstat: block %s disconnected, %d recent address statistics removed", hash, n)
+    }
 }
 
 // Collect walks the chain from the cursor to the current tip once and returns.

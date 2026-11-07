@@ -92,10 +92,11 @@ func TestRollback(t *testing.T) {
     var bis []*Info
     for h := int64(100); h <= 104; h++ { bis = append(bis, &Info{Height: h, Hash: fmt.Sprintf("hash%d", h)}) }
     if err := Flush(bis); err != nil { t.Fatal(err) }
-    var n, err = Rollback("unknown")
-    if err != nil || n != 0 { t.Fatalf("unknown hash: removed %d, %v", n, err) }
-    n, err = Rollback("hash102")
-    if err != nil || n != 3 { t.Fatalf("removed %d, %v; want 3", n, err) }
+    Rollback("unknown")
+    for h := int64(100); h <= 104; h++ {
+        if _, ok := Load(h); !ok { t.Errorf("block %d removed for an unknown hash", h) }
+    }
+    Rollback("hash102")
     for h := int64(100); h <= 104; h++ {
         if _, ok := Load(h); ok != (h < 102) { t.Errorf("block %d cached = %v", h, ok) }
     }

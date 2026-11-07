@@ -9,7 +9,6 @@ import "strings"
 import "sync"
 import "time"
 import "github.com/go-zeromq/zmq4"
-import "bitnsbot/app"
 import "bitnsbot/blocks"
 import "bitnsbot/addrstat"
 import "bitnsbot/core"
@@ -375,17 +374,6 @@ var zmqRetry = 5 * time.Second
 // disconnect must not stall on either. The two run in order, the block cache
 // first, and a failure of one does not keep the other from running.
 func rollback(hash string) {
-    var n, rbErr = blocks.Rollback(hash)
-    if rbErr != nil {
-        logging.Err("zmq: roll back block %s: %v", hash, rbErr)
-    } else if n > 0 {
-        logging.Status("zmq: block %s disconnected, %d cached blocks removed", hash, n)
-        app.Notify("blocks")
-    }
-    var rows, asErr = addrstat.Rollback(hash)
-    if asErr != nil {
-        logging.Err("zmq: roll back address statistics of block %s: %v", hash, asErr)
-    } else if rows > 0 {
-        logging.Status("zmq: block %s disconnected, %d recent address statistics removed", hash, rows)
-    }
+    blocks.Rollback(hash)
+    addrstat.Rollback(hash)
 }

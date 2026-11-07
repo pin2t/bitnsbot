@@ -215,14 +215,20 @@ func Compute(ctx context.Context, hash string) (*Info, error) {
 // block disconnected by a reorg leaves stale. Everything above goes too, since
 // it was built on the disconnected block, and the highest height stored is
 // where Update resumes, so the replacement chain is cached by the next
-// catch-up. A hash the table does not hold removes nothing. It reports how
-// many blocks it removed.
-func Rollback(hash string) (int64, error) {
-    if db == nil { return 0, nil }
+// catch-up. A hash the table does not hold removes nothing. A failure is
+// logged as an error; removing blocks is logged as a status line and announced
+// to the Mini App's Blocks tab, which reads this table.
+func Rollback(hash string) {
+    if db == nil { return }
     var res, err = db.Exec("delete from blocks where height >= (select height from blocks where hash = ?)", hash)
-    if err != nil { return 0, err }
-    var n, _ = res.RowsAffected()
-    return n, nil
+    if err != nil {
+        logging.Err("blocks: roll back block %s: %v", hash, err)
+        return
+    }
+    if n, _ := res.RowsAffected(); n > 0 {
+        logging.Status("blocks: block %s disconnected, %d cached blocks removed", hash, n)
+        app.Notify("blocks")
+    }
 }
 
 // Update catches the block cache up from the last processed block to tip,

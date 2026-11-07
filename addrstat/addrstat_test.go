@@ -470,9 +470,11 @@ func TestRollbackRereadsDisconnectedBlocks(t *testing.T) {
         return c.respond(method, params)
     })
     if err := Collect(); err != nil { t.Fatalf("Collect: %v", err) }
-    if n, err := Rollback("0"); err == nil { t.Errorf("rolled back a folded block: %d rows", n) }
-    var n, err = Rollback("2")
-    if err != nil || n != 4 { t.Fatalf("Rollback = %d, %v, want the 4 rows of blocks 2 and 3", n, err) }
+    Rollback("0")
+    if h, ok := cursors.Get(cursors.AddrStat); !ok || h != 0 { t.Errorf("cursor = %d ok=%v after rolling back a folded block", h, ok) }
+    if n := staged(t); n != 3 { t.Errorf("recaddrstat holds %d blocks after rolling back a folded one, want 3", n) }
+    Rollback("2")
+    if n := staged(t); n != 1 { t.Errorf("recaddrstat holds %d blocks after the rollback, want block 1", n) }
     if _, ok := Get(addrB); ok { t.Error("addrB still answered after its block was disconnected") }
     if h, _ := Height(); h != 1 { t.Errorf("Height = %d after the rollback, want 1", h) }
     c.blocks[2] = blockOf(3000, tx{outs: []core.Payment{pay(scriptA, 900)}})
