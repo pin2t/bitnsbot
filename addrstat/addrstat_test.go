@@ -10,7 +10,6 @@ import "errors"
 import "strconv"
 import "sync"
 import "testing"
-import "time"
 import "database/sql"
 import _ "modernc.org/sqlite"
 import "bitnsbot/addrindex"
@@ -341,9 +340,9 @@ func table(t *testing.T) map[string]Stat {
 // Reading blocks on several goroutines writes exactly the table one goroutine
 // does, folds of a few blocks at a time included.
 func TestParallelMatchesSequential(t *testing.T) {
-    var saved, rowsMax = workers, aggregateRows
-    defer func() { workers, aggregateRows = saved, rowsMax }()
-    aggregateRows = 25
+    var saved, merging = workers, mergeBlocks
+    defer func() { workers, mergeBlocks = saved, merging }()
+    mergeBlocks = 25
     var results []map[string]Stat
     for _, n := range []int{1, 8} {
         workers = n
@@ -362,15 +361,18 @@ func TestParallelMatchesSequential(t *testing.T) {
 
 // A fold covers a run of blocks with nothing missing, so the cursor never passes
 // a block that has not been applied: no block is asked for at or below the
-// cursor, and none is asked for twice.
+// cursor, none is asked for twice, and none past the round the cursor allows.
 func TestParallelFoldLeavesNoGap(t *testing.T) {
-    var saved, rowsMax = workers, aggregateRows
-    defer func() { workers, aggregateRows = saved, rowsMax }()
-    workers, aggregateRows = 8, 3
+    var saved, merging, round = workers, mergeBlocks, roundBlocks
+    defer func() { workers, mergeBlocks, roundBlocks = saved, merging, round }()
+    workers, mergeBlocks, roundBlocks = 8, 3, 10
     open(t)
     var c = busyChain(120)
     c.onFetch = func(h int) {
-        if at, ok := cursors.Get(cursors.AddrStat); ok && int64(h) <= at { t.Errorf("block %d asked for with the cursor at %d", h, at) }
+        var at, ok = cursors.Get(cursors.AddrStat)
+        if !ok { at = -1 }
+        if int64(h) <= at { t.Errorf("block %d asked for with the cursor at %d", h, at) }
+        if int64(h) > at+roundBlocks { t.Errorf("block %d asked for past the round from cursor %d", h, at) }
     }
     serve(t, c)
     if err := Collect(); err != nil { t.Fatalf("Collect: %v", err) }
@@ -379,6 +381,7 @@ func TestParallelFoldLeavesNoGap(t *testing.T) {
     for h := 0; h <= 120; h++ {
         if seen[h] != 1 { t.Errorf("block %d fetched %d times", h, seen[h]) }
     }
+    if h, ok := cursors.Get(cursors.AddrStat); !ok || h != 120 { t.Errorf("cursor = %d ok=%v, want 120", h, ok) }
 }
 
 // A block that cannot be read fails the pass, and the cursor stays below it. The
@@ -481,54 +484,8 @@ func TestRollbackRereadsDisconnectedBlocks(t *testing.T) {
     if _, ok := Get(addrC); ok { t.Error("addrC still answered, paid only by a disconnected block") }
 }
 
-// A block that hangs right after the cursor holds every fold up, so once more
-// than gapBlocks blocks are staged behind it the aggregator reads it again on a
-// goroutine of its own. The stuck read here is released only by that second
-// read, so a pass that never makes it hangs until the test fails it; and the
-// stuck read finishing after the cursor has moved past its block writes nothing.
-func TestAggregatorReadsTheMissingBlock(t *testing.T) {
-    var saved, gaps = workers, gapBlocks
-    defer func() { workers, gapBlocks = saved, gaps }()
-    workers, gapBlocks = 2, 5
-    open(t)
-    serve(t, busyChain(40))
-    if err := Collect(); err != nil { t.Fatalf("Collect: %v", err) }
-    var want = table(t)
-    open(t)
-    var c = busyChain(40)
-    var release = make(chan struct{})
-    var reads int
-    c.onFetch = func(h int) {
-        if h != 0 { return }
-        c.mu.Lock()
-        reads++
-        var first = reads == 1
-        c.mu.Unlock()
-        if !first {
-            close(release)
-            return
-        }
-        select {
-        case <-release:
-        case <-time.After(5 * time.Second):
-            t.Error("block 0 was never read again while the staged blocks piled up behind it")
-        }
-    }
-    serve(t, c)
-    if err := Collect(); err != nil { t.Fatalf("Collect: %v", err) }
-    if reads != 2 { t.Errorf("block 0 read %d times, want 2", reads) }
-    if h, ok := cursors.Get(cursors.AddrStat); !ok || h != 40 { t.Errorf("cursor = %d ok=%v, want 40", h, ok) }
-    if n := staged(t); n != 0 { t.Errorf("recaddrstat holds %d blocks, want none below the cursor", n) }
-    var got = table(t)
-    if len(got) != len(want) { t.Fatalf("%d rows, want %d", len(got), len(want)) }
-    for addr, w := range want {
-        if got[addr] != w { t.Errorf("%s: %+v, want %+v", addr, got[addr], w) }
-    }
-}
-
-// A block written after the cursor has passed it — a slow reader finishing a
-// block the aggregator already read again and folded — writes nothing, or every
-// read would count it twice until the next fold.
+// A block written after the cursor has passed it writes nothing, or every read
+// would count it twice until the next fold.
 func TestRecordSkipsFoldedBlocks(t *testing.T) {
     open(t)
     serve(t, busyChain(5))

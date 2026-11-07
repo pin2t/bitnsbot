@@ -39,39 +39,30 @@ import "bitnsbot/signals"
 
 var db *sql.DB
 
-// recent is how many of the newest scanned blocks the aggregator leaves in
+// recent is how many of the newest blocks below the tip Update leaves in
 // recaddrstat rather than folding into addrstat — the depth of reorg Rollback can
-// undo. It is also the distance to the tip past which Update reads blocks on
-// several goroutines. A package var so tests can lower it.
+// undo. A package var so tests can lower it.
 var recent = 10
 
-// workers is how many goroutines read blocks at once while the scan is more than
-// `recent` blocks behind the tip: all the processors but two, which the node — on
-// the Pi, the same machine — and the aggregator keep, and at least one. A
-// package var so tests can raise it on a machine with few.
+// workers is how many goroutines read blocks at once: all the processors but
+// two, which the node — on the Pi, the same machine — and the database keep, and
+// at least one. A package var so tests can set it.
 var workers = max(1, runtime.GOMAXPROCS(0)-2)
 
-// aggregateRows bounds how many recaddrstat rows one aggregation folds into
-// addrstat in one transaction: the transaction holds SQLite's one write lock, and
-// a block reader waiting on it gives up after the busy timeout. Further rows are
-// folded by the next transaction straight after. A package var so tests shrink it.
-var aggregateRows int64 = 200_000
+// roundBlocks is how many heights one round of Update hands its workers, counted
+// from the one after the cursor: the staged blocks a round leaves behind are
+// bounded by it, since the cursor moves only between rounds. A package var so
+// tests shrink it.
+var roundBlocks int64 = 1000
 
-// gapBlocks is how many distinct blocks recaddrstat may hold while the height
-// straight after the cursor is still missing before the aggregator reads that
-// height itself on a goroutine of its own. Nothing can be folded past the gap, so
-// one slow block — a node busy connecting one, a reader stuck on a timeout —
-// would otherwise let the staged blocks pile up behind it. A package var so tests
-// shrink it.
-var gapBlocks = 100
+// mergeBlocks is how many staged blocks one fold moves into addrstat in one
+// transaction, which holds SQLite's one write lock for its length. A package var
+// so tests shrink it.
+var mergeBlocks int64 = 100
 
-// aggregateEvery is the backstop the aggregator wakes on when no block reader has
-// told it a block was written.
-var aggregateEvery = time.Minute
-
-// mu serialises folding blocks into addrstat with Rollback, so a disconnected
-// block cannot be deleted between the aggregator choosing it and folding it, which
-// would move the cursor over a height whose movements were never counted.
+// mu serialises folding blocks into addrstat with Rollback and with record, so a
+// disconnected block cannot be deleted between a fold choosing it and folding it,
+// which would move the cursor over a height whose movements were never counted.
 var mu sync.Mutex
 
 // Stat is one address's record. Balance and Flow are derived from Recv and Sent
@@ -221,146 +212,112 @@ func Collect() error {
     return Update(tip)
 }
 
-// Update advances the statistics to tip once and returns, in two stages that run
-// at once. Block readers — `workers` goroutines while more than `recent` blocks
-// are left to read, one otherwise — each take the next height off a shared
-// counter, read the block (core.BlockAt, one getblock at verbosity 3, whose
-// prevouts are where a spend's script and amount, and so a transaction's fee, are
-// written down), and write its per-address movements to recaddrstat in a
-// transaction of their own. A height recaddrstat already holds was read by an
-// earlier pass and is skipped.
+// Update advances the statistics to tip once and returns, in rounds of two
+// stages that run one after the other. First the read: `workers` goroutines take
+// heights off a channel — the roundBlocks heights from the one after the cursor,
+// or up to tip when that is nearer — and each reads its block (core.BlockAt, one
+// getblock at verbosity 3, whose prevouts are where a spend's script and amount,
+// and so a transaction's fee, are written down) and writes its per-address
+// movements to recaddrstat, skipping a height recaddrstat already holds, read by
+// an earlier round or pass. The channel is closed once every height is sent, and
+// the round waits for the workers to finish. Then the merge: the staged blocks
+// straight on from the cursor are folded into addrstat a mergeBlocks run at a
+// time, each run moving the cursor in its own transaction, stopping at the first
+// missing height or at tip less `recent`. The rounds repeat until one has handed
+// out every height up to tip.
 //
-// Alongside them the aggregator, woken by each block written and every
-// aggregateEvery, folds the oldest blocks into addrstat until `recent` are left
-// (see aggregate). It runs once more when the readers are done. When more than
-// gapBlocks blocks are staged and the height straight after the cursor is still
-// missing, it reads that height on a goroutine of its own, once per height, so
-// one slow block does not hold every fold up behind it.
-//
-// A block that cannot be read stops the readers and fails the pass; the blocks
-// already written stay, and the next pass reads only what is missing.
+// A block that cannot be read stops the round's other reads, the blocks already
+// staged are merged as far as they run, and the pass fails; the next pass reads
+// only what is missing.
 func Update(tip int64) error {
     if db == nil { return nil }
     var ctx, cancel = context.WithTimeout(context.Background(), 6*time.Hour)
     defer cancel()
-    var from int64
-    if last, ok := cursors.Get(cursors.AddrStat); ok { from = last + 1 }
-    if from > tip { return nil }
-    var done, err = scanned(from)
-    if err != nil { return err }
-    var left = tip - from + 1 - int64(len(done))
-    var readers = 1
-    if left > int64(recent) { readers = workers }
-    var tally = &tally{prog: progress.New("addrstat", from, tip), said: time.Now(), read: from - 1, shown: from - 1, gap: -1}
-    var changed = make(chan struct{}, 1)
-    var stop = make(chan struct{})
-    var aggregated = make(chan error, 1)
-    var next atomic.Int64
-    next.Store(from)
-    var failure error
-    var fmu sync.Mutex
-    var fail = func(rerr error) {
-        fmu.Lock()
-        if failure == nil { failure = rerr }
-        fmu.Unlock()
-        cancel()
-    }
-    var wrote = func() {
-        select {
-        case changed <- struct{}{}:
-        default:
-        }
-    }
-    var rescues sync.WaitGroup
-    var rescued = map[int64]bool{}
-    go func() {
-        var t = time.NewTicker(aggregateEvery)
-        defer t.Stop()
+    var start int64
+    if last, ok := cursors.Get(cursors.AddrStat); ok { start = last + 1 }
+    if start > tip { return nil }
+    var prog = progress.New("addrstat", start, tip)
+    var read int64
+    for {
+        var from int64
+        if last, ok := cursors.Get(cursors.AddrStat); ok { from = last + 1 }
+        var to = min(from+roundBlocks-1, tip)
+        var n, rerr = readBlocks(ctx, from, to)
+        read += n
+        if rerr == nil { rerr = ctx.Err() }
+        var f = folded{from: -1}
         for {
-            select {
-            case <-stop:
-                aggregated <- nil
-                return
-            case <-changed:
-            case <-t.C:
-            }
-            if aerr := aggregate(tally); aerr != nil {
-                aggregated <- aerr
-                cancel()
-                return
-            }
-            tally.report(false)
-            if tally.staged > gapBlocks && tally.gap >= 0 && !rescued[tally.gap] {
-                var gap = tally.gap
-                rescued[gap] = true
-                logging.Info("addrstat: block %d still missing with %d blocks staged, reading it again", gap, tally.staged)
-                rescues.Go(func() {
-                    if rerr := record(ctx, gap); rerr != nil {
-                        fail(rerr)
-                        return
-                    }
-                    wrote()
-                })
-            }
+            var moved, ferr = fold(tip, &f)
+            if ferr != nil { return ferr }
+            if !moved { break }
         }
-    }()
-    var read atomic.Int64
-    var wg sync.WaitGroup
-    for range readers {
-        wg.Go(func() {
-            for ctx.Err() == nil {
-                var h = next.Add(1) - 1
-                if h > tip { return }
-                if done[h] { continue }
-                if rerr := record(ctx, h); rerr != nil {
-                    fail(rerr)
-                    return
-                }
-                read.Add(1)
-                wrote()
-            }
-        })
+        if f.from >= 0 {
+            logging.Info("addrstat: folded %s, %d addresses merged, %d of them emptied", blocksMsg(f.from, f.to), f.merged, f.emptied)
+        }
+        if rerr != nil { return rerr }
+        if from <= to { prog.Chunk(from, to) }
+        if to >= tip { break }
     }
-    wg.Wait()
-    close(stop)
-    var aerr = <-aggregated
-    rescues.Wait()
-    if failure != nil { return failure }
-    if aerr != nil { return aerr }
-    var ferr = aggregate(tally)
-    tally.report(true)
-    if ferr != nil { return ferr }
-    if read.Load() > 0 {
+    if read > 0 {
         var h, _ = Height()
-        logging.Info("addrstat: caught up with %s, %d addresses hold coins", blocksMsg(from, h), Count())
+        logging.Info("addrstat: caught up with %s, %d addresses hold coins", blocksMsg(start, h), Count())
         signals.Send(signals.AddrStat)
     }
     return nil
 }
 
-// scanned is the set of heights from `from` up that recaddrstat holds, which an
-// earlier pass read and wrote and this one must not count again.
-func scanned(from int64) (map[int64]bool, error) {
-    var rows, err = db.Query("select distinct block from recaddrstat where block >= ?", from)
-    if err != nil { return nil, err }
-    defer rows.Close()
-    var done = map[int64]bool{}
-    for rows.Next() {
-        var h int64
-        if serr := rows.Scan(&h); serr != nil { return nil, serr }
-        done[h] = true
+// readBlocks is one round's read: the heights from..to are sent down a channel
+// to `workers` goroutines, each skipping a height recaddrstat already holds and
+// recording the rest. The first failure cancels the reads still to come and is
+// returned once every worker has stopped; the count is how many blocks were
+// written.
+func readBlocks(parent context.Context, from, to int64) (int64, error) {
+    var ctx, cancel = context.WithCancel(parent)
+    defer cancel()
+    var heights = make(chan int64)
+    var failure error
+    var fmu sync.Mutex
+    var written atomic.Int64
+    var wg sync.WaitGroup
+    for range workers {
+        wg.Go(func() {
+            for h := range heights {
+                if ctx.Err() != nil { continue }
+                var have, err = holds(h)
+                if err == nil && have { continue }
+                if err == nil { err = record(ctx, h) }
+                if err != nil {
+                    fmu.Lock()
+                    if failure == nil { failure = err }
+                    fmu.Unlock()
+                    cancel()
+                    continue
+                }
+                written.Add(1)
+            }
+        })
     }
-    return done, rows.Err()
+    for h := from; h <= to && ctx.Err() == nil; h++ { heights <- h }
+    close(heights)
+    wg.Wait()
+    return written.Load(), failure
+}
+
+// holds reports whether recaddrstat holds block h — every block read has a row,
+// if only the empty address's marking it read.
+func holds(h int64) (bool, error) {
+    var have bool
+    var err = db.QueryRow("select exists (select 1 from recaddrstat where block = ?)", h).Scan(&have)
+    return have, err
 }
 
 // record reads block h and writes what it moved to recaddrstat, one row per
 // address plus the empty address's row marking the block read, in one
 // transaction. Whatever an earlier write left under h is replaced, so a block
-// written again — a reorg racing a pass, or a slow reader finishing a block the
-// aggregator had read again to close the gap behind the cursor — is not counted
-// twice. A block already folded is not written at all: its rows would sit below
-// the cursor, counted twice by every read until the next fold cleared them. The
-// write holds mu, so a fold cannot move the cursor between the check and it.
+// written again — a reorg racing a pass — is not counted twice. A block already
+// folded is not written at all: its rows would sit below the cursor, counted
+// twice by every read until the next fold cleared them. The write holds mu, so a
+// fold cannot move the cursor between the check and it.
 func record(ctx context.Context, h int64) error {
     var blk, err = core.BlockAt(ctx, int(h))
     if err != nil { return fmt.Errorf("block %d: %w", h, err) }
@@ -387,59 +344,20 @@ func record(ctx context.Context, h int64) error {
     return tx.Commit()
 }
 
-// aggregate folds recaddrstat's oldest blocks into addrstat until `recent` are
-// left, a transaction of at most aggregateRows rows at a time. Only a run of
-// heights straight on from the cursor can be folded — the cursor goes to the
-// last of them, and a height still being read would otherwise be stepped over —
-// so it stops at the first gap and waits for the reader that will fill it.
-//
-// What it folded goes into t, which says so in the log at most once a minute.
-func aggregate(t *tally) error {
-    for {
-        var moved, err = fold(t)
-        if err != nil || !moved { return err }
-    }
-}
-
-// tally is what the aggregator has folded since it last said so. The aggregator
-// folds whenever a block is written, so a line per fold would be a line per
-// block of a build that reads hundreds a second.
-type tally struct {
-    prog    *progress.Progress
-    said    time.Time
-    folded  bool
+// folded is what one round's merge moved into addrstat, for its log line; from
+// is -1 until a fold has moved something.
+type folded struct {
     from    int64
     to      int64
-    read    int64
-    shown   int64
-    staged  int
-    gap     int64
     merged  int64
     emptied int64
 }
 
-// report logs what has been folded and how far the scan has read, if a minute has
-// passed since the last line or force says the pass is over. Progress is the run
-// of heights read, not folded: that is how far the scan has got, the newest
-// `recent` blocks being as read as the rest.
-func (t *tally) report(force bool) {
-    if !force && time.Since(t.said) < aggregateEvery { return }
-    t.said = time.Now()
-    if t.folded {
-        logging.Info("addrstat: folded %s, %d addresses merged, %d of them emptied",
-            blocksMsg(t.from, t.to), t.merged, t.emptied)
-    }
-    if t.read > t.shown {
-        t.prog.Chunk(t.shown+1, t.read)
-        t.shown = t.read
-    }
-    t.folded, t.merged, t.emptied = false, 0, 0
-}
-
-// fold is one of aggregate's transactions, and reports whether it moved the
-// cursor. It notes in t how many blocks are staged and, when the height straight
-// after the cursor is not among them, that height — which Update reads again on a
-// goroutine of its own once more than gapBlocks are staged behind it.
+// fold moves the next run of staged blocks into addrstat in one transaction, and
+// reports whether it moved the cursor. The run starts at the height after the
+// cursor and holds at most mergeBlocks heights, none of them past tip less
+// `recent`; it ends at the first height recaddrstat does not hold, since the
+// cursor goes to its last height and would otherwise step over one never read.
 //
 // The movements are summed per address in SQL and added to the row in the same
 // statement — one statement for the lot rather than a query and an update per
@@ -454,37 +372,27 @@ func (t *tally) report(force bool) {
 // what keeps it from growing to every address the chain has ever had. It reaches
 // only the addresses the folded blocks touched, rather than sweeping the balance
 // index, which would also take rows these blocks never touched.
-func fold(t *tally) (bool, error) {
+func fold(tip int64, f *folded) (bool, error) {
     mu.Lock()
     defer mu.Unlock()
     var cursor = int64(-1)
     if last, ok := cursors.Get(cursors.AddrStat); ok { cursor = last }
-    var rows, err = db.Query("select block, count(*) from recaddrstat where block > ? group by block order by block", cursor)
+    var limit = min(cursor+mergeBlocks, tip-int64(recent))
+    if limit <= cursor { return false, nil }
+    var rows, err = db.Query("select distinct block from recaddrstat where block > ? and block <= ? order by block", cursor, limit)
     if err != nil { return false, err }
-    var heights, counts []int64
+    var to = cursor
     for rows.Next() {
-        var h, n int64
-        if serr := rows.Scan(&h, &n); serr != nil {
+        var h int64
+        if serr := rows.Scan(&h); serr != nil {
             rows.Close()
             return false, serr
         }
-        heights = append(heights, h)
-        counts = append(counts, n)
+        if h != to+1 { break }
+        to = h
     }
     rows.Close()
     if rerr := rows.Err(); rerr != nil { return false, rerr }
-    var run = 0
-    for run < len(heights) && heights[run] == cursor+1+int64(run) { run++ }
-    t.staged, t.gap = len(heights), -1
-    if len(heights) > 0 && run == 0 { t.gap = cursor + 1 }
-    if run > 0 { t.read = heights[run-1] }
-    var foldable = min(run, len(heights)-recent)
-    var to, total = cursor, int64(0)
-    for i := range max(foldable, 0) {
-        if to > cursor && total+counts[i] > aggregateRows { break }
-        to = heights[i]
-        total += counts[i]
-    }
     if to == cursor { return false, nil }
     var tx, terr = db.Begin()
     if terr != nil { return false, terr }
@@ -512,11 +420,10 @@ func fold(t *tally) (bool, error) {
     if _, rerr := tx.Exec("delete from recaddrstat where block <= ?", to); rerr != nil { return false, rerr }
     if serr := cursors.Set(tx, cursors.AddrStat, to); serr != nil { return false, serr }
     if cerr := tx.Commit(); cerr != nil { return false, cerr }
-    if !t.folded { t.from = cursor + 1 }
-    t.folded = true
-    t.to = to
-    t.merged += merged
-    t.emptied += emptied
+    if f.from < 0 { f.from = cursor + 1 }
+    f.to = to
+    f.merged += merged
+    f.emptied += emptied
     return true, nil
 }
 
