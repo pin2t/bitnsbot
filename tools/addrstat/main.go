@@ -134,27 +134,27 @@ func build(opt *options, out io.Writer) error {
     var from int64
     if h, ok := addrstat.Height(); ok { from = h + 1 }
     if from > tip {
-        fmt.Fprintf(out, "Statistics are already at the tip (block %d), %d addresses hold coins\n", tip, addrstat.Count())
+        fmt.Fprintf(out, "Statistics are already at the tip (block %d), %d addresses\n", tip, addrstat.Count())
         return nil
     }
     fmt.Fprintf(out, "Collecting blocks %d..%d\n", from, tip)
     var started = time.Now()
     if uerr := addrstat.Update(tip); uerr != nil { return uerr }
-    fmt.Fprintf(out, "Collected %d blocks up to %d in %s, %d addresses hold coins\n",
+    fmt.Fprintf(out, "Collected %d blocks up to %d in %s, %d addresses\n",
         tip-from+1, tip, took(time.Since(started)), addrstat.Count())
     return nil
 }
 
 // query prints the statistics held for an address, and reports false when there
-// are none: the address holds nothing as of the cursor, or the scan has not been
-// past it. The node is asked for its tip only to say how current the answer is,
-// so a node that cannot be reached costs that line and nothing else.
+// are none: the scan has not been past it. The node is asked for its tip only to
+// say how current the answer is, so a node that cannot be reached costs that line
+// and nothing else.
 func query(opt *options, address string, out io.Writer) (bool, error) {
     var at, built = addrstat.Height()
     if !built { return false, errors.New("the statistics have never been built — run addrstat build first") }
     var stat, ok = addrstat.Get(address)
     if !ok {
-        fmt.Fprintf(out, "No statistics for %s: it holds nothing as of block %d\n", address, at)
+        fmt.Fprintf(out, "No statistics for %s as of block %d\n", address, at)
         fmt.Fprint(out, current(opt, at))
         return false, nil
     }

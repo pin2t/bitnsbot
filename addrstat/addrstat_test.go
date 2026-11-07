@@ -177,22 +177,23 @@ func TestCollectGathersStatistics(t *testing.T) {
     if Count() != 3 { t.Errorf("Count = %d, want the three addresses the chain paid", Count()) }
 }
 
-// An address the chunk emptied loses its row: the table is the addresses that
-// hold coins, so what a spent-out change address leaves behind is nothing.
-func TestEmptiedAddressIsRemoved(t *testing.T) {
+// An address emptied keeps its row and its history, whether the block that
+// emptied it is folded with the one that paid it or in a later pass.
+func TestEmptiedAddressIsKept(t *testing.T) {
     open(t)
     serve(t, &chain{tip: 1, blocks: map[int]core.Block{
         0: blockOf(1000, tx{outs: []core.Payment{pay(scriptA, 5000)}}),
         1: blockOf(2000, tx{outs: []core.Payment{pay(scriptB, 4000)}, spent: []core.Payment{pay(scriptA, 5000)}}),
     }})
     if err := Collect(); err != nil { t.Fatalf("Collect: %v", err) }
-    if rows(t, addrA) != 0 { t.Errorf("addrA kept a row holding nothing: %+v", statOf(t, addrA)) }
+    if a := statOf(t, addrA); a.Balance != 0 || a.Recv != 5000 || a.Sent != 5000 || a.Txs != 2 { t.Errorf("addrA = %+v", a) }
+    if a, ok := Get(addrA); !ok || a.Txs != 2 { t.Errorf("Get(addrA) = %+v ok=%v, want its history", a, ok) }
     if b := statOf(t, addrB); b.Balance != 4000 { t.Errorf("addrB = %+v", b) }
+    if Count() != 2 { t.Errorf("Count = %d, want both addresses", Count()) }
 }
 
-// An address emptied by a later chunk loses the row an earlier one gave it, so
-// the delete has to reach a row the chunk did not insert.
-func TestEmptiedAcrossChunksIsRemoved(t *testing.T) {
+// An address emptied by a later pass keeps the row an earlier one gave it.
+func TestEmptiedAcrossChunksIsKept(t *testing.T) {
     open(t)
     var src = serve(t, &chain{tip: 0, blocks: map[int]core.Block{
         0: blockOf(1000, tx{outs: []core.Payment{pay(scriptA, 5000)}}),
@@ -202,7 +203,7 @@ func TestEmptiedAcrossChunksIsRemoved(t *testing.T) {
     if a := statOf(t, addrA); a.Balance != 5000 { t.Errorf("addrA = %+v", a) }
     src.tip = 1
     if err := Collect(); err != nil { t.Fatalf("Collect: %v", err) }
-    if rows(t, addrA) != 0 { t.Error("addrA kept a row after a later chunk emptied it") }
+    if a := statOf(t, addrA); a.Balance != 0 || a.Txs != 2 { t.Errorf("addrA = %+v after a later pass emptied it", a) }
 }
 
 // A transaction that both pays an address and spends from it is one transaction
@@ -446,9 +447,9 @@ func TestRecentBlocksStayStaged(t *testing.T) {
     if !ok || a.Recv != 6700 || a.Balance != 6700 || a.Txs != 3 || a.First != 1000 || a.Last != 4000 || a.Type != "segwit" {
         t.Errorf("Get(addrA) = %+v ok=%v", a, ok)
     }
-    if _, ok := Get(addrB); ok { t.Error("Get answered for addrB, which a staged block emptied") }
+    if b, ok := Get(addrB); !ok || b.Balance != 0 || b.Txs != 2 { t.Errorf("Get(addrB) = %+v ok=%v, want it emptied by a staged block", b, ok) }
     if c, ok := Get(addrC); !ok || c.Balance != 2000 || c.Txs != 1 { t.Errorf("Get(addrC) = %+v ok=%v", c, ok) }
-    if Count() != 2 { t.Errorf("Count = %d, want 2: addrA and addrC hold coins, addrB was emptied", Count()) }
+    if Count() != 3 { t.Errorf("Count = %d, want 3: addrA, addrB and addrC", Count()) }
 }
 
 // Rollback deletes the disconnected block's staged rows and those above it, and

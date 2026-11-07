@@ -14,13 +14,9 @@
 // themselves which heights they hold.
 //
 // **The scan writes the addresses it finds**, rather than gathering for a set
-// somebody put there: a chunk inserts a row for every address it saw and had
-// none for, and deletes the row of every address it saw whose balance has
-// reached zero — so the table holds the addresses that hold coins, the way
-// addrbal's entries do, rather than growing to the billion-odd an address a
-// chain-wide history would keep. The consequence to know is that an address
-// emptied and later paid again starts a fresh row: its row was deleted while it
-// held nothing, so the transactions and the first date from before that are gone.
+// somebody put there: a fold inserts a row for every address it saw and had none
+// for, and keeps every row, an address whose balance has reached zero included —
+// so its history is whole however often it is emptied and paid again.
 package addrstat
 
 import "context"
@@ -121,8 +117,8 @@ func Init(handle *sql.DB) error {
 }
 
 // Get returns an address's statistics — its addrstat row with the movements of
-// the blocks still in recaddrstat added — and false when there are none to give:
-// the scan has not reached the address, or it holds nothing. A record with no
+// the blocks still in recaddrstat added — and false when there are none to give,
+// the scan not having reached the address. A record with no
 // transactions in it is answered with false as well — a row an earlier version
 // seeded and this scan has not been past, so answering with it would present "0
 // transactions" as a fact. The live path answers those instead, as it does for
@@ -148,21 +144,18 @@ func Get(addr string) (Stat, bool) {
     if rows.Err() != nil { return Stat{}, false }
     s.Balance = s.Recv - s.Sent
     s.Flow = s.Recv + s.Sent
-    return s, s.Txs > 0 && s.Balance != 0
+    return s, s.Txs > 0
 }
 
-// Count is how many addresses hold coins as of the newest block scanned: the
-// addrstat rows, which all do, adjusted by what recaddrstat's blocks moved — an
-// address they paid that has no row is one more, a row they emptied one fewer.
-// It counts rather than keeping a total, so it cannot drift from what it counts,
-// and the scan does not call it per block.
+// Count is how many addresses the statistics hold as of the newest block
+// scanned: the addrstat rows, and the addresses recaddrstat's blocks touched that
+// have no row yet. It counts rather than keeping a total, so it cannot drift from
+// what it counts, and the scan does not call it per block.
 func Count() int {
     if db == nil { return 0 }
     var n int
-    var err = db.QueryRow(`select (select count(*) from addrstat) + coalesce((select sum(case
-            when s.addr is null then r.balance != 0 else (s.balance + r.balance != 0) - 1 end)
-        from (select addr, sum(recv) - sum(sent) as balance from recaddrstat where addr != '' group by addr) r
-        left join addrstat s on s.addr = r.addr), 0)`).Scan(&n)
+    var err = db.QueryRow(`select (select count(*) from addrstat) + (select count(distinct r.addr)
+        from recaddrstat r where r.addr != '' and not exists (select 1 from addrstat s where s.addr = r.addr))`).Scan(&n)
     if err != nil { return 0 }
     return n
 }
@@ -260,7 +253,7 @@ func Update(tip int64) error {
             if !moved { break }
         }
         if f.from >= 0 {
-            logging.Info("addrstat: folded %s, %d addresses merged, %d of them emptied", blocksMsg(f.from, f.to), f.merged, f.emptied)
+            logging.Info("addrstat: folded %s, %d addresses merged", blocksMsg(f.from, f.to), f.merged)
         }
         if rerr != nil { return rerr }
         if from <= to { prog.Chunk(from, to) }
@@ -268,7 +261,7 @@ func Update(tip int64) error {
     }
     if read > 0 {
         var h, _ = Height()
-        logging.Info("addrstat: caught up with %s, %d addresses hold coins", blocksMsg(start, h), Count())
+        logging.Info("addrstat: caught up with %s, %d addresses", blocksMsg(start, h), Count())
         signals.Send(signals.AddrStat)
     }
     return nil
@@ -358,7 +351,6 @@ type folded struct {
     from    int64
     to      int64
     merged  int64
-    emptied int64
 }
 
 // fold moves the next run of staged blocks into addrstat in one transaction, and
@@ -375,11 +367,8 @@ type folded struct {
 // — and `type` is only ever written by the insert, so a form named by hand is left
 // as it is.
 //
-// An address with no row gets one, and one whose balance has reached zero loses
-// the row it had: the table is the addresses that hold coins, so the delete is
-// what keeps it from growing to every address the chain has ever had. It reaches
-// only the addresses the folded blocks touched, rather than sweeping the balance
-// index, which would also take rows these blocks never touched.
+// An address with no row gets one, and a row is never deleted, an address
+// holding nothing included.
 func fold(tip int64, f *folded) (bool, error) {
     mu.Lock()
     defer mu.Unlock()
@@ -421,17 +410,12 @@ func fold(tip int64, f *folded) (bool, error) {
             flow = addrstat.recv + excluded.recv + addrstat.sent + excluded.sent`, cursor, to)
     if uerr != nil { return false, uerr }
     var merged, _ = res.RowsAffected()
-    var gone, derr = tx.Exec(`delete from addrstat where balance = 0 and addr in
-        (select addr from recaddrstat where block > ? and block <= ? and addr != '')`, cursor, to)
-    if derr != nil { return false, derr }
-    var emptied, _ = gone.RowsAffected()
     if _, rerr := tx.Exec("delete from recaddrstat where block <= ?", to); rerr != nil { return false, rerr }
     if serr := cursors.Set(tx, cursors.AddrStat, to); serr != nil { return false, serr }
     if cerr := tx.Commit(); cerr != nil { return false, cerr }
     if f.from < 0 { f.from = cursor + 1 }
     f.to = to
     f.merged += merged
-    f.emptied += emptied
     return true, nil
 }
 
