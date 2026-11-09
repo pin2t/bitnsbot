@@ -399,13 +399,13 @@ func fold(tip int64, f *folded) (bool, error) {
     return true, nil
 }
 
-// Merge adds one block's movements straight to addrstat and moves the cursor to
-// h, in one transaction — tools/addrstat's pre-build, which reads blocks in
-// parallel and hands them here in height order, staging nothing. Whatever
-// recaddrstat holds under h is deleted in the same transaction, the block being
-// counted now, so a build over a database the bot has staged blocks in does not
-// count them twice. A nil deltas only moves the cursor, which is how the tool
-// steps over a block it could not read.
+// Merge adds the movements of every block up to h straight to addrstat and moves
+// the cursor to h, in one transaction — tools/addrstat's pre-build, which reads
+// blocks in parallel, sums a run of them in memory in height order and hands the
+// sum here, staging nothing. Whatever recaddrstat holds at or below h is deleted
+// in the same transaction, those blocks being counted now, so a build over a
+// database the bot has staged blocks in does not count them twice. A nil deltas
+// only moves the cursor.
 func Merge(h int64, deltas map[string]*Stat) error {
     if db == nil { return errors.New("addrstat: no database") }
     mu.Lock()
@@ -423,7 +423,7 @@ func Merge(h int64, deltas map[string]*Stat) error {
             return ierr
         }
     }
-    if _, derr := tx.Exec("delete from recaddrstat where block = ?", h); derr != nil { return derr }
+    if _, derr := tx.Exec("delete from recaddrstat where block <= ?", h); derr != nil { return derr }
     if serr := cursors.Set(tx, cursors.AddrStat, h); serr != nil { return serr }
     return tx.Commit()
 }

@@ -16,22 +16,26 @@ import "time"
 import "bitnsbot/logging"
 
 // Progress is one catch-up: the height the scan resumed at, the tip it is
-// heading for, and when it started. The rate is measured over the whole pass
-// rather than the last chunk, since one slow chunk — a node busy connecting a
-// block — says nothing about the hours left.
+// heading for, and when the last chunk ended — or the scan began, before the
+// first. The rate is measured over the last chunk alone, not the whole pass, so
+// it follows the chain as it is now: an early block holds a transaction or two
+// and a recent one thousands, and a rate averaged from genesis promises the tip
+// hours too soon.
 type Progress struct {
     name  string
     first int64
     tip   int64
-    began time.Time
+    last  time.Time
 }
 
 // New starts measuring a scan of blocks from..tip under the name it logs by.
 func New(name string, from, tip int64) *Progress {
-    return &Progress{name: name, first: from, tip: tip, began: time.Now()}
+    return &Progress{name: name, first: from, tip: tip, last: time.Now()}
 }
 
-// Chunk reports that the scan has built blocks from..to, and says nothing once
+// Chunk reports that the scan has built blocks from..to — the rate and the ETA
+// being that chunk's blocks over the time since the one before it ended — and
+// says nothing once
 // to has reached the tip: the catch-up is over, and each index logs the pass it
 // has finished itself. The share is held under 100% while any block is left, a
 // line that rounds to all of it being one an operator reads as finished.
@@ -41,7 +45,9 @@ func (p *Progress) Chunk(from, to int64) {
     var left = p.tip - to
     var pct = float64(done) / float64(done+left) * 100
     if pct > 99.9 { pct = 99.9 }
-    var rate = float64(done) / time.Since(p.began).Seconds()
+    var now = time.Now()
+    var rate = float64(to-from+1) / now.Sub(p.last).Seconds()
+    p.last = now
     var eta = time.Duration(0)
     if rate > 0 { eta = time.Duration(float64(left) / rate * float64(time.Second)) }
     logging.Status("%s: built blocks %d..%d of %d, %.1f%% of %d to go, %s blocks/sec, ETA %s",

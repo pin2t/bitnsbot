@@ -24,7 +24,7 @@ func capture(t *testing.T, fn func()) string {
 func TestChunkReportsProgressAndETA(t *testing.T) {
     var out = capture(t, func() {
         var p = New("addrindex", 1, 1000)
-        p.began = time.Now().Add(-10 * time.Second)
+        p.last = time.Now().Add(-10 * time.Second)
         p.Chunk(1, 100)
     })
     for _, want := range []string{"addrindex", "blocks 1..100 of 1000", "10.0%", "900 to go", "ETA"} {
@@ -60,4 +60,20 @@ func TestWaitAndTrim(t *testing.T) {
 func TestShareStaysUnderWholeWhileBlocksRemain(t *testing.T) {
     var out = capture(t, func() { New("addrstat", 0, 20000).Chunk(19000, 19999) })
     if !strings.Contains(out, "99.9%") { t.Errorf("want a share under the whole, got %q", out) }
+}
+
+// The rate is the last chunk's: a pass that crawled through its first chunk and
+// flies through its second forecasts from the second.
+func TestRateIsTheLastChunks(t *testing.T) {
+    var out = capture(t, func() {
+        var p = New("addrstat", 1, 100000)
+        p.last = time.Now().Add(-1000 * time.Second)
+        p.Chunk(1, 100)
+        p.last = time.Now().Add(-10 * time.Second)
+        p.Chunk(101, 10100)
+    })
+    var lines = strings.Split(strings.TrimSpace(out), "\n")
+    if len(lines) != 2 { t.Fatalf("logged %q", out) }
+    if !strings.Contains(lines[0], "0.1 blocks/sec") { t.Errorf("first chunk: %q", lines[0]) }
+    if !strings.Contains(lines[1], " 1000 blocks/sec, ETA 1m") { t.Errorf("second chunk: %q", lines[1]) }
 }
