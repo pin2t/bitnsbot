@@ -338,35 +338,60 @@ func table(t *testing.T) map[string]Stat {
     return out
 }
 
-// Reading blocks on several goroutines writes exactly the table one goroutine
-// does, folds of a few blocks at a time included.
-func TestParallelMatchesSequential(t *testing.T) {
-    var saved, merging = workers, mergeBlocks
-    defer func() { workers, mergeBlocks = saved, merging }()
-    mergeBlocks = 25
+// Folding a block at a time writes exactly the table folding a hundred at a time
+// does, and so does Merge, block by block, staging nothing — the tool's path.
+func TestFoldSizesAndMergeAgree(t *testing.T) {
+    var merging = mergeBlocks
+    defer func() { mergeBlocks = merging }()
     var results []map[string]Stat
-    for _, n := range []int{1, 8} {
-        workers = n
+    for _, n := range []int64{1, 100} {
+        mergeBlocks = n
         open(t)
         serve(t, busyChain(150))
-        if err := Collect(); err != nil { t.Fatalf("Collect with %d workers: %v", n, err) }
-        if h, ok := cursors.Get(cursors.AddrStat); !ok || h != 150 { t.Errorf("%d workers: cursor = %d ok=%v", n, h, ok) }
+        if err := Collect(); err != nil { t.Fatalf("Collect folding %d: %v", n, err) }
+        if h, ok := cursors.Get(cursors.AddrStat); !ok || h != 150 { t.Errorf("folding %d: cursor = %d ok=%v", n, h, ok) }
         results = append(results, table(t))
     }
-    if len(results[0]) == 0 { t.Fatal("the sequential scan wrote nothing") }
-    if len(results[0]) != len(results[1]) { t.Fatalf("%d rows sequentially, %d in parallel", len(results[0]), len(results[1])) }
-    for addr, want := range results[0] {
-        if got := results[1][addr]; got != want { t.Errorf("%s: parallel %+v, sequential %+v", addr, got, want) }
+    open(t)
+    var c = busyChain(150)
+    for h := 0; h <= 150; h++ {
+        if err := Merge(int64(h), Deltas(c.blocks[h])); err != nil { t.Fatalf("Merge %d: %v", h, err) }
     }
+    if h, ok := cursors.Get(cursors.AddrStat); !ok || h != 150 { t.Errorf("merged: cursor = %d ok=%v", h, ok) }
+    results = append(results, table(t))
+    if len(results[0]) == 0 { t.Fatal("the scan wrote nothing") }
+    for i := 1; i < len(results); i++ {
+        if len(results[0]) != len(results[i]) { t.Fatalf("%d rows against %d", len(results[0]), len(results[i])) }
+        for addr, want := range results[0] {
+            if got := results[i][addr]; got != want { t.Errorf("%s: run %d %+v, want %+v", addr, i, got, want) }
+        }
+    }
+}
+
+// Merge counts a block the bot has staged once: its staged rows go in the same
+// transaction, so a build over a database the bot already wrote does not add
+// them a second time at the next fold.
+func TestMergeReplacesStagedBlock(t *testing.T) {
+    open(t)
+    recent = 5
+    var c = serve(t, busyChain(3))
+    if err := Collect(); err != nil { t.Fatalf("Collect: %v", err) }
+    if n := staged(t); n != 4 { t.Fatalf("recaddrstat holds %d blocks, want 4", n) }
+    for h := 0; h <= 3; h++ {
+        if err := Merge(int64(h), Deltas(c.blocks[h])); err != nil { t.Fatalf("Merge %d: %v", h, err) }
+    }
+    if n := staged(t); n != 0 { t.Errorf("recaddrstat holds %d blocks after merging them", n) }
+    var a, _ = Get(addrindex.Address(scriptOf(1)))
+    if a.Txs != 2 { t.Errorf("Get = %+v, want its two transactions counted once", a) }
 }
 
 // A fold covers a run of blocks with nothing missing, so the cursor never passes
 // a block that has not been applied: no block is asked for at or below the
 // cursor, none is asked for twice, and none past the round the cursor allows.
-func TestParallelFoldLeavesNoGap(t *testing.T) {
-    var saved, merging, round = workers, mergeBlocks, roundBlocks
-    defer func() { workers, mergeBlocks, roundBlocks = saved, merging, round }()
-    workers, mergeBlocks, roundBlocks = 8, 3, 10
+func TestFoldLeavesNoGap(t *testing.T) {
+    var merging, round = mergeBlocks, roundBlocks
+    defer func() { mergeBlocks, roundBlocks = merging, round }()
+    mergeBlocks, roundBlocks = 3, 10
     open(t)
     var c = busyChain(120)
     c.onFetch = func(h int) {
@@ -388,10 +413,7 @@ func TestParallelFoldLeavesNoGap(t *testing.T) {
 // A block that cannot be read fails the pass, and the cursor stays below it. The
 // blocks written before the failure are kept, and the retry reads what is missing
 // and ends with the table a pass with no failure writes.
-func TestParallelFailureResumes(t *testing.T) {
-    var saved = workers
-    defer func() { workers = saved }()
-    workers = 4
+func TestFailureResumes(t *testing.T) {
     open(t)
     serve(t, busyChain(30))
     if err := Collect(); err != nil { t.Fatalf("Collect: %v", err) }

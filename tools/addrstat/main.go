@@ -9,9 +9,10 @@
 //	addrstat build -db bitnsbot.sqlite -coreURL http://127.0.0.1:8332 -coreCookie ./cookie
 //	addrstat query -db bitnsbot.sqlite -coreURL http://127.0.0.1:8332 -coreCookie ./cookie <address>
 //
-// build catches the statistics up from their cursor to the chain tip and exits,
-// where the bot's index catch-up goroutine keeps polling; query prints what the
-// table holds for one address. query reads only the database — the node is asked
+// build is the fast first build: it reads blocks in parallel from the cursor to
+// five blocks below the tip and merges them straight into addrstat, then exits,
+// leaving the bot's index catch-up goroutine to keep up from there one block at
+// a time; query prints what the table holds for one address. query reads only the database — the node is asked
 // for its tip, best effort, so the answer can say how far behind it stands.
 package main
 
@@ -22,14 +23,19 @@ import "flag"
 import "fmt"
 import "io"
 import "os"
+import "os/signal"
+import "runtime"
 import "strconv"
 import "strings"
+import "sync"
+import "syscall"
 import "time"
 import _ "modernc.org/sqlite"
 import "bitnsbot/addrstat"
 import "bitnsbot/core"
 import "bitnsbot/cursors"
 import "bitnsbot/logging"
+import "bitnsbot/progress"
 
 // options are the flags both commands share, named as the bot's own are, so a
 // line of the bot's config file reads the same here.
@@ -122,27 +128,155 @@ func openDB(path string, existing bool) (*sql.DB, error) {
     return handle, nil
 }
 
-// build catches the statistics up to the tip with one addrstat.Update and exits.
-// It asks the node for the tip itself, so an unreachable node is reported as that
-// rather than as the first block failing.
+// behind is how far below the tip a build stops, so the bot's own Update — which
+// stages the newest blocks where a reorg can take them out — carries on from
+// there. A merge goes straight into addrstat and cannot be undone.
+const behind = 5
+
+// attempts is how many times a block is asked for before the build gives up on
+// it, waiting retryDelay, then twice that, and so on between them: 1, 2, 4 and
+// 8 seconds.
+const attempts = 5
+
+// retryDelay is the first wait between two tries at a block. A package var so
+// tests do not sit through it.
+var retryDelay = time.Second
+
+// workers is how many goroutines read blocks at once: all the processors but
+// two, which the node and the database keep, and at least one.
+var workers = max(1, runtime.GOMAXPROCS(0)-2)
+
+// progressEvery is how many merged blocks a progress line covers.
+const progressEvery = 1000
+
+// fetched is one block's movements per address, or why it could not be read.
+type fetched struct {
+    deltas map[string]*addrstat.Stat
+    err    error
+}
+
+// job is a height for a worker to read and the slot its result goes in.
+type job struct {
+    height int64
+    slot   chan fetched
+}
+
+// build pre-builds the statistics from their cursor to the tip less `behind`,
+// straight into the addrstat table, and exits. The bot's addrstat.Update is the
+// keep-up path — one block at a time, staged — and this is the fast first build:
+// `workers` goroutines read blocks and work out their movements, which is where
+// the time goes (a getblock at verbosity 3 and an address encoded per script),
+// and one goroutine merges them into addrstat with addrstat.Merge, each block
+// with the cursor in one transaction.
+//
+// The merge takes the blocks in height order — a slot per height, queued as the
+// heights are handed out, read back in that order — so the cursor always says
+// exactly which blocks are counted, and a build stopped partway, by Ctrl+C or a
+// failure, resumes from it without counting a block twice.
+//
+// A block that still cannot be read after `attempts` tries is reported and
+// skipped: its height is printed and the cursor steps over it, so what it moved
+// is missing from the statistics. The heights skipped are listed at the end.
 func build(opt *options, out io.Writer) error {
     if err := core.Init(opt.url, opt.user, opt.pass, opt.cookie); err != nil { return err }
-    var ctx, cancel = context.WithTimeout(context.Background(), 30*time.Second)
-    var tip, err = core.GetBlockCount(ctx)
-    cancel()
+    var tctx, tcancel = context.WithTimeout(context.Background(), 30*time.Second)
+    var tip, err = core.GetBlockCount(tctx)
+    tcancel()
     if err != nil { return fmt.Errorf("Core RPC is unreachable at %s: %w", opt.url, err) }
     var from int64
-    if h, ok := addrstat.Height(); ok { from = h + 1 }
-    if from > tip {
-        fmt.Fprintf(out, "Statistics are already at the tip (block %d), %d addresses\n", tip, addrstat.Count())
+    if h, ok := cursors.Get(cursors.AddrStat); ok { from = h + 1 }
+    var to = tip - behind
+    if from > to {
+        fmt.Fprintf(out, "Statistics are already within %d blocks of the tip (block %d), %d addresses\n", behind, tip, addrstat.Count())
         return nil
     }
-    fmt.Fprintf(out, "Collecting blocks %d..%d\n", from, tip)
+    fmt.Fprintf(out, "Collecting blocks %d..%d on %d workers\n", from, to, workers)
+    var ctx, stop = signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+    defer stop()
     var started = time.Now()
-    if uerr := addrstat.Update(tip); uerr != nil { return uerr }
+    var skipped, cerr = collect(ctx, from, to, out)
+    if len(skipped) > 0 { fmt.Fprintf(out, "Skipped %d blocks: %v\n", len(skipped), skipped) }
+    if cerr != nil { return cerr }
     fmt.Fprintf(out, "Collected %d blocks up to %d in %s, %d addresses\n",
-        tip-from+1, tip, took(time.Since(started)), addrstat.Count())
+        to-from+1, to, took(time.Since(started)), addrstat.Count())
     return nil
+}
+
+// collect reads from..to on the workers and merges each block in height order,
+// returning the heights it skipped. A failed merge or a cancelled context stops
+// it, the reads still queued are drained, and the cursor stands at the last block
+// merged.
+func collect(parent context.Context, from, to int64, out io.Writer) ([]int64, error) {
+    var ctx, cancel = context.WithCancel(parent)
+    defer cancel()
+    var jobs = make(chan job)
+    var order = make(chan chan fetched, workers*4)
+    var wg sync.WaitGroup
+    for range workers {
+        wg.Go(func() {
+            for j := range jobs { j.slot <- read(ctx, j.height) }
+        })
+    }
+    go func() {
+        defer close(order)
+        defer close(jobs)
+        for h := from; h <= to && ctx.Err() == nil; h++ {
+            var slot = make(chan fetched, 1)
+            order <- slot
+            jobs <- job{height: h, slot: slot}
+        }
+    }()
+    var prog = progress.New("addrstat", from, to)
+    var skipped []int64
+    var failure error
+    var chunk = from
+    var h = from
+    for slot := range order {
+        if failure != nil { continue }
+        var f = <-slot
+        if f.err != nil && ctx.Err() != nil {
+            failure = fmt.Errorf("stopped at block %d: %w", h, ctx.Err())
+            cancel()
+            continue
+        }
+        if f.err != nil {
+            fmt.Fprintf(out, "Skipping block %d: %v\n", h, f.err)
+            skipped = append(skipped, h)
+        }
+        if merr := addrstat.Merge(h, f.deltas); merr != nil {
+            failure = fmt.Errorf("merge block %d: %w", h, merr)
+            cancel()
+            continue
+        }
+        if h-chunk+1 >= progressEvery || h == to {
+            prog.Chunk(chunk, h)
+            chunk = h + 1
+        }
+        h++
+    }
+    wg.Wait()
+    return skipped, failure
+}
+
+// read asks the node for block h up to `attempts` times, doubling the wait
+// between tries from retryDelay, and works out what it moved. A cancelled context
+// ends the waiting at once.
+func read(ctx context.Context, h int64) fetched {
+    var delay = retryDelay
+    var last error
+    for try := 1; try <= attempts; try++ {
+        var blk, err = core.BlockAt(ctx, int(h))
+        if err == nil { return fetched{deltas: addrstat.Deltas(blk)} }
+        last = err
+        if try == attempts { break }
+        select {
+        case <-time.After(delay):
+        case <-ctx.Done():
+            return fetched{err: ctx.Err()}
+        }
+        delay *= 2
+    }
+    return fetched{err: fmt.Errorf("%d attempts: %w", attempts, last)}
 }
 
 // query prints the statistics held for an address, and reports false when there

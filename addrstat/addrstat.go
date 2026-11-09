@@ -13,6 +13,12 @@
 // two tables. The cursor is addrstat's alone: recaddrstat's blocks say for
 // themselves which heights they hold.
 //
+// **This is the keep-up path**: the bot reads one block at a time, in height
+// order. A first build from genesis is tools/addrstat's job, which reads blocks
+// on several goroutines and merges each straight into addrstat through Merge,
+// staging nothing, and leaves the cursor a few blocks below the tip for Update to
+// carry on from.
+//
 // **The scan writes the addresses it finds**, rather than gathering for a set
 // somebody put there: a fold inserts a row for every address it saw and had none
 // for, and keeps every row, an address whose balance has reached zero included —
@@ -20,10 +26,9 @@
 package addrstat
 
 import "context"
+import "errors"
 import "fmt"
-import "runtime"
 import "sync"
-import "sync/atomic"
 import "time"
 import "database/sql"
 import "bitnsbot/addrindex"
@@ -40,13 +45,8 @@ var db *sql.DB
 // undo. A package var so tests can lower it.
 var recent = 10
 
-// workers is how many goroutines read blocks at once: all the processors but
-// two, which the node — on the Pi, the same machine — and the database keep, and
-// at least one. A package var so tests can set it.
-var workers = max(1, runtime.GOMAXPROCS(0)-2)
-
-// roundBlocks is how many heights one round of Update hands its workers, counted
-// from the one after the cursor: the staged blocks a round leaves behind are
+// roundBlocks is how many heights one round of Update reads, counted from the
+// one after the cursor: the staged blocks a round leaves behind are
 // bounded by it, since the cursor moves only between rounds. A package var so
 // tests shrink it.
 var roundBlocks int64 = 1000
@@ -55,6 +55,23 @@ var roundBlocks int64 = 1000
 // transaction, which holds SQLite's one write lock for its length. A package var
 // so tests shrink it.
 var mergeBlocks int64 = 100
+
+// onConflict is what an insert into addrstat does with an address that already
+// has a row: add the movements to it. Balance and Flow are derived from the sums
+// they follow from, so they cannot drift out of step with them. `first` takes the
+// earlier of the two only when there is one — a fresh row has 0 there, which is
+// not earlier than anything — and `type` is only ever written by the insert, so a
+// form named by hand is left as it is. Shared by fold and Merge.
+const onConflict = ` on conflict(addr) do update set
+    recv = addrstat.recv + excluded.recv,
+    sent = addrstat.sent + excluded.sent,
+    fees = addrstat.fees + excluded.fees,
+    txs = addrstat.txs + excluded.txs,
+    first = case when excluded.first > 0 and (addrstat.first = 0 or excluded.first < addrstat.first)
+        then excluded.first else addrstat.first end,
+    last = max(addrstat.last, excluded.last),
+    balance = addrstat.recv + excluded.recv - (addrstat.sent + excluded.sent),
+    flow = addrstat.recv + excluded.recv + addrstat.sent + excluded.sent`
 
 // mu serialises folding blocks into addrstat with Rollback and with record, so a
 // disconnected block cannot be deleted between a fold choosing it and folding it,
@@ -214,22 +231,21 @@ func Collect() error {
 }
 
 // Update advances the statistics to tip once and returns, in rounds of two
-// stages that run one after the other. First the read: `workers` goroutines take
-// heights off a channel — the roundBlocks heights from the one after the cursor,
-// or up to tip when that is nearer — and each reads its block (core.BlockAt, one
-// getblock at verbosity 3, whose prevouts are where a spend's script and amount,
-// and so a transaction's fee, are written down) and writes its per-address
-// movements to recaddrstat, skipping a height recaddrstat already holds, read by
-// an earlier round or pass. The channel is closed once every height is sent, and
-// the round waits for the workers to finish. Then the merge: the staged blocks
-// straight on from the cursor are folded into addrstat a mergeBlocks run at a
-// time, each run moving the cursor in its own transaction, stopping at the first
-// missing height or at tip less `recent`. The rounds repeat until one has handed
-// out every height up to tip.
+// stages that run one after the other. First the read: the roundBlocks heights
+// from the one after the cursor, or up to tip when that is nearer, are read one
+// at a time in height order (core.BlockAt, one getblock at verbosity 3, whose
+// prevouts are where a spend's script and amount, and so a transaction's fee, are
+// written down), each block's per-address movements written to recaddrstat and a
+// height recaddrstat already holds — read by an earlier round or pass — skipped.
+// Then the merge: the staged blocks straight on from the cursor are folded into
+// addrstat a mergeBlocks run at a time, each run moving the cursor in its own
+// transaction, stopping at the first missing height or at tip less `recent`, so
+// the newest `recent` blocks stay staged. The rounds repeat until one has read
+// every height up to tip.
 //
-// A block that cannot be read stops the round's other reads, the blocks already
-// staged are merged as far as they run, and the pass fails; the next pass reads
-// only what is missing.
+// A block that cannot be read stops the round, the blocks already staged are
+// merged as far as they run, and the pass fails; the next pass reads only what
+// is missing.
 func Update(tip int64) error {
     if db == nil { return nil }
     var ctx, cancel = context.WithTimeout(context.Background(), 6*time.Hour)
@@ -267,41 +283,20 @@ func Update(tip int64) error {
     return nil
 }
 
-// readBlocks is one round's read: the heights from..to are sent down a channel
-// to `workers` goroutines, each skipping a height recaddrstat already holds and
-// recording the rest. The first failure cancels the reads still to come and is
-// returned once every worker has stopped; the count is how many blocks were
-// written.
-func readBlocks(parent context.Context, from, to int64) (int64, error) {
-    var ctx, cancel = context.WithCancel(parent)
-    defer cancel()
-    var heights = make(chan int64)
-    var failure error
-    var fmu sync.Mutex
-    var written atomic.Int64
-    var wg sync.WaitGroup
-    for range workers {
-        wg.Go(func() {
-            for h := range heights {
-                if ctx.Err() != nil { continue }
-                var have, err = holds(h)
-                if err == nil && have { continue }
-                if err == nil { err = record(ctx, h) }
-                if err != nil {
-                    fmu.Lock()
-                    if failure == nil { failure = err }
-                    fmu.Unlock()
-                    cancel()
-                    continue
-                }
-                written.Add(1)
-            }
-        })
+// readBlocks is one round's read: the heights from..to in order, skipping a
+// height recaddrstat already holds and recording the rest. It stops at the first
+// failure; the count is how many blocks were written.
+func readBlocks(ctx context.Context, from, to int64) (int64, error) {
+    var written int64
+    for h := from; h <= to; h++ {
+        if err := ctx.Err(); err != nil { return written, err }
+        var have, err = holds(h)
+        if err != nil { return written, err }
+        if have { continue }
+        if rerr := record(ctx, h); rerr != nil { return written, rerr }
+        written++
     }
-    for h := from; h <= to && ctx.Err() == nil; h++ { heights <- h }
-    close(heights)
-    wg.Wait()
-    return written.Load(), failure
+    return written, nil
 }
 
 // holds reports whether recaddrstat holds block h — every block read has a row,
@@ -322,8 +317,7 @@ func holds(h int64) (bool, error) {
 func record(ctx context.Context, h int64) error {
     var blk, err = core.BlockAt(ctx, int(h))
     if err != nil { return fmt.Errorf("block %d: %w", h, err) }
-    var deltas = map[string]*Stat{}
-    apply(deltas, blk)
+    var deltas = Deltas(blk)
     mu.Lock()
     defer mu.Unlock()
     if at, ok := cursors.Get(cursors.AddrStat); ok && h <= at { return nil }
@@ -360,12 +354,8 @@ type folded struct {
 // cursor goes to its last height and would otherwise step over one never read.
 //
 // The movements are summed per address in SQL and added to the row in the same
-// statement — one statement for the lot rather than a query and an update per
-// address. Balance and Flow are derived from the sums they follow from, so they
-// cannot drift out of step with them. `first` takes the earlier of the two only
-// when there is one — a fresh row has 0 there, which is not earlier than anything
-// — and `type` is only ever written by the insert, so a form named by hand is left
-// as it is.
+// statement (onConflict) — one statement for the lot rather than a query and an
+// update per address.
 //
 // An address with no row gets one, and a row is never deleted, an address
 // holding nothing included.
@@ -397,17 +387,7 @@ func fold(tip int64, f *folded) (bool, error) {
     var res, uerr = tx.Exec(`insert into addrstat (addr, type, balance, recv, sent, flow, fees, txs, first, last)
         select addr, max(type), sum(recv) - sum(sent), sum(recv), sum(sent), sum(recv) + sum(sent), sum(fees),
             sum(txs), coalesce(min(nullif(first, 0)), 0), max(last)
-        from recaddrstat where block > ? and block <= ? and addr != '' group by addr
-        on conflict(addr) do update set
-            recv = addrstat.recv + excluded.recv,
-            sent = addrstat.sent + excluded.sent,
-            fees = addrstat.fees + excluded.fees,
-            txs = addrstat.txs + excluded.txs,
-            first = case when excluded.first > 0 and (addrstat.first = 0 or excluded.first < addrstat.first)
-                then excluded.first else addrstat.first end,
-            last = max(addrstat.last, excluded.last),
-            balance = addrstat.recv + excluded.recv - (addrstat.sent + excluded.sent),
-            flow = addrstat.recv + excluded.recv + addrstat.sent + excluded.sent`, cursor, to)
+        from recaddrstat where block > ? and block <= ? and addr != '' group by addr`+onConflict, cursor, to)
     if uerr != nil { return false, uerr }
     var merged, _ = res.RowsAffected()
     if _, rerr := tx.Exec("delete from recaddrstat where block <= ?", to); rerr != nil { return false, rerr }
@@ -419,6 +399,35 @@ func fold(tip int64, f *folded) (bool, error) {
     return true, nil
 }
 
+// Merge adds one block's movements straight to addrstat and moves the cursor to
+// h, in one transaction — tools/addrstat's pre-build, which reads blocks in
+// parallel and hands them here in height order, staging nothing. Whatever
+// recaddrstat holds under h is deleted in the same transaction, the block being
+// counted now, so a build over a database the bot has staged blocks in does not
+// count them twice. A nil deltas only moves the cursor, which is how the tool
+// steps over a block it could not read.
+func Merge(h int64, deltas map[string]*Stat) error {
+    if db == nil { return errors.New("addrstat: no database") }
+    mu.Lock()
+    defer mu.Unlock()
+    var tx, err = db.Begin()
+    if err != nil { return err }
+    defer tx.Rollback()
+    var stmt, perr = tx.Prepare(`insert into addrstat (addr, type, balance, recv, sent, flow, fees, txs, first, last)
+        values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`+onConflict)
+    if perr != nil { return perr }
+    defer stmt.Close()
+    for addr, d := range deltas {
+        if _, ierr := stmt.Exec(addr, d.Type, d.Recv-d.Sent, d.Recv, d.Sent, d.Recv+d.Sent, d.Fees, d.Txs,
+            d.First, d.Last); ierr != nil {
+            return ierr
+        }
+    }
+    if _, derr := tx.Exec("delete from recaddrstat where block = ?", h); derr != nil { return derr }
+    if serr := cursors.Set(tx, cursors.AddrStat, h); serr != nil { return serr }
+    return tx.Commit()
+}
+
 // blocksMsg names a range of heights the way every collector's line does, in the
 // singular when it is one block.
 func blocksMsg(from, to int64) string {
@@ -426,7 +435,7 @@ func blocksMsg(from, to int64) string {
     return fmt.Sprintf("blocks %d..%d", from, to)
 }
 
-// apply adds one block's movements to deltas. A transaction is
+// Deltas is what one block moved, per address it touched. A transaction is
 // counted once per address however many of its outputs or inputs name it, which
 // is the same dedup the index itself does — an address paid twice by one
 // transaction was in one transaction.
@@ -436,7 +445,8 @@ func blocksMsg(from, to int64) string {
 // and this is what the live path already does.
 //
 // a coinbase spends nothing and pays no fee
-func apply(deltas map[string]*Stat, blk core.Block) {
+func Deltas(blk core.Block) map[string]*Stat {
+    var deltas = map[string]*Stat{}
     for _, tx := range blk.Txs {
         var fee int64
         if len(tx.Spent) > 0 {
@@ -462,6 +472,7 @@ func apply(deltas map[string]*Stat, blk core.Block) {
             touch(s, seen, addr, blk.Time)
         }
     }
+    return deltas
 }
 
 // at is the running record for the address a script pays, or nil when it pays no
@@ -469,8 +480,8 @@ func apply(deltas map[string]*Stat, blk core.Block) {
 // what addrbal leaves out of its count for the same reason. The address is
 // encoded from the script, and its form named from the address, once per block
 // rather than once per touch: a busy address appears many times in a block, and
-// base58 and bech32 are the expensive part of this scan — which is why blocks
-// are read and applied on several goroutines at once.
+// base58 and bech32 are the expensive part of this scan — which is why the
+// tool's pre-build reads and applies blocks on several goroutines at once.
 func at(deltas map[string]*Stat, script []byte) (*Stat, string) {
     var addr = addrindex.Address(script)
     if addr == "" { return nil, "" }
