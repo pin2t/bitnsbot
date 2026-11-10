@@ -102,7 +102,7 @@
             align-items: center;
             justify-content: space-between;
             gap: 16px;
-            max-width: 900px;
+            max-width: 1040px;
             width: 100%;
             margin: 0 auto;
             padding: 24px 16px;
@@ -151,7 +151,7 @@
             align-items: center;
             justify-content: center;
             gap: 20px;
-            max-width: 900px;
+            max-width: 1040px;
             width: 100%;
             margin: 0 auto;
             padding: 8px 16px 24px;
@@ -159,13 +159,12 @@
         .intro {
             display: flex;
             flex-direction: column;
-            align-items: center;
+            align-items: flex-start;
             gap: 8px;
         }
         h1 {
             margin: 0;
             max-width: 34em;
-            text-align: center;
             font-size: 1.625rem;
             line-height: 1.25;
             font-weight: 750;
@@ -173,7 +172,6 @@
         .tagline {
             margin: 0;
             max-width: 46em;
-            text-align: center;
             color: var(--muted);
             font-size: 1.0625rem;
         }
@@ -187,7 +185,6 @@
         .side {
             flex: 1 1 0;
             min-width: 0;
-            max-width: 520px;
             display: flex;
             flex-direction: column;
             gap: 20px;
@@ -236,7 +233,7 @@
         }
         .screens {
             position: relative;
-            width: clamp(160px, min(78vw, calc((100vh - 440px) * 0.445)), 300px);
+            width: clamp(160px, min(78vw, calc((100vh - 250px) * 0.445)), 246px);
             aspect-ratio: 570 / 1280;
             border-radius: 28px;
             overflow: hidden;
@@ -296,7 +293,7 @@
         .qr:hover { border-color: var(--muted); }
         .qr img {
             display: block;
-            width: min(clamp(110px, calc(100vh - 670px), 200px), 100%);
+            width: min(clamp(110px, calc(100vh - 640px), 180px), 100%);
             height: auto;
             aspect-ratio: 1;
             border-radius: 8px;
@@ -314,7 +311,9 @@
         @media (max-width: 720px) {
             .stage { flex-direction: column; gap: 40px; }
             h1 { font-size: 1.375rem; }
-            .side { flex: none; width: 100%; }
+            .stage { align-items: stretch; }
+            .side { display: contents; }
+            .intro { order: -1; align-items: center; text-align: center; }
             .qr img { width: min(160px, 100%); }
         }
         @media (max-width: 480px) {
@@ -345,10 +344,6 @@
         </div>
     </header>
     <main>
-        <div class="intro">
-            <h1>Bitcoin transaction notifications in Telegram and MAX</h1>
-            <p class="tagline">A free Bitcoin notification bot and blockchain explorer: watch addresses and transactions, look up blocks, fees, the mempool and the market — in chat or in the Mini App.</p>
-        </div>
         <div class="stage">
             <section class="carousel" aria-label="Screenshots">
                 <div class="screens">
@@ -361,6 +356,10 @@
                 <div class="dots"></div>
             </section>
             <div class="side">
+                <div class="intro">
+                    <h1>Bitcoin transaction notifications in Telegram and MAX</h1>
+                    <p class="tagline">A free Bitcoin notification bot and blockchain explorer: watch addresses and transactions, look up blocks, fees, the mempool and the market — in chat or in the Mini App.</p>
+                </div>
                 <section class="features" aria-labelledby="features-title">
                     <h2 id="features-title">What it does</h2>
                     <ul>
