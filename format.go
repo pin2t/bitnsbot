@@ -8,12 +8,6 @@ import "time"
 import "bitnsbot/rates"
 import "unicode/utf8"
 
-func ago(n int, unit string, lang string) string {
-    var s = i18nl(lang).String("ago")
-    if n == 1 { return "1 " + unit + " " + s }
-    return fmt.Sprintf("%d %s %s", n, unit, s)
-}
-
 func when(unix int64, lang string) string {
     if s := relative(unix, lang); s != "" { return s }
     return strings.ToLower(i18nl(lang).DateTime(time.Unix(unix, 0).UTC()))
@@ -27,17 +21,20 @@ func day(unix int64, lang string) string {
 }
 
 // relative renders a time within the last three months as "2 days ago", and ""
-// for anything older, which belongs in absolute form.
+// for anything older, which belongs in absolute form. Each unit is a whole
+// phrase rather than a number, a unit and "ago" put together, because the
+// phrase is what translates: Spanish puts "hace" first, and Russian puts the
+// unit in the accusative ("1 минуту назад", not "1 минута назад").
 func relative(unix int64, lang string) string {
     var t = time.Unix(unix, 0)
     if !t.After(time.Now().AddDate(0, -3, 0)) { return "" }
     var since = time.Since(t)
     switch {
     case since < time.Minute:     return i18nl(lang).String("just now")
-    case since < time.Hour:       return ago(int(since.Minutes()), i18nl(lang).String("min"), lang)
-    case since < 24*time.Hour:    return ago(int(since.Hours()), i18nl(lang).String("h"), lang)
-    case since < 31*24*time.Hour: return ago(int(since.Hours()/24), i18nl(lang).String("d"), lang)
-    default:                      return ago(int(since.Hours()/24/30), i18nl(lang).String("m"), lang)
+    case since < time.Hour:       return i18nl(lang).Plural(int64(since.Minutes()), "%d minute ago|%d minutes ago")
+    case since < 24*time.Hour:    return i18nl(lang).Plural(int64(since.Hours()), "%d hour ago|%d hours ago")
+    case since < 31*24*time.Hour: return i18nl(lang).Plural(int64(since.Hours()/24), "%d day ago|%d days ago")
+    default:                      return i18nl(lang).Plural(int64(since.Hours()/24/30), "%d month ago|%d months ago")
     }
 }
 
@@ -132,10 +129,12 @@ func compactBTC(sat int64, lang string) string {
 }
 
 // periodText renders a duration as its two most-significant non-zero units among
-// years / months / days / hours / minutes — "3 y 2 d", "2 m 1 d", "5 h 10 min".
-// Years and months use 365- and 30-day approximations, extracted in order.
+// years / months / days / hours / minutes — "3 years 2 days", "2 months 1 day",
+// "5 hours 10 minutes". Years and months use 365- and 30-day approximations,
+// extracted in order. Every unit is rendered before the zero ones are dropped,
+// so each key is a literal at its Plural call, where i18n-vet can see it.
 func periodText(d time.Duration, lang string) string {
-    var total = int(d.Minutes())
+    var total = int64(d.Minutes())
     var years = total / (365 * 24 * 60)
     total -= years * 365 * 24 * 60
     var months = total / (30 * 24 * 60)
@@ -145,13 +144,19 @@ func periodText(d time.Duration, lang string) string {
     var hours = total / 60
     var mins = total - hours*60
     var units = []struct {
-        n int
-        s string
-    }{{years, i18nl(lang).String("y")}, {months, i18nl(lang).String("m")}, {days, i18nl(lang).String("d")}, {hours, i18nl(lang).String("h")}, {mins, i18nl(lang).String("min")}}
+        n    int64
+        text string
+    }{
+        {years, i18nl(lang).Plural(years, "%d year|%d years")},
+        {months, i18nl(lang).Plural(months, "%d month|%d months")},
+        {days, i18nl(lang).Plural(days, "%d day|%d days")},
+        {hours, i18nl(lang).Plural(hours, "%d hour|%d hours")},
+        {mins, i18nl(lang).Plural(mins, "%d minute|%d minutes")},
+    }
     var parts []string
     for _, u := range units {
         if u.n > 0 {
-            parts = append(parts, fmt.Sprintf("%d %s", u.n, u.s))
+            parts = append(parts, u.text)
         }
     }
     if len(parts) == 0 {
@@ -221,16 +226,19 @@ func btcAmount(sat int64) string {
     return s
 }
 
-// durationText renders elapsed time compactly: "45 sec", "12 min", "2 h 5 min".
+// durationText renders elapsed time: "45 seconds", "12 minutes", "2 hours 5
+// minutes". It is only ever shown after "after", so its minutes and seconds are
+// the "-after" context keys — Russian puts them in the accusative there
+// ("через 1 минуту"), where a period's are nominative.
 func durationText(d time.Duration, lang string) string {
     switch {
-    case d < time.Minute: return i18nl(lang).Sprintf("%d sec", int(d.Seconds()))
-    case d < time.Hour:   return i18nl(lang).Sprintf("%d min", int(d.Minutes()))
+    case d < time.Minute: return i18nl(lang).Plural(int64(d.Seconds()), "%d second-after")
+    case d < time.Hour:   return i18nl(lang).Plural(int64(d.Minutes()), "%d minute-after")
     default:
-        var h = int(d / time.Hour)
-        var m = int(d/time.Minute) % 60
-        if m == 0 { return i18nl(lang).Sprintf("%d h", h) }
-        return i18nl(lang).Sprintf("%d h %d min", h, m)
+        var h = i18nl(lang).Plural(int64(d/time.Hour), "%d hour|%d hours")
+        var m = int64(d/time.Minute) % 60
+        if m == 0 { return h }
+        return h + " " + i18nl(lang).Plural(m, "%d minute-after")
     }
 }
 

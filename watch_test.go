@@ -382,10 +382,12 @@ func TestDurationText(t *testing.T) {
         d    time.Duration
         want string
     }{
-        {30 * time.Second, "30 sec"},
-        {5 * time.Minute, "5 min"},
-        {90 * time.Minute, "1 h 30 min"},
-        {2 * time.Hour, "2 h"},
+        {30 * time.Second, "30 seconds"},
+        {time.Minute, "1 minute"},
+        {5 * time.Minute, "5 minutes"},
+        {90 * time.Minute, "1 hour 30 minutes"},
+        {2 * time.Hour, "2 hours"},
+        {121 * time.Minute, "2 hours 1 minute"},
     }
     for _, c := range cases {
         if got := durationText(c.d, ""); got != c.want {

@@ -297,8 +297,7 @@ func appMinerInfo(lang, name string) app.Info {
     var out = app.Info{Title: name}
     var s, ok = miners.Get(name)
     if !ok { return out }
-    var blocks = i18nl(lang).Sprintf("%d blocks", s.Blocks)
-    if s.Blocks == 1 { blocks = i18nl(lang).String("1 block") }
+    var blocks = i18nl(lang).Plural(int64(s.Blocks), "%d block|%d blocks")
     out.OK = true
     out.Rows = []app.Field{
         {Label: i18nl(lang).String("Blocks mined"), Value: blocks},
@@ -1412,8 +1411,7 @@ func minersCmd(platform string, chat int64) {
     }
     var lines []string
     for i, m := range top {
-        var blocks = i18n(platform, chat).Sprintf("%d blocks", m.Blocks)
-        if m.Blocks == 1 { blocks = i18n(platform, chat).String("1 block") }
+        var blocks = i18n(platform, chat).Plural(int64(m.Blocks), "%d block|%d blocks")
         lines = append(lines, i18n(platform, chat).Sprintf("%d. %s. %s mined, reward %s BTC, fees %s BTC, consumption %s GW",
             i+1, m.Name, blocks, trimNum(toBTC(m.Reward), 2), trimNum(toBTC(m.Fees), 2), trimNum(m.ConsumptionGW, 1)))
     }
@@ -1600,8 +1598,7 @@ func minerChart(lang, name, data, period string, now time.Time) app.Chart {
     }
     var format = func(v float64) string {
         if data == "consumption" { return trimNum(v, 2) + " GW" }
-        if v == 1 { return t.String("1 block") }
-        return t.Sprintf("%d blocks", int64(v))
+        return t.Plural(int64(v), "%d block|%d blocks")
     }
     var values = make([]float64, len(starts))
     var total, blocks, peak = int64(0), int64(0), 0.0

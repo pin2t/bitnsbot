@@ -706,7 +706,7 @@ function Details({ path, title, open, back }) {
 }
 
 const keptTxs = 100;
-const ago = window.Intl && Intl.RelativeTimeFormat ? new Intl.RelativeTimeFormat("ru", { style: "short", numeric: "always" }) : null;
+const ago = window.Intl && Intl.RelativeTimeFormat ? new Intl.RelativeTimeFormat("ru", { style: "long", numeric: "always" }) : null;
 function agoText(at, now) {
   const s = Math.max(0, Math.round(now / 1000 - at));
   if (!ago) { return ""; }

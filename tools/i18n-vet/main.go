@@ -6,7 +6,8 @@
 //	i18n-vet <directory>
 //
 // The tool walks all .go files recursively under <directory>, finds every
-// i18n(…)/i18nl(…).Sprintf("format", …) and .String("s") call, and verifies that
+// i18n(…)/i18nl(…).Sprintf("format", …), .String("s") and .Plural(n, "forms")
+// call, and verifies that
 // each format string appears in every translation section of i18n.go. Translation
 // sections are delimited by comments:
 //
@@ -15,7 +16,10 @@
 //	// i18n-vet:end translation
 //
 // For each translation, the tool checks that the translated string has the same
-// number and types of format specifiers as the original.
+// number and types of format specifiers as the original. A Plural key holds its
+// forms separated by "|", and a translation as many as its language has, so
+// there every form of the translation must carry the verbs of every form of the
+// key.
 package main
 
 import "bytes"
@@ -49,7 +53,7 @@ func main() {
 		os.Exit(2)
 	}
 	var dir = os.Args[1]
-	var sourceStrings []string
+	var sourceStrings []i18nString
 	var err = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 		if err != nil { return err }
 		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
@@ -74,19 +78,27 @@ func main() {
 	var errors int
 	for _, src := range sourceStrings {
 		for lang, langTrans := range translations {
-			var translated, ok = langTrans[src]
+			var translated, ok = langTrans[src.s]
 			if !ok {
-				fmt.Printf("%s: missing translation for %q\n", lang, src)
+				fmt.Printf("%s: missing translation for %q\n", lang, src.s)
 				errors++
 				continue
 			}
-			var srcVerbs = formatVerbs(src)
-			var trVerbs = formatVerbs(translated)
-			if srcVerbs != trVerbs {
-				fmt.Printf("%s: format specifier mismatch for %q\n", lang, src)
-				fmt.Printf("  original:    %q (verbs: %q)\n", src, srcVerbs)
-				fmt.Printf("  translation: %q (verbs: %q)\n", translated, trVerbs)
-				errors++
+			var srcForms = []string{src.s}
+			var trForms = []string{translated}
+			if src.plural {
+				srcForms = strings.Split(src.s, "|")
+				trForms = strings.Split(translated, "|")
+			}
+			var srcVerbs = formatVerbs(srcForms[0])
+			for _, form := range append(srcForms, trForms...) {
+				if formatVerbs(form) != srcVerbs {
+					fmt.Printf("%s: format specifier mismatch for %q\n", lang, src.s)
+					fmt.Printf("  original:    %q (verbs: %q)\n", src.s, srcVerbs)
+					fmt.Printf("  translation: %q (verbs: %q)\n", translated, formatVerbs(form))
+					errors++
+					break
+				}
 			}
 		}
 	}
@@ -96,8 +108,16 @@ func main() {
 	}
 }
 
+// i18nString is a translated string found at a call site, and whether it is a
+// Plural key, whose forms are checked one by one.
+type i18nString struct {
+	s      string
+	plural bool
+}
+
 // extractI18nStrings walks an AST and returns every string literal passed as the
-// first argument to i18n(…)/i18nl(…).Sprintf or .String.
+// first argument to i18n(…)/i18nl(…).Sprintf or .String, or as the second to
+// .Plural, which takes the count first.
 //
 // The receiver must be i18n(…) — a chat's language — or i18nl(…), the
 // same lookup by language code, which is how the Mini App translates.
@@ -105,27 +125,30 @@ func main() {
 // First argument is the format string
 //
 // Unquote the string literal
-func extractI18nStrings(f *ast.File) []string {
-	var strings []string
+func extractI18nStrings(f *ast.File) []i18nString {
+	var found []i18nString
 	ast.Inspect(f, func(n ast.Node) bool {
 		var call, ok = n.(*ast.CallExpr)
 		if !ok { return true }
 		var sel, selOK = call.Fun.(*ast.SelectorExpr)
 		if !selOK { return true }
-		if sel.Sel.Name != "Sprintf" && sel.Sel.Name != "String" { return true }
+		var plural = sel.Sel.Name == "Plural"
+		if sel.Sel.Name != "Sprintf" && sel.Sel.Name != "String" && !plural { return true }
 		var call2, innerOK = sel.X.(*ast.CallExpr)
 		if !innerOK { return true }
 		var ident, identOK = call2.Fun.(*ast.Ident)
 		if !identOK || (ident.Name != "i18n" && ident.Name != "i18nl") { return true }
-		if len(call.Args) == 0 { return true }
-		var lit, litOK = call.Args[0].(*ast.BasicLit)
+		var arg = 0
+		if plural { arg = 1 }
+		if len(call.Args) <= arg { return true }
+		var lit, litOK = call.Args[arg].(*ast.BasicLit)
 		if !litOK || lit.Kind != token.STRING { return true }
 		var s, err = stringLiteral(lit.Value)
 		if err != nil { return true }
-		strings = append(strings, s)
+		found = append(found, i18nString{s, plural})
 		return true
 	})
-	return strings
+	return found
 }
 
 // stringLiteral unquotes a Go string literal, handling both regular and raw strings.
