@@ -13,3 +13,6 @@ bitnsbot.conf
 /tools/i18n-vet/i18n-vet
 /tools/addrindex/addrindex
 /tools/csvimport/csvimport
+.gigaide
+*.db-shm
+*.db-wal

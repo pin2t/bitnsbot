@@ -15,7 +15,6 @@ import "time"
 import "bitnsbot/addrindex"
 import "bitnsbot/addrstat"
 import "bitnsbot/core"
-import "bitnsbot/cursors"
 import "bitnsbot/logging"
 import "bitnsbot/rates"
 
@@ -422,7 +421,7 @@ func addressTxViews(ctx context.Context, lang, addr string, from int) (views []a
 func txStartHeight(addr string) uint32 {
     var s, ok = addrstat.Get(addr)
     if !ok || s.Last <= 0 { return 0 }
-    var statCursor, statOK = cursors.Get(cursors.AddrStat)
+    var statCursor, statOK = addrstat.Height()
     var indexCursor, indexOK = addrindex.Cursor()
     if !statOK || !indexOK || statCursor < int64(indexCursor) { return 0 }
     if h, ok := blocks.ByTime(s.Last); ok && h > 0 { return uint32(h) }

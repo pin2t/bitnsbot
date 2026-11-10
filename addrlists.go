@@ -10,7 +10,14 @@ import "bitnsbot/logging"
 // package gathers — and all three are an `order by` over it, served by the index
 // on the column each ranks.
 //
-// That is the whole of the ranking now. Under bbolt this file kept three index
+// The newest blocks the scan has read are still in recaddrstat, not yet folded
+// into addrstat, so a ranking is two arms merged in order: the addrstat rows those
+// blocks did not touch, walked through the column's index, and the addresses they
+// did, with their movements added — a few thousand per block, sorted on their own.
+// SQLite merges a `union all` under an `order by` without sorting the whole, so
+// the limit still stops the walk of the index early.
+//
+// Under bbolt this file kept three index
 // buckets of its own, rebuilt hourly, because a bucket keyed by address cannot be
 // walked in value order; SQLite has an index for that, and `addrstat_balance`,
 // `addrstat_txs` and `addrstat_last` are it. The rebuild goroutine, the key
@@ -97,8 +104,13 @@ func appAddresses(lang string, rng app.AddrRange) app.Addrs {
         if want > addrsRestoreRows { want = addrsRestoreRows }
     }
     if rng.From + want > addrsMaxRows { want = addrsMaxRows - rng.From }
-    var rows, err = db.Query("select addr, "+list.column+" from addrstat where "+list.keep+
-        " order by "+list.column+" "+list.order+" limit ? offset ?", want+1, rng.From)
+    var rows, err = db.Query(`with r as (select addr, sum(recv) - sum(sent) as balance, sum(txs) as txs,
+            max(last) as last from recaddrstat where addr != '' group by addr),
+        m as (select r.addr, coalesce(s.balance, 0) + r.balance as balance, coalesce(s.txs, 0) + r.txs as txs,
+            max(coalesce(s.last, 0), r.last) as last from r left join addrstat s on s.addr = r.addr)
+        select addr, `+list.column+` from addrstat where `+list.keep+` and addr not in (select addr from r)
+        union all select addr, `+list.column+` from m where `+list.keep+`
+        order by 2 `+list.order+` limit ? offset ?`, want+1, rng.From)
     if err != nil {
         logging.Warn("mini app: %s addresses: %v", rng.Kind, err)
         return out

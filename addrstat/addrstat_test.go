@@ -1,6 +1,7 @@
 package addrstat
 
 import "bytes"
+import "context"
 import "encoding/hex"
 import "fmt"
 import "path/filepath"
@@ -98,10 +99,15 @@ func (c *chain) respond(method string, params []any) (any, error) {
 
 // open creates the tables the scan writes into and points the package at them.
 // There is nothing to seed: a row is an address the scan has found holding
-// coins, so the table starts empty whatever the chain holds.
+// coins, so the table starts empty whatever the chain holds. recent is 0, so a
+// pass folds every block it reads into addrstat and the tests of what the
+// statistics hold can read that table alone; the staging tests raise it.
 func open(t *testing.T) *sql.DB {
     t.Helper()
-    var handle, err = sql.Open("sqlite", filepath.Join(t.TempDir(), "t.db"))
+    var saved = recent
+    recent = 0
+    t.Cleanup(func() { recent = saved })
+    var handle, err = sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "t.db")+"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(10000)")
     if err != nil { t.Fatalf("open: %v", err) }
     if err := cursors.Init(handle); err != nil { t.Fatalf("cursors: %v", err) }
     if err := Init(handle); err != nil { t.Fatalf("init: %v", err) }
@@ -171,22 +177,23 @@ func TestCollectGathersStatistics(t *testing.T) {
     if Count() != 3 { t.Errorf("Count = %d, want the three addresses the chain paid", Count()) }
 }
 
-// An address the chunk emptied loses its row: the table is the addresses that
-// hold coins, so what a spent-out change address leaves behind is nothing.
-func TestEmptiedAddressIsRemoved(t *testing.T) {
+// An address emptied keeps its row and its history, whether the block that
+// emptied it is folded with the one that paid it or in a later pass.
+func TestEmptiedAddressIsKept(t *testing.T) {
     open(t)
     serve(t, &chain{tip: 1, blocks: map[int]core.Block{
         0: blockOf(1000, tx{outs: []core.Payment{pay(scriptA, 5000)}}),
         1: blockOf(2000, tx{outs: []core.Payment{pay(scriptB, 4000)}, spent: []core.Payment{pay(scriptA, 5000)}}),
     }})
     if err := Collect(); err != nil { t.Fatalf("Collect: %v", err) }
-    if rows(t, addrA) != 0 { t.Errorf("addrA kept a row holding nothing: %+v", statOf(t, addrA)) }
+    if a := statOf(t, addrA); a.Balance != 0 || a.Recv != 5000 || a.Sent != 5000 || a.Txs != 2 { t.Errorf("addrA = %+v", a) }
+    if a, ok := Get(addrA); !ok || a.Txs != 2 { t.Errorf("Get(addrA) = %+v ok=%v, want its history", a, ok) }
     if b := statOf(t, addrB); b.Balance != 4000 { t.Errorf("addrB = %+v", b) }
+    if Count() != 2 { t.Errorf("Count = %d, want both addresses", Count()) }
 }
 
-// An address emptied by a later chunk loses the row an earlier one gave it, so
-// the delete has to reach a row the chunk did not insert.
-func TestEmptiedAcrossChunksIsRemoved(t *testing.T) {
+// An address emptied by a later pass keeps the row an earlier one gave it.
+func TestEmptiedAcrossChunksIsKept(t *testing.T) {
     open(t)
     var src = serve(t, &chain{tip: 0, blocks: map[int]core.Block{
         0: blockOf(1000, tx{outs: []core.Payment{pay(scriptA, 5000)}}),
@@ -196,25 +203,7 @@ func TestEmptiedAcrossChunksIsRemoved(t *testing.T) {
     if a := statOf(t, addrA); a.Balance != 5000 { t.Errorf("addrA = %+v", a) }
     src.tip = 1
     if err := Collect(); err != nil { t.Fatalf("Collect: %v", err) }
-    if rows(t, addrA) != 0 { t.Error("addrA kept a row after a later chunk emptied it") }
-}
-
-// A chunk that reaches flushKeys addresses merges what it has and takes the
-// cursor to the block it had read, so a scan of the modern chain is bounded by
-// the addresses it holds rather than by its thousand blocks.
-func TestChunkFlushesOnKeys(t *testing.T) {
-    open(t)
-    var keys, size = flushKeys, chunkSize
-    flushKeys, chunkSize = 1, 1000
-    defer func() { flushKeys, chunkSize = keys, size }()
-    serve(t, &chain{tip: 2, blocks: map[int]core.Block{
-        0: blockOf(1000, tx{outs: []core.Payment{pay(scriptA, 5000)}}),
-        1: blockOf(2000, tx{outs: []core.Payment{pay(scriptB, 3000)}}),
-        2: blockOf(3000, tx{outs: []core.Payment{pay(scriptC, 2000)}}),
-    }})
-    if err := Collect(); err != nil { t.Fatalf("Collect: %v", err) }
-    if h, ok := cursors.Get(cursors.AddrStat); !ok || h != 2 { t.Errorf("cursor = %d ok=%v, want 2", h, ok) }
-    if Count() != 3 { t.Errorf("Count = %d, want 3", Count()) }
+    if a := statOf(t, addrA); a.Balance != 0 || a.Txs != 2 { t.Errorf("addrA = %+v after a later pass emptied it", a) }
 }
 
 // A transaction that both pays an address and spends from it is one transaction
@@ -349,39 +338,67 @@ func table(t *testing.T) map[string]Stat {
     return out
 }
 
-// Reading a chunk's blocks on several goroutines writes exactly the table one
-// goroutine does, chunks and mid-chunk merges included.
-func TestParallelMatchesSequential(t *testing.T) {
-    var saved, size, keys = workers, chunkSize, flushKeys
-    defer func() { workers, chunkSize, flushKeys = saved, size, keys }()
-    chunkSize, flushKeys = 40, 25
+// Folding a block at a time writes exactly the table folding a hundred at a time
+// does, and so does Merge, block by block, staging nothing — the tool's path.
+func TestFoldSizesAndMergeAgree(t *testing.T) {
+    var merging = mergeBlocks
+    defer func() { mergeBlocks = merging }()
     var results []map[string]Stat
-    for _, n := range []int{1, 8} {
-        workers = n
+    for _, n := range []int64{1, 100} {
+        mergeBlocks = n
         open(t)
         serve(t, busyChain(150))
-        if err := Collect(); err != nil { t.Fatalf("Collect with %d workers: %v", n, err) }
-        if h, ok := cursors.Get(cursors.AddrStat); !ok || h != 150 { t.Errorf("%d workers: cursor = %d ok=%v", n, h, ok) }
+        if err := Collect(); err != nil { t.Fatalf("Collect folding %d: %v", n, err) }
+        if h, ok := cursors.Get(cursors.AddrStat); !ok || h != 150 { t.Errorf("folding %d: cursor = %d ok=%v", n, h, ok) }
         results = append(results, table(t))
     }
-    if len(results[0]) == 0 { t.Fatal("the sequential scan wrote nothing") }
-    if len(results[0]) != len(results[1]) { t.Fatalf("%d rows sequentially, %d in parallel", len(results[0]), len(results[1])) }
-    for addr, want := range results[0] {
-        if got := results[1][addr]; got != want { t.Errorf("%s: parallel %+v, sequential %+v", addr, got, want) }
+    open(t)
+    var c = busyChain(150)
+    for h := 0; h <= 150; h++ {
+        if err := Merge(int64(h), Deltas(c.blocks[h])); err != nil { t.Fatalf("Merge %d: %v", h, err) }
+    }
+    if h, ok := cursors.Get(cursors.AddrStat); !ok || h != 150 { t.Errorf("merged: cursor = %d ok=%v", h, ok) }
+    results = append(results, table(t))
+    if len(results[0]) == 0 { t.Fatal("the scan wrote nothing") }
+    for i := 1; i < len(results); i++ {
+        if len(results[0]) != len(results[i]) { t.Fatalf("%d rows against %d", len(results[0]), len(results[i])) }
+        for addr, want := range results[0] {
+            if got := results[i][addr]; got != want { t.Errorf("%s: run %d %+v, want %+v", addr, i, got, want) }
+        }
     }
 }
 
-// A merge taken on flushKeys covers a run of blocks with nothing missing, so the
-// cursor never passes a block that has not been applied: no block is asked for
-// at or below the cursor, and none is asked for twice.
-func TestParallelFlushLeavesNoGap(t *testing.T) {
-    var saved, keys = workers, flushKeys
-    defer func() { workers, flushKeys = saved, keys }()
-    workers, flushKeys = 8, 3
+// Merge counts a block the bot has staged once: its staged rows go in the same
+// transaction, so a build over a database the bot already wrote does not add
+// them a second time at the next fold.
+func TestMergeReplacesStagedBlock(t *testing.T) {
+    open(t)
+    recent = 5
+    var c = serve(t, busyChain(3))
+    if err := Collect(); err != nil { t.Fatalf("Collect: %v", err) }
+    if n := staged(t); n != 4 { t.Fatalf("recaddrstat holds %d blocks, want 4", n) }
+    for h := 0; h <= 3; h++ {
+        if err := Merge(int64(h), Deltas(c.blocks[h])); err != nil { t.Fatalf("Merge %d: %v", h, err) }
+    }
+    if n := staged(t); n != 0 { t.Errorf("recaddrstat holds %d blocks after merging them", n) }
+    var a, _ = Get(addrindex.Address(scriptOf(1)))
+    if a.Txs != 2 { t.Errorf("Get = %+v, want its two transactions counted once", a) }
+}
+
+// A fold covers a run of blocks with nothing missing, so the cursor never passes
+// a block that has not been applied: no block is asked for at or below the
+// cursor, none is asked for twice, and none past the round the cursor allows.
+func TestFoldLeavesNoGap(t *testing.T) {
+    var merging, round = mergeBlocks, roundBlocks
+    defer func() { mergeBlocks, roundBlocks = merging, round }()
+    mergeBlocks, roundBlocks = 3, 10
     open(t)
     var c = busyChain(120)
     c.onFetch = func(h int) {
-        if at, ok := cursors.Get(cursors.AddrStat); ok && int64(h) <= at { t.Errorf("block %d asked for with the cursor at %d", h, at) }
+        var at, ok = cursors.Get(cursors.AddrStat)
+        if !ok { at = -1 }
+        if int64(h) <= at { t.Errorf("block %d asked for with the cursor at %d", h, at) }
+        if int64(h) > at+roundBlocks { t.Errorf("block %d asked for past the round from cursor %d", h, at) }
     }
     serve(t, c)
     if err := Collect(); err != nil { t.Fatalf("Collect: %v", err) }
@@ -390,24 +407,118 @@ func TestParallelFlushLeavesNoGap(t *testing.T) {
     for h := 0; h <= 120; h++ {
         if seen[h] != 1 { t.Errorf("block %d fetched %d times", h, seen[h]) }
     }
+    if h, ok := cursors.Get(cursors.AddrStat); !ok || h != 120 { t.Errorf("cursor = %d ok=%v, want 120", h, ok) }
 }
 
-// A block that cannot be read fails the pass and merges nothing of the chunk it
-// is in, so the next pass reads the same heights again.
-func TestParallelFailureMergesNothing(t *testing.T) {
-    var saved = workers
-    defer func() { workers = saved }()
-    workers = 4
+// A block that cannot be read fails the pass, and the cursor stays below it. The
+// blocks written before the failure are kept, and the retry reads what is missing
+// and ends with the table a pass with no failure writes.
+func TestFailureResumes(t *testing.T) {
+    open(t)
+    serve(t, busyChain(30))
+    if err := Collect(); err != nil { t.Fatalf("Collect: %v", err) }
+    var want = table(t)
     open(t)
     var c = busyChain(30)
     c.fail = map[int]bool{17: true}
     serve(t, c)
     if err := Collect(); err == nil { t.Fatal("a pass with an unreadable block succeeded") }
-    if _, ok := cursors.Get(cursors.AddrStat); ok { t.Error("the cursor moved past a failed chunk") }
-    if Count() != 0 { t.Errorf("Count = %d after a failed chunk, want 0", Count()) }
+    if h, ok := cursors.Get(cursors.AddrStat); ok && h >= 17 { t.Errorf("the cursor moved to %d, past the failed block", h) }
     c.mu.Lock()
     c.fail = nil
+    c.fetched = nil
     c.mu.Unlock()
     if err := Collect(); err != nil { t.Fatalf("retry: %v", err) }
     if h, ok := cursors.Get(cursors.AddrStat); !ok || h != 30 { t.Errorf("cursor = %d ok=%v after the retry", h, ok) }
+    for _, h := range c.fetched {
+        if h < 10 { t.Errorf("the retry read block %d again", h) }
+    }
+    var got = table(t)
+    if len(got) != len(want) { t.Fatalf("%d rows after the retry, want %d", len(got), len(want)) }
+    for addr, w := range want {
+        if got[addr] != w { t.Errorf("%s: %+v after the retry, want %+v", addr, got[addr], w) }
+    }
+}
+
+// staged is how many distinct blocks recaddrstat holds.
+func staged(t *testing.T) int {
+    t.Helper()
+    var n int
+    if err := db.QueryRow("select count(distinct block) from recaddrstat").Scan(&n); err != nil { t.Fatal(err) }
+    return n
+}
+
+// A pass leaves the newest `recent` blocks in recaddrstat and folds the rest, and
+// the readers see the two together: Get, Count and Height answer as if every
+// block read were folded.
+func TestRecentBlocksStayStaged(t *testing.T) {
+    open(t)
+    recent = 2
+    serve(t, &chain{tip: 3, blocks: map[int]core.Block{
+        0: blockOf(1000, tx{outs: []core.Payment{pay(scriptA, 5000)}}),
+        1: blockOf(2000, tx{outs: []core.Payment{pay(scriptB, 3000)}}),
+        2: blockOf(3000, tx{outs: []core.Payment{pay(scriptA, 700)}}),
+        3: blockOf(4000, tx{outs: []core.Payment{pay(scriptC, 2000), pay(scriptA, 1000)}, spent: []core.Payment{pay(scriptB, 3000)}}),
+    }})
+    if err := Collect(); err != nil { t.Fatalf("Collect: %v", err) }
+    if h, ok := cursors.Get(cursors.AddrStat); !ok || h != 1 { t.Errorf("cursor = %d ok=%v, want 1", h, ok) }
+    if n := staged(t); n != 2 { t.Errorf("recaddrstat holds %d blocks, want 2", n) }
+    if h, ok := Height(); !ok || h != 3 { t.Errorf("Height = %d ok=%v, want 3", h, ok) }
+    if a := statOf(t, addrA); a.Recv != 5000 || a.Txs != 1 { t.Errorf("addrA folded = %+v, want only block 0", a) }
+    var a, ok = Get(addrA)
+    if !ok || a.Recv != 6700 || a.Balance != 6700 || a.Txs != 3 || a.First != 1000 || a.Last != 4000 || a.Type != "segwit" {
+        t.Errorf("Get(addrA) = %+v ok=%v", a, ok)
+    }
+    if b, ok := Get(addrB); !ok || b.Balance != 0 || b.Txs != 2 { t.Errorf("Get(addrB) = %+v ok=%v, want it emptied by a staged block", b, ok) }
+    if c, ok := Get(addrC); !ok || c.Balance != 2000 || c.Txs != 1 { t.Errorf("Get(addrC) = %+v ok=%v", c, ok) }
+    if Count() != 3 { t.Errorf("Count = %d, want 3: addrA, addrB and addrC", Count()) }
+}
+
+// Rollback deletes the disconnected block's staged rows and those above it, and
+// the next pass reads those heights again from the chain that replaced them.
+func TestRollbackRereadsDisconnectedBlocks(t *testing.T) {
+    open(t)
+    recent = 3
+    var c = &chain{tip: 3, blocks: map[int]core.Block{
+        0: blockOf(1000, tx{outs: []core.Payment{pay(scriptA, 5000)}}),
+        1: blockOf(2000, tx{outs: []core.Payment{pay(scriptA, 100)}}),
+        2: blockOf(3000, tx{outs: []core.Payment{pay(scriptB, 3000)}}),
+        3: blockOf(4000, tx{outs: []core.Payment{pay(scriptC, 2000)}}),
+    }}
+    coretest.Start(t, func(method string, params []any) (any, error) {
+        if method == "getblockheader" {
+            var h, _ = strconv.Atoi(params[0].(string))
+            return map[string]any{"hash": params[0], "height": h}, nil
+        }
+        return c.respond(method, params)
+    })
+    if err := Collect(); err != nil { t.Fatalf("Collect: %v", err) }
+    Rollback("0")
+    if h, ok := cursors.Get(cursors.AddrStat); !ok || h != 0 { t.Errorf("cursor = %d ok=%v after rolling back a folded block", h, ok) }
+    if n := staged(t); n != 3 { t.Errorf("recaddrstat holds %d blocks after rolling back a folded one, want 3", n) }
+    Rollback("2")
+    if n := staged(t); n != 1 { t.Errorf("recaddrstat holds %d blocks after the rollback, want block 1", n) }
+    if _, ok := Get(addrB); ok { t.Error("addrB still answered after its block was disconnected") }
+    if h, _ := Height(); h != 1 { t.Errorf("Height = %d after the rollback, want 1", h) }
+    c.blocks[2] = blockOf(3000, tx{outs: []core.Payment{pay(scriptA, 900)}})
+    c.blocks[3] = blockOf(4000)
+    c.fetched = nil
+    if err := Collect(); err != nil { t.Fatalf("Collect: %v", err) }
+    if len(c.fetched) != 2 { t.Errorf("fetched %v after the rollback, want blocks 2 and 3", c.fetched) }
+    if a, _ := Get(addrA); a.Recv != 6000 || a.Txs != 3 { t.Errorf("Get(addrA) = %+v, want the replacement block counted", a) }
+    if _, ok := Get(addrC); ok { t.Error("addrC still answered, paid only by a disconnected block") }
+}
+
+// A block written after the cursor has passed it writes nothing, or every read
+// would count it twice until the next fold.
+func TestRecordSkipsFoldedBlocks(t *testing.T) {
+    open(t)
+    serve(t, busyChain(5))
+    if err := Collect(); err != nil { t.Fatalf("Collect: %v", err) }
+    var before = table(t)
+    var a, _ = Get(addrindex.Address(scriptOf(5)))
+    if err := record(context.Background(), 3); err != nil { t.Fatalf("record: %v", err) }
+    if n := staged(t); n != 0 { t.Errorf("recaddrstat holds %d blocks after writing a folded one", n) }
+    if got, _ := Get(addrindex.Address(scriptOf(5))); got != a { t.Errorf("Get = %+v after, %+v before", got, a) }
+    if len(table(t)) != len(before) { t.Error("addrstat changed") }
 }
