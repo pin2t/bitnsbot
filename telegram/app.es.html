@@ -512,7 +512,7 @@
     var rows = list.querySelectorAll(".blk");
     for (var i = mpKept; i < rows.length; i++) { rows[i].remove(); }
     if (!(window.Intl && Intl.RelativeTimeFormat)) { return; }
-    var fmt = new Intl.RelativeTimeFormat(list.dataset.lang || undefined, { style: "short", numeric: "always" });
+    var fmt = new Intl.RelativeTimeFormat(list.dataset.lang || undefined, { style: "long", numeric: "always" });
     var now = Date.now() / 1000;
     list.querySelectorAll(".ago[data-ts]").forEach(function(a) {
       var s = Math.max(0, Math.round(now - Number(a.dataset.ts)));

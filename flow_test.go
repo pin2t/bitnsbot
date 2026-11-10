@@ -243,7 +243,7 @@ func TestInfoFlow(t *testing.T) {
         t.Fatalf("expected transaction reply for recent transaction, got: %#v", sent)
     }
     message("tg", 11, "", "/info 200", "", nil)
-    if len(sent) != 11 || !strings.Contains(sent[10], "Block #200") || !strings.Contains(sent[10], "Time:          2 d ago") {
+    if len(sent) != 11 || !strings.Contains(sent[10], "Block #200") || !strings.Contains(sent[10], "Time:          2 days ago") {
         t.Fatalf("expected relative time format for recent block, got: %#v", sent)
     }
     if !strings.Contains(sent[10], "Difficulty:    1 G") {
@@ -636,11 +636,11 @@ func TestPeriodText(t *testing.T) {
         d    time.Duration
         want string
     }{
-        {365 * 24 * time.Hour, "1 y"},
-        {(3*365 + 2) * 24 * time.Hour, "3 y 2 d"},
-        {(2*30 + 1) * 24 * time.Hour, "2 m 1 d"},
-        {5*time.Hour + 10*time.Minute, "5 h 10 min"},
-        {45 * time.Minute, "45 min"},
+        {365 * 24 * time.Hour, "1 year"},
+        {(3*365 + 2) * 24 * time.Hour, "3 years 2 days"},
+        {(2*30 + 1) * 24 * time.Hour, "2 months 1 day"},
+        {5*time.Hour + 10*time.Minute, "5 hours 10 minutes"},
+        {45 * time.Minute, "45 minutes"},
         {30 * time.Second, "just now"},
     }
     for _, c := range cases {

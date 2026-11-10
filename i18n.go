@@ -37,6 +37,10 @@ var english = trans{
 	"oct-alone": "oct",
 	"nov-alone": "nov",
 	"dec-alone": "dec",
+	// a duration following "after", which Russian puts in the accusative: "через
+	// 1 минуту" against the nominative "1 минута" of a period
+	"%d minute-after": "%d minute|%d minutes",
+	"%d second-after": "%d second|%d seconds",
 }
 
 // langTrans holds per-language translation maps. English is not among them — it
@@ -56,7 +60,6 @@ var langTrans = map[string]trans{
 		"Stopped watching %s":                           "Прекращено отслеживание %s",
 		"Network fees projected from %s mempool transactions":      "Оценка комиссий сети на основе %s ожидающих транзакций",
 		"Mempool\n\n<pre>%s</pre>":                                 "Мемпул\n\n<pre>%s</pre>",
-		"%d blocks":                                                "%d блоков",
 		"%d. %s. %s mined, reward %s BTC, fees %s BTC, consumption %s GW": "%d. %s. %s добыто, награда %s BTC, комиссии %s BTC, потребление %s ГВт",
 		"Top miners by blocks mined:":                              "Топ майнеров:",
 		"Bitcoin market\n\n<pre>%s</pre>":                          "Рынок Bitcoin\n\n<pre>%s</pre>",
@@ -68,13 +71,19 @@ var langTrans = map[string]trans{
 		"🔔 Transaction %s was confirmed in block #%d after %s":    "🔔 Транзакция %s подтверждена в блоке #%d через %s",
 		"%s sent %s to %s. %s":    "%s отправил %s на %s. %s",
 		"%s received %s. %s":      "%s получил %s. %s",
-		"ago":                     "назад",
 		"just now":                "только что",
-	    "min":                     "мин",
-	    "h":                       "ч",
-		"d":                       "д",
-		"m":                       "мес",
-		"y":                       "г",
+		"%d minute ago|%d minutes ago": "%d минуту назад|%d минуты назад|%d минут назад",
+		"%d hour ago|%d hours ago":     "%d час назад|%d часа назад|%d часов назад",
+		"%d day ago|%d days ago":       "%d день назад|%d дня назад|%d дней назад",
+		"%d month ago|%d months ago":   "%d месяц назад|%d месяца назад|%d месяцев назад",
+		"%d year|%d years":             "%d год|%d года|%d лет",
+		"%d month|%d months":           "%d месяц|%d месяца|%d месяцев",
+		"%d day|%d days":               "%d день|%d дня|%d дней",
+		"%d hour|%d hours":             "%d час|%d часа|%d часов",
+		"%d minute|%d minutes":         "%d минута|%d минуты|%d минут",
+		"%d minute-after":              "%d минуту|%d минуты|%d минут",
+		"%d second-after":              "%d секунду|%d секунды|%d секунд",
+		"%d block|%d blocks":           "%d блок|%d блока|%d блоков",
 		"<a href=\"https://bitnsbot.com\">Bitnsbot</a>. I keep an eye on the Bitcoin network for you.": "<a href=\"https://bitnsbot.com\">Bitnsbot</a>. Я слежу за сетью Bitcoin.",
 		"• <b>/info</b> — look up a transaction, block, or address\n": "• <b>/info</b> — информация о транзакциях, блоках и адресах в сети\n",
 		"• <b>/watch</b> — get notified when an address receives a payment, or when a transaction confirms\n": "• <b>/watch</b> — подписка на уведомения об операциях по адресу, или о подтверждении транзакции\n",
@@ -86,10 +95,6 @@ var langTrans = map[string]trans{
 		"• <b>/market</b> — price, market cap, volume and recent changes\n": "• <b>/market</b> — рыночная информация\n",
 		"• <b>/start</b> — show this message\n": "• <b>/start</b> — это сообщение\n",
 		"Version %s. Build %s. Source code <a href=\"https://github.com/pin2t/bitnsbot\">bitnsbot</a>. Don't forget to give me a ⭐": "Версия %s. Сборка %s. Исходный код <a href=\"https://github.com/pin2t/bitnsbot\">bitnsbot</a>. Поставьте мне звезду",
-		"%d sec":      "%d сек",
-		"%d min":      "%d мин",
-		"%d h":        "%d ч",
-		"%d h %d min": "%d ч %d мин",
 		"Send an address or transaction to watch, optionally followed by an alias — all in one message, e.g. bc1q… John": "Отправьте адрес или хеш транзакции для отслеживания (с алиасом через пробел), например bc1q... Иван",
 		"Sorry, something went wrong saving that watch":            "Ошибка при записи отслеживания",
 		"Sorry, this chat has reached the limit of %d subscriptions. Unwatch something first to add a new one.": "Извините, в этом чате достигнут лимит в %d подписок. Сначала отмените отслеживание, чтобы добавить новую.",
@@ -116,7 +121,6 @@ var langTrans = map[string]trans{
 		"Total flow":   "Оборот",
 		"Total fees":   "Комиссий всего",
 		"No miner statistics yet — still collecting": "Статистика в процессе сборка, подождите",
-		"1 block":      "1 блок",
 		"No price data yet — still fetching": "Рыночные данные пока недоступны, попробуйте позже",
 		"Price":                              "Цена",
 		"Market cap":                         "Капитализация",
@@ -261,7 +265,6 @@ var langTrans = map[string]trans{
 		"Stopped watching %s":                           "Se dejó de observar %s",
 		"Network fees projected from %s mempool transactions":      "Comisiones de red proyectadas de %s transacciones del mempool",
 		"Mempool\n\n<pre>%s</pre>":                                 "Mempool\n\n<pre>%s</pre>",
-		"%d blocks":                                                "%d bloques",
 		"%d. %s. %s mined, reward %s BTC, fees %s BTC, consumption %s GW": "%d. %s. %s minado, recompensa %s BTC, comisiones %s BTC, consumo %s GW",
 		"Top miners by blocks mined:":                              "Principales mineros por bloques minados:",
 		"Bitcoin market\n\n<pre>%s</pre>":                          "Mercado Bitcoin\n\n<pre>%s</pre>",
@@ -273,13 +276,19 @@ var langTrans = map[string]trans{
 		"🔔 Transaction %s was confirmed in block #%d after %s":  "🔔 Transacción %s fue confirmada en bloque #%d después de %s",
 		"%s sent %s to %s. %s":    "%s envió %s a %s. %s",
 		"%s received %s. %s":      "%s recibió %s. %s",
-		"ago":                     "hace",
 		"just now":                "ahora mismo",
-		"min":                     "min",
-		"h":                       "h",
-		"d":                       "d",
-		"m":                       "m",
-		"y":                       "a",
+		"%d minute ago|%d minutes ago": "hace %d minuto|hace %d minutos",
+		"%d hour ago|%d hours ago":     "hace %d hora|hace %d horas",
+		"%d day ago|%d days ago":       "hace %d día|hace %d días",
+		"%d month ago|%d months ago":   "hace %d mes|hace %d meses",
+		"%d year|%d years":             "%d año|%d años",
+		"%d month|%d months":           "%d mes|%d meses",
+		"%d day|%d days":               "%d día|%d días",
+		"%d hour|%d hours":             "%d hora|%d horas",
+		"%d minute|%d minutes":         "%d minuto|%d minutos",
+		"%d minute-after":              "%d minuto|%d minutos",
+		"%d second-after":              "%d segundo|%d segundos",
+		"%d block|%d blocks":           "%d bloque|%d bloques",
 		"<a href=\"https://bitnsbot.com\">Bitnsbot</a>. I keep an eye on the Bitcoin network for you.": "<a href=\"https://bitnsbot.com\">Bitnsbot</a>. Vigilo la red Bitcoin por ti.",
 		"• <b>/info</b> — look up a transaction, block, or address\n": "• <b>/info</b> — consultar una transacción, bloque o dirección\n",
 		"• <b>/watch</b> — get notified when an address receives a payment, or when a transaction confirms\n": "• <b>/watch</b> — recibir notificaciones cuando una dirección recibe un pago o una transacción se confirma\n",
@@ -291,10 +300,6 @@ var langTrans = map[string]trans{
 		"• <b>/market</b> — price, market cap, volume and recent changes\n": "• <b>/market</b> — precio, capitalización, volumen y cambios recientes\n",
 		"• <b>/start</b> — show this message\n": "• <b>/start</b> — mostrar este mensaje\n",
 		"Version %s. Build %s. Source code <a href=\"https://github.com/pin2t/bitnsbot\">bitnsbot</a>. Don't forget to give me a ⭐": "Versión %s. Build %s. Código fuente <a href=\"https://github.com/pin2t/bitnsbot\">bitnsbot</a>. No olvides darme una ⭐",
-		"%d sec":      "%d s",
-		"%d min":      "%d min",
-		"%d h":        "%d h",
-		"%d h %d min": "%d h %d min",
 		"Send an address or transaction to watch, optionally followed by an alias — all in one message, e.g. bc1q… John": "Envía una dirección o transacción para observar, opcionalmente seguida de un alias — todo en un mensaje, ej. bc1q… John",
 		"Sorry, something went wrong saving that watch":            "Error al guardar la observación",
 		"Sorry, this chat has reached the limit of %d subscriptions. Unwatch something first to add a new one.": "Lo siento, este chat alcanzó el límite de %d suscripciones. Deja de observar algo primero para añadir una nueva.",
@@ -321,7 +326,6 @@ var langTrans = map[string]trans{
 		"Total flow":   "Flujo total",
 		"Total fees":   "Comisiones totales",
 		"No miner statistics yet — still collecting": "Sin estadísticas de mineros todavía — recopilando",
-		"1 block":      "1 bloque",
 		"No price data yet — still fetching": "Sin datos de precio todavía — obteniendo",
 		"Price":                              "Precio",
 		"Market cap":                         "Cap. de mercado",
@@ -494,6 +498,26 @@ func (t trans) String(s string) string {
 		if translated, ok := t[s]; ok { return translated }
 	}
 	return s
+}
+
+// Plural renders n in the form its count needs. The key lists the English forms,
+// singular then plural, separated by "|" ("%d minute|%d minutes"), and each
+// form holds one %d for n. A translation lists as many forms as its language
+// has, and the count of them picks the rule: two is English and Spanish (one,
+// and everything else, zero included), three is Russian (1, 21 and 101 take
+// the first; 2-4, 22-24 the second, but not 12-14; the rest the third). A key
+// may also be a context key, which english maps to the forms to show.
+func (t trans) Plural(n int64, forms string) string {
+    var parts = strings.Split(t.String(forms), "|")
+    var abs = n
+    if abs < 0 { abs = -abs }
+    var i = 0
+    switch {
+    case len(parts) == 2 && abs != 1: i = 1
+    case len(parts) == 3 && (abs%10 == 0 || abs%10 >= 5 || abs%100 >= 11 && abs%100 <= 14): i = 2
+    case len(parts) == 3 && abs%10 != 1: i = 1
+    }
+    return fmt.Sprintf(parts[i], n)
 }
 
 // DateTime formats tm as "2 January 2006 15:04" using the English month name,
