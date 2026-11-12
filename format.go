@@ -31,10 +31,10 @@ func relative(unix int64, lang string) string {
     var since = time.Since(t)
     switch {
     case since < time.Minute:     return i18nl(lang).String("just now")
-    case since < time.Hour:       return i18nl(lang).Plural(int64(since.Minutes()), "%d minute ago|%d minutes ago")
-    case since < 24*time.Hour:    return i18nl(lang).Plural(int64(since.Hours()), "%d hour ago|%d hours ago")
-    case since < 31*24*time.Hour: return i18nl(lang).Plural(int64(since.Hours()/24), "%d day ago|%d days ago")
-    default:                      return i18nl(lang).Plural(int64(since.Hours()/24/30), "%d month ago|%d months ago")
+    case since < time.Hour:       return i18np(lang).Plural(int64(since.Minutes()), "minute-ago")
+    case since < 24*time.Hour:    return i18np(lang).Plural(int64(since.Hours()), "hour-ago")
+    case since < 31*24*time.Hour: return i18np(lang).Plural(int64(since.Hours()/24), "day-ago")
+    default:                      return i18np(lang).Plural(int64(since.Hours()/24/30), "month-ago")
     }
 }
 
@@ -147,11 +147,11 @@ func periodText(d time.Duration, lang string) string {
         n    int64
         text string
     }{
-        {years, i18nl(lang).Plural(years, "%d year|%d years")},
-        {months, i18nl(lang).Plural(months, "%d month|%d months")},
-        {days, i18nl(lang).Plural(days, "%d day|%d days")},
-        {hours, i18nl(lang).Plural(hours, "%d hour|%d hours")},
-        {mins, i18nl(lang).Plural(mins, "%d minute|%d minutes")},
+        {years, i18np(lang).Plural(years, "year")},
+        {months, i18np(lang).Plural(months, "month")},
+        {days, i18np(lang).Plural(days, "day")},
+        {hours, i18np(lang).Plural(hours, "hour")},
+        {mins, i18np(lang).Plural(mins, "minute")},
     }
     var parts []string
     for _, u := range units {
@@ -228,17 +228,17 @@ func btcAmount(sat int64) string {
 
 // durationText renders elapsed time: "45 seconds", "12 minutes", "2 hours 5
 // minutes". It is only ever shown after "after", so its minutes and seconds are
-// the "-after" context keys — Russian puts them in the accusative there
+// the "-after" keys — Russian puts them in the accusative there
 // ("через 1 минуту"), where a period's are nominative.
 func durationText(d time.Duration, lang string) string {
     switch {
-    case d < time.Minute: return i18nl(lang).Plural(int64(d.Seconds()), "%d second-after")
-    case d < time.Hour:   return i18nl(lang).Plural(int64(d.Minutes()), "%d minute-after")
+    case d < time.Minute: return i18np(lang).Plural(int64(d.Seconds()), "second-after")
+    case d < time.Hour:   return i18np(lang).Plural(int64(d.Minutes()), "minute-after")
     default:
-        var h = i18nl(lang).Plural(int64(d/time.Hour), "%d hour|%d hours")
+        var h = i18np(lang).Plural(int64(d/time.Hour), "hour")
         var m = int64(d/time.Minute) % 60
         if m == 0 { return h }
-        return h + " " + i18nl(lang).Plural(m, "%d minute-after")
+        return h + " " + i18np(lang).Plural(m, "minute-after")
     }
 }
 

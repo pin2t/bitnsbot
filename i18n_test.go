@@ -65,7 +65,7 @@ func TestPlural(t *testing.T) {
         {"es", 0, "0 horas"}, {"es", 1, "1 hora"}, {"es", 2, "2 horas"},
     }
     for _, c := range cases {
-        if got := i18nl(c.lang).Plural(c.n, "%d hour|%d hours"); got != c.want {
+        if got := i18np(c.lang).Plural(c.n, "hour"); got != c.want {
             t.Errorf("%s: Plural(%d) = %q, want %q", c.lang, c.n, got, c.want)
         }
     }
@@ -102,5 +102,29 @@ func TestPluralUnits(t *testing.T) {
         if c.got != c.want {
             t.Errorf("%s: got %q, want %q", c.lang, c.got, c.want)
         }
+    }
+}
+
+// i18n-vet checks the keys call sites name; this checks the table itself, so a
+// key added to English for a call site still being written is not left
+// untranslated, and a language does not keep a key English has dropped.
+func TestPluralsCoverEveryLanguage(t *testing.T) {
+    for lang, table := range plurals {
+        for key := range plurals["en"] {
+            if _, ok := table[key]; !ok {
+                t.Errorf("%s has no plural forms for %q", lang, key)
+            }
+        }
+        for key, forms := range table {
+            if _, ok := plurals["en"][key]; !ok {
+                t.Errorf("%s has plural forms for %q, which English does not", lang, key)
+            }
+            if len(forms) < 2 || len(forms) > 3 {
+                t.Errorf("%s: %q has %d forms, want 2 or 3", lang, key, len(forms))
+            }
+        }
+    }
+    if got := i18np("zz").Plural(2, "hour"); got != "2 hours" {
+        t.Errorf("a language with no forms renders %q, want English", got)
     }
 }
