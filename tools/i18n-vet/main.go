@@ -6,8 +6,7 @@
 //	i18n-vet <directory>
 //
 // The tool walks all .go files recursively under <directory>, finds every
-// i18n(…)/i18nl(…).Sprintf("format", …), .String("s") and .Plural(n, "forms")
-// call, and verifies that
+// i18n(…)/i18nl(…).Sprintf("format", …) and .String("s") call, and verifies that
 // each format string appears in every translation section of i18n.go. Translation
 // sections are delimited by comments:
 //
@@ -16,10 +15,17 @@
 //	// i18n-vet:end translation
 //
 // For each translation, the tool checks that the translated string has the same
-// number and types of format specifiers as the original. A Plural key holds its
-// forms separated by "|", and a translation as many as its language has, so
-// there every form of the translation must carry the verbs of every form of the
-// key.
+// number and types of format specifiers as the original.
+//
+// It also finds every i18np(…).Plural(n, "key") call and checks the key against
+// every plural section, delimited the same way:
+//
+//	// i18n-vet:plurals <lang>
+//	    "key": {"%d form", …},
+//	// i18n-vet:end plurals
+//
+// Each language must have the key, with two or three forms, and every form must
+// hold exactly one %d, since Plural formats the count and nothing else.
 package main
 
 import "bytes"
@@ -53,7 +59,8 @@ func main() {
 		os.Exit(2)
 	}
 	var dir = os.Args[1]
-	var sourceStrings []i18nString
+	var sourceStrings []string
+	var pluralKeys []string
 	var err = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 		if err != nil { return err }
 		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
@@ -62,7 +69,9 @@ func main() {
 		var fset = token.NewFileSet()
 		var f, parseErr = parser.ParseFile(fset, path, nil, parser.ParseComments)
 		if parseErr != nil { return fmt.Errorf("%s: %w", path, parseErr) }
-		sourceStrings = append(sourceStrings, extractI18nStrings(f)...)
+		var strs, keys = extractI18nStrings(f)
+		sourceStrings = append(sourceStrings, strs...)
+		pluralKeys = append(pluralKeys, keys...)
 		return nil
 	})
 	if err != nil {
@@ -75,29 +84,53 @@ func main() {
 		fmt.Fprintf(os.Stderr, "parse translations: %v\n", transErr)
 		os.Exit(1)
 	}
+	var pluralSections, pluralErr = parsePluralSections(i18nPath)
+	if pluralErr != nil {
+		fmt.Fprintf(os.Stderr, "parse plurals: %v\n", pluralErr)
+		os.Exit(1)
+	}
 	var errors int
 	for _, src := range sourceStrings {
 		for lang, langTrans := range translations {
-			var translated, ok = langTrans[src.s]
+			var translated, ok = langTrans[src]
 			if !ok {
-				fmt.Printf("%s: missing translation for %q\n", lang, src.s)
+				fmt.Printf("%s: missing translation for %q\n", lang, src)
 				errors++
 				continue
 			}
-			var srcForms = []string{src.s}
-			var trForms = []string{translated}
-			if src.plural {
-				srcForms = strings.Split(src.s, "|")
-				trForms = strings.Split(translated, "|")
+			var srcVerbs = formatVerbs(src)
+			var trVerbs = formatVerbs(translated)
+			if srcVerbs != trVerbs {
+				fmt.Printf("%s: format specifier mismatch for %q\n", lang, src)
+				fmt.Printf("  original:    %q (verbs: %q)\n", src, srcVerbs)
+				fmt.Printf("  translation: %q (verbs: %q)\n", translated, trVerbs)
+				errors++
 			}
-			var srcVerbs = formatVerbs(srcForms[0])
-			for _, form := range append(srcForms, trForms...) {
-				if formatVerbs(form) != srcVerbs {
-					fmt.Printf("%s: format specifier mismatch for %q\n", lang, src.s)
-					fmt.Printf("  original:    %q (verbs: %q)\n", src.s, srcVerbs)
-					fmt.Printf("  translation: %q (verbs: %q)\n", translated, formatVerbs(form))
+		}
+	}
+	if len(pluralKeys) > 0 && len(pluralSections) == 0 {
+		fmt.Printf("no plural sections found for %d Plural calls\n", len(pluralKeys))
+		errors++
+	}
+	var checked = make(map[string]bool)
+	for _, key := range pluralKeys {
+		if checked[key] { continue }
+		checked[key] = true
+		for lang, forms := range pluralSections {
+			var list, ok = forms[key]
+			if !ok {
+				fmt.Printf("%s: missing plural forms for %q\n", lang, key)
+				errors++
+				continue
+			}
+			if len(list) < 2 || len(list) > 3 {
+				fmt.Printf("%s: %q has %d plural forms, want 2 or 3\n", lang, key, len(list))
+				errors++
+			}
+			for _, form := range list {
+				if formatVerbs(form) != "d" {
+					fmt.Printf("%s: plural form %q of %q must hold exactly one %%d\n", lang, form, key)
 					errors++
-					break
 				}
 			}
 		}
@@ -108,16 +141,10 @@ func main() {
 	}
 }
 
-// i18nString is a translated string found at a call site, and whether it is a
-// Plural key, whose forms are checked one by one.
-type i18nString struct {
-	s      string
-	plural bool
-}
-
 // extractI18nStrings walks an AST and returns every string literal passed as the
-// first argument to i18n(…)/i18nl(…).Sprintf or .String, or as the second to
-// .Plural, which takes the count first.
+// first argument to i18n(…)/i18nl(…).Sprintf or .String, and separately every
+// key passed as the second argument to i18np(…).Plural, which takes the count
+// first.
 //
 // The receiver must be i18n(…) — a chat's language — or i18nl(…), the
 // same lookup by language code, which is how the Mini App translates.
@@ -125,8 +152,9 @@ type i18nString struct {
 // First argument is the format string
 //
 // Unquote the string literal
-func extractI18nStrings(f *ast.File) []i18nString {
-	var found []i18nString
+func extractI18nStrings(f *ast.File) ([]string, []string) {
+	var found []string
+	var keys []string
 	ast.Inspect(f, func(n ast.Node) bool {
 		var call, ok = n.(*ast.CallExpr)
 		if !ok { return true }
@@ -137,7 +165,9 @@ func extractI18nStrings(f *ast.File) []i18nString {
 		var call2, innerOK = sel.X.(*ast.CallExpr)
 		if !innerOK { return true }
 		var ident, identOK = call2.Fun.(*ast.Ident)
-		if !identOK || (ident.Name != "i18n" && ident.Name != "i18nl") { return true }
+		if !identOK { return true }
+		if plural != (ident.Name == "i18np") { return true }
+		if !plural && ident.Name != "i18n" && ident.Name != "i18nl" { return true }
 		var arg = 0
 		if plural { arg = 1 }
 		if len(call.Args) <= arg { return true }
@@ -145,10 +175,14 @@ func extractI18nStrings(f *ast.File) []i18nString {
 		if !litOK || lit.Kind != token.STRING { return true }
 		var s, err = stringLiteral(lit.Value)
 		if err != nil { return true }
-		found = append(found, i18nString{s, plural})
+		if plural {
+			keys = append(keys, s)
+		} else {
+			found = append(found, s)
+		}
 		return true
 	})
-	return found
+	return found, keys
 }
 
 // stringLiteral unquotes a Go string literal, handling both regular and raw strings.
@@ -224,6 +258,42 @@ func parseTranslationSections(path string) (map[string]map[string]string, error)
 				currentTrans[key] = val
 			}
 		}
+	}
+	return result, nil
+}
+
+// parsePluralSections reads i18n.go and extracts the plural sections delimited
+// by // i18n-vet:plurals <lang> and // i18n-vet:end plurals, each entry a key and
+// its forms on one line: "key": {"%d form", "%d forms"},
+func parsePluralSections(path string) (map[string]map[string][]string, error) {
+	var data, err = os.ReadFile(path)
+	if err != nil { return nil, err }
+	var result = make(map[string]map[string][]string)
+	var current map[string][]string
+	var entryRE = regexp.MustCompile(`^\s*"((?:[^"\\]|\\.)*)"\s*:\s*\{(.*)\}\s*,?\s*$`)
+	var formRE = regexp.MustCompile(`"((?:[^"\\]|\\.)*)"`)
+	for _, line := range strings.Split(string(data), "\n") {
+		var trimmed = strings.TrimSpace(line)
+		if strings.Contains(trimmed, "i18n-vet:plurals ") {
+			var parts = strings.Fields(trimmed)
+			current = make(map[string][]string)
+			result[parts[len(parts)-1]] = current
+			continue
+		}
+		if strings.Contains(trimmed, "i18n-vet:end plurals") {
+			current = nil
+			continue
+		}
+		if current == nil { continue }
+		var m = entryRE.FindStringSubmatch(line)
+		if m == nil { continue }
+		var forms []string
+		for _, f := range formRE.FindAllStringSubmatch(m[2], -1) {
+			var form, formErr = stringLiteral("\"" + f[1] + "\"")
+			if formErr != nil { continue }
+			forms = append(forms, form)
+		}
+		current[m[1]] = forms
 	}
 	return result, nil
 }

@@ -37,10 +37,6 @@ var english = trans{
 	"oct-alone": "oct",
 	"nov-alone": "nov",
 	"dec-alone": "dec",
-	// a duration following "after", which Russian puts in the accusative: "через
-	// 1 минуту" against the nominative "1 минута" of a period
-	"%d minute-after": "%d minute|%d minutes",
-	"%d second-after": "%d second|%d seconds",
 }
 
 // langTrans holds per-language translation maps. English is not among them — it
@@ -72,18 +68,6 @@ var langTrans = map[string]trans{
 		"%s sent %s to %s. %s":    "%s отправил %s на %s. %s",
 		"%s received %s. %s":      "%s получил %s. %s",
 		"just now":                "только что",
-		"%d minute ago|%d minutes ago": "%d минуту назад|%d минуты назад|%d минут назад",
-		"%d hour ago|%d hours ago":     "%d час назад|%d часа назад|%d часов назад",
-		"%d day ago|%d days ago":       "%d день назад|%d дня назад|%d дней назад",
-		"%d month ago|%d months ago":   "%d месяц назад|%d месяца назад|%d месяцев назад",
-		"%d year|%d years":             "%d год|%d года|%d лет",
-		"%d month|%d months":           "%d месяц|%d месяца|%d месяцев",
-		"%d day|%d days":               "%d день|%d дня|%d дней",
-		"%d hour|%d hours":             "%d час|%d часа|%d часов",
-		"%d minute|%d minutes":         "%d минута|%d минуты|%d минут",
-		"%d minute-after":              "%d минуту|%d минуты|%d минут",
-		"%d second-after":              "%d секунду|%d секунды|%d секунд",
-		"%d block|%d blocks":           "%d блок|%d блока|%d блоков",
 		"<a href=\"https://bitnsbot.com\">Bitnsbot</a>. I keep an eye on the Bitcoin network for you.": "<a href=\"https://bitnsbot.com\">Bitnsbot</a>. Я слежу за сетью Bitcoin.",
 		"• <b>/info</b> — look up a transaction, block, or address\n": "• <b>/info</b> — информация о транзакциях, блоках и адресах в сети\n",
 		"• <b>/watch</b> — get notified when an address receives a payment, or when a transaction confirms\n": "• <b>/watch</b> — подписка на уведомения об операциях по адресу, или о подтверждении транзакции\n",
@@ -277,18 +261,6 @@ var langTrans = map[string]trans{
 		"%s sent %s to %s. %s":    "%s envió %s a %s. %s",
 		"%s received %s. %s":      "%s recibió %s. %s",
 		"just now":                "ahora mismo",
-		"%d minute ago|%d minutes ago": "hace %d minuto|hace %d minutos",
-		"%d hour ago|%d hours ago":     "hace %d hora|hace %d horas",
-		"%d day ago|%d days ago":       "hace %d día|hace %d días",
-		"%d month ago|%d months ago":   "hace %d mes|hace %d meses",
-		"%d year|%d years":             "%d año|%d años",
-		"%d month|%d months":           "%d mes|%d meses",
-		"%d day|%d days":               "%d día|%d días",
-		"%d hour|%d hours":             "%d hora|%d horas",
-		"%d minute|%d minutes":         "%d minuto|%d minutos",
-		"%d minute-after":              "%d minuto|%d minutos",
-		"%d second-after":              "%d segundo|%d segundos",
-		"%d block|%d blocks":           "%d bloque|%d bloques",
 		"<a href=\"https://bitnsbot.com\">Bitnsbot</a>. I keep an eye on the Bitcoin network for you.": "<a href=\"https://bitnsbot.com\">Bitnsbot</a>. Vigilo la red Bitcoin por ti.",
 		"• <b>/info</b> — look up a transaction, block, or address\n": "• <b>/info</b> — consultar una transacción, bloque o dirección\n",
 		"• <b>/watch</b> — get notified when an address receives a payment, or when a transaction confirms\n": "• <b>/watch</b> — recibir notificaciones cuando una dirección recibe un pago o una transacción se confirma\n",
@@ -500,24 +472,97 @@ func (t trans) String(s string) string {
 	return s
 }
 
-// Plural renders n in the form its count needs. The key lists the English forms,
-// singular then plural, separated by "|" ("%d minute|%d minutes"), and each
-// form holds one %d for n. A translation lists as many forms as its language
-// has, and the count of them picks the rule: two is English and Spanish (one,
-// and everything else, zero included), three is Russian (1, 21 and 101 take
-// the first; 2-4, 22-24 the second, but not 12-14; the rest the third). A key
-// may also be a context key, which english maps to the forms to show.
-func (t trans) Plural(n int64, forms string) string {
-    var parts = strings.Split(t.String(forms), "|")
+// pluralTr holds one language's plural forms, already split: a key names the
+// unit ("hour", "minute-ago") and its forms are the phrases to choose from, each
+// holding one %d for the count. A language lists as many forms as it has, and
+// the count of them is the rule Plural applies.
+type pluralTr map[string][]string
+
+// plurals is kept apart from langTrans because a form is chosen by a count, not
+// looked up by its English text: the key is a name, and English is a table
+// here like any other, since a name is not something to show. Each phrase is
+// one key, "ago" included, because Spanish puts "hace" first and Russian
+// declines the unit before "назад" ("1 минуту назад", not "1 минута"). The
+// "-after" units follow "after", which Russian puts in the accusative ("через 1
+// минуту"), where a period's are nominative ("1 минута"). i18n-vet checks every
+// key a call site names against every section between its markers.
+var plurals = map[string]pluralTr{
+    // i18n-vet:plurals en
+    "en": {
+        "minute-ago":   {"%d minute ago", "%d minutes ago"},
+        "hour-ago":     {"%d hour ago", "%d hours ago"},
+        "day-ago":      {"%d day ago", "%d days ago"},
+        "month-ago":    {"%d month ago", "%d months ago"},
+        "year":         {"%d year", "%d years"},
+        "month":        {"%d month", "%d months"},
+        "day":          {"%d day", "%d days"},
+        "hour":         {"%d hour", "%d hours"},
+        "minute":       {"%d minute", "%d minutes"},
+        "minute-after": {"%d minute", "%d minutes"},
+        "second-after": {"%d second", "%d seconds"},
+        "block":        {"%d block", "%d blocks"},
+    },
+    // i18n-vet:end plurals
+    // i18n-vet:plurals ru
+    "ru": {
+        "minute-ago":   {"%d минуту назад", "%d минуты назад", "%d минут назад"},
+        "hour-ago":     {"%d час назад", "%d часа назад", "%d часов назад"},
+        "day-ago":      {"%d день назад", "%d дня назад", "%d дней назад"},
+        "month-ago":    {"%d месяц назад", "%d месяца назад", "%d месяцев назад"},
+        "year":         {"%d год", "%d года", "%d лет"},
+        "month":        {"%d месяц", "%d месяца", "%d месяцев"},
+        "day":          {"%d день", "%d дня", "%d дней"},
+        "hour":         {"%d час", "%d часа", "%d часов"},
+        "minute":       {"%d минута", "%d минуты", "%d минут"},
+        "minute-after": {"%d минуту", "%d минуты", "%d минут"},
+        "second-after": {"%d секунду", "%d секунды", "%d секунд"},
+        "block":        {"%d блок", "%d блока", "%d блоков"},
+    },
+    // i18n-vet:end plurals
+    // i18n-vet:plurals es
+    "es": {
+        "minute-ago":   {"hace %d minuto", "hace %d minutos"},
+        "hour-ago":     {"hace %d hora", "hace %d horas"},
+        "day-ago":      {"hace %d día", "hace %d días"},
+        "month-ago":    {"hace %d mes", "hace %d meses"},
+        "year":         {"%d año", "%d años"},
+        "month":        {"%d mes", "%d meses"},
+        "day":          {"%d día", "%d días"},
+        "hour":         {"%d hora", "%d horas"},
+        "minute":       {"%d minuto", "%d minutos"},
+        "minute-after": {"%d minuto", "%d minutos"},
+        "second-after": {"%d segundo", "%d segundos"},
+        "block":        {"%d bloque", "%d bloques"},
+    },
+    // i18n-vet:end plurals
+}
+
+// i18np returns the plural forms for a language, English for "" and for any
+// language there are none for — the way i18nl falls back to the english table.
+func i18np(lang string) pluralTr {
+    if p, ok := plurals[lang]; ok { return p }
+    return plurals["en"]
+}
+
+// Plural renders n in the form its count needs. The number of forms picks the
+// rule: two is English and Spanish (one, and everything else, zero included),
+// three is Russian (1, 21 and 101 take the first; 2-4, 22-24 the second, but
+// not 12-14; the rest the third). A key the language lacks falls back to
+// English's forms, and a key nobody has to the count and the name, so a missing
+// entry reads oddly rather than crashing a reply.
+func (p pluralTr) Plural(n int64, key string) string {
+    var forms, ok = p[key]
+    if !ok { forms, ok = plurals["en"][key] }
+    if !ok { return fmt.Sprintf("%d %s", n, key) }
     var abs = n
     if abs < 0 { abs = -abs }
     var i = 0
     switch {
-    case len(parts) == 2 && abs != 1: i = 1
-    case len(parts) == 3 && (abs%10 == 0 || abs%10 >= 5 || abs%100 >= 11 && abs%100 <= 14): i = 2
-    case len(parts) == 3 && abs%10 != 1: i = 1
+    case len(forms) == 2 && abs != 1: i = 1
+    case len(forms) == 3 && (abs%10 == 0 || abs%10 >= 5 || abs%100 >= 11 && abs%100 <= 14): i = 2
+    case len(forms) == 3 && abs%10 != 1: i = 1
     }
-    return fmt.Sprintf(parts[i], n)
+    return fmt.Sprintf(forms[i], n)
 }
 
 // DateTime formats tm as "2 January 2006 15:04" using the English month name,
