@@ -9,7 +9,7 @@ import "testing"
 import "bitnsbot/blocks"
 import "bitnsbot/addrbal"
 import "bitnsbot/core/coretest"
-import "bitnsbot/cursors"
+import "bitnsbot/addrindex"
 
 // One tip fetch, then each index to that tip, in order: the block cache, the
 // miner statistics, the address index, the per-address statistics, the address
@@ -78,8 +78,8 @@ func TestUpdateIndexesRunsInOrder(t *testing.T) {
             t.Errorf("block %d was not cached", h)
         }
     }
-    if last, ok := cursors.Get(cursors.AddrIndex); !ok || last != 2 {
-        t.Errorf("address index cursor = (%d, %v), want (2, true)", last, ok)
+    if last, ok := addrindex.Height(); !ok || last != 2 {
+        t.Errorf("address index height = (%d, %v), want (2, true)", last, ok)
     }
     if _, ok := addrbal.Count(); !ok {
         t.Error("addrbal did not catch up")

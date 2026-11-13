@@ -176,7 +176,7 @@ func build(opt *options) {
     }
     var tip = int(count)
     var from = 0
-    if h, ok := addrindex.Cursor(); ok { from = h + 1 }
+    if h, ok := addrindex.Height(); ok { from = h + 1 }
     if from > tip {
         fmt.Printf("Index is already at the tip (block %d)\n", tip)
         return
@@ -186,7 +186,7 @@ func build(opt *options) {
     if err := addrindex.Build(); err != nil {
         logging.Fatal("build: %v", err)
     }
-    var at, _ = addrindex.Cursor()
+    var at, _ = addrindex.Height()
     fmt.Printf("Built %d blocks up to %d in %s\n", at-from+1, at, took(time.Since(started)))
 }
 

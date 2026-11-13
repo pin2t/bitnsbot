@@ -10,6 +10,7 @@ import "sync"
 import "time"
 import "github.com/go-zeromq/zmq4"
 import "bitnsbot/blocks"
+import "bitnsbot/addrindex"
 import "bitnsbot/addrstat"
 import "bitnsbot/core"
 import "bitnsbot/logging"
@@ -368,12 +369,14 @@ func startZMQ(ctx context.Context, endpoints []string) error {
 // variable so a test need not wait; startZMQ reads it once.
 var zmqRetry = 5 * time.Second
 
-// rollback takes a block a reorg disconnected out of the block cache and the
-// address statistics. It runs on a goroutine of its own, since both ask the
-// database and the second the node, and the ZMQ read loop that hears of the
-// disconnect must not stall on either. The two run in order, the block cache
-// first, and a failure of one does not keep the other from running.
+// rollback takes a block a reorg disconnected out of the block cache, the
+// address statistics and the address index. It runs on a goroutine of its own,
+// since all three ask the database and the last two the node, and the ZMQ read
+// loop that hears of the disconnect must not stall on any. They run in order,
+// the block cache first, and a failure of one does not keep the others from
+// running.
 func rollback(hash string) {
     blocks.Rollback(hash)
     addrstat.Rollback(hash)
+    addrindex.Rollback(hash)
 }
