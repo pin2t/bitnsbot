@@ -16,3 +16,4 @@ bitnsbot.conf
 .gigaide
 *.db-shm
 *.db-wal
+.claude

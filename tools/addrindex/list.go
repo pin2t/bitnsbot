@@ -67,7 +67,7 @@ func list(opt *options, address string) {
     if !info.IsValid { logging.Fatal("%s is not a Bitcoin address", address) }
     var script, derr = hex.DecodeString(info.ScriptPubKey)
     if derr != nil { logging.Fatal("decode scriptPubKey: %v", derr) }
-    if _, ok := addrindex.Cursor(); !ok {
+    if _, ok := addrindex.Height(); !ok {
         fmt.Fprintln(os.Stderr, "warning: this index has never been built — run addrindex build first")
     }
     var touches, capped = addrindex.Lookup(script, opt.limit)

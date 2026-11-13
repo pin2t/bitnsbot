@@ -1,6 +1,7 @@
 package addrindex
 
 import "bytes"
+import "context"
 import "encoding/hex"
 import "errors"
 import "fmt"
@@ -19,7 +20,10 @@ func openTestDB(t *testing.T) {
     if err != nil { t.Fatalf("open: %v", err) }
     if err := cursors.Init(handle); err != nil { t.Fatalf("cursors: %v", err) }
     if err := Init(handle); err != nil { t.Fatalf("init: %v", err) }
+    var saved = recent
+    recent = 0
     t.Cleanup(func() {
+        recent = saved
         handle.Close()
         db = nil
         cursors.Init(nil)
@@ -194,15 +198,15 @@ func TestLookupSpansRanges(t *testing.T) {
     }
 }
 
-func TestCursor(t *testing.T) {
+func TestHeight(t *testing.T) {
     openTestDB(t)
-    if _, ok := Cursor(); ok {
+    if _, ok := Height(); ok {
         t.Fatal("expected no cursor on a fresh index")
     }
     if err := merge(nil, 500); err != nil {
         t.Fatalf("merge: %v", err)
     }
-    var h, ok = Cursor()
+    var h, ok = Height()
     if !ok || h != 500 {
         t.Fatalf("cursor = %+v ok=%v, want Height=500", h, ok)
     }
@@ -257,6 +261,9 @@ func (c *chain) respond(method string, params []any) (any, error) {
         return c.tip, nil
     case "getblockhash":
         return fmt.Sprint(params[0]), nil
+    case "getblockheader":
+        var height, _ = strconv.Atoi(params[0].(string))
+        return map[string]any{"hash": params[0], "height": height}, nil
     case "getblock":
         var height, _ = strconv.Atoi(params[0].(string))
         c.fetched = append(c.fetched, height)
@@ -318,7 +325,7 @@ func TestCatchUp(t *testing.T) {
     if len(touchesB) != 1 || touchesB[0].Height != 1 {
         t.Fatalf("scriptB touches = %v, want [height 1]", touchesB)
     }
-    var height, ok = Cursor()
+    var height, ok = Height()
     if !ok || height != 2 {
         t.Fatalf("cursor = %+v ok=%v, want Height=2", height, ok)
     }
@@ -356,7 +363,7 @@ func TestCatchUpChunksAndRetries(t *testing.T) {
     if len(touches) != 2 {
         t.Fatalf("touches after partial catch-up = %d, want 2 (the first chunk only)", len(touches))
     }
-    var height, _ = Cursor()
+    var height, _ = Height()
     if height != 1 {
         t.Fatalf("cursor = %d, want 1 (stuck before the failed block)", height)
     }
@@ -393,4 +400,103 @@ func TestMergeWithoutInit(t *testing.T) {
     if err := merge(map[string][]Touch{"p": {{Height: 1}}}, 1); err == nil {
         t.Error("merge with no database reported success")
     }
+}
+
+// A pass merges every block below the tip less `recent` into addrindex and
+// leaves the newest `recent` staged in recaddrindex, a row per (shard, block)
+// plus the marker; a lookup reads both, in order, either way round. A later
+// pass folds what the new tip has pushed below the line, with no block read
+// twice.
+func TestRecentBlocksStayStaged(t *testing.T) {
+    openTestDB(t)
+    recent = 2
+    var script = "0014dddddddddddddddddddddddddddddddddddddddd"
+    var blocks = map[int]core.Block{}
+    for h := 0; h < 8; h++ { blocks[h] = syntheticBlock(t, []string{script}, nil) }
+    var src = serve(t, &chain{tip: 5, blocks: blocks})
+    if err := Build(); err != nil { t.Fatalf("build: %v", err) }
+    if at, _ := cursors.Get(cursors.AddrIndex); at != 3 { t.Fatalf("cursor = %d, want 3", at) }
+    if h, ok := Height(); !ok || h != 5 { t.Fatalf("height = %d, %v; want 5", h, ok) }
+    var staged []int64
+    var rows, err = db.Query("select distinct block from recaddrindex order by block")
+    if err != nil { t.Fatal(err) }
+    for rows.Next() {
+        var b int64
+        rows.Scan(&b)
+        staged = append(staged, b)
+    }
+    rows.Close()
+    if len(staged) != 2 || staged[0] != 4 || staged[1] != 5 { t.Fatalf("staged blocks = %v, want [4 5]", staged) }
+    var raw = mustHex(t, script)
+    var got, _ = Lookup(raw, 100)
+    if len(got) != 6 { t.Fatalf("touches = %v, want heights 0..5", got) }
+    for i, tch := range got {
+        if tch.Height != uint32(i) { t.Fatalf("touches = %v, want heights 0..5 oldest first", got) }
+    }
+    var newest, capped = LookupFrom(raw, 0, 3)
+    if !capped || len(newest) != 3 || newest[0].Height != 5 || newest[2].Height != 3 {
+        t.Fatalf("newest = %v (capped=%v), want 5, 4, 3 with more behind", newest, capped)
+    }
+    var bounded, _ = LookupFrom(raw, 4, 2)
+    if len(bounded) != 2 || bounded[0].Height != 4 || bounded[1].Height != 3 {
+        t.Fatalf("bounded = %v, want 4, 3", bounded)
+    }
+    src.tip = 7
+    src.fetched = nil
+    if err := Build(); err != nil { t.Fatalf("second build: %v", err) }
+    if len(src.fetched) != 2 || src.fetched[0] != 6 || src.fetched[1] != 7 {
+        t.Fatalf("second build fetched %v, want [6 7]", src.fetched)
+    }
+    if at, _ := cursors.Get(cursors.AddrIndex); at != 5 { t.Fatalf("cursor = %d, want 5", at) }
+    got, _ = Lookup(raw, 100)
+    if len(got) != 8 { t.Fatalf("touches = %v, want heights 0..7", got) }
+    for i, tch := range got {
+        if tch.Height != uint32(i) { t.Fatalf("touches = %v, want heights 0..7 oldest first", got) }
+    }
+}
+
+// Rolling a staged block back deletes it and every block above it, so the next
+// pass reads them from the replacing chain; a block already merged into
+// addrindex is left alone.
+func TestRollbackRereadsDisconnectedBlocks(t *testing.T) {
+    openTestDB(t)
+    recent = 3
+    var old, replaced = "0014eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "0014ffffffffffffffffffffffffffffffffffffffff"
+    var blocks = map[int]core.Block{}
+    for h := 0; h < 6; h++ { blocks[h] = syntheticBlock(t, []string{old}, nil) }
+    var src = serve(t, &chain{tip: 5, blocks: blocks})
+    if err := Build(); err != nil { t.Fatalf("build: %v", err) }
+    Rollback("1")
+    if got, _ := Lookup(mustHex(t, old), 100); len(got) != 6 {
+        t.Fatalf("rolling back a merged block removed touches: %v", got)
+    }
+    Rollback("4")
+    if h, _ := Height(); h != 3 { t.Fatalf("height after rollback = %d, want 3", h) }
+    if got, _ := Lookup(mustHex(t, old), 100); len(got) != 4 || got[3].Height != 3 {
+        t.Fatalf("touches after rollback = %v, want heights 0..3", got)
+    }
+    src.blocks[4] = syntheticBlock(t, []string{replaced}, nil)
+    src.blocks[5] = syntheticBlock(t, []string{replaced}, nil)
+    src.fetched = nil
+    if err := Build(); err != nil { t.Fatalf("rebuild: %v", err) }
+    if len(src.fetched) != 2 || src.fetched[0] != 4 || src.fetched[1] != 5 {
+        t.Fatalf("rebuild fetched %v, want [4 5]", src.fetched)
+    }
+    if got, _ := Lookup(mustHex(t, replaced), 100); len(got) != 2 || got[0].Height != 4 {
+        t.Fatalf("replacing chain touches = %v, want heights 4, 5", got)
+    }
+    if got, _ := Lookup(mustHex(t, old), 100); len(got) != 4 {
+        t.Fatalf("old chain touches = %v, want only heights 0..3", got)
+    }
+}
+
+// A block the cursor has passed is never staged: its touches are in addrindex
+// already, and a staged copy would be read twice by every lookup.
+func TestRecordSkipsMergedBlocks(t *testing.T) {
+    openTestDB(t)
+    var script = "0014abababababababababababababababababababab"
+    serve(t, &chain{tip: 2, blocks: map[int]core.Block{2: syntheticBlock(t, []string{script}, nil)}})
+    if err := merge(nil, 2); err != nil { t.Fatal(err) }
+    if err := record(context.Background(), 2); err != nil { t.Fatal(err) }
+    if have, _ := holds(2); have { t.Fatal("a block at the cursor was staged") }
 }

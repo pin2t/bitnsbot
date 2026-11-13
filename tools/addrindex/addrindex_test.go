@@ -345,7 +345,7 @@ func TestBuildThenList(t *testing.T) {
     if !strings.Contains(built, "Building blocks 0..3") {
         t.Errorf("build did not report its range: %q", built)
     }
-    if at, ok := addrindex.Cursor(); !ok || at != 3 {
+    if at, ok := addrindex.Height(); !ok || at != 3 {
         t.Fatalf("cursor = %d, %v; want 3 — the build must advance the shared cursor", at, ok)
     }
     var out = capture(t, func() { list(opt, address) })

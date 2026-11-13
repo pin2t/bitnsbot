@@ -231,7 +231,7 @@ func main() {
 	if capped {
 		fmt.Fprintf(os.Stderr, "warning: too many touches, showing the oldest %d\n", len(touches))
 	}
-	if _, ok := addrindex.Cursor(); !ok {
+	if _, ok := addrindex.Height(); !ok {
 		fmt.Println("Address index is still building — results may be partial.")
 	}
 	var totalReceived, totalSent float64

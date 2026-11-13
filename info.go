@@ -422,7 +422,7 @@ func txStartHeight(addr string) uint32 {
     var s, ok = addrstat.Get(addr)
     if !ok || s.Last <= 0 { return 0 }
     var statCursor, statOK = addrstat.Height()
-    var indexCursor, indexOK = addrindex.Cursor()
+    var indexCursor, indexOK = addrindex.Height()
     if !statOK || !indexOK || statCursor < int64(indexCursor) { return 0 }
     if h, ok := blocks.ByTime(s.Last); ok && h > 0 { return uint32(h) }
     return 0
@@ -674,7 +674,7 @@ func addrPairs(ctx context.Context, lang string, addr string) ([][2]string, bool
     if decodeErr == nil {
         txs, complete = addressHistory(ctx, script)
     }
-    if _, ok := addrindex.Cursor(); !ok {
+    if _, ok := addrindex.Height(); !ok {
         pairs = append(pairs, [2]string{i18nl(lang).String("Activity"), i18nl(lang).String("unavailable (address index is still building)")})
     } else if len(txs) == 0 && !complete {
         pairs = append(pairs, [2]string{i18nl(lang).String("Activity"), i18nl(lang).String("unavailable")})
