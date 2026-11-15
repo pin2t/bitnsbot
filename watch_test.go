@@ -792,7 +792,7 @@ func TestConfirmationLinksBlock(t *testing.T) {
 		t.Fatal("no confirmation message was sent")
 	}
 	var body = markups[len(markups)-1]
-	if text, _ := body["text"].(string); !strings.Contains(text, "block #959126") {
+	if text, _ := body["text"].(string); !strings.Contains(text, "block 959126") {
 		t.Fatalf("confirmation text = %q", body["text"])
 	}
 	var markup, ok = body["reply_markup"].(map[string]any)
