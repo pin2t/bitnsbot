@@ -15,48 +15,50 @@ import "bitnsbot/txwatches"
 import "bitnsbot/watches"
 
 type notification struct {
-    txid         string
-    received     map[string]int64   // address → value paid to it by this tx's outputs
-    sent         map[string]int64   // address → value spent from it by this tx's inputs
-    fee          int64              // satoshi
-    feeRate      float64            // sat/vB
-    confEstimate string             // confETAXXX, "" if unavailable
-    feeOK        bool               // whether fee/feeRate are populated
+	txid         string
+	received     map[string]int64 // address → value paid to it by this tx's outputs
+	sent         map[string]int64 // address → value spent from it by this tx's inputs
+	fee          int64            // satoshi
+	feeRate      float64          // sat/vB
+	confEstimate string           // confETAXXX, "" if unavailable
+	feeOK        bool             // whether fee/feeRate are populated
 }
 
 type notifyKey struct {
-    platform string
-    chat int64
-    id   string
+	platform string
+	chat     int64
+	id       string
 }
 
 type notifyChans struct {
-    ch   chan notification
-    stop chan struct{}
+	ch   chan notification
+	stop chan struct{}
 }
 
 var notifyMu sync.Mutex
 var notifies = make(map[notifyKey]notifyChans)
 
 func startNotifyChat(platform string, chat int64, watch, alias string) {
-    var ch = make(chan notification)
-    var stop = make(chan struct{})
-    notifyMu.Lock()
-    notifies[notifyKey{platform, chat, watch}] = notifyChans{ch, stop}
-    notifyMu.Unlock()
-    go func(platform string, chat int64, watch, alias string, ch <-chan notification, stop chan struct{}) {
-        for {
-            select {
-            case <-stop:
-                return
-            case n := <-ch:
-                var msg, ids, summary, ok = addressNotification(platform, chat, n, watch, alias)
-                if !ok { continue }
-                send(platform, chat, msg, ids)
-                txwatches.AddAddrConfirm(n.txid, platform, chat, watch, alias, summary)
-            }
-        }
-    }(platform, chat, watch, alias, ch, stop)
+	var ch = make(chan notification)
+	var stop = make(chan struct{})
+	notifyMu.Lock()
+	notifies[notifyKey{platform, chat, watch}] = notifyChans{ch, stop}
+	notifyMu.Unlock()
+	go func(platform string, chat int64, watch, alias string, ch <-chan notification, stop chan struct{}) {
+		for {
+			select {
+			case <-stop:
+				return
+			case n := <-ch:
+				var msg, ids, summary, ok = addressNotification(platform, chat, n, watch, alias)
+				if !ok {
+					continue
+				}
+				send(platform, chat, msg, ids)
+				txwatches.AddAddrConfirm(n.txid, platform, chat, watch, alias, summary)
+			}
+		}
+	}(platform, chat, watch, alias, ch, stop)
 }
 
 // addressNotification renders the mempool message for a transaction touching a
@@ -73,100 +75,115 @@ func startNotifyChat(platform string, chat int64, watch, alias string) {
 // part of the spend came back as change, so the address is only down
 // by the difference
 func addressNotification(platform string, chat int64, n notification, watchID, alias string) (string, []string, txwatches.Summary, bool) {
-    var lang = chatLang(platform, chat)
-    var estimates = map[string]string{
-        confETAFast:   i18n(platform, chat).String("~10-20 min"),
-        confETAMedium: i18n(platform, chat).String("~1 hour"),
-        confETASlow:   i18n(platform, chat).String("2+ hours"),
-    }
-    var in, gotIn = n.received[watchID]
-    var out, gotOut = n.sent[watchID]
-    if !gotIn && !gotOut { return "", nil, txwatches.Summary{}, false }
-    var label = short(watchID)
-    if alias != "" { label += " (" + html.EscapeString(alias) + ")" }
-    var ids = []string{n.txid, watchID}
-    var pairs [][2]string
-    var header string
-    var summary txwatches.Summary
-    if gotOut {
-        type pair struct {a string; b int64}
-        var recipients []pair
-        var total int64
-        var addrs = make([]string, 0)
-        for addr, value := range n.received {
-            if addr == watchID { continue }
-            recipients = append(recipients, pair{addr, value})
-            addrs = append(addrs, addr)
-            total += value
-        }
-        sort.Slice(recipients, func(i, j int) bool {
-            if n.received[recipients[i].a] != n.received[recipients[j].a] {
-                return n.received[recipients[i].a] > n.received[recipients[j].a]
-            }
-            return recipients[i].b < recipients[j].b
-        })
-        summary = txwatches.Summary{Amount: out, Recipients: addrs, Outgoing: true}
-        header = i18n(platform, chat).Sprintf("%s is sending %s to\n", label, amountLine(out, time.Time{}, true, lang))
-        if len(recipients) == 0 { header += i18n(platform, chat).String("none") + "\n" }
-        for i := 0; i < min(len(recipients), shownAddrs); i++ {
-            header += fmt.Sprintf("%s: %s\n", short(recipients[i].a), amountLine(recipients[i].b, time.Now(), true, lang))
-            ids = append(ids, recipients[i].a)
-        }
-        if len(recipients) > shownAddrs { header += "...\n" }
-        pairs = append(pairs, [2]string{i18n(platform, chat).String("Sending"), amountLine(out, time.Time{}, true, lang)})
-        if gotIn {
-            pairs = append(pairs,
-                [2]string{i18n(platform, chat).String("Change back"), amountLine(in, time.Time{}, true, lang)},
-                [2]string{i18n(platform, chat).String("Net"), amountLine(in-out, time.Time{}, true, lang)},
-            )
-        }
-        if n.feeOK {
-            pairs = append(pairs, [2]string{
-                i18n(platform, chat).String("Fee"),
-                group(n.fee) + " " + i18n(platform, chat).Sprintf("sats") + " (" + strings.TrimSuffix(strconv.FormatFloat(n.feeRate, 'f', 1, 64), ".0") + " " + i18n(platform, chat).String("sat/vB") + ")"})
-            if n.confEstimate != "" {
-                pairs = append(pairs, [2]string{i18n(platform, chat).String("ETA"), estimates[n.confEstimate]})
-            }
-        }
-    } else {
-        var msg = i18n(platform, chat).Sprintf("🔔 %s receiving %s. Transaction <code>%s</code>", label, amountLine(in, time.Time{}, true, lang), n.txid)
-        if n.confEstimate != "" {
-            msg += "\n" + i18n(platform, chat).String("ETA") + " " + estimates[n.confEstimate]
-        }
-        return msg, ids, txwatches.Summary{Amount: in}, true
-    }
-    header += i18n(platform, chat).Sprintf("Transaction <code>%s</code>", n.txid)
-    return fmt.Sprintf("🔔 %s%s", header, fields(pairs)), ids, summary, true
+	var lang = chatLang(platform, chat)
+	var estimates = map[string]string{
+		confETAFast:   i18n(platform, chat).String("~10-20 min"),
+		confETAMedium: i18n(platform, chat).String("~1 hour"),
+		confETASlow:   i18n(platform, chat).String("2+ hours"),
+	}
+	var in, gotIn = n.received[watchID]
+	var out, gotOut = n.sent[watchID]
+	if !gotIn && !gotOut {
+		return "", nil, txwatches.Summary{}, false
+	}
+	var label = short(watchID)
+	if alias != "" {
+		label += " (" + html.EscapeString(alias) + ")"
+	}
+	var ids = []string{n.txid, watchID}
+	var pairs [][2]string
+	var header string
+	var summary txwatches.Summary
+	if gotOut {
+		type pair struct {
+			a string
+			b int64
+		}
+		var recipients []pair
+		var total int64
+		var addrs = make([]string, 0)
+		for addr, value := range n.received {
+			if addr == watchID {
+				continue
+			}
+			recipients = append(recipients, pair{addr, value})
+			addrs = append(addrs, addr)
+			total += value
+		}
+		sort.Slice(recipients, func(i, j int) bool {
+			if n.received[recipients[i].a] != n.received[recipients[j].a] {
+				return n.received[recipients[i].a] > n.received[recipients[j].a]
+			}
+			return recipients[i].b < recipients[j].b
+		})
+		summary = txwatches.Summary{Amount: out, Recipients: addrs, Outgoing: true}
+		header = i18n(platform, chat).Sprintf("%s is sending %s to\n", label, amountLine(out, time.Time{}, true, lang))
+		if len(recipients) == 0 {
+			header += i18n(platform, chat).String("none") + "\n"
+		}
+		for i := 0; i < min(len(recipients), shownAddrs); i++ {
+			header += fmt.Sprintf("%s: %s\n", short(recipients[i].a), amountLine(recipients[i].b, time.Now(), true, lang))
+			ids = append(ids, recipients[i].a)
+		}
+		if len(recipients) > shownAddrs {
+			header += "...\n"
+		}
+		pairs = append(pairs, [2]string{i18n(platform, chat).String("Sending"), amountLine(out, time.Time{}, true, lang)})
+		if gotIn {
+			pairs = append(pairs,
+				[2]string{i18n(platform, chat).String("Change back"), amountLine(in, time.Time{}, true, lang)},
+				[2]string{i18n(platform, chat).String("Net"), amountLine(in-out, time.Time{}, true, lang)},
+			)
+		}
+		if n.feeOK {
+			pairs = append(pairs, [2]string{
+				i18n(platform, chat).String("Fee"),
+				group(n.fee) + " " + i18n(platform, chat).Sprintf("sats") + " (" + strings.TrimSuffix(strconv.FormatFloat(n.feeRate, 'f', 1, 64), ".0") + " " + i18n(platform, chat).String("sat/vB") + ")"})
+			if n.confEstimate != "" {
+				pairs = append(pairs, [2]string{i18n(platform, chat).String("ETA"), estimates[n.confEstimate]})
+			}
+		}
+	} else {
+		var msg = i18n(platform, chat).Sprintf("🔔 %s receiving %s. Transaction <code>%s</code>", label, amountLine(in, time.Time{}, true, lang), n.txid)
+		if n.confEstimate != "" {
+			msg += "\n" + i18n(platform, chat).String("ETA") + " " + estimates[n.confEstimate]
+		}
+		return msg, ids, txwatches.Summary{Amount: in}, true
+	}
+	header += i18n(platform, chat).Sprintf("Transaction <code>%s</code>", n.txid)
+	return fmt.Sprintf("🔔 %s%s", header, fields(pairs)), ids, summary, true
 }
 
 // fields renders the aligned <pre> block a message hangs beneath, or nothing at
 // all when there is nothing to show — a coinbase or a transaction first seen
 // already mined has no fee or confirmation estimate to report.
 func fields(pairs [][2]string) string {
-    if len(pairs) == 0 { return "" }
-    return "\n\n<pre>" + joinAlign(pairs) + "</pre>"
+	if len(pairs) == 0 {
+		return ""
+	}
+	return "\n\n<pre>" + joinAlign(pairs) + "</pre>"
 }
 
 func stopNotifyChat(platform string, chat int64, id string) {
-    notifyMu.Lock()
-    defer notifyMu.Unlock()
-    var key = notifyKey{platform, chat, id}
-    if c, found := notifies[key]; found {
-        close(c.stop)
-        delete(notifies, key)
-    }
+	notifyMu.Lock()
+	defer notifyMu.Unlock()
+	var key = notifyKey{platform, chat, id}
+	if c, found := notifies[key]; found {
+		close(c.stop)
+		delete(notifies, key)
+	}
 }
 
 func notifyAddresses() (res []string) {
-    notifyMu.Lock()
-    defer notifyMu.Unlock()
-    res = make([]string, 0, len(notifies))
-    for k := range notifies {
-        if !slices.Contains(res, k.id) {
-            res = append(res, k.id)
-        }
-    }
-    return res
+	notifyMu.Lock()
+	defer notifyMu.Unlock()
+	res = make([]string, 0, len(notifies))
+	for k := range notifies {
+		if !slices.Contains(res, k.id) {
+			res = append(res, k.id)
+		}
+	}
+	return res
 }
 
 // notified remembers which transactions have already been announced, keyed by
@@ -190,17 +207,19 @@ var notified = make(map[string]time.Time)
 const notifiedTTL = 48 * time.Hour
 
 func alreadyNotified(txid string) bool {
-    notifiedMu.Lock()
-    defer notifiedMu.Unlock()
-    var _, seen = notified[txid]
-    if !seen {
-        var cutoff = time.Now().Add(-notifiedTTL)
-        for id, at := range notified {
-            if at.Before(cutoff) { delete(notified, id) }
-        }
-        notified[txid] = time.Now()
-    }
-    return seen
+	notifiedMu.Lock()
+	defer notifiedMu.Unlock()
+	var _, seen = notified[txid]
+	if !seen {
+		var cutoff = time.Now().Add(-notifiedTTL)
+		for id, at := range notified {
+			if at.Before(cutoff) {
+				delete(notified, id)
+			}
+		}
+		notified[txid] = time.Now()
+	}
+	return seen
 }
 
 // record the outpoints this transaction creates for watched addresses, so a
@@ -213,48 +232,50 @@ func alreadyNotified(txid string) bool {
 // transaction: this is a mempool transaction, so it has no undo data and Core
 // reports neither fee nor prevout for it at verbosity 2.
 func broadcast(txHex string) {
-    if !core.Enabled() { return }
-    var ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
-    defer cancel()
-    var tx, err = core.DecodeRawTransaction(ctx, txHex)
-    if err != nil {
-        logging.Err("decode notified tx: %v", err)
-        return
-    }
-    if alreadyNotified(tx.Txid) {
-        logging.Info("skipping already-notified transaction %s", short(tx.Txid))
-        return
-    }
-    var n = notification{txid: tx.Txid, received: make(map[string]int64), sent: make(map[string]int64)}
-    for _, vout := range tx.Vout {
-        if a := vout.ScriptPubKey.Address; a != "" {
-            n.received[a] += toSat(vout.Value)
-        }
-    }
-    recordOutpoints(tx.Txid, tx.Vout)
-    if full, ferr := core.GetRawTransaction(ctx, tx.Txid); ferr == nil {
-        if _, _, _, spent, ok := txInputs(ctx, full); ok {
-            n.sent = spent
-        }
-        if entry, eerr := core.GetMempoolEntry(ctx, tx.Txid); eerr == nil && entry.Vsize > 0 {
-            n.fee = toSat(entry.Fees.Base)
-            n.feeRate = float64(toSat(entry.Fees.Base)) / float64(entry.Vsize)
-            n.confEstimate = confEstimate(n.feeRate)
-            n.feeOK = true
-        }
-    }
-    notifyMu.Lock()
-    var chans = make([]chan notification, 0)
-    for _, v := range notifies {
-        chans = append(chans, v.ch)
-    }
-    notifyMu.Unlock()
-    for _, ch := range chans {
-        select {
-        case ch <- n:
-        case <-time.After(500 * time.Millisecond):
-        }
-    }
+	if !core.Enabled() {
+		return
+	}
+	var ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	var tx, err = core.DecodeRawTransaction(ctx, txHex)
+	if err != nil {
+		logging.Err("decode notified tx: %v", err)
+		return
+	}
+	if alreadyNotified(tx.Txid) {
+		logging.Info("skipping already-notified transaction %s", short(tx.Txid))
+		return
+	}
+	var n = notification{txid: tx.Txid, received: make(map[string]int64), sent: make(map[string]int64)}
+	for _, vout := range tx.Vout {
+		if a := vout.ScriptPubKey.Address; a != "" {
+			n.received[a] += toSat(vout.Value)
+		}
+	}
+	recordOutpoints(tx.Txid, tx.Vout)
+	if full, ferr := core.GetRawTransaction(ctx, tx.Txid); ferr == nil {
+		if _, _, _, spent, ok := txInputs(ctx, full); ok {
+			n.sent = spent
+		}
+		if entry, eerr := core.GetMempoolEntry(ctx, tx.Txid); eerr == nil && entry.Vsize > 0 {
+			n.fee = toSat(entry.Fees.Base)
+			n.feeRate = float64(toSat(entry.Fees.Base)) / float64(entry.Vsize)
+			n.confEstimate = confEstimate(n.feeRate)
+			n.feeOK = true
+		}
+	}
+	notifyMu.Lock()
+	var chans = make([]chan notification, 0)
+	for _, v := range notifies {
+		chans = append(chans, v.ch)
+	}
+	notifyMu.Unlock()
+	for _, ch := range chans {
+		select {
+		case ch <- n:
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
 }
 
 // seedOutpoints loads each watched address's current unspent outputs into the
@@ -275,35 +296,39 @@ func broadcast(txHex string) {
 //
 // map each address's scriptPubKey so a scan hit can be attributed back
 func seedOutpoints(addrs []string) {
-    if !core.Enabled() || len(addrs) == 0 { return }
-    go func() {
-        var ctx, cancel = context.WithTimeout(context.Background(), 30*time.Minute)
-        defer cancel()
-        var owner = map[string]string{}
-        for _, addr := range addrs {
-            var info, err = core.ValidateAddress(ctx, addr)
-            if err != nil || !info.IsValid {
-                logging.Warn("seed outpoints: validate %s: %v", short(addr), err)
-                continue
-            }
-            owner[info.ScriptPubKey] = addr
-            watchScript(info.ScriptPubKey, addr)
-        }
-        if len(owner) == 0 { return }
-        var result, err = core.ScanTxOutSet(ctx, addrs)
-        if err != nil {
-            logging.Warn("scan UTXO set for %d address(es): %v — spends of existing balances may go unreported", len(addrs), err)
-            return
-        }
-        var seeded int
-        for _, u := range result.Unspents {
-            if addr, ok := owner[u.ScriptPubKey]; ok {
-                watchOutpoint(outpoint{u.Txid, u.Vout}, addr)
-                seeded++
-            }
-        }
-        logging.Info("watching %d unspent output(s) across %d address(es)", seeded, len(owner))
-    }()
+	if !core.Enabled() || len(addrs) == 0 {
+		return
+	}
+	go func() {
+		var ctx, cancel = context.WithTimeout(context.Background(), 30*time.Minute)
+		defer cancel()
+		var owner = map[string]string{}
+		for _, addr := range addrs {
+			var info, err = core.ValidateAddress(ctx, addr)
+			if err != nil || !info.IsValid {
+				logging.Warn("seed outpoints: validate %s: %v", short(addr), err)
+				continue
+			}
+			owner[info.ScriptPubKey] = addr
+			watchScript(info.ScriptPubKey, addr)
+		}
+		if len(owner) == 0 {
+			return
+		}
+		var result, err = core.ScanTxOutSet(ctx, addrs)
+		if err != nil {
+			logging.Warn("scan UTXO set for %d address(es): %v — spends of existing balances may go unreported", len(addrs), err)
+			return
+		}
+		var seeded int
+		for _, u := range result.Unspents {
+			if addr, ok := owner[u.ScriptPubKey]; ok {
+				watchOutpoint(outpoint{u.Txid, u.Vout}, addr)
+				seeded++
+			}
+		}
+		logging.Info("watching %d unspent output(s) across %d address(es)", seeded, len(owner))
+	}()
 }
 
 const confETAFast = "fast"
@@ -314,15 +339,20 @@ const confETASlow = "slow"
 // window by comparing it to the cached mempool-based fee recommendations. Returns
 // "" until the first background recomputation completes.
 func confEstimate(feeRate float64) string {
-    feesMu.Lock()
-    var rec, ok = cachedFees, cachedFeesOK
-    feesMu.Unlock()
-    if !ok { return confETAFast }
-    switch {
-    case feeRate >= rec.fastest: return confETAFast
-    case feeRate >= rec.hour:    return confETAMedium
-    default:                     return confETASlow
-    }
+	feesMu.Lock()
+	var rec, ok = cachedFees, cachedFeesOK
+	feesMu.Unlock()
+	if !ok {
+		return confETAFast
+	}
+	switch {
+	case feeRate >= rec.fastest:
+		return confETAFast
+	case feeRate >= rec.hour:
+		return confETAMedium
+	default:
+		return confETASlow
+	}
 }
 
 // startNotify turns every persisted watchCmd back into a live watcher goroutine
@@ -332,31 +362,33 @@ func confEstimate(feeRate float64) string {
 // time (MAX without -maxToken) is left in the store, untouched, for a start
 // that is.
 func startNotify(platforms ...string) {
-    var records, err = watches.List()
-    if err != nil {
-        logging.Err("list watches: %v", err)
-        return
-    }
-    for _, w := range records {
-        if slices.Contains(platforms, w.Platform) { startNotifyChat(w.Platform, w.Chat, w.Address, w.Alias) }
-    }
-    var addrs = notifyAddresses()
-    if core.Enabled() && len(addrs) > 0 {
-        seedOutpoints(addrs)
-    }
+	var records, err = watches.List()
+	if err != nil {
+		logging.Err("list watches: %v", err)
+		return
+	}
+	for _, w := range records {
+		if slices.Contains(platforms, w.Platform) {
+			startNotifyChat(w.Platform, w.Chat, w.Address, w.Alias)
+		}
+	}
+	var addrs = notifyAddresses()
+	if core.Enabled() && len(addrs) > 0 {
+		seedOutpoints(addrs)
+	}
 }
 
 func stopNotify() {
-    notifyMu.Lock()
-    for _, v := range notifies {
-        close(v.stop)
-    }
-    notifies = make(map[notifyKey]notifyChans)
-    notifyMu.Unlock()
-    notifiedMu.Lock()
-    notified = make(map[string]time.Time)
-    notifiedMu.Unlock()
-    txwatches.Reset()
+	notifyMu.Lock()
+	for _, v := range notifies {
+		close(v.stop)
+	}
+	notifies = make(map[notifyKey]notifyChans)
+	notifyMu.Unlock()
+	notifiedMu.Lock()
+	notified = make(map[string]time.Time)
+	notifiedMu.Unlock()
+	txwatches.Reset()
 }
 
 // confirmationMessage restates what the mempool notification said and adds where
@@ -365,38 +397,38 @@ func stopNotify() {
 // tap-to-copy. The amount and recipients come from the summary recorded when the
 // transaction was first seen, so the block arriving costs no extra lookups.
 func confirmationMessage(platform string, chat int64, c txwatches.Confirmed, height int64) (string, []string) {
-    var lang = chatLang(platform, chat)
-    var elapsed = durationText(time.Since(c.WatchedAt), lang)
-    var landed = i18n(platform, chat).Sprintf("Confirmed in block #%d after %s. Transaction <code>%s</code>", height, elapsed, c.Txid)
-    var ids = []string{c.Txid}
-    if c.Addr == "" {
-        var label = short(c.Txid)
-        if c.Alias != "" {
-            label += " (" + html.EscapeString(c.Alias) + ")"
-        }
-        ids = append(ids, strconv.FormatInt(height, 10))
-        return i18n(platform, chat).Sprintf("🔔 Transaction %s was confirmed in block #%d after %s", label, height, elapsed), ids
-    }
-    var label = short(c.Addr)
-    if c.Alias != "" {
-        label += " (" + html.EscapeString(c.Alias) + ")"
-    }
-    ids = append(ids, c.Addr)
-    var msg string
-    if c.Summary.Outgoing {
-        var saddr string
-        if len(c.Summary.Recipients) > 0 {
-            saddr = compactAddrs(c.Summary.Recipients)
-        } else {
-            saddr = i18n(platform, chat).String("none")
-        }
-        msg = i18n(platform, chat).Sprintf("%s sent %s to %s. %s", label, amountLine(c.Summary.Amount, time.Time{}, true, lang), saddr, landed)
-        ids = append(ids, firstN(c.Summary.Recipients, shownAddrs)...)
-    } else {
-        msg = i18n(platform, chat).Sprintf("%s received %s. %s", label, amountLine(c.Summary.Amount, time.Time{}, true, lang), landed)
-    }
-    ids = append(ids, strconv.FormatInt(height, 10))
-    return "🔔 " + msg, ids
+	var lang = chatLang(platform, chat)
+	var elapsed = durationText(time.Since(c.WatchedAt), lang)
+	var landed = i18n(platform, chat).Sprintf("Confirmed in block %d after %s. Transaction <code>%s</code>", height, elapsed, c.Txid)
+	var ids = []string{c.Txid}
+	if c.Addr == "" {
+		var label = short(c.Txid)
+		if c.Alias != "" {
+			label += " (" + html.EscapeString(c.Alias) + ")"
+		}
+		ids = append(ids, strconv.FormatInt(height, 10))
+		return i18n(platform, chat).Sprintf("🔔 Transaction %s was confirmed in block %d after %s", label, height, elapsed), ids
+	}
+	var label = short(c.Addr)
+	if c.Alias != "" {
+		label += " (" + html.EscapeString(c.Alias) + ")"
+	}
+	ids = append(ids, c.Addr)
+	var msg string
+	if c.Summary.Outgoing {
+		var saddr string
+		if len(c.Summary.Recipients) > 0 {
+			saddr = compactAddrs(c.Summary.Recipients)
+		} else {
+			saddr = i18n(platform, chat).String("none")
+		}
+		msg = i18n(platform, chat).Sprintf("%s sent %s to %s. %s", label, amountLine(c.Summary.Amount, time.Time{}, true, lang), saddr, landed)
+		ids = append(ids, firstN(c.Summary.Recipients, shownAddrs)...)
+	} else {
+		msg = i18n(platform, chat).Sprintf("%s received %s. %s", label, amountLine(c.Summary.Amount, time.Time{}, true, lang), landed)
+	}
+	ids = append(ids, strconv.FormatInt(height, 10))
+	return "🔔 " + msg, ids
 }
 
 // processConfirms notifies and drops every transaction watch whose transaction
@@ -406,18 +438,22 @@ func confirmationMessage(platform string, chat int64, c txwatches.Confirmed, hei
 // (spawned by notifier.Handle) since it calls back into core. Each confirmation
 // goes out on the platform its watch was made on.
 func processConfirms(hash string) {
-    if !core.Enabled() { return }
-    if !txwatches.Any() { return }
-    var ctx, cancel = context.WithTimeout(context.Background(), 30*time.Second)
-    defer cancel()
-    var blk, err = core.GetBlockTxids(ctx, hash)
-    if err != nil {
-        logging.Warn("check confirmations for block %s: %v", short(hash), err)
-        return
-    }
-    for _, c := range txwatches.Confirms(blk.Tx) {
-        var msg, ids = confirmationMessage(c.Platform, c.ChatID, c, blk.Height)
-        send(c.Platform, c.ChatID, msg, ids)
-        logging.Info("confirmed watch %s for %s chat %d in block %d", short(c.Txid), c.Platform, c.ChatID, blk.Height)
-    }
+	if !core.Enabled() {
+		return
+	}
+	if !txwatches.Any() {
+		return
+	}
+	var ctx, cancel = context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	var blk, err = core.GetBlockTxids(ctx, hash)
+	if err != nil {
+		logging.Warn("check confirmations for block %s: %v", short(hash), err)
+		return
+	}
+	for _, c := range txwatches.Confirms(blk.Tx) {
+		var msg, ids = confirmationMessage(c.Platform, c.ChatID, c, blk.Height)
+		send(c.Platform, c.ChatID, msg, ids)
+		logging.Info("confirmed watch %s for %s chat %d in block %d", short(c.Txid), c.Platform, c.ChatID, blk.Height)
+	}
 }

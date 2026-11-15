@@ -16,23 +16,27 @@ import "bitnsbot/txwatches"
 import "bitnsbot/watches"
 
 func countWatchers(watchID string) int {
-    notifyMu.Lock()
-    defer notifyMu.Unlock()
-    var n int
-    for k, _ := range notifies {
-        if k.id == watchID { n++ }
-    }
-    return n
+	notifyMu.Lock()
+	defer notifyMu.Unlock()
+	var n int
+	for k, _ := range notifies {
+		if k.id == watchID {
+			n++
+		}
+	}
+	return n
 }
 
 func watcherChats(watchID string) []int64 {
-    notifyMu.Lock()
-    defer notifyMu.Unlock()
-    var ids []int64
-    for k, _ := range notifies {
-        if k.id == watchID { ids = append(ids, k.chat) }
-    }
-    return ids
+	notifyMu.Lock()
+	defer notifyMu.Unlock()
+	var ids []int64
+	for k, _ := range notifies {
+		if k.id == watchID {
+			ids = append(ids, k.chat)
+		}
+	}
+	return ids
 }
 
 // TestWatchNotification drives the full address-watch notification path. Under
@@ -56,108 +60,110 @@ func watcherChats(watchID string) []int64 {
 // the mempool notification also registers a one-shot confirmation watch, so
 // the chat gets a second message once this transaction is mined
 func TestWatchNotification(t *testing.T) {
-    var sentMu sync.Mutex
-    var sent []string
-    var tg = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-        var body struct {
-            Text string `json:"text"`
-        }
-        json.NewDecoder(r.Body).Decode(&body)
-        sentMu.Lock()
-        sent = append(sent, body.Text)
-        sentMu.Unlock()
-        json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": true})
-    }))
-    defer tg.Close()
-    useTelegram(t, tg.URL)
-    var watchedAddr = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
-    var txid = "f21b47a9143a23e80cc59e81588d21558b394005580b285961957cb3bed5b3e0"
-    var srv = coretest.Server(t, func(method string, params []any) (any, error) {
-        switch method {
-        case "validateaddress":
-            return map[string]any{"isvalid": true, "address": watchedAddr, "scriptPubKey": "76a914aa88ac"}, nil
-        case "scantxoutset":
-            return map[string]any{"success": true, "unspents": []map[string]any{}}, nil
-        case "decoderawtransaction":
-            return map[string]any{
-                "txid": txid,
-                "vout": []map[string]any{{"value": 2.5, "n": 0, "scriptPubKey": map[string]any{"address": watchedAddr, "hex": "76a914aa88ac"}}},
-            }, nil
-        case "getrawtransaction":
-            if reqTxid, _ := params[0].(string); reqTxid == "prevtx" {
-                return map[string]any{"vout": []map[string]any{{"value": 2.5001, "n": 0, "scriptPubKey": map[string]any{"address": "1InputAddr"}}}}, nil
-            }
-            return map[string]any{
-                "txid": txid, "confirmations": 0, "size": 110, "vsize": 100,
-                "vin":  []map[string]any{{"txid": "prevtx", "vout": 0}},
-                "vout": []map[string]any{{"value": 2.5, "n": 0, "scriptPubKey": map[string]any{"address": watchedAddr, "hex": "76a914aa88ac"}}},
-            }, nil
-        case "getmempoolentry":
-            return map[string]any{"vsize": 100, "fees": map[string]any{"base": 0.0001}}, nil
-        case "estimatesmartfee":
-            var rate = 0.0002
-            if blocks, _ := params[0].(float64); blocks == 2 {
-                rate = 0.0005
-            }
-            return map[string]any{"feerate": rate, "blocks": params[0]}, nil
-        }
-        return nil, nil
-    })
-    coretest.Use(t, srv)
-    feesMu.Lock()
-    cachedFees = recommendedFees{fastest: 50, halfHour: 30, hour: 20, economy: 10, minimum: 1}
-    cachedFeesOK = true
-    cachedFeesCount = 1000
-    feesMu.Unlock()
-    openDB(filepath.Join(t.TempDir(), "watches.db"))
-    defer closeDB()
-    stopNotify()
-    resetWatched()
-    defer stopNotify()
-    watchCmd("tg", 42, watchedAddr+" John", nil)
-    broadcast("deadbeefrawtxhex")
-    var deadline = time.Now().Add(3 * time.Second)
-    for time.Now().Before(deadline) {
-        sentMu.Lock()
-        var n = len(sent)
-        sentMu.Unlock()
-        if n >= 2 { break }
-        time.Sleep(10 * time.Millisecond)
-    }
-    sentMu.Lock()
-    defer sentMu.Unlock()
-    var found string
-    for _, m := range sent {
-        if strings.Contains(m, "receiving") || strings.Contains(m, "received") {
-            found = m
-        }
-    }
-    if found == "" {
-        t.Fatalf("expected a watch notification, got: %#v", sent)
-    }
-    if !strings.Contains(found, short(watchedAddr)) || !strings.Contains(found, txid) {
-        t.Fatalf("notification missing address/txid: %q", found)
-    }
-    if !strings.Contains(found, short(watchedAddr)+" (John)") {
-        t.Fatalf("notification missing alias: %q", found)
-    }
-    if !strings.Contains(found, "2.5 BTC") {
-        t.Fatalf("expected 2.5 BTC in notification, got: %q", found)
-    }
-    for _, want := range []string{"ETA ~10-20 min"} {
-        if !strings.Contains(found, want) {
-            t.Fatalf("notification missing %q: %q", want, found)
-        }
-    }
-    var registered bool
-    for _, c := range txwatches.Confirms([]string{txid}) {
-        if c.ChatID == 42 && c.Addr == watchedAddr {
-            registered = true
-        }
-    }
-    if !registered {
-        t.Fatalf("expected a confirmation watch registered for the watched-address tx")
-    }
+	var sentMu sync.Mutex
+	var sent []string
+	var tg = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Text string `json:"text"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		sentMu.Lock()
+		sent = append(sent, body.Text)
+		sentMu.Unlock()
+		json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": true})
+	}))
+	defer tg.Close()
+	useTelegram(t, tg.URL)
+	var watchedAddr = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
+	var txid = "f21b47a9143a23e80cc59e81588d21558b394005580b285961957cb3bed5b3e0"
+	var srv = coretest.Server(t, func(method string, params []any) (any, error) {
+		switch method {
+		case "validateaddress":
+			return map[string]any{"isvalid": true, "address": watchedAddr, "scriptPubKey": "76a914aa88ac"}, nil
+		case "scantxoutset":
+			return map[string]any{"success": true, "unspents": []map[string]any{}}, nil
+		case "decoderawtransaction":
+			return map[string]any{
+				"txid": txid,
+				"vout": []map[string]any{{"value": 2.5, "n": 0, "scriptPubKey": map[string]any{"address": watchedAddr, "hex": "76a914aa88ac"}}},
+			}, nil
+		case "getrawtransaction":
+			if reqTxid, _ := params[0].(string); reqTxid == "prevtx" {
+				return map[string]any{"vout": []map[string]any{{"value": 2.5001, "n": 0, "scriptPubKey": map[string]any{"address": "1InputAddr"}}}}, nil
+			}
+			return map[string]any{
+				"txid": txid, "confirmations": 0, "size": 110, "vsize": 100,
+				"vin":  []map[string]any{{"txid": "prevtx", "vout": 0}},
+				"vout": []map[string]any{{"value": 2.5, "n": 0, "scriptPubKey": map[string]any{"address": watchedAddr, "hex": "76a914aa88ac"}}},
+			}, nil
+		case "getmempoolentry":
+			return map[string]any{"vsize": 100, "fees": map[string]any{"base": 0.0001}}, nil
+		case "estimatesmartfee":
+			var rate = 0.0002
+			if blocks, _ := params[0].(float64); blocks == 2 {
+				rate = 0.0005
+			}
+			return map[string]any{"feerate": rate, "blocks": params[0]}, nil
+		}
+		return nil, nil
+	})
+	coretest.Use(t, srv)
+	feesMu.Lock()
+	cachedFees = recommendedFees{fastest: 50, halfHour: 30, hour: 20, economy: 10, minimum: 1}
+	cachedFeesOK = true
+	cachedFeesCount = 1000
+	feesMu.Unlock()
+	openDB(filepath.Join(t.TempDir(), "watches.db"))
+	defer closeDB()
+	stopNotify()
+	resetWatched()
+	defer stopNotify()
+	watchCmd("tg", 42, watchedAddr+" John", nil)
+	broadcast("deadbeefrawtxhex")
+	var deadline = time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		sentMu.Lock()
+		var n = len(sent)
+		sentMu.Unlock()
+		if n >= 2 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	sentMu.Lock()
+	defer sentMu.Unlock()
+	var found string
+	for _, m := range sent {
+		if strings.Contains(m, "receiving") || strings.Contains(m, "received") {
+			found = m
+		}
+	}
+	if found == "" {
+		t.Fatalf("expected a watch notification, got: %#v", sent)
+	}
+	if !strings.Contains(found, short(watchedAddr)) || !strings.Contains(found, txid) {
+		t.Fatalf("notification missing address/txid: %q", found)
+	}
+	if !strings.Contains(found, short(watchedAddr)+" (John)") {
+		t.Fatalf("notification missing alias: %q", found)
+	}
+	if !strings.Contains(found, "2.5 BTC") {
+		t.Fatalf("expected 2.5 BTC in notification, got: %q", found)
+	}
+	for _, want := range []string{"ETA ~10-20 min"} {
+		if !strings.Contains(found, want) {
+			t.Fatalf("notification missing %q: %q", want, found)
+		}
+	}
+	var registered bool
+	for _, c := range txwatches.Confirms([]string{txid}) {
+		if c.ChatID == 42 && c.Addr == watchedAddr {
+			registered = true
+		}
+	}
+	if !registered {
+		t.Fatalf("expected a confirmation watch registered for the watched-address tx")
+	}
 }
 
 // chat 2 unwatches; only chat 1 must remain, both as a live watcher and in the store
@@ -166,57 +172,57 @@ func TestWatchNotification(t *testing.T) {
 //
 // bare /unwatch marks the chat pending and consumes the next plain message
 func TestUnwatchFlow(t *testing.T) {
-    var sent []string
-    var server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-        var body struct {
-            Text string `json:"text"`
-        }
-        json.NewDecoder(r.Body).Decode(&body)
-        sent = append(sent, body.Text)
-        json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": true})
-    }))
-    defer server.Close()
-    useTelegram(t, server.URL)
-    core.Reset()
-    stopNotify()
-    defer stopNotify()
-    openDB(filepath.Join(t.TempDir(), "watches.db"))
-    defer closeDB()
-    var addr = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
-    message("tg", 1, "", "/watch " + addr, "", nil)
-    message("tg", 2, "", "/watch " + addr, "", nil)
-    if countWatchers(addr) != 2 {
-        t.Fatalf("expected 2 watchers, got %d", countWatchers(addr))
-    }
-    message("tg", 2, "", "/unwatch " + addr, "", nil)
-    if sent[len(sent)-1] != "Stopped watching "+addr {
-        t.Fatalf("unexpected unwatch reply: %#v", sent)
-    }
-    if got := watcherChats(addr); len(got) != 1 || got[0] != 1 {
-        t.Fatalf("expected only chat 1 to remain, got %#v", got)
-    }
-    var records, _ = watches.List()
-    if len(records) != 1 || records[0].Chat != 1 {
-        t.Fatalf("expected only chat 1's record in store, got %#v", records)
-    }
-    message("tg", 1, "", "/unwatch bogusaddr", "", nil)
-    if sent[len(sent)-1] != "You're not watching bogusaddr" {
-        t.Fatalf("unexpected not-watching reply: %q", sent[len(sent)-1])
-    }
-    message("tg", 1, "", "/unwatch", "", nil)
-    if c, _, _ := chats.Get("tg", 1); c.State != chats.Unwatch {
-        t.Fatalf("expected chat 1 pending for unwatch")
-    }
-    message("tg", 1, "", addr, "", nil)
-    if sent[len(sent)-1] != "Stopped watching "+addr {
-        t.Fatalf("expected follow-up to remove chat 1's watch, got: %q", sent[len(sent)-1])
-    }
-    if c, _, _ := chats.Get("tg", 1); c.State != "" {
-        t.Fatalf("expected pending cleared")
-    }
-    if countWatchers(addr) != 0 {
-        t.Fatalf("expected no watchers left, got %d", countWatchers(addr))
-    }
+	var sent []string
+	var server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Text string `json:"text"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		sent = append(sent, body.Text)
+		json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": true})
+	}))
+	defer server.Close()
+	useTelegram(t, server.URL)
+	core.Reset()
+	stopNotify()
+	defer stopNotify()
+	openDB(filepath.Join(t.TempDir(), "watches.db"))
+	defer closeDB()
+	var addr = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
+	message("tg", 1, "", "/watch "+addr, "", nil)
+	message("tg", 2, "", "/watch "+addr, "", nil)
+	if countWatchers(addr) != 2 {
+		t.Fatalf("expected 2 watchers, got %d", countWatchers(addr))
+	}
+	message("tg", 2, "", "/unwatch "+addr, "", nil)
+	if sent[len(sent)-1] != "Stopped watching "+addr {
+		t.Fatalf("unexpected unwatch reply: %#v", sent)
+	}
+	if got := watcherChats(addr); len(got) != 1 || got[0] != 1 {
+		t.Fatalf("expected only chat 1 to remain, got %#v", got)
+	}
+	var records, _ = watches.List()
+	if len(records) != 1 || records[0].Chat != 1 {
+		t.Fatalf("expected only chat 1's record in store, got %#v", records)
+	}
+	message("tg", 1, "", "/unwatch bogusaddr", "", nil)
+	if sent[len(sent)-1] != "You're not watching bogusaddr" {
+		t.Fatalf("unexpected not-watching reply: %q", sent[len(sent)-1])
+	}
+	message("tg", 1, "", "/unwatch", "", nil)
+	if c, _, _ := chats.Get("tg", 1); c.State != chats.Unwatch {
+		t.Fatalf("expected chat 1 pending for unwatch")
+	}
+	message("tg", 1, "", addr, "", nil)
+	if sent[len(sent)-1] != "Stopped watching "+addr {
+		t.Fatalf("expected follow-up to remove chat 1's watch, got: %q", sent[len(sent)-1])
+	}
+	if c, _, _ := chats.Get("tg", 1); c.State != "" {
+		t.Fatalf("expected pending cleared")
+	}
+	if countWatchers(addr) != 0 {
+		t.Fatalf("expected no watchers left, got %d", countWatchers(addr))
+	}
 }
 
 // nothing watched yet
@@ -227,49 +233,49 @@ func TestUnwatchFlow(t *testing.T) {
 //
 // a watch id containing HTML metacharacters must be escaped
 func TestWatchesFlow(t *testing.T) {
-    var sent []string
-    var server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-        var body struct {
-            Text string `json:"text"`
-        }
-        json.NewDecoder(r.Body).Decode(&body)
-        sent = append(sent, body.Text)
-        json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": true})
-    }))
-    defer server.Close()
-    useTelegram(t, server.URL)
-    openDB(filepath.Join(t.TempDir(), "watches.db"))
-    defer closeDB()
-    stopNotify()
-    defer stopNotify()
-    message("tg", 1, "", "/watches", "", nil)
-    if sent[len(sent)-1] != "You're not watching anything yet" {
-        t.Fatalf("unexpected empty reply: %q", sent[len(sent)-1])
-    }
-    var addr = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
-    var txid = "f21b47a9143a23e80cc59e81588d21558b394005580b285961957cb3bed5b3e0"
-    watches.Add("tg", 1, addr, "", nil)
-    txwatches.Add(txid, "tg", 1, "")
-    watches.Add("tg", 2, "someoneElsesAddress", "", nil)
-    message("tg", 1, "", "/watches", "", nil)
-    var msg = sent[len(sent)-1]
-    if !strings.Contains(msg, "<code>"+addr+"</code>") {
-        t.Fatalf("expected full address in <code>, got: %q", msg)
-    }
-    if !strings.Contains(msg, "<code>"+txid+"</code>") {
-        t.Fatalf("expected full txid in <code>, got: %q", msg)
-    }
-    if !strings.Contains(msg, "Addresses:") || !strings.Contains(msg, "Transactions:") {
-        t.Fatalf("expected grouped sections, got: %q", msg)
-    }
-    if strings.Contains(msg, "someoneElsesAddress") {
-        t.Fatalf("must not list another chat's watch: %q", msg)
-    }
-    watches.Add("tg", 3, "a<b>c", "", nil)
-    message("tg", 3, "", "/watches", "", nil)
-    if last := sent[len(sent)-1]; !strings.Contains(last, "a&lt;b&gt;c") {
-        t.Fatalf("expected HTML-escaped watch id, got: %q", last)
-    }
+	var sent []string
+	var server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Text string `json:"text"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		sent = append(sent, body.Text)
+		json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": true})
+	}))
+	defer server.Close()
+	useTelegram(t, server.URL)
+	openDB(filepath.Join(t.TempDir(), "watches.db"))
+	defer closeDB()
+	stopNotify()
+	defer stopNotify()
+	message("tg", 1, "", "/watches", "", nil)
+	if sent[len(sent)-1] != "You're not watching anything yet" {
+		t.Fatalf("unexpected empty reply: %q", sent[len(sent)-1])
+	}
+	var addr = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
+	var txid = "f21b47a9143a23e80cc59e81588d21558b394005580b285961957cb3bed5b3e0"
+	watches.Add("tg", 1, addr, "", nil)
+	txwatches.Add(txid, "tg", 1, "")
+	watches.Add("tg", 2, "someoneElsesAddress", "", nil)
+	message("tg", 1, "", "/watches", "", nil)
+	var msg = sent[len(sent)-1]
+	if !strings.Contains(msg, "<code>"+addr+"</code>") {
+		t.Fatalf("expected full address in <code>, got: %q", msg)
+	}
+	if !strings.Contains(msg, "<code>"+txid+"</code>") {
+		t.Fatalf("expected full txid in <code>, got: %q", msg)
+	}
+	if !strings.Contains(msg, "Addresses:") || !strings.Contains(msg, "Transactions:") {
+		t.Fatalf("expected grouped sections, got: %q", msg)
+	}
+	if strings.Contains(msg, "someoneElsesAddress") {
+		t.Fatalf("must not list another chat's watch: %q", msg)
+	}
+	watches.Add("tg", 3, "a<b>c", "", nil)
+	message("tg", 3, "", "/watches", "", nil)
+	if last := sent[len(sent)-1]; !strings.Contains(last, "a&lt;b&gt;c") {
+		t.Fatalf("expected HTML-escaped watch id, got: %q", last)
+	}
 }
 
 // TestWatchLimit seeds a chat up to maxSubscriptionsPerChat and checks that a new
@@ -279,181 +285,185 @@ func TestWatchesFlow(t *testing.T) {
 //
 // the rejected watch must not have been stored
 func TestWatchLimit(t *testing.T) {
-    var sent []string
-    var server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-        var body struct {
-            Text string `json:"text"`
-        }
-        json.NewDecoder(r.Body).Decode(&body)
-        sent = append(sent, body.Text)
-        json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": true})
-    }))
-    defer server.Close()
-    useTelegram(t, server.URL)
-    core.Reset()
-    stopNotify()
-    defer stopNotify()
-    txwatches.Reset()
-    defer txwatches.Reset()
-    openDB(filepath.Join(t.TempDir(), "watches.db"))
-    defer closeDB()
-    for i := 0; i < maxSubscriptionsPerChat; i++ {
-        if err := watches.Add("tg", 42, fmt.Sprintf("addr%d", i), "", nil); err != nil {
-            t.Fatalf("seed watch %d: %v", i, err)
-        }
-    }
-    var addr = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
-    watchCmd("tg", 42, addr, nil)
-    if last := sent[len(sent)-1]; !strings.Contains(last, "limit") {
-        t.Fatalf("expected a limit rejection, got %q", last)
-    }
-    var records, _ = watches.List()
-    for _, r := range records {
-        if r.Chat == 42 && r.Address == addr {
-            t.Fatalf("the rejected watch was stored anyway")
-        }
-    }
+	var sent []string
+	var server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Text string `json:"text"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		sent = append(sent, body.Text)
+		json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": true})
+	}))
+	defer server.Close()
+	useTelegram(t, server.URL)
+	core.Reset()
+	stopNotify()
+	defer stopNotify()
+	txwatches.Reset()
+	defer txwatches.Reset()
+	openDB(filepath.Join(t.TempDir(), "watches.db"))
+	defer closeDB()
+	for i := 0; i < maxSubscriptionsPerChat; i++ {
+		if err := watches.Add("tg", 42, fmt.Sprintf("addr%d", i), "", nil); err != nil {
+			t.Fatalf("seed watch %d: %v", i, err)
+		}
+	}
+	var addr = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
+	watchCmd("tg", 42, addr, nil)
+	if last := sent[len(sent)-1]; !strings.Contains(last, "limit") {
+		t.Fatalf("expected a limit rejection, got %q", last)
+	}
+	var records, _ = watches.List()
+	for _, r := range records {
+		if r.Chat == 42 && r.Address == addr {
+			t.Fatalf("the rejected watch was stored anyway")
+		}
+	}
 }
 
 // a hashblock frame is what zmq.go turns into a checkConfirmations that finds
 // txid in the new block and messages chat 7
 func TestTxConfirmation(t *testing.T) {
-    var sentMu sync.Mutex
-    var sent []string
-    var tg = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-        var body struct {
-            Text string `json:"text"`
-        }
-        json.NewDecoder(r.Body).Decode(&body)
-        sentMu.Lock()
-        sent = append(sent, body.Text)
-        sentMu.Unlock()
-        json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": true})
-    }))
-    defer tg.Close()
-    useTelegram(t, tg.URL)
-    var txid = "f21b47a9143a23e80cc59e81588d21558b394005580b285961957cb3bed5b3e0"
-    var srv = coretest.Server(t, func(method string, params []any) (any, error) {
-        var p = params
-        _ = p
-        switch method {
-        case "notifyblocks":
-            return nil, nil
-        case "getblock":
-            if len(p) > 1 && p[1].(float64) == 1 {
-                return map[string]any{"height": 100, "tx": []string{txid}}, nil
-            }
-            return map[string]any{"hash": "0000000000000000abc", "height": 100, "time": 1700000000, "size": 300,
-                "tx": []map[string]any{{"txid": "cb", "size": 100, "vin": []map[string]any{{"coinbase": "03"}}, "vout": []map[string]any{{"value": 50.0}}}}}, nil
-        }
-        return nil, nil
-    })
-    defer srv.Close()
-    coretest.Use(t, srv)
-    openDB(filepath.Join(t.TempDir(), "watches.db"))
-    defer closeDB()
-    stopNotify()
-    defer stopNotify()
-    txwatches.Add(txid, "tg", 7, "Alice")
-    go processConfirms("0000000000000000abc")
-    var found string
-    var deadline = time.Now().Add(3 * time.Second)
-    for time.Now().Before(deadline) {
-        sentMu.Lock()
-        for _, m := range sent {
-            if strings.Contains(m, "was confirmed") { found = m }
-        }
-        sentMu.Unlock()
-        if found != "" { break }
-        time.Sleep(10 * time.Millisecond)
-    }
-    if found == "" {
-        t.Fatalf("expected a confirmation notification, got: %#v", sent)
-    }
-    for _, want := range []string{"Transaction " + short(txid), "(Alice)", "was confirmed in block #100 after"} {
-        if !strings.Contains(found, want) {
-            t.Fatalf("confirmation missing %q: %q", want, found)
-        }
-    }
+	var sentMu sync.Mutex
+	var sent []string
+	var tg = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Text string `json:"text"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		sentMu.Lock()
+		sent = append(sent, body.Text)
+		sentMu.Unlock()
+		json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": true})
+	}))
+	defer tg.Close()
+	useTelegram(t, tg.URL)
+	var txid = "f21b47a9143a23e80cc59e81588d21558b394005580b285961957cb3bed5b3e0"
+	var srv = coretest.Server(t, func(method string, params []any) (any, error) {
+		var p = params
+		_ = p
+		switch method {
+		case "notifyblocks":
+			return nil, nil
+		case "getblock":
+			if len(p) > 1 && p[1].(float64) == 1 {
+				return map[string]any{"height": 100, "tx": []string{txid}}, nil
+			}
+			return map[string]any{"hash": "0000000000000000abc", "height": 100, "time": 1700000000, "size": 300,
+				"tx": []map[string]any{{"txid": "cb", "size": 100, "vin": []map[string]any{{"coinbase": "03"}}, "vout": []map[string]any{{"value": 50.0}}}}}, nil
+		}
+		return nil, nil
+	})
+	defer srv.Close()
+	coretest.Use(t, srv)
+	openDB(filepath.Join(t.TempDir(), "watches.db"))
+	defer closeDB()
+	stopNotify()
+	defer stopNotify()
+	txwatches.Add(txid, "tg", 7, "Alice")
+	go processConfirms("0000000000000000abc")
+	var found string
+	var deadline = time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		sentMu.Lock()
+		for _, m := range sent {
+			if strings.Contains(m, "was confirmed") {
+				found = m
+			}
+		}
+		sentMu.Unlock()
+		if found != "" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if found == "" {
+		t.Fatalf("expected a confirmation notification, got: %#v", sent)
+	}
+	for _, want := range []string{"Transaction " + short(txid), "(Alice)", "was confirmed in block 100 after"} {
+		if !strings.Contains(found, want) {
+			t.Fatalf("confirmation missing %q: %q", want, found)
+		}
+	}
 }
 
 func TestDurationText(t *testing.T) {
-    var cases = []struct {
-        d    time.Duration
-        want string
-    }{
-        {30 * time.Second, "30 seconds"},
-        {time.Minute, "1 minute"},
-        {5 * time.Minute, "5 minutes"},
-        {90 * time.Minute, "1 hour 30 minutes"},
-        {2 * time.Hour, "2 hours"},
-        {121 * time.Minute, "2 hours 1 minute"},
-    }
-    for _, c := range cases {
-        if got := durationText(c.d, ""); got != c.want {
-            t.Errorf("durationText(%v) = %q, want %q", c.d, got, c.want)
-        }
-    }
+	var cases = []struct {
+		d    time.Duration
+		want string
+	}{
+		{30 * time.Second, "30 seconds"},
+		{time.Minute, "1 minute"},
+		{5 * time.Minute, "5 minutes"},
+		{90 * time.Minute, "1 hour 30 minutes"},
+		{2 * time.Hour, "2 hours"},
+		{121 * time.Minute, "2 hours 1 minute"},
+	}
+	for _, c := range cases {
+		if got := durationText(c.d, ""); got != c.want {
+			t.Errorf("durationText(%v) = %q, want %q", c.d, got, c.want)
+		}
+	}
 }
 
 func TestAddrConfirmation(t *testing.T) {
-    var sentMu sync.Mutex
-    var sent []string
-    var tg = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-        var body struct {
-            Text string `json:"text"`
-        }
-        json.NewDecoder(r.Body).Decode(&body)
-        sentMu.Lock()
-        sent = append(sent, body.Text)
-        sentMu.Unlock()
-        json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": true})
-    }))
-    defer tg.Close()
-    useTelegram(t, tg.URL)
-    var addr = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
-    var txid = "f21b47a9143a23e80cc59e81588d21558b394005580b285961957cb3bed5b3e0"
-    var srv = coretest.Server(t, func(method string, params []any) (any, error) {
-        if method == "getblock" {
-            return map[string]any{"height": 200, "tx": []string{txid}}, nil
-        }
-        return nil, nil
-    })
-    defer srv.Close()
-    coretest.Use(t, srv)
-    stopNotify()
-    defer stopNotify()
-    txwatches.AddAddrConfirm(txid, "tg", 7, addr, "John", txwatches.Summary{})
-    processConfirms("hash200")
-    sentMu.Lock()
-    defer sentMu.Unlock()
-    var found string
-    for _, m := range sent {
-        if strings.Contains(m, "Confirmed") {
-            found = m
-        }
-    }
-    if found == "" {
-        t.Fatalf("expected a confirmation message, got %#v", sent)
-    }
-    for _, want := range []string{txid, short(addr), "(John)", "Confirmed in block #200 after"} {
-        if !strings.Contains(found, want) {
-            t.Fatalf("address confirmation missing %q: %q", want, found)
-        }
-    }
+	var sentMu sync.Mutex
+	var sent []string
+	var tg = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Text string `json:"text"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		sentMu.Lock()
+		sent = append(sent, body.Text)
+		sentMu.Unlock()
+		json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": true})
+	}))
+	defer tg.Close()
+	useTelegram(t, tg.URL)
+	var addr = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
+	var txid = "f21b47a9143a23e80cc59e81588d21558b394005580b285961957cb3bed5b3e0"
+	var srv = coretest.Server(t, func(method string, params []any) (any, error) {
+		if method == "getblock" {
+			return map[string]any{"height": 200, "tx": []string{txid}}, nil
+		}
+		return nil, nil
+	})
+	defer srv.Close()
+	coretest.Use(t, srv)
+	stopNotify()
+	defer stopNotify()
+	txwatches.AddAddrConfirm(txid, "tg", 7, addr, "John", txwatches.Summary{})
+	processConfirms("hash200")
+	sentMu.Lock()
+	defer sentMu.Unlock()
+	var found string
+	for _, m := range sent {
+		if strings.Contains(m, "Confirmed") {
+			found = m
+		}
+	}
+	if found == "" {
+		t.Fatalf("expected a confirmation message, got %#v", sent)
+	}
+	for _, want := range []string{txid, short(addr), "(John)", "Confirmed in block 200 after"} {
+		if !strings.Contains(found, want) {
+			t.Fatalf("address confirmation missing %q: %q", want, found)
+		}
+	}
 }
 
 // the two identical address confirmations dedup to one; the direct watch (addr "") stays distinct
 func TestAddrConfirmDedup(t *testing.T) {
-    txwatches.Reset()
-    defer txwatches.Reset()
-    txwatches.AddAddrConfirm("txabc", "tg", 5, "addrX", "Alias", txwatches.Summary{})
-    txwatches.AddAddrConfirm("txabc", "tg", 5, "addrX", "Alias", txwatches.Summary{})
-    txwatches.Add("txabc", "tg", 5, "")
-    var n = len(txwatches.Confirms([]string{"txabc"}))
-    if n != 2 {
-        t.Fatalf("expected 2 entries (deduped addr-confirm + distinct direct watch), got %d", n)
-    }
+	txwatches.Reset()
+	defer txwatches.Reset()
+	txwatches.AddAddrConfirm("txabc", "tg", 5, "addrX", "Alias", txwatches.Summary{})
+	txwatches.AddAddrConfirm("txabc", "tg", 5, "addrX", "Alias", txwatches.Summary{})
+	txwatches.Add("txabc", "tg", 5, "")
+	var n = len(txwatches.Confirms([]string{"txabc"}))
+	if n != 2 {
+		t.Fatalf("expected 2 entries (deduped addr-confirm + distinct direct watch), got %d", n)
+	}
 }
 
 // spendCoreServer fakes Core for a transaction *spending* watchedAddr: the
@@ -462,40 +472,42 @@ func TestAddrConfirmDedup(t *testing.T) {
 // which is the only way the sending side is visible, since a decoded transaction
 // names receiving addresses only.
 func spendCoreServer(t *testing.T, watchedAddr, txid string, change bool) *httptest.Server {
-    var inValue = 1.0001
-    var outs = []map[string]any{
-        {"value": 1.0, "n": 0, "scriptPubKey": map[string]any{"address": "1RecipientAddr", "hex": "76a914bb88ac"}},
-    }
-    if change {
-        inValue = 2.5
-        outs = append(outs, map[string]any{"value": 1.4999, "n": 1, "scriptPubKey": map[string]any{"address": watchedAddr, "hex": "76a914aa88ac"}})
-    }
-    return coretest.Server(t, func(method string, params []any) (any, error) {
-        switch method {
-        case "validateaddress":
-            return map[string]any{"isvalid": true, "address": watchedAddr, "scriptPubKey": "76a914aa88ac"}, nil
-        case "scantxoutset":
-            return map[string]any{"success": true, "unspents": []map[string]any{}}, nil
-        case "decoderawtransaction":
-            return map[string]any{"txid": txid, "vout": outs}, nil
-        case "getrawtransaction":
-            if reqTxid, _ := params[0].(string); reqTxid == "prevtx" {
-                return map[string]any{"vout": []map[string]any{{"value": inValue, "n": 0, "scriptPubKey": map[string]any{"address": watchedAddr, "hex": "76a914aa88ac"}}}}, nil
-            }
-            return map[string]any{
-                "txid": txid, "confirmations": 0, "size": 110, "vsize": 100,
-                "vin":  []map[string]any{{"txid": "prevtx", "vout": 0}},
-                "vout": outs,
-            }, nil
-        case "getmempoolentry":
-            return map[string]any{"vsize": 100, "fees": map[string]any{"base": 0.0001}}, nil
-        case "estimatesmartfee":
-            var rate = 0.0002
-            if blocks, _ := params[0].(float64); blocks == 2 { rate = 0.0005 }
-            return map[string]any{"feerate": rate, "blocks": params[0]}, nil
-        }
-        return nil, nil
-    })
+	var inValue = 1.0001
+	var outs = []map[string]any{
+		{"value": 1.0, "n": 0, "scriptPubKey": map[string]any{"address": "1RecipientAddr", "hex": "76a914bb88ac"}},
+	}
+	if change {
+		inValue = 2.5
+		outs = append(outs, map[string]any{"value": 1.4999, "n": 1, "scriptPubKey": map[string]any{"address": watchedAddr, "hex": "76a914aa88ac"}})
+	}
+	return coretest.Server(t, func(method string, params []any) (any, error) {
+		switch method {
+		case "validateaddress":
+			return map[string]any{"isvalid": true, "address": watchedAddr, "scriptPubKey": "76a914aa88ac"}, nil
+		case "scantxoutset":
+			return map[string]any{"success": true, "unspents": []map[string]any{}}, nil
+		case "decoderawtransaction":
+			return map[string]any{"txid": txid, "vout": outs}, nil
+		case "getrawtransaction":
+			if reqTxid, _ := params[0].(string); reqTxid == "prevtx" {
+				return map[string]any{"vout": []map[string]any{{"value": inValue, "n": 0, "scriptPubKey": map[string]any{"address": watchedAddr, "hex": "76a914aa88ac"}}}}, nil
+			}
+			return map[string]any{
+				"txid": txid, "confirmations": 0, "size": 110, "vsize": 100,
+				"vin":  []map[string]any{{"txid": "prevtx", "vout": 0}},
+				"vout": outs,
+			}, nil
+		case "getmempoolentry":
+			return map[string]any{"vsize": 100, "fees": map[string]any{"base": 0.0001}}, nil
+		case "estimatesmartfee":
+			var rate = 0.0002
+			if blocks, _ := params[0].(float64); blocks == 2 {
+				rate = 0.0005
+			}
+			return map[string]any{"feerate": rate, "blocks": params[0]}, nil
+		}
+		return nil, nil
+	})
 }
 
 // awaitNotification drives a watch on watchedAddr against the given fake core and
@@ -506,9 +518,9 @@ var capturedMu sync.Mutex
 var captured []string
 
 func sentMessages(t *testing.T) []string {
-    capturedMu.Lock()
-    defer capturedMu.Unlock()
-    return append([]string(nil), captured...)
+	capturedMu.Lock()
+	defer capturedMu.Unlock()
+	return append([]string(nil), captured...)
 }
 
 // Populate cachedFees so confEstimate can map fee rates to ETA without
@@ -519,55 +531,59 @@ func sentMessages(t *testing.T) []string {
 //
 // ZMQ delivers the raw transaction; this is what zmq.go does with a rawtx frame
 func awaitNotification(t *testing.T, btcdSrv *httptest.Server, watchedAddr string) string {
-    capturedMu.Lock()
-    captured = nil
-    capturedMu.Unlock()
-    var sentMu sync.Mutex
-    var sent []string
-    var tg = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-        var body struct {
-            Text string `json:"text"`
-        }
-        json.NewDecoder(r.Body).Decode(&body)
-        sentMu.Lock()
-        sent = append(sent, body.Text)
-        sentMu.Unlock()
-        capturedMu.Lock()
-        captured = append(captured, body.Text)
-        capturedMu.Unlock()
-        json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": true})
-    }))
-    useTelegram(t, tg.URL)
-    coretest.Use(t, btcdSrv)
-    feesMu.Lock()
-    cachedFees = recommendedFees{fastest: 50, halfHour: 30, hour: 20, economy: 10, minimum: 1}
-    cachedFeesOK = true
-    cachedFeesCount = 1000
-    feesMu.Unlock()
-    openDB(filepath.Join(t.TempDir(), "watches.db"))
-    stopNotify()
-    resetWatched()
-    t.Cleanup(tg.Close)
-    t.Cleanup(func() { closeDB() })
-    t.Cleanup(stopNotify)
-    t.Cleanup(resetWatched)
-    watchCmd("tg", 42, watchedAddr+" John", nil)
-    broadcast("deadbeefrawtxhex")
-    var deadline = time.Now().Add(3 * time.Second)
-    for time.Now().Before(deadline) {
-        sentMu.Lock()
-        var found string
-        for _, m := range sent {
-            if strings.Contains(m, "is sending") { found = m }
-        }
-        sentMu.Unlock()
-        if found != "" { return found }
-        time.Sleep(10 * time.Millisecond)
-    }
-    sentMu.Lock()
-    defer sentMu.Unlock()
-    t.Fatalf("expected a watch notification, got: %#v", sent)
-    return ""
+	capturedMu.Lock()
+	captured = nil
+	capturedMu.Unlock()
+	var sentMu sync.Mutex
+	var sent []string
+	var tg = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Text string `json:"text"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		sentMu.Lock()
+		sent = append(sent, body.Text)
+		sentMu.Unlock()
+		capturedMu.Lock()
+		captured = append(captured, body.Text)
+		capturedMu.Unlock()
+		json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": true})
+	}))
+	useTelegram(t, tg.URL)
+	coretest.Use(t, btcdSrv)
+	feesMu.Lock()
+	cachedFees = recommendedFees{fastest: 50, halfHour: 30, hour: 20, economy: 10, minimum: 1}
+	cachedFeesOK = true
+	cachedFeesCount = 1000
+	feesMu.Unlock()
+	openDB(filepath.Join(t.TempDir(), "watches.db"))
+	stopNotify()
+	resetWatched()
+	t.Cleanup(tg.Close)
+	t.Cleanup(func() { closeDB() })
+	t.Cleanup(stopNotify)
+	t.Cleanup(resetWatched)
+	watchCmd("tg", 42, watchedAddr+" John", nil)
+	broadcast("deadbeefrawtxhex")
+	var deadline = time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		sentMu.Lock()
+		var found string
+		for _, m := range sent {
+			if strings.Contains(m, "is sending") {
+				found = m
+			}
+		}
+		sentMu.Unlock()
+		if found != "" {
+			return found
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	sentMu.Lock()
+	defer sentMu.Unlock()
+	t.Fatalf("expected a watch notification, got: %#v", sent)
+	return ""
 }
 
 // Spending the whole balance with nothing back: the address only appears in the
@@ -577,37 +593,39 @@ func awaitNotification(t *testing.T, btcdSrv *httptest.Server, watchedAddr strin
 //
 // an outgoing transaction is worth a confirmation follow-up too
 func TestSpendNotification(t *testing.T) {
-    var watchedAddr = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
-    var txid = "f21b47a9143a23e80cc59e81588d21558b394005580b285961957cb3bed5b3e0"
-    var srv = spendCoreServer(t, watchedAddr, txid, false)
-    defer srv.Close()
-    var got = awaitNotification(t, srv, watchedAddr)
-    if !strings.Contains(got, short(watchedAddr)+" (John)") {
-        t.Fatalf("expected an outgoing-transaction notification: %q", got)
-    }
-    if strings.Contains(got, "New transaction on") {
-        t.Fatalf("a spend must not be reported as an incoming transaction: %q", got)
-    }
-    if !strings.Contains(got, "Sending:") || !strings.Contains(got, "1 BTC") {
-        t.Fatalf("expected the sent amount: %q", got)
-    }
-    for _, unwanted := range []string{"Change back:", "Net:", "Amount:"} {
-        if strings.Contains(got, unwanted) {
-            t.Fatalf("unexpected %q with no change output: %q", unwanted, got)
-        }
-    }
-    for _, want := range []string{"Fee:", "10 000 sats (100 sat/vB)", "ETA:", "~10-20 min"} {
-        if !strings.Contains(got, want) {
-            t.Fatalf("notification missing %q: %q", want, got)
-        }
-    }
-    var registered bool
-    for _, c := range txwatches.Confirms([]string{txid}) {
-        if c.ChatID == 42 && c.Addr == watchedAddr { registered = true }
-    }
-    if !registered {
-        t.Fatal("expected a confirmation watch registered for the outgoing tx")
-    }
+	var watchedAddr = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
+	var txid = "f21b47a9143a23e80cc59e81588d21558b394005580b285961957cb3bed5b3e0"
+	var srv = spendCoreServer(t, watchedAddr, txid, false)
+	defer srv.Close()
+	var got = awaitNotification(t, srv, watchedAddr)
+	if !strings.Contains(got, short(watchedAddr)+" (John)") {
+		t.Fatalf("expected an outgoing-transaction notification: %q", got)
+	}
+	if strings.Contains(got, "New transaction on") {
+		t.Fatalf("a spend must not be reported as an incoming transaction: %q", got)
+	}
+	if !strings.Contains(got, "Sending:") || !strings.Contains(got, "1 BTC") {
+		t.Fatalf("expected the sent amount: %q", got)
+	}
+	for _, unwanted := range []string{"Change back:", "Net:", "Amount:"} {
+		if strings.Contains(got, unwanted) {
+			t.Fatalf("unexpected %q with no change output: %q", unwanted, got)
+		}
+	}
+	for _, want := range []string{"Fee:", "10 000 sats (100 sat/vB)", "ETA:", "~10-20 min"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("notification missing %q: %q", want, got)
+		}
+	}
+	var registered bool
+	for _, c := range txwatches.Confirms([]string{txid}) {
+		if c.ChatID == 42 && c.Addr == watchedAddr {
+			registered = true
+		}
+	}
+	if !registered {
+		t.Fatal("expected a confirmation watch registered for the outgoing tx")
+	}
 }
 
 // The usual spend: part goes to the recipient and the rest returns as change, so
@@ -615,19 +633,19 @@ func TestSpendNotification(t *testing.T) {
 //
 // 2.5 spent, 1.4999 back as change, so the address is down 1.0001 BTC
 func TestSpendWithChangeNotification(t *testing.T) {
-    var watchedAddr = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
-    var txid = "f21b47a9143a23e80cc59e81588d21558b394005580b285961957cb3bed5b3e0"
-    var srv = spendCoreServer(t, watchedAddr, txid, true)
-    defer srv.Close()
-    var got = awaitNotification(t, srv, watchedAddr)
-    if !strings.Contains(got, "sending") {
-        t.Fatalf("expected an outgoing-transaction notification: %q", got)
-    }
-    for _, want := range []string{"Sending:", "2.5 BTC", "Change back:", "1.4999 BTC", "Net:", "-1.0001 BTC"} {
-        if !strings.Contains(got, want) {
-            t.Fatalf("notification missing %q: %q", want, got)
-        }
-    }
+	var watchedAddr = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
+	var txid = "f21b47a9143a23e80cc59e81588d21558b394005580b285961957cb3bed5b3e0"
+	var srv = spendCoreServer(t, watchedAddr, txid, true)
+	defer srv.Close()
+	var got = awaitNotification(t, srv, watchedAddr)
+	if !strings.Contains(got, "sending") {
+		t.Fatalf("expected an outgoing-transaction notification: %q", got)
+	}
+	for _, want := range []string{"Sending:", "2.5 BTC", "Change back:", "1.4999 BTC", "Net:", "-1.0001 BTC"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("notification missing %q: %q", want, got)
+		}
+	}
 }
 
 // Spend detection needs to know which outpoints a watched address owns, because
@@ -639,52 +657,53 @@ func TestSpendWithChangeNotification(t *testing.T) {
 //
 // an unspent belonging to a different script must not be attributed to us
 func TestSeedOutpoints(t *testing.T) {
-    var addr = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
-    var script = "76a914aabbccddeeff88ac"
-    var srv = coretest.Server(t, func(method string, params []any) (any, error) {
-        switch method {
-        case "validateaddress":
-            return map[string]any{"isvalid": true, "address": addr, "scriptPubKey": script}, nil
-        case "scantxoutset":
-            if action, _ := params[0].(string); action != "start" {
-                t.Fatalf("scantxoutset action = %v, want start", params[0])
-            }
-            return map[string]any{"success": true, "unspents": []map[string]any{
-                {"txid": "tx2", "vout": 0, "scriptPubKey": script, "amount": 1.0, "height": 100},
-                {"txid": "tx4", "vout": 1, "scriptPubKey": script, "amount": 0.5, "height": 200},
-                {"txid": "other", "vout": 0, "scriptPubKey": "76a914ffff88ac", "amount": 9.0, "height": 300},
-            }}, nil
-        }
-        return nil, nil
-    })
-    coretest.Use(t, srv)
-    resetWatched()
-    t.Cleanup(resetWatched)
-    seedOutpoints([]string{addr})
-    var deadline = time.Now().Add(5 * time.Second)
-    for time.Now().Before(deadline) {
-        watchedMu.Lock()
-        var n = len(watchedOutpoints)
-        watchedMu.Unlock()
-        if n >= 2 { break }
-        time.Sleep(10 * time.Millisecond)
-    }
-    watchedMu.Lock()
-    defer watchedMu.Unlock()
-    if watchedScripts[script] != addr {
-        t.Fatalf("the address's scriptPubKey was not registered for matching: %v", watchedScripts)
-    }
-    var want = map[outpoint]string{{"tx2", 0}: addr, {"tx4", 1}: addr}
-    for op, owner := range want {
-        if watchedOutpoints[op] != owner {
-            t.Fatalf("outpoint %v not seeded (got %q): %v", op, watchedOutpoints[op], watchedOutpoints)
-        }
-    }
-    if _, ok := watchedOutpoints[outpoint{"other", 0}]; ok {
-        t.Fatal("an unrelated address's outpoint was seeded")
-    }
+	var addr = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
+	var script = "76a914aabbccddeeff88ac"
+	var srv = coretest.Server(t, func(method string, params []any) (any, error) {
+		switch method {
+		case "validateaddress":
+			return map[string]any{"isvalid": true, "address": addr, "scriptPubKey": script}, nil
+		case "scantxoutset":
+			if action, _ := params[0].(string); action != "start" {
+				t.Fatalf("scantxoutset action = %v, want start", params[0])
+			}
+			return map[string]any{"success": true, "unspents": []map[string]any{
+				{"txid": "tx2", "vout": 0, "scriptPubKey": script, "amount": 1.0, "height": 100},
+				{"txid": "tx4", "vout": 1, "scriptPubKey": script, "amount": 0.5, "height": 200},
+				{"txid": "other", "vout": 0, "scriptPubKey": "76a914ffff88ac", "amount": 9.0, "height": 300},
+			}}, nil
+		}
+		return nil, nil
+	})
+	coretest.Use(t, srv)
+	resetWatched()
+	t.Cleanup(resetWatched)
+	seedOutpoints([]string{addr})
+	var deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		watchedMu.Lock()
+		var n = len(watchedOutpoints)
+		watchedMu.Unlock()
+		if n >= 2 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	watchedMu.Lock()
+	defer watchedMu.Unlock()
+	if watchedScripts[script] != addr {
+		t.Fatalf("the address's scriptPubKey was not registered for matching: %v", watchedScripts)
+	}
+	var want = map[outpoint]string{{"tx2", 0}: addr, {"tx4", 1}: addr}
+	for op, owner := range want {
+		if watchedOutpoints[op] != owner {
+			t.Fatalf("outpoint %v not seeded (got %q): %v", op, watchedOutpoints[op], watchedOutpoints)
+		}
+	}
+	if _, ok := watchedOutpoints[outpoint{"other", 0}]; ok {
+		t.Fatal("an unrelated address's outpoint was seeded")
+	}
 }
-
 
 // Core publishes a transaction on rawtx twice — when it enters the mempool and
 // again when it is mined — so broadcasting the same transaction twice must
@@ -696,97 +715,105 @@ func TestSeedOutpoints(t *testing.T) {
 //
 // a *different* transaction on the same address still notifies
 func TestBroadcastDedups(t *testing.T) {
-    var watchedAddr = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
-    var txid = "f21b47a9143a23e80cc59e81588d21558b394005580b285961957cb3bed5b3e0"
-    var srv = spendCoreServer(t, watchedAddr, txid, false)
-    defer srv.Close()
-    var got = awaitNotification(t, srv, watchedAddr)
-    if !strings.Contains(got, "is sending") {
-        t.Fatalf("expected a first notification, got %q", got)
-    }
-    var before = len(sentMessages(t))
-    broadcast("deadbeefrawtxhex")
-    time.Sleep(300 * time.Millisecond)
-    if after := len(sentMessages(t)); after != before {
-        t.Fatalf("a repeat broadcast sent %d extra message(s); it must send none", after-before)
-    }
-    if alreadyNotified("some-other-txid") {
-        t.Fatal("an unseen txid must not be reported as already notified")
-    }
+	var watchedAddr = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
+	var txid = "f21b47a9143a23e80cc59e81588d21558b394005580b285961957cb3bed5b3e0"
+	var srv = spendCoreServer(t, watchedAddr, txid, false)
+	defer srv.Close()
+	var got = awaitNotification(t, srv, watchedAddr)
+	if !strings.Contains(got, "is sending") {
+		t.Fatalf("expected a first notification, got %q", got)
+	}
+	var before = len(sentMessages(t))
+	broadcast("deadbeefrawtxhex")
+	time.Sleep(300 * time.Millisecond)
+	if after := len(sentMessages(t)); after != before {
+		t.Fatalf("a repeat broadcast sent %d extra message(s); it must send none", after-before)
+	}
+	if alreadyNotified("some-other-txid") {
+		t.Fatal("an unseen txid must not be reported as already notified")
+	}
 }
 
 // A transaction first seen already mined — a coinbase paying a watched address,
 // or one that arrived while the bot was down — has no earlier sighting to dedup
 // against, so it must still notify.
 func TestBroadcastNotifiesFirstSeenMined(t *testing.T) {
-    stopNotify()
-    defer stopNotify()
-    if alreadyNotified("mined-first-sighting") {
-        t.Fatal("a transaction never seen before must notify, even when already confirmed")
-    }
-    if !alreadyNotified("mined-first-sighting") {
-        t.Fatal("the second sighting of the same transaction must be suppressed")
-    }
+	stopNotify()
+	defer stopNotify()
+	if alreadyNotified("mined-first-sighting") {
+		t.Fatal("a transaction never seen before must notify, even when already confirmed")
+	}
+	if !alreadyNotified("mined-first-sighting") {
+		t.Fatal("the second sighting of the same transaction must be suppressed")
+	}
 }
 
 // The confirmation message names the block it was mined in, so that block should
 // be one tap away like the txid and address are.
 func TestConfirmationLinksBlock(t *testing.T) {
-    var txid = "f21b47a9143a23e80cc59e81588d21558b394005580b285961957cb3bed5b3e0"
-    var addr = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
-    var markupMu sync.Mutex
-    var markups []map[string]any
-    var tg = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-        var body map[string]any
-        json.NewDecoder(r.Body).Decode(&body)
-        markupMu.Lock()
-        markups = append(markups, body)
-        markupMu.Unlock()
-        json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": true})
-    }))
-    defer tg.Close()
-    useTelegram(t, tg.URL)
-    var srv = coretest.Server(t, func(method string, params []any) (any, error) {
-        if method == "getblock" {
-            return map[string]any{"height": 959126, "tx": []string{txid}}, nil
-        }
-        return nil, nil
-    })
-    coretest.Use(t, srv)
-    stopNotify()
-    t.Cleanup(stopNotify)
-    txwatches.AddAddrConfirm(txid, "tg", 42, addr, "", txwatches.Summary{})
-    processConfirms("0000000000000000abc")
-    var deadline = time.Now().Add(3 * time.Second)
-    for time.Now().Before(deadline) {
-        markupMu.Lock()
-        var n = len(markups)
-        markupMu.Unlock()
-        if n > 0 { break }
-        time.Sleep(10 * time.Millisecond)
-    }
-    markupMu.Lock()
-    defer markupMu.Unlock()
-    if len(markups) == 0 { t.Fatal("no confirmation message was sent") }
-    var body = markups[len(markups)-1]
-    if text, _ := body["text"].(string); !strings.Contains(text, "block #959126") {
-        t.Fatalf("confirmation text = %q", body["text"])
-    }
-    var markup, ok = body["reply_markup"].(map[string]any)
-    if !ok { t.Fatal("the confirmation message carries no buttons") }
-    var found []string
-    for _, row := range markup["inline_keyboard"].([]any) {
-        for _, btn := range row.([]any) {
-            found = append(found, btn.(map[string]any)["callback_data"].(string))
-        }
-    }
-    var want = map[string]bool{txid: false, addr: false, "959126": false}
-    for _, data := range found {
-        if _, expected := want[data]; expected { want[data] = true }
-    }
-    for id, seen := range want {
-        if !seen {
-            t.Errorf("no button for %q — buttons were %v", id, found)
-        }
-    }
+	var txid = "f21b47a9143a23e80cc59e81588d21558b394005580b285961957cb3bed5b3e0"
+	var addr = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
+	var markupMu sync.Mutex
+	var markups []map[string]any
+	var tg = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		json.NewDecoder(r.Body).Decode(&body)
+		markupMu.Lock()
+		markups = append(markups, body)
+		markupMu.Unlock()
+		json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": true})
+	}))
+	defer tg.Close()
+	useTelegram(t, tg.URL)
+	var srv = coretest.Server(t, func(method string, params []any) (any, error) {
+		if method == "getblock" {
+			return map[string]any{"height": 959126, "tx": []string{txid}}, nil
+		}
+		return nil, nil
+	})
+	coretest.Use(t, srv)
+	stopNotify()
+	t.Cleanup(stopNotify)
+	txwatches.AddAddrConfirm(txid, "tg", 42, addr, "", txwatches.Summary{})
+	processConfirms("0000000000000000abc")
+	var deadline = time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		markupMu.Lock()
+		var n = len(markups)
+		markupMu.Unlock()
+		if n > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	markupMu.Lock()
+	defer markupMu.Unlock()
+	if len(markups) == 0 {
+		t.Fatal("no confirmation message was sent")
+	}
+	var body = markups[len(markups)-1]
+	if text, _ := body["text"].(string); !strings.Contains(text, "block #959126") {
+		t.Fatalf("confirmation text = %q", body["text"])
+	}
+	var markup, ok = body["reply_markup"].(map[string]any)
+	if !ok {
+		t.Fatal("the confirmation message carries no buttons")
+	}
+	var found []string
+	for _, row := range markup["inline_keyboard"].([]any) {
+		for _, btn := range row.([]any) {
+			found = append(found, btn.(map[string]any)["callback_data"].(string))
+		}
+	}
+	var want = map[string]bool{txid: false, addr: false, "959126": false}
+	for _, data := range found {
+		if _, expected := want[data]; expected {
+			want[data] = true
+		}
+	}
+	for id, seen := range want {
+		if !seen {
+			t.Errorf("no button for %q — buttons were %v", id, found)
+		}
+	}
 }
