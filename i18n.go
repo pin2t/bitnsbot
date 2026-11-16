@@ -556,12 +556,13 @@ func (p pluralTr) Plural(n int64, key string) string {
 	var forms, ok = p[key]
 	if !ok { forms, ok = plurals["en"][key] }
 	if !ok { return fmt.Sprintf("%d %s", n, key) }
-	if n < 0 { n = -n }
+	var nn = n
+	if n < 0 { nn = -n }
 	var i = 0
 	switch {
-	case len(forms) == 2 && n != 1: i = 1
-	case len(forms) == 3 && (n%10 == 0 || n%10 >= 5 || n%100 >= 11 && n%100 <= 14): i = 2
-	case len(forms) == 3 && n%10 != 1: i = 1
+	case len(forms) == 2 && nn != 1: i = 1
+	case len(forms) == 3 && (nn%10 == 0 || nn%10 >= 5 || nn%100 >= 11 && nn%100 <= 14): i = 2
+	case len(forms) == 3 && nn%10 != 1: i = 1
 	}
 	return fmt.Sprintf(forms[i], n)
 }
