@@ -75,5 +75,5 @@ func TestRateIsTheLastChunks(t *testing.T) {
     var lines = strings.Split(strings.TrimSpace(out), "\n")
     if len(lines) != 2 { t.Fatalf("logged %q", out) }
     if !strings.Contains(lines[0], "0.1 blocks/sec") { t.Errorf("first chunk: %q", lines[0]) }
-    if !strings.Contains(lines[1], " 1000 blocks/sec, ETA 1m") { t.Errorf("second chunk: %q", lines[1]) }
+    if !strings.Contains(lines[1], " 1000 blocks/sec, ETA 1 m") { t.Errorf("second chunk: %q", lines[1]) }
 }
