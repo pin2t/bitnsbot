@@ -332,7 +332,11 @@ func startZMQ(ctx context.Context, endpoints []string) error {
                     if len(msg.Frames[1]) < 33 || msg.Frames[1][32] != 'D' { continue }
                     var hash = hex.EncodeToString(msg.Frames[1][:32])
                     logging.Info("zmq: block %s disconnected", hash)
-                    go rollback(hash)
+                    go func() {
+						blocks.Rollback(hash)
+						addrstat.Rollback(hash)
+						addrindex.Rollback(hash)
+					}()
                 case "rawtx":
                     var tx, ok = parseTx(msg.Frames[1])
                     if !ok {
@@ -368,15 +372,3 @@ func startZMQ(ctx context.Context, endpoints []string) error {
 // again after a read failed, and between attempts while they stay down. A
 // variable so a test need not wait; startZMQ reads it once.
 var zmqRetry = 5 * time.Second
-
-// rollback takes a block a reorg disconnected out of the block cache, the
-// address statistics and the address index. It runs on a goroutine of its own,
-// since all three ask the database and the last two the node, and the ZMQ read
-// loop that hears of the disconnect must not stall on any. They run in order,
-// the block cache first, and a failure of one does not keep the others from
-// running.
-func rollback(hash string) {
-    blocks.Rollback(hash)
-    addrstat.Rollback(hash)
-    addrindex.Rollback(hash)
-}

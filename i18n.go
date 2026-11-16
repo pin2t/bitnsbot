@@ -448,9 +448,7 @@ func i18n(platform string, chat int64) trans { return i18nl(chatLang(platform, c
 // has to resolve to a readable word in every language and English is where that
 // word lives.
 func i18nl(lang string) trans {
-	if t, ok := langTrans[lang]; ok {
-		return t
-	}
+	if t, ok := langTrans[lang]; ok { return t }
 	return english
 }
 
@@ -544,9 +542,7 @@ var plurals = map[string]pluralTr{
 // i18np returns the plural forms for a language, English for "" and for any
 // language there are none for — the way i18nl falls back to the english table.
 func i18np(lang string) pluralTr {
-	if p, ok := plurals[lang]; ok {
-		return p
-	}
+	if p, ok := plurals[lang]; ok { return p }
 	return plurals["en"]
 }
 
@@ -558,24 +554,15 @@ func i18np(lang string) pluralTr {
 // entry reads oddly rather than crashing a reply.
 func (p pluralTr) Plural(n int64, key string) string {
 	var forms, ok = p[key]
-	if !ok {
-		forms, ok = plurals["en"][key]
-	}
-	if !ok {
-		return fmt.Sprintf("%d %s", n, key)
-	}
-	var abs = n
-	if abs < 0 {
-		abs = -abs
-	}
+	if !ok { forms, ok = plurals["en"][key] }
+	if !ok { return fmt.Sprintf("%d %s", n, key) }
+	var nn = n
+	if n < 0 { nn = -n }
 	var i = 0
 	switch {
-	case len(forms) == 2 && abs != 1:
-		i = 1
-	case len(forms) == 3 && (abs%10 == 0 || abs%10 >= 5 || abs%100 >= 11 && abs%100 <= 14):
-		i = 2
-	case len(forms) == 3 && abs%10 != 1:
-		i = 1
+	case len(forms) == 2 && nn != 1: i = 1
+	case len(forms) == 3 && (nn%10 == 0 || nn%10 >= 5 || nn%100 >= 11 && nn%100 <= 14): i = 2
+	case len(forms) == 3 && nn%10 != 1: i = 1
 	}
 	return fmt.Sprintf(forms[i], n)
 }
@@ -589,9 +576,7 @@ func (t trans) Date(tm time.Time) string { return t.date(tm, "2 January 2006") }
 
 func (t trans) date(tm time.Time, layout string) string {
 	var formatted = tm.Format(layout)
-	if t == nil {
-		return formatted
-	}
+	if t == nil { return formatted }
 	var month = tm.Month().String()
 	if translated, ok := t[month]; ok {
 		formatted = strings.Replace(formatted, month, translated, 1)

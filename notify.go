@@ -232,9 +232,7 @@ func alreadyNotified(txid string) bool {
 // transaction: this is a mempool transaction, so it has no undo data and Core
 // reports neither fee nor prevout for it at verbosity 2.
 func broadcast(txHex string) {
-	if !core.Enabled() {
-		return
-	}
+	if !core.Enabled() { return }
 	var ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	var tx, err = core.DecodeRawTransaction(ctx, txHex)
@@ -296,9 +294,7 @@ func broadcast(txHex string) {
 //
 // map each address's scriptPubKey so a scan hit can be attributed back
 func seedOutpoints(addrs []string) {
-	if !core.Enabled() || len(addrs) == 0 {
-		return
-	}
+	if !core.Enabled() || len(addrs) == 0 { return }
 	go func() {
 		var ctx, cancel = context.WithTimeout(context.Background(), 30*time.Minute)
 		defer cancel()
@@ -438,12 +434,8 @@ func confirmationMessage(platform string, chat int64, c txwatches.Confirmed, hei
 // (spawned by notifier.Handle) since it calls back into core. Each confirmation
 // goes out on the platform its watch was made on.
 func processConfirms(hash string) {
-	if !core.Enabled() {
-		return
-	}
-	if !txwatches.Any() {
-		return
-	}
+	if !core.Enabled() { return }
+	if !txwatches.Any() { return }
 	var ctx, cancel = context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	var blk, err = core.GetBlockTxids(ctx, hash)
