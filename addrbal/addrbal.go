@@ -201,7 +201,7 @@ func scan(ctx context.Context, from, to int, prog *progress.Progress) error {
             logging.Info("addrbal: collected from %s in %s, %d addresses merged in %s, %d with a balance",
                 bm, merging.Sub(began).Round(time.Millisecond), len(deltas),
                 time.Since(merging).Round(time.Millisecond), count.Load())
-            prog.Chunk(int64(start), int64(height))
+            prog.Update(int64(start), int64(height))
             deltas = map[uint64]int64{}
             start = height + 1
             began = time.Now()

@@ -387,7 +387,7 @@ func collect(parent context.Context, from, to int64, dir string, rows int64, out
             st = fresh
         }
         if h-chunk+1 >= progressEvery || h == to {
-            prog.Chunk(chunk, h)
+            prog.Update(chunk, h)
             chunk = h + 1
         }
         h++

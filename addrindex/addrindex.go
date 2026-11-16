@@ -390,7 +390,7 @@ func Update(tip int64) error {
         }
         if err := merge(touches, int(to)); err != nil { return err }
         logging.Info("addrindex: built from " + blocksMsg(from, to))
-        prog.Chunk(from, to)
+        prog.Update(from, to)
         from = to + 1
     }
     var staged int64

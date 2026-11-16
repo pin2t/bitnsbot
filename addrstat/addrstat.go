@@ -272,7 +272,7 @@ func Update(tip int64) error {
             logging.Info("addrstat: folded %s, %d addresses merged", blocksMsg(f.from, f.to), f.merged)
         }
         if rerr != nil { return rerr }
-        if from <= to { prog.Chunk(from, to) }
+        if from <= to { prog.Update(from, to) }
         if to >= tip { break }
     }
     if read > 0 {

@@ -39,7 +39,7 @@ func New(name string, from, tip int64) *Progress {
 // to has reached the tip: the catch-up is over, and each index logs the pass it
 // has finished itself. The share is held under 100% while any block is left, a
 // line that rounds to all of it being one an operator reads as finished.
-func (p *Progress) Chunk(from, to int64) {
+func (p *Progress) Update(from, to int64) {
     if p == nil || to >= p.tip || to < p.first { return }
     var done = to - p.first + 1
     var left = p.tip - to
@@ -50,7 +50,7 @@ func (p *Progress) Chunk(from, to int64) {
     p.last = now
     var eta = time.Duration(0)
     if rate > 0 { eta = time.Duration(float64(left) / rate * float64(time.Second)) }
-    logging.Status("%s: built blocks %d..%d of %d, %.1f%% of %d to go, %s blocks/sec, ETA %s",
+    logging.Status("%s: built blocks %d..%d of %d (%.1f%% done), %d to go, %s blocks/sec, ETA %s",
         p.name, from, to, p.tip, pct, left, trim(rate), wait(eta))
 }
 
@@ -65,7 +65,7 @@ func trim(rate float64) string {
 // wait names a forecast with the two largest units that matter and no more, a
 // scan of hours not being accurate to the second.
 func wait(d time.Duration) string {
-    if d >= time.Hour { return fmt.Sprintf("%dh%02dm", int(d/time.Hour), int(d/time.Minute)%60) }
-    if d >= time.Minute { return fmt.Sprintf("%dm%02ds", int(d/time.Minute), int(d/time.Second)%60) }
-    return fmt.Sprintf("%ds", int(d/time.Second))
+    if d >= time.Hour { return fmt.Sprintf("%d h %02d m", int(d/time.Hour), int(d/time.Minute)%60) }
+    if d >= time.Minute { return fmt.Sprintf("%d m %02d s", int(d/time.Minute), int(d/time.Second)%60) }
+    return fmt.Sprintf("%d s", int(d/time.Second))
 }

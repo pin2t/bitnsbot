@@ -116,7 +116,7 @@ func Update(tip int64) {
             return
         }
         last = to
-        prog.Chunk(from, to)
+        prog.Update(from, to)
         from = to + 1
         if from < tip { time.Sleep(cooldownPeriod) }
     }

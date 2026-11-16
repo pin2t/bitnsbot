@@ -287,7 +287,7 @@ func Update(tip int64) {
             return
         }
         if len(infos) > 0 { app.Notify("blocks") }
-        prog.Chunk(from, to)
+        prog.Update(from, to)
         if to < tip { time.Sleep(chunkPause) }
         from = to + 1
     }
