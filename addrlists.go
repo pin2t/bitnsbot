@@ -13,7 +13,9 @@ import "bitnsbot/logging"
 // The newest blocks the scan has read are still in recaddrstat, not yet folded
 // into addrstat, so a ranking is two arms merged in order: the addrstat rows those
 // blocks did not touch, walked through the column's index, and the addresses they
-// did, with their movements added — a few thousand per block, sorted on their own.
+// did, with their movements added to their rows — a few thousand per block,
+// sorted on their own. Every staged address has a row, the keep-up path staging
+// none that does not.
 // SQLite merges a `union all` under an `order by` without sorting the whole, so
 // the limit still stops the walk of the index early.
 //
@@ -106,8 +108,8 @@ func appAddresses(lang string, rng app.AddrRange) app.Addrs {
     if rng.From + want > addrsMaxRows { want = addrsMaxRows - rng.From }
     var rows, err = db.Query(`with r as (select addr, sum(recv) - sum(sent) as balance, sum(txs) as txs,
             max(last) as last from recaddrstat where addr != '' group by addr),
-        m as (select r.addr, coalesce(s.balance, 0) + r.balance as balance, coalesce(s.txs, 0) + r.txs as txs,
-            max(coalesce(s.last, 0), r.last) as last from r left join addrstat s on s.addr = r.addr)
+        m as (select r.addr, s.balance + r.balance as balance, s.txs + r.txs as txs,
+            max(s.last, r.last) as last from r join addrstat s on s.addr = r.addr)
         select addr, `+list.column+` from addrstat where `+list.keep+` and addr not in (select addr from r)
         union all select addr, `+list.column+` from m where `+list.keep+`
         order by 2 `+list.order+` limit ? offset ?`, want+1, rng.From)

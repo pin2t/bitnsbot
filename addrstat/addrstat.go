@@ -19,10 +19,13 @@
 // staging nothing, and leaves the cursor a few blocks below the tip for Update to
 // carry on from.
 //
-// **The scan writes the addresses it finds**, rather than gathering for a set
-// somebody put there: a fold inserts a row for every address it saw and had none
-// for, and keeps every row, an address whose balance has reached zero included —
-// so its history is whole however often it is emptied and paid again.
+// **The keep-up path follows the addresses addrstat already holds**, and adds
+// none: a block's movements are staged only for addresses with a row, and a
+// fold only updates rows — it inserts none and deletes none, an address whose
+// balance has reached zero included, so its history is whole however often it
+// is emptied and paid again. Which addresses there are is the pre-build's to
+// say; an address the chain first pays after it is not followed until a build
+// covers it.
 package addrstat
 
 import "context"
@@ -61,7 +64,7 @@ var mergeBlocks int64 = 100
 // they follow from, so they cannot drift out of step with them. `first` takes the
 // earlier of the two only when there is one — a fresh row has 0 there, which is
 // not earlier than anything — and `type` is only ever written by the insert, so a
-// form named by hand is left as it is. Shared by fold and Merge.
+// form named by hand is left as it is.
 const onConflict = ` on conflict(addr) do update set
     recv = addrstat.recv + excluded.recv,
     sent = addrstat.sent + excluded.sent,
@@ -165,14 +168,13 @@ func Get(addr string) (Stat, bool) {
 }
 
 // Count is how many addresses the statistics hold as of the newest block
-// scanned: the addrstat rows, and the addresses recaddrstat's blocks touched that
-// have no row yet. It counts rather than keeping a total, so it cannot drift from
-// what it counts, and the scan does not call it per block.
+// scanned — the addrstat rows, since recaddrstat stages movements only for
+// addresses that have one. It counts rather than keeping a total, so it cannot
+// drift from what it counts, and the scan does not call it per block.
 func Count() int {
     if db == nil { return 0 }
     var n int
-    var err = db.QueryRow(`select (select count(*) from addrstat) + (select count(distinct r.addr)
-        from recaddrstat r where r.addr != '' and not exists (select 1 from addrstat s where s.addr = r.addr))`).Scan(&n)
+    var err = db.QueryRow(`select count(*) from addrstat`).Scan(&n)
     if err != nil { return 0 }
     return n
 }
@@ -308,8 +310,9 @@ func holds(h int64) (bool, error) {
 }
 
 // record reads block h and writes what it moved to recaddrstat, one row per
-// address plus the empty address's row marking the block read, in one
-// transaction. Whatever an earlier write left under h is replaced, so a block
+// address addrstat already holds plus the empty address's row marking the block
+// read, in one transaction. An address with no row is left out: the keep-up
+// path adds no addresses, so its movements would have nowhere to go. Whatever an earlier write left under h is replaced, so a block
 // written again — a reorg racing a pass — is not counted twice. A block already
 // folded is not written at all: its rows would sit below the cursor, counted
 // twice by every read until the next fold cleared them. The write holds mu, so a
@@ -325,14 +328,17 @@ func record(ctx context.Context, h int64) error {
     if terr != nil { return terr }
     defer tx.Rollback()
     if _, derr := tx.Exec("delete from recaddrstat where block = ?", h); derr != nil { return derr }
+    if _, merr := tx.Exec(`insert into recaddrstat (addr, type, balance, recv, sent, flow, fees, txs, first, last, block)
+        values ('', '', 0, 0, 0, 0, 0, 0, 0, 0, ?)`, h); merr != nil {
+        return merr
+    }
     var stmt, perr = tx.Prepare(`insert into recaddrstat (addr, type, balance, recv, sent, flow, fees, txs, first, last, block)
-        values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        select ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? where exists (select 1 from addrstat where addr = ?)`)
     if perr != nil { return perr }
     defer stmt.Close()
-    if _, ierr := stmt.Exec("", "", 0, 0, 0, 0, 0, 0, 0, 0, h); ierr != nil { return ierr }
     for addr, d := range deltas {
         if _, ierr := stmt.Exec(addr, d.Type, d.Recv-d.Sent, d.Recv, d.Sent, d.Recv+d.Sent, d.Fees, d.Txs,
-            d.First, d.Last, h); ierr != nil {
+            d.First, d.Last, h, addr); ierr != nil {
             return ierr
         }
     }
@@ -353,12 +359,14 @@ type folded struct {
 // `recent`; it ends at the first height recaddrstat does not hold, since the
 // cursor goes to its last height and would otherwise step over one never read.
 //
-// The movements are summed per address in SQL and added to the row in the same
-// statement (onConflict) — one statement for the lot rather than a query and an
-// update per address.
+// The movements are summed per address in SQL and added to the row in one
+// update — one statement for the lot rather than a query and an update per
+// address. Balance and Flow are derived from the sums, and `first` takes the
+// earlier of the two only when there is one, as onConflict does for Merge.
 //
-// An address with no row gets one, and a row is never deleted, an address
-// holding nothing included.
+// Only rows already there are updated: a fold inserts none and deletes none, an
+// address holding nothing included. record stages only addresses with a row, and
+// rows are never deleted, so nothing staged is left without one.
 func fold(tip int64, f *folded) (bool, error) {
     mu.Lock()
     defer mu.Unlock()
@@ -384,10 +392,20 @@ func fold(tip int64, f *folded) (bool, error) {
     var tx, terr = db.Begin()
     if terr != nil { return false, terr }
     defer tx.Rollback()
-    var res, uerr = tx.Exec(`insert into addrstat (addr, type, balance, recv, sent, flow, fees, txs, first, last)
-        select addr, max(type), sum(recv) - sum(sent), sum(recv), sum(sent), sum(recv) + sum(sent), sum(fees),
-            sum(txs), coalesce(min(nullif(first, 0)), 0), max(last)
-        from recaddrstat where block > ? and block <= ? and addr != '' group by addr`+onConflict, cursor, to)
+    var res, uerr = tx.Exec(`update addrstat set
+            recv = addrstat.recv + d.recv,
+            sent = addrstat.sent + d.sent,
+            fees = addrstat.fees + d.fees,
+            txs = addrstat.txs + d.txs,
+            first = case when d.first > 0 and (addrstat.first = 0 or d.first < addrstat.first)
+                then d.first else addrstat.first end,
+            last = max(addrstat.last, d.last),
+            balance = addrstat.recv + d.recv - (addrstat.sent + d.sent),
+            flow = addrstat.recv + d.recv + addrstat.sent + d.sent
+        from (select addr, sum(recv) as recv, sum(sent) as sent, sum(fees) as fees, sum(txs) as txs,
+            coalesce(min(nullif(first, 0)), 0) as first, max(last) as last
+            from recaddrstat where block > ? and block <= ? and addr != '' group by addr) as d
+        where addrstat.addr = d.addr`, cursor, to)
     if uerr != nil { return false, uerr }
     var merged, _ = res.RowsAffected()
     if _, rerr := tx.Exec("delete from recaddrstat where block <= ?", to); rerr != nil { return false, rerr }
