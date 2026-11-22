@@ -542,9 +542,11 @@ func merge(ctx context.Context, a, b span, out io.Writer) error {
 
 // install adds the one range file left to the database's addrstat table and
 // moves the cursor to its last block, in one transaction, then deletes it.
-// Whatever recaddrstat holds at or below that block is deleted in the same
-// transaction, those blocks being counted now, so a build over a database the
-// bot has staged blocks in does not count them twice.
+// Everything recaddrstat holds is deleted in the same transaction: the blocks at
+// or below that one are counted now, and the bot staged the ones above only for
+// the addresses addrstat held then, so the bot reads them again for the
+// addresses this build adds. A build over a database the bot has staged blocks
+// in therefore counts none of them twice and misses none.
 //
 // Into an empty table — a first build — the three ranking indexes are dropped in
 // that transaction and built again once it commits, by addrstat.Init, which
@@ -577,7 +579,7 @@ func install(ctx context.Context, handle *sql.DB, r span, out io.Writer) error {
     var res, ierr = tx.ExecContext(ctx, installRows)
     if ierr != nil { return fmt.Errorf("install %s: %w", filepath.Base(r.path), ierr) }
     var n, _ = res.RowsAffected()
-    if _, derr := tx.ExecContext(ctx, "delete from recaddrstat where block <= ?", r.to); derr != nil { return derr }
+    if _, derr := tx.ExecContext(ctx, "delete from recaddrstat"); derr != nil { return derr }
     if serr := cursors.Set(tx, cursors.AddrStat, r.to); serr != nil { return serr }
     if cerr := tx.Commit(); cerr != nil { return cerr }
     fmt.Fprintf(out, "Installed %s, %d addresses, in %s\n", filepath.Base(r.path), n, took(time.Since(started)))

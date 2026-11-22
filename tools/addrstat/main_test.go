@@ -130,14 +130,20 @@ func busy(tip int) *chain {
 
 // matchesUpdate checks that what a build left for addrA, addrB and one of the
 // thirteen is what the bot's own one-at-a-time Update writes over blocks 0..to of
-// the same chain, in a database of its own.
+// the same chain, in a database of its own — one given an empty row for each of
+// the three, since Update follows only the addresses addrstat already holds.
 func matchesUpdate(t *testing.T, c *chain, to int) {
     t.Helper()
     var built = map[string]addrstat.Stat{}
     for _, a := range []string{addrA, addrB, addrindex.Address(append([]byte{0x00, 20}, bytes.Repeat([]byte{5}, 20)...))} {
         built[a], _ = addrstat.Get(a)
     }
-    var other, _ = setup(t, &chain{tip: to, blocks: c.blocks})
+    var other, handle = setup(t, &chain{tip: to, blocks: c.blocks})
+    for a, s := range built {
+        var _, err = handle.Exec(`insert into addrstat (addr, type, balance, recv, sent, flow, fees, txs, first, last)
+            values (?, ?, 0, 0, 0, 0, 0, 0, 0, 0)`, a, s.Type)
+        if err != nil { t.Fatal(err) }
+    }
     if err := core.Init(other.url, other.user, other.pass, ""); err != nil { t.Fatal(err) }
     if err := addrstat.Update(int64(to)); err != nil { t.Fatalf("Update: %v", err) }
     for a, want := range built {

@@ -455,15 +455,14 @@ func TestAppAddressListsAreRanked(t *testing.T) {
 //
 
 // The newest blocks the scan has read are still in recaddrstat, and a ranking
-// counts them: a staged payment can lift an address above a folded one, an
-// address only the staged blocks paid is ranked too, and one they emptied drops
-// out of the lists that need a balance.
+// counts them: a staged payment can lift an address above a folded one, and one
+// they emptied drops out of the lists that need a balance.
 func TestAppAddressListsCountStagedBlocks(t *testing.T) {
     if err := openDB(filepath.Join(t.TempDir(), "watches.db")); err != nil {
         t.Fatalf("open db: %v", err)
     }
     defer closeDB()
-    seedAddrList(t, "rich", map[string]int64{"aaa": 500, "bbb": 300, "ccc": 200})
+    seedAddrList(t, "rich", map[string]int64{"aaa": 500, "bbb": 300, "ccc": 200, "ddd": 100})
     for _, r := range []struct {
         addr        string
         recv, sent  int64
@@ -476,7 +475,7 @@ func TestAppAddressListsCountStagedBlocks(t *testing.T) {
     var got = appAddresses("", app.AddrRange{Kind: "rich"})
     var ids []string
     for _, r := range got.Rows { ids = append(ids, r.Id) }
-    if strings.Join(ids, ",") != "bbb,aaa,ddd" { t.Errorf("rich ranks %v, want bbb (700), aaa (500), ddd (250)", ids) }
+    if strings.Join(ids, ",") != "bbb,aaa,ddd" { t.Errorf("rich ranks %v, want bbb (700), aaa (500), ddd (350)", ids) }
 }
 // and a restored list reaches the row Back returns to, in one batch
 func TestAppAddressListPages(t *testing.T) {

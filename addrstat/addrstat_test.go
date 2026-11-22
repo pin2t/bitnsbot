@@ -97,9 +97,9 @@ func (c *chain) respond(method string, params []any) (any, error) {
     return nil, fmt.Errorf("unexpected call %s %v", method, params)
 }
 
-// open creates the tables the scan writes into and points the package at them.
-// There is nothing to seed: a row is an address the scan has found holding
-// coins, so the table starts empty whatever the chain holds. recent is 0, so a
+// open creates the tables the scan writes into and points the package at them,
+// both empty: the keep-up path follows only the addresses addrstat holds, so a
+// test seeds the ones it wants followed (seed). recent is 0, so a
 // pass folds every block it reads into addrstat and the tests of what the
 // statistics hold can read that table alone; the staging tests raise it.
 func open(t *testing.T) *sql.DB {
@@ -113,6 +113,31 @@ func open(t *testing.T) *sql.DB {
     if err := Init(handle); err != nil { t.Fatalf("init: %v", err) }
     t.Cleanup(func() { handle.Close(); db = nil })
     return handle
+}
+
+// seed gives each address an empty row of its own form, which is what makes the
+// scan follow it — the rows a pre-build would have installed.
+func seed(t *testing.T, addrs ...string) {
+    t.Helper()
+    for _, addr := range addrs {
+        var _, kind, _ = addrindex.Decode(addr)
+        var _, err = db.Exec(`insert or ignore into addrstat (addr, type, balance, recv, sent, flow, fees, txs, first, last)
+            values (?, ?, 0, 0, 0, 0, 0, 0, 0, 0)`, addr, kind)
+        if err != nil { t.Fatal(err) }
+    }
+}
+
+// paid is every address the chain's blocks pay or spend from.
+func paid(c *chain) []string {
+    var out []string
+    var seen = map[string]bool{}
+    for _, blk := range c.blocks {
+        for addr := range Deltas(blk) {
+            if !seen[addr] { out = append(out, addr) }
+            seen[addr] = true
+        }
+    }
+    return out
 }
 
 func statOf(t *testing.T, addr string) Stat {
@@ -149,6 +174,7 @@ func rows(t *testing.T, addr string) int {
 // three transactions: two paying it, one both spending from it and paying it
 func TestCollectGathersStatistics(t *testing.T) {
     open(t)
+    seed(t, addrA, addrB, addrC)
     serve(t, &chain{tip: 2, blocks: map[int]core.Block{
         0: blockOf(1000, tx{outs: []core.Payment{pay(scriptA, 5000)}}),
         1: blockOf(2000, tx{outs: []core.Payment{pay(scriptA, 3000), pay(scriptC, 100)}}),
@@ -181,6 +207,7 @@ func TestCollectGathersStatistics(t *testing.T) {
 // emptied it is folded with the one that paid it or in a later pass.
 func TestEmptiedAddressIsKept(t *testing.T) {
     open(t)
+    seed(t, addrA, addrB)
     serve(t, &chain{tip: 1, blocks: map[int]core.Block{
         0: blockOf(1000, tx{outs: []core.Payment{pay(scriptA, 5000)}}),
         1: blockOf(2000, tx{outs: []core.Payment{pay(scriptB, 4000)}, spent: []core.Payment{pay(scriptA, 5000)}}),
@@ -195,6 +222,7 @@ func TestEmptiedAddressIsKept(t *testing.T) {
 // An address emptied by a later pass keeps the row an earlier one gave it.
 func TestEmptiedAcrossChunksIsKept(t *testing.T) {
     open(t)
+    seed(t, addrA, addrB, addrC)
     var src = serve(t, &chain{tip: 0, blocks: map[int]core.Block{
         0: blockOf(1000, tx{outs: []core.Payment{pay(scriptA, 5000)}}),
         1: blockOf(2000, tx{outs: []core.Payment{pay(scriptB, 4000)}, spent: []core.Payment{pay(scriptA, 5000)}}),
@@ -210,6 +238,7 @@ func TestEmptiedAcrossChunksIsKept(t *testing.T) {
 // for it, not two.
 func TestTransactionCountedOncePerAddress(t *testing.T) {
     open(t)
+    seed(t, addrA, addrB, addrC)
     serve(t, &chain{tip: 0, blocks: map[int]core.Block{
         0: blockOf(1000, tx{
             outs:  []core.Payment{pay(scriptA, 400), pay(scriptA, 100)},
@@ -227,6 +256,7 @@ func TestTransactionCountedOncePerAddress(t *testing.T) {
 // adds to what is stored rather than counting a block twice.
 func TestCollectResumes(t *testing.T) {
     open(t)
+    seed(t, addrA, addrB, addrC)
     var src = serve(t, &chain{tip: 0, blocks: map[int]core.Block{
         0: blockOf(1000, tx{outs: []core.Payment{pay(scriptA, 500)}}),
         1: blockOf(2000, tx{outs: []core.Payment{pay(scriptA, 700)}}),
@@ -250,6 +280,7 @@ func TestCollectResumes(t *testing.T) {
 // nothing new: the cursor is at the tip, so there is nothing to announce
 func TestCollectSignalsWhenItHasCaughtUp(t *testing.T) {
     open(t)
+    seed(t, addrA)
     signals.Reset()
     var wake = signals.Subscribe(signals.AddrStat)
     serve(t, &chain{tip: 0, blocks: map[int]core.Block{
@@ -273,6 +304,7 @@ func TestCollectSignalsWhenItHasCaughtUp(t *testing.T) {
 // to answer with and the live path answers it instead.
 func TestGetWaitsForSomethingToReport(t *testing.T) {
     open(t)
+    seed(t, addrA, addrC)
     if _, ok := Get(addrA); ok { t.Fatal("answered before the scan had been past the address") }
     serve(t, &chain{tip: 0, blocks: map[int]core.Block{
         0: blockOf(1000, tx{outs: []core.Payment{pay(scriptA, 500)}}),
@@ -286,6 +318,7 @@ func TestGetWaitsForSomethingToReport(t *testing.T) {
 // Init is run on every start, so one must leave the scan's place alone.
 func TestRepeatedInitKeepsTheCursor(t *testing.T) {
     var handle = open(t)
+    seed(t, addrA)
     serve(t, &chain{tip: 0, blocks: map[int]core.Block{
         0: blockOf(1000, tx{outs: []core.Payment{pay(scriptA, 500)}}),
     }})
@@ -347,6 +380,7 @@ func TestFoldSizesAndMergeAgree(t *testing.T) {
     for _, n := range []int64{1, 100} {
         mergeBlocks = n
         open(t)
+        seed(t, paid(busyChain(150))...)
         serve(t, busyChain(150))
         if err := Collect(); err != nil { t.Fatalf("Collect folding %d: %v", n, err) }
         if h, ok := cursors.Get(cursors.AddrStat); !ok || h != 150 { t.Errorf("folding %d: cursor = %d ok=%v", n, h, ok) }
@@ -354,6 +388,7 @@ func TestFoldSizesAndMergeAgree(t *testing.T) {
     }
     open(t)
     var c = busyChain(150)
+    seed(t, paid(c)...)
     for h := 0; h <= 150; h++ {
         if err := Merge(int64(h), Deltas(c.blocks[h])); err != nil { t.Fatalf("Merge %d: %v", h, err) }
     }
@@ -375,6 +410,7 @@ func TestMergeReplacesStagedBlock(t *testing.T) {
     open(t)
     recent = 5
     var c = serve(t, busyChain(3))
+    seed(t, paid(c)...)
     if err := Collect(); err != nil { t.Fatalf("Collect: %v", err) }
     if n := staged(t); n != 4 { t.Fatalf("recaddrstat holds %d blocks, want 4", n) }
     for h := 0; h <= 3; h++ {
@@ -394,6 +430,7 @@ func TestFoldLeavesNoGap(t *testing.T) {
     mergeBlocks, roundBlocks = 3, 10
     open(t)
     var c = busyChain(120)
+    seed(t, paid(c)...)
     c.onFetch = func(h int) {
         var at, ok = cursors.Get(cursors.AddrStat)
         if !ok { at = -1 }
@@ -415,11 +452,13 @@ func TestFoldLeavesNoGap(t *testing.T) {
 // and ends with the table a pass with no failure writes.
 func TestFailureResumes(t *testing.T) {
     open(t)
+    seed(t, paid(busyChain(30))...)
     serve(t, busyChain(30))
     if err := Collect(); err != nil { t.Fatalf("Collect: %v", err) }
     var want = table(t)
     open(t)
     var c = busyChain(30)
+    seed(t, paid(c)...)
     c.fail = map[int]bool{17: true}
     serve(t, c)
     if err := Collect(); err == nil { t.Fatal("a pass with an unreadable block succeeded") }
@@ -453,6 +492,7 @@ func staged(t *testing.T) int {
 // block read were folded.
 func TestRecentBlocksStayStaged(t *testing.T) {
     open(t)
+    seed(t, addrA, addrB, addrC)
     recent = 2
     serve(t, &chain{tip: 3, blocks: map[int]core.Block{
         0: blockOf(1000, tx{outs: []core.Payment{pay(scriptA, 5000)}}),
@@ -478,6 +518,7 @@ func TestRecentBlocksStayStaged(t *testing.T) {
 // the next pass reads those heights again from the chain that replaced them.
 func TestRollbackRereadsDisconnectedBlocks(t *testing.T) {
     open(t)
+    seed(t, addrA, addrB, addrC)
     recent = 3
     var c = &chain{tip: 3, blocks: map[int]core.Block{
         0: blockOf(1000, tx{outs: []core.Payment{pay(scriptA, 5000)}}),
@@ -513,6 +554,7 @@ func TestRollbackRereadsDisconnectedBlocks(t *testing.T) {
 // would count it twice until the next fold.
 func TestRecordSkipsFoldedBlocks(t *testing.T) {
     open(t)
+    seed(t, paid(busyChain(5))...)
     serve(t, busyChain(5))
     if err := Collect(); err != nil { t.Fatalf("Collect: %v", err) }
     var before = table(t)
@@ -521,4 +563,27 @@ func TestRecordSkipsFoldedBlocks(t *testing.T) {
     if n := staged(t); n != 0 { t.Errorf("recaddrstat holds %d blocks after writing a folded one", n) }
     if got, _ := Get(addrindex.Address(scriptOf(5))); got != a { t.Errorf("Get = %+v after, %+v before", got, a) }
     if len(table(t)) != len(before) { t.Error("addrstat changed") }
+}
+
+// The keep-up path follows only the addresses addrstat holds: a block paying one
+// it does not hold stages nothing for it, and the fold neither gives it a row nor
+// takes one from an address it emptied.
+func TestUpdateFollowsOnlyKnownAddresses(t *testing.T) {
+    open(t)
+    recent = 1
+    seed(t, addrA)
+    serve(t, &chain{tip: 2, blocks: map[int]core.Block{
+        0: blockOf(1000, tx{outs: []core.Payment{pay(scriptA, 5000), pay(scriptB, 300)}}),
+        1: blockOf(2000, tx{outs: []core.Payment{pay(scriptC, 4000)}, spent: []core.Payment{pay(scriptA, 5000)}}),
+        2: blockOf(3000, tx{outs: []core.Payment{pay(scriptB, 100), pay(scriptA, 20)}}),
+    }})
+    if err := Collect(); err != nil { t.Fatalf("Collect: %v", err) }
+    var n int
+    if err := db.QueryRow("select count(*) from recaddrstat where addr in (?, ?)", addrB, addrC).Scan(&n); err != nil { t.Fatal(err) }
+    if n != 0 { t.Errorf("recaddrstat holds %d rows for addresses addrstat does not", n) }
+    if rows(t, addrB) != 0 || rows(t, addrC) != 0 { t.Error("a fold gave an unknown address a row") }
+    if _, ok := Get(addrB); ok { t.Error("answered for an address nobody follows") }
+    if a := statOf(t, addrA); a.Balance != 0 || a.Txs != 2 { t.Errorf("addrA folded = %+v, want it emptied and kept", a) }
+    if a, ok := Get(addrA); !ok || a.Balance != 20 || a.Txs != 3 { t.Errorf("Get(addrA) = %+v ok=%v", a, ok) }
+    if Count() != 1 { t.Errorf("Count = %d, want addrA alone", Count()) }
 }
