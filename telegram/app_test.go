@@ -45,8 +45,7 @@ func freshInitData(token string) string {
     })
 }
 
-// fakeSource stands in for main's caches. Its methods are handed to startApp as
-// the app.Options functions.
+// fakeSource stands in for main's caches. It is handed to startApp as the app.Source.
 type fakeSource struct {
     f app.Fees
     n app.Network
@@ -56,7 +55,7 @@ type fakeSource struct {
     t map[string]app.Info
     a map[string]app.Info
     w map[int64]app.Watches
-    // al is one ranked list per kind, already in the order Options.Addresses would return
+    // al is one ranked list per kind, already in the order Source.Addresses would return
     // it, so the fake only has to page.
     al map[string][]app.Addr
     // at is one address's transaction views, newest first, for the same reason.
@@ -65,26 +64,7 @@ type fakeSource struct {
     mp map[int64]app.Mempool
 }
 
-func (s fakeSource) options() app.Options {
-    return app.Options{
-        Fees:       s.Fees,
-        Network:    s.Network,
-        Market:     s.Market,
-        Blocks:     s.Blocks,
-        Addresses:  s.Addresses,
-        BlockInfo:  s.BlockInfo,
-        TxInfo:     s.TxInfo,
-        AddrInfo:   s.AddrInfo,
-        AddrTxs:    s.AddrTxs,
-        MinerInfo:  s.MinerInfo,
-        MinerChart: s.MinerChart,
-        Mempool:    s.Mempool,
-        Watches:    s.Watches,
-        Watching:   s.Watching,
-        SetWatch:   s.SetWatch,
-        SetAlias:   s.SetAlias,
-    }
-}
+func (s fakeSource) options() app.Source { return s }
 
 func (s fakeSource) Mempool(lang string, after int64) app.Mempool { return s.mp[after] }
 
@@ -139,7 +119,7 @@ func (s fakeSource) SetWatch(chat int64, kind, id string, on bool) (bool, error)
 }
 
 // aliases is what SetAlias recorded, so a test can prove the alias reached the
-// Options function and under which id.
+// Source method and under which id.
 var aliases = map[int64]map[string]string{}
 
 func (s fakeSource) SetAlias(chat int64, kind, id, alias string) (bool, error) {
@@ -394,11 +374,11 @@ func liveNetwork() app.Network {
 //
 // The rendered-card caches are package state shared across tests, so each
 // test starts from empty rather than seeing the previous one's fixture.
-func handler(t *testing.T, token string, opt app.Options) http.Handler {
+func handler(t *testing.T, token string, src app.Source) http.Handler {
     invalidateAll()
     watched = map[int64]map[string]bool{}
     aliases = map[int64]map[string]string{}
-    var srv = startApp("127.0.0.1:0", token, opt)
+    var srv = startApp("127.0.0.1:0", token, src)
     t.Cleanup(func() { srv.Close() })
     return srv.Handler
 }
@@ -411,11 +391,7 @@ func (failingSource) SetWatch(chat int64, kind, id string, on bool) (bool, error
     return false, errFailed
 }
 
-func (s failingSource) options() app.Options {
-    var opt = s.fakeSource.options()
-    opt.SetWatch = s.SetWatch
-    return opt
-}
+func (s failingSource) options() app.Source { return s }
 
 var errFailed = fmt.Errorf("store unavailable")
 

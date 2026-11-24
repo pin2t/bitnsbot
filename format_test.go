@@ -35,8 +35,8 @@ func TestUSDFormat(t *testing.T) {
 
 // no rate stored yet → sats only, no USD
 func TestAmountLineUSD(t *testing.T) {
-    if err := openDB(filepath.Join(t.TempDir(), "watches.db")); err != nil {
-        t.Fatalf("openDB: %v", err)
+    if err := openTestDB(filepath.Join(t.TempDir(), "watches.db")); err != nil {
+        t.Fatalf("openTestDB: %v", err)
     }
     defer closeDB()
     if err := rates.Init(db); err != nil {
@@ -55,8 +55,8 @@ func TestAmountLineUSD(t *testing.T) {
 // a confirmed tx whose block time predates our rate history (older than the
 // tolerance) still shows USD, falling back to the latest known rate.
 func TestAmountLineFallback(t *testing.T) {
-    if err := openDB(filepath.Join(t.TempDir(), "watches.db")); err != nil {
-        t.Fatalf("openDB: %v", err)
+    if err := openTestDB(filepath.Join(t.TempDir(), "watches.db")); err != nil {
+        t.Fatalf("openTestDB: %v", err)
     }
     defer closeDB()
     if err := rates.Init(db); err != nil {
@@ -72,8 +72,8 @@ func TestAmountLineFallback(t *testing.T) {
 // flowAmount renders one side of a transaction flow: the sats/BTC figure with
 // the USD estimate in-line, and the figure alone when no rate is stored.
 func TestFlowAmount(t *testing.T) {
-    if err := openDB(filepath.Join(t.TempDir(), "watches.db")); err != nil {
-        t.Fatalf("openDB: %v", err)
+    if err := openTestDB(filepath.Join(t.TempDir(), "watches.db")); err != nil {
+        t.Fatalf("openTestDB: %v", err)
     }
     defer closeDB()
     if err := rates.Init(db); err != nil {

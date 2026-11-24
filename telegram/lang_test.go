@@ -221,18 +221,7 @@ func (s langSpy) MinerChart(lang, name, data, period string) app.Chart {
     return s.fakeSource.MinerChart(lang, name, data, period)
 }
 
-func (s langSpy) options() app.Options {
-    var opt = s.fakeSource.options()
-    opt.Market = s.Market
-    opt.Blocks = s.Blocks
-    opt.Addresses = s.Addresses
-    opt.BlockInfo = s.BlockInfo
-    opt.TxInfo = s.TxInfo
-    opt.AddrInfo = s.AddrInfo
-    opt.MinerInfo = s.MinerInfo
-    opt.MinerChart = s.MinerChart
-    return opt
-}
+func (s langSpy) options() app.Source { return s }
 
 // and an English reader is asked in English, not in whoever came first
 func TestSourceIsAskedInTheReadersLanguage(t *testing.T) {

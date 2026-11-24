@@ -151,7 +151,7 @@ func TestZMQReconnects(t *testing.T) {
 // nothing. The publisher repeats both, since a subscriber that has just dialled
 // misses whatever went out before its subscription arrived.
 func TestZMQDisconnectRollsBack(t *testing.T) {
-    if err := openDB(filepath.Join(t.TempDir(), "zmq.db")); err != nil { t.Fatal(err) }
+    if err := openTestDB(filepath.Join(t.TempDir(), "zmq.db")); err != nil { t.Fatal(err) }
     defer closeDB()
     var hash = func(b byte) []byte { return bytes.Repeat([]byte{b}, 32) }
     var bis []*blocks.Info

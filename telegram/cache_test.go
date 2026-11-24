@@ -110,26 +110,7 @@ func (s *countingSource) Blocks(lang string, rng app.Range) app.Blocks {
     return b
 }
 
-func (s *countingSource) options() app.Options {
-    return app.Options{
-        Fees:       s.Fees,
-        Network:    s.Network,
-        Market:     s.Market,
-        Blocks:     s.Blocks,
-        Addresses:  s.Addresses,
-        BlockInfo:  s.BlockInfo,
-        TxInfo:     s.TxInfo,
-        AddrInfo:   s.AddrInfo,
-        AddrTxs:    s.AddrTxs,
-        MinerInfo:  s.MinerInfo,
-        MinerChart: s.MinerChart,
-        Mempool:    s.Mempool,
-        Watches:    s.Watches,
-        Watching:   s.Watching,
-        SetWatch:   s.SetWatch,
-        SetAlias:   s.SetAlias,
-    }
-}
+func (s *countingSource) options() app.Source { return s }
 
 // rangeKey names a window the way the tests count them: one key per distinct
 // request, so a cache hit shows up as a call that did not happen.
@@ -180,7 +161,7 @@ func TestNotifyClearsOneCard(t *testing.T) {
 }
 
 // The shell page is cached like the cards it embeds, so repeat visits do not
-// re-render the whole template or re-read every Options function.
+// re-render the whole template or re-read every Source method.
 func TestPageServedFromCache(t *testing.T) {
     var src = newCounting()
     var h = handler(t, "TESTTOKEN", src.options())

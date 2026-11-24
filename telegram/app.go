@@ -215,7 +215,7 @@ func invalidateAll() {
 }
 
 // serve writes a cached render, producing it only on a miss. data is called
-// outside cacheMu because it reaches into main's app.Options functions, which hold locks of
+// outside cacheMu because it reaches into main's app.Source functions, which hold locks of
 // its own; two concurrent misses simply render the same bytes twice, which is
 // cheaper than serialising every request behind one mutex.
 func cached(c *lru.Cache[string, []byte], w http.ResponseWriter, r *http.Request, render func(string) []byte) {
@@ -631,7 +631,7 @@ func chatOf(initData string) int64 {
 //
 // Shutdown calls this before it starts waiting, so the streams end and the
 // connections go idle instead of holding it open until the deadline.
-func startApp(addr, token string, opt app.Options) *http.Server {
+func startApp(addr, token string, src app.Source) *http.Server {
     var mux = http.NewServeMux()
     mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
         if r.URL.Path != "/" {
@@ -639,7 +639,7 @@ func startApp(addr, token string, opt app.Options) *http.Server {
             return
         }
         cached(cardsCache, w, r, func(lang string) []byte {
-            return render(lang, "app", page{Fees: opt.Fees(), Network: opt.Network(), Market: opt.Market(lang), Blocks: opt.Blocks(lang, app.Range{}), Addrs: opt.Addresses(lang, app.AddrRange{Kind: "rich"})})
+            return render(lang, "app", page{Fees: src.Fees(), Network: src.Network(), Market: src.Market(lang), Blocks: src.Blocks(lang, app.Range{}), Addrs: src.Addresses(lang, app.AddrRange{Kind: "rich"})})
         })
     })
     mux.HandleFunc("/htmx.min.js", func(w http.ResponseWriter, r *http.Request) {
@@ -657,17 +657,17 @@ func startApp(addr, token string, opt app.Options) *http.Server {
         events(w, r, closing)
     })
     mux.HandleFunc("/fees", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
-        cached(cardsCache, w, r, func(lang string) []byte { return render(lang, "fees", opt.Fees()) })
+        cached(cardsCache, w, r, func(lang string) []byte { return render(lang, "fees", src.Fees()) })
     }))
     mux.HandleFunc("/network", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
-        cached(cardsCache, w, r, func(lang string) []byte { return render(lang, "network", opt.Network()) })
+        cached(cardsCache, w, r, func(lang string) []byte { return render(lang, "network", src.Network()) })
     }))
     mux.HandleFunc("/market", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
-        cached(cardsCache, w, r, func(lang string) []byte { return render(lang, "market", opt.Market(lang)) })
+        cached(cardsCache, w, r, func(lang string) []byte { return render(lang, "market", src.Market(lang)) })
     }))
     mux.HandleFunc("/blocks", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
         if to := r.URL.Query().Get("to"); isPanel(to) { w.Header().Set("HX-Trigger", showtab(to)) }
-        cached(blocksCache, w, r, func(lang string) []byte { return render(lang, "blocks", opt.Blocks(lang, app.Range{Down: heightOf(r, "down")})) })
+        cached(blocksCache, w, r, func(lang string) []byte { return render(lang, "blocks", src.Blocks(lang, app.Range{Down: heightOf(r, "down")})) })
     }))
     mux.HandleFunc("/moreblocks", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
         var before = heightOf(r, "before")
@@ -675,7 +675,7 @@ func startApp(addr, token string, opt app.Options) *http.Server {
             http.Error(w, "no such block", http.StatusBadRequest)
             return
         }
-        cached(blocksCache, w, r, func(lang string) []byte { return render(lang, "blockrows", opt.Blocks(lang, app.Range{Before: before})) })
+        cached(blocksCache, w, r, func(lang string) []byte { return render(lang, "blockrows", src.Blocks(lang, app.Range{Before: before})) })
     }))
     mux.HandleFunc("/newblocks", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
         var after = heightOf(r, "after")
@@ -684,9 +684,9 @@ func startApp(addr, token string, opt app.Options) *http.Server {
             return
         }
         var lang = language(r)
-        var blocks, name = opt.Blocks(lang, app.Range{After: after}), "newblocks"
+        var blocks, name = src.Blocks(lang, app.Range{After: after}), "newblocks"
         if blocks.More {
-            blocks, name = opt.Blocks(lang, app.Range{}), "blocks"
+            blocks, name = src.Blocks(lang, app.Range{}), "blocks"
             w.Header().Set("HX-Retarget", "#"+blocksSlot)
         }
         var b = render(lang, name, blocks)
@@ -704,7 +704,7 @@ func startApp(addr, token string, opt app.Options) *http.Server {
             return
         }
         var back, swap = backToList(r)
-        details(w, r, blocksSlot, back, swap, "", "", func(lang string) app.Info { return opt.BlockInfo(lang, height) })
+        details(w, r, blocksSlot, back, swap, "", "", func(lang string) app.Info { return src.BlockInfo(lang, height) })
     }))
     mux.HandleFunc("/tx", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
         var id = strings.TrimSpace(r.URL.Query().Get("id"))
@@ -720,13 +720,13 @@ func startApp(addr, token string, opt app.Options) *http.Server {
         }
         var back, swap = backToList(r)
         if r.URL.Query().Get("from") == "mempool" { back, swap = "mempool", "outerHTML" }
-        details(w, r, blocksSlot, back, swap, "tx", id, func(lang string) app.Info { return opt.TxInfo(lang, id) })
+        details(w, r, blocksSlot, back, swap, "tx", id, func(lang string) app.Info { return src.TxInfo(lang, id) })
     }))
     mux.HandleFunc("/mempool", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
         var lang = language(r)
         var to = r.URL.Query().Get("from")
         if !isPanel(to) { to = "home" }
-        var mp = opt.Mempool(lang, -1)
+        var mp = src.Mempool(lang, -1)
         mp.Lang, mp.Back = lang, "blocks?to="+to
         w.Header().Set("HX-Retarget", "#"+blocksSlot)
         w.Header().Set("HX-Trigger", showtab(tabOf(blocksSlot)))
@@ -739,7 +739,7 @@ func startApp(addr, token string, opt app.Options) *http.Server {
             return
         }
         var lang = language(r)
-        var mp = opt.Mempool(lang, after)
+        var mp = src.Mempool(lang, after)
         mp.Lang = lang
         if mp.More {
             w.Header().Set("HX-Retarget", "#mplist")
@@ -755,9 +755,9 @@ func startApp(addr, token string, opt app.Options) *http.Server {
         }
         var back, swap = backToList(r)
         details(w, r, blocksSlot, back, swap, "", "", func(lang string) app.Info {
-            var info = opt.MinerInfo(lang, name)
+            var info = src.MinerInfo(lang, name)
             if info.OK {
-                var chart = opt.MinerChart(lang, name, "blocks", "month")
+                var chart = src.MinerChart(lang, name, "blocks", "month")
                 info.Chart = &chart
             }
             return info
@@ -770,7 +770,7 @@ func startApp(addr, token string, opt app.Options) *http.Server {
             return
         }
         var data, period = chartDataOf(r), chartPeriodOf(r)
-        cached(blocksCache, w, r, func(lang string) []byte { return render(lang, "chart", opt.MinerChart(lang, name, data, period)) })
+        cached(blocksCache, w, r, func(lang string) []byte { return render(lang, "chart", src.MinerChart(lang, name, data, period)) })
     }))
     mux.HandleFunc("/address", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
         var a = strings.TrimSpace(r.URL.Query().Get("a"))
@@ -779,7 +779,7 @@ func startApp(addr, token string, opt app.Options) *http.Server {
             return
         }
         var back, swap = backToAddrList(r)
-        details(w, r, addressSlot, back, swap, "address", a, func(lang string) app.Info { return opt.AddrInfo(lang, a) })
+        details(w, r, addressSlot, back, swap, "address", a, func(lang string) app.Info { return src.AddrInfo(lang, a) })
     }))
     mux.HandleFunc("/addresses", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
         var to = r.URL.Query().Get("to")
@@ -788,7 +788,7 @@ func startApp(addr, token string, opt app.Options) *http.Server {
         rng.Down, rng.Restore = addrDownOf(r)
         w.Header().Set("HX-Retarget", "#"+addressSlot)
         w.Header().Set("HX-Trigger", showtab(to))
-        cached(addrsCache, w, r, func(lang string) []byte { return render(lang, "addresses", opt.Addresses(lang, rng)) })
+        cached(addrsCache, w, r, func(lang string) []byte { return render(lang, "addresses", src.Addresses(lang, rng)) })
     }))
     mux.HandleFunc("/moreaddrs", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
         var from, err = strconv.Atoi(r.URL.Query().Get("from"))
@@ -797,7 +797,7 @@ func startApp(addr, token string, opt app.Options) *http.Server {
             return
         }
         cached(addrsCache, w, r, func(lang string) []byte {
-            return render(lang, "addrrows", opt.Addresses(lang, app.AddrRange{Kind: addrKindOf(r), From: from}))
+            return render(lang, "addrrows", src.Addresses(lang, app.AddrRange{Kind: addrKindOf(r), From: from}))
         })
     }))
     mux.HandleFunc("/moreaddrtxs", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
@@ -810,13 +810,13 @@ func startApp(addr, token string, opt app.Options) *http.Server {
         var to = r.URL.Query().Get("origin")
         if !isPanel(to) { to = "addresses" }
         cached(txsCache, w, r, func(lang string) []byte {
-            var txs = opt.AddrTxs(lang, a, from)
+            var txs = src.AddrTxs(lang, a, from)
             txs.Slot, txs.From = addressSlot, to
             return render(lang, "txrows", txs)
         })
     }))
     mux.HandleFunc("/watches", requireInitData(token, func(w http.ResponseWriter, r *http.Request) {
-        var b = render(language(r), "watches", opt.Watches(chatOf(r.Header.Get("X-Telegram-Init-Data"))))
+        var b = render(language(r), "watches", src.Watches(chatOf(r.Header.Get("X-Telegram-Init-Data"))))
         if b == nil {
             http.Error(w, "internal server error", http.StatusInternalServerError)
             return
@@ -836,7 +836,7 @@ func startApp(addr, token string, opt app.Options) *http.Server {
         var chat = chatOf(r.Header.Get("X-Telegram-Init-Data"))
         var btn = watchButton{Kind: kind, Id: id}
         if r.Method == http.MethodPost {
-            var on, serr = opt.SetWatch(chat, kind, id, r.URL.Query().Get("on") == "1")
+            var on, serr = src.SetWatch(chat, kind, id, r.URL.Query().Get("on") == "1")
             if serr != nil {
                 logging.Err("mini app: set watch %s: %v", id, serr)
                 btn.Error = true
@@ -846,7 +846,7 @@ func startApp(addr, token string, opt app.Options) *http.Server {
             if on && !btn.Error { events["askalias"] = map[string]string{"kind": kind, "id": id} }
             w.Header().Set("HX-Trigger", trigger(events))
         } else {
-            btn.On = opt.Watching(chat, kind, id)
+            btn.On = src.Watching(chat, kind, id)
         }
         var b = render(language(r), "watchbtn", btn)
         if b == nil {
@@ -873,7 +873,7 @@ func startApp(addr, token string, opt app.Options) *http.Server {
             w.WriteHeader(http.StatusNoContent)
             return
         }
-        if _, err := opt.SetAlias(chatOf(r.Header.Get("X-Telegram-Init-Data")), kind, id, alias); err != nil {
+        if _, err := src.SetAlias(chatOf(r.Header.Get("X-Telegram-Init-Data")), kind, id, alias); err != nil {
             logging.Err("mini app: set alias %s: %v", id, err)
             http.Error(w, "internal server error", http.StatusInternalServerError)
             return

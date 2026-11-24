@@ -84,8 +84,8 @@ func TestChatOf(t *testing.T) {
     if got := chatOf(none); got != 0 { t.Errorf("no chat = %d, want 0", got) }
 }
 
-// recorder is a fake app.Options that counts its calls and remembers what each
-// was asked, since an Options function has nothing translated to show.
+// recorder is a fake app.Source that counts its calls and remembers what each
+// was asked, since a Source method has nothing translated to show.
 type recorder struct {
     mu      sync.Mutex
     calls   map[string]int
@@ -108,59 +108,73 @@ func (r *recorder) count(name string) int {
     return r.calls[name]
 }
 
-func (r *recorder) options() app.Options {
-    return app.Options{
-        Fees:    func() app.Fees { r.hit("fees", ""); return app.Fees{OK: true, TxCount: "42"} },
-        Network: func() app.Network { r.hit("network", ""); return app.Network{OK: true, Blocks: "963 268"} },
-        Market:  func(lang string) app.Market { r.hit("market", lang); return app.Market{OK: true, Price: "$1"} },
-        Blocks: func(lang string, rng app.Range) app.Blocks {
-            r.hit("blocks", lang)
-            return app.Blocks{OK: true, Top: rng.After + rng.Before, Rows: []app.Block{{Num: 7}}}
-        },
-        Addresses: func(lang string, rng app.AddrRange) app.Addrs {
-            r.hit("addresses "+rng.Kind+" "+strconv.Itoa(rng.From), lang)
-            return app.Addrs{OK: true, Kind: rng.Kind}
-        },
-        BlockInfo: func(lang string, height int64) app.Info {
-            r.hit("block", lang)
-            return app.Info{OK: true, Title: "Блок " + strconv.FormatInt(height, 10), Kind: "block"}
-        },
-        TxInfo: func(lang, txid string) app.Info {
-            r.hit("tx", lang)
-            if strings.HasPrefix(txid, "0000") { return app.Info{OK: true, Title: "Блок 1", Kind: "block"} }
-            return app.Info{OK: true, Title: txid[:6]}
-        },
-        AddrInfo:  func(lang, a string) app.Info { r.hit("address", lang); return app.Info{OK: a != "nope", Title: a} },
-        AddrTxs:   func(lang, a string, from int) app.Txs { r.hit("addrtxs", lang); return app.Txs{OK: true, Addr: a, Next: from + 1} },
-        MinerInfo: func(lang, name string) app.Info { r.hit("miner", lang); return app.Info{OK: true, Title: name} },
-        MinerChart: func(lang, name, data, period string) app.Chart {
-            r.hit("chart "+data+" "+period, lang)
-            return app.Chart{OK: true, Name: name, Data: data, Period: period}
-        },
-        Mempool: func(lang string, after int64) app.Mempool {
-            r.hit("mempool "+strconv.FormatInt(after, 10), lang)
-            return app.Mempool{OK: true, Top: after + 1}
-        },
-        Watches: func(chat int64) app.Watches {
-            r.mu.Lock()
-            r.chats = append(r.chats, chat)
-            r.mu.Unlock()
-            return app.Watches{OK: true, Addresses: []app.Watch{{Id: "bc1q" + strconv.FormatInt(chat, 10)}}}
-        },
-        Watching: func(chat int64, kind, id string) bool { return id == "bc1qon" },
-        SetWatch: func(chat int64, kind, id string, on bool) (bool, error) {
-            r.mu.Lock()
-            r.set = append(r.set, strconv.FormatInt(chat, 10)+" "+kind+" "+id+" "+strconv.FormatBool(on))
-            r.mu.Unlock()
-            return on, nil
-        },
-        SetAlias: func(chat int64, kind, id, alias string) (bool, error) {
-            r.mu.Lock()
-            r.aliases = append(r.aliases, strconv.FormatInt(chat, 10)+" "+kind+" "+id+" "+alias)
-            r.mu.Unlock()
-            return true, nil
-        },
-    }
+func (r *recorder) Fees() app.Fees { r.hit("fees", ""); return app.Fees{OK: true, TxCount: "42"} }
+
+func (r *recorder) Network() app.Network { r.hit("network", ""); return app.Network{OK: true, Blocks: "963 268"} }
+
+func (r *recorder) Market(lang string) app.Market { r.hit("market", lang); return app.Market{OK: true, Price: "$1"} }
+
+func (r *recorder) Blocks(lang string, rng app.Range) app.Blocks {
+    r.hit("blocks", lang)
+    return app.Blocks{OK: true, Top: rng.After + rng.Before, Rows: []app.Block{{Num: 7}}}
+}
+
+func (r *recorder) Addresses(lang string, rng app.AddrRange) app.Addrs {
+    r.hit("addresses "+rng.Kind+" "+strconv.Itoa(rng.From), lang)
+    return app.Addrs{OK: true, Kind: rng.Kind}
+}
+
+func (r *recorder) BlockInfo(lang string, height int64) app.Info {
+    r.hit("block", lang)
+    return app.Info{OK: true, Title: "Блок " + strconv.FormatInt(height, 10), Kind: "block"}
+}
+
+func (r *recorder) TxInfo(lang, txid string) app.Info {
+    r.hit("tx", lang)
+    if strings.HasPrefix(txid, "0000") { return app.Info{OK: true, Title: "Блок 1", Kind: "block"} }
+    return app.Info{OK: true, Title: txid[:6]}
+}
+
+func (r *recorder) AddrInfo(lang, a string) app.Info { r.hit("address", lang); return app.Info{OK: a != "nope", Title: a} }
+
+func (r *recorder) AddrTxs(lang, a string, from int) app.Txs {
+    r.hit("addrtxs", lang)
+    return app.Txs{OK: true, Addr: a, Next: from + 1}
+}
+
+func (r *recorder) MinerInfo(lang, name string) app.Info { r.hit("miner", lang); return app.Info{OK: true, Title: name} }
+
+func (r *recorder) MinerChart(lang, name, data, period string) app.Chart {
+    r.hit("chart "+data+" "+period, lang)
+    return app.Chart{OK: true, Name: name, Data: data, Period: period}
+}
+
+func (r *recorder) Mempool(lang string, after int64) app.Mempool {
+    r.hit("mempool "+strconv.FormatInt(after, 10), lang)
+    return app.Mempool{OK: true, Top: after + 1}
+}
+
+func (r *recorder) Watches(chat int64) app.Watches {
+    r.mu.Lock()
+    r.chats = append(r.chats, chat)
+    r.mu.Unlock()
+    return app.Watches{OK: true, Addresses: []app.Watch{{Id: "bc1q" + strconv.FormatInt(chat, 10)}}}
+}
+
+func (r *recorder) Watching(chat int64, kind, id string) bool { return id == "bc1qon" }
+
+func (r *recorder) SetWatch(chat int64, kind, id string, on bool) (bool, error) {
+    r.mu.Lock()
+    r.set = append(r.set, strconv.FormatInt(chat, 10)+" "+kind+" "+id+" "+strconv.FormatBool(on))
+    r.mu.Unlock()
+    return on, nil
+}
+
+func (r *recorder) SetAlias(chat int64, kind, id, alias string) (bool, error) {
+    r.mu.Lock()
+    r.aliases = append(r.aliases, strconv.FormatInt(chat, 10)+" "+kind+" "+id+" "+alias)
+    r.mu.Unlock()
+    return true, nil
 }
 
 // serveApp starts the Mini App's routes against a fresh recorder, with an empty
@@ -172,7 +186,7 @@ func serveApp(t *testing.T) (*recorder, *httptest.Server, chan struct{}) {
     cacheMu.Unlock()
     var r = &recorder{calls: map[string]int{}, langs: map[string]string{}}
     var closing = make(chan struct{})
-    var srv = httptest.NewServer(routes(testToken, r.options(), closing))
+    var srv = httptest.NewServer(routes(testToken, r, closing))
     t.Cleanup(srv.Close)
     return r, srv, closing
 }
@@ -211,7 +225,7 @@ func TestPageIsPublicAndDataIsNot(t *testing.T) {
     }
 }
 
-// Every endpoint answers the Options function's own value as JSON, and asks it
+// Every endpoint answers the Source method's own value as JSON, and asks it
 // in Russian — the one language the MAX Mini App speaks.
 func TestAPIAnswersInRussian(t *testing.T) {
     var r, srv, _ = serveApp(t)

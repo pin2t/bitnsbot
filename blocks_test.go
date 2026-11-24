@@ -45,8 +45,8 @@ func TestFormatBlock(t *testing.T) {
 // the collector resumes, so a lookup above it would step the collector over every
 // block in between.
 func TestBlockLookupDoesNotStore(t *testing.T) {
-    if err := openDB(filepath.Join(t.TempDir(), "watches.db")); err != nil {
-        t.Fatalf("openDB: %v", err)
+    if err := openTestDB(filepath.Join(t.TempDir(), "watches.db")); err != nil {
+        t.Fatalf("openTestDB: %v", err)
     }
     defer closeDB()
     var srv = coretest.Server(t, func(method string, params []any) (any, error) {
@@ -73,7 +73,7 @@ func TestBlockLookupDoesNotStore(t *testing.T) {
     if len(sent) != 1 || !strings.Contains(sent[0], "Block #500") {
         t.Fatalf("/info 500 replied %q", sent)
     }
-    if info := appBlockInfo("", 500); !info.OK {
+    if info := (appSource{}).BlockInfo("", 500); !info.OK {
         t.Fatal("the Mini App's block page did not show a block it had to compute")
     }
     if _, ok := blocks.Load(500); ok {
@@ -91,10 +91,10 @@ func TestBlockLookupDoesNotStore(t *testing.T) {
 // the place and disagreeing with it.
 func TestOpenDBDropsTheOldBlocksCursor(t *testing.T) {
     var path = filepath.Join(t.TempDir(), "watches.db")
-    if err := openDB(path); err != nil { t.Fatalf("openDB: %v", err) }
+    if err := openTestDB(path); err != nil { t.Fatalf("openTestDB: %v", err) }
     if _, err := db.Exec("insert into cursors (name, place) values ('miners', 7)"); err != nil { t.Fatal(err) }
     closeDB()
-    if err := openDB(path); err != nil { t.Fatalf("reopen: %v", err) }
+    if err := openTestDB(path); err != nil { t.Fatalf("reopen: %v", err) }
     defer closeDB()
     if v, ok := cursors.Get(cursors.Miners); !ok || v != 7 {
         t.Errorf("miners cursor = %d (found %v), want 7 — only the blocks row goes", v, ok)
@@ -137,8 +137,8 @@ func TestMinerName(t *testing.T) {
 //
 // Back restores everything from the tip down to the block that was opened
 func TestAppBlocksWindows(t *testing.T) {
-    if err := openDB(filepath.Join(t.TempDir(), "watches.db")); err != nil {
-        t.Fatalf("openDB: %v", err)
+    if err := openTestDB(filepath.Join(t.TempDir(), "watches.db")); err != nil {
+        t.Fatalf("openTestDB: %v", err)
     }
     defer closeDB()
     for h := int64(700000); h < 700050; h++ {
@@ -151,45 +151,45 @@ func TestAppBlocksWindows(t *testing.T) {
         for _, r := range b.Rows { out = append(out, r.Num) }
         return out
     }
-    var top = appBlocks("", app.Range{})
+    var top = appSource{}.Blocks("", app.Range{})
     if !top.OK || len(top.Rows) != blocksPerPage || !top.More {
         t.Fatalf("newest batch: %d rows more=%v", len(top.Rows), top.More)
     }
     if top.Top != 700049 || top.Next != 700038 || heights(top)[0] != 700049 {
         t.Fatalf("newest batch spans %d..%d, want 700049..700038", top.Top, top.Next)
     }
-    var next = appBlocks("", app.Range{Before: top.Next})
+    var next = appSource{}.Blocks("", app.Range{Before: top.Next})
     if len(next.Rows) != blocksPerPage || next.Top != 700037 || next.Next != 700026 {
         t.Fatalf("second batch spans %d..%d, want 700037..700026", next.Top, next.Next)
     }
-    if b := appBlocks("", app.Range{Before: 800000}); b.Top != 700049 {
+    if b := (appSource{}).Blocks("", app.Range{Before: 800000}); b.Top != 700049 {
         t.Fatalf("a before above the tip should start at the tip, got %d", b.Top)
     }
-    if b := appBlocks("", app.Range{Before: 700000}); b.OK || len(b.Rows) != 0 {
+    if b := (appSource{}).Blocks("", app.Range{Before: 700000}); b.OK || len(b.Rows) != 0 {
         t.Fatalf("nothing is below the oldest block, got %d rows", len(b.Rows))
     }
-    var fresh = appBlocks("", app.Range{After: 700046})
+    var fresh = appSource{}.Blocks("", app.Range{After: 700046})
     if got := heights(fresh); len(got) != 3 || got[0] != 700049 || got[2] != 700047 {
         t.Fatalf("prepend = %v, want 700049..700047", got)
     }
     if fresh.More {
         t.Error("three new blocks fit in a batch; nothing was cut off")
     }
-    var none = appBlocks("", app.Range{After: 700049})
+    var none = appSource{}.Blocks("", app.Range{After: 700049})
     if len(none.Rows) != 0 || none.Top != 700049 {
         t.Fatalf("nothing new = %d rows top=%d, want 0 rows at 700049", len(none.Rows), none.Top)
     }
-    if b := appBlocks("", app.Range{After: 700000}); !b.More {
+    if b := (appSource{}).Blocks("", app.Range{After: 700000}); !b.More {
         t.Error("49 new blocks do not fit in one batch; More must say so")
     }
-    var back = appBlocks("", app.Range{Down: 700030})
+    var back = appSource{}.Blocks("", app.Range{Down: 700030})
     if got := heights(back); len(got) != 20 || got[0] != 700049 || got[19] != 700030 {
         t.Fatalf("restored %d rows spanning %v, want 700049..700030", len(got), got)
     }
     if !back.More {
         t.Error("there are older blocks below the restored list, so it keeps its sentinel")
     }
-    if b := appBlocks("", app.Range{Down: 700000}); b.More {
+    if b := (appSource{}).Blocks("", app.Range{Down: 700000}); b.More {
         t.Error("a list restored to the oldest block has nothing more to append")
     }
 }

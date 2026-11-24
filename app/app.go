@@ -1,6 +1,6 @@
 // Package app is what the two Mini Apps — Telegram's, in package telegram, and
 // MAX's, in package max — share: the chain data they render, already formatted
-// by main and handed over as one Options function per kind, and the events that
+// by main and handed over through the Source interface main implements, and the events that
 // tell them it moved (Notify, Listen).
 //
 // It holds no server of its own. Each Mini App is started by its platform's
@@ -192,7 +192,7 @@ type Info struct {
     Back  string
     // Kind and Id name what the watch button acts on — "address" or "tx" and
     // the full id. Empty on a page with nothing to watch, which is what a block
-    // or a miner page leaves them. An Options function may set Kind itself when the page it
+    // or a miner page leaves them. A Source may set Kind itself when the page it
     // returns is not what the URL asked for: a 64-hex id arrives at /tx, and one
     // the node has a block header for comes back as that block. The button
     // itself is loaded separately: whether *this* reader watches it is per-user,
@@ -412,7 +412,7 @@ type Watch struct {
     Alias string
 }
 
-// Watches is one user's watch list. Alone among the Options functions this one is
+// Watches is one user's watch list. Alone among the Source methods this one is
 // per-user, which is why it is never cached and never rendered into the shell
 // page — both of those are shared by every visitor. OK is false when the lookup
 // failed, which is a different answer from watching nothing.
@@ -422,33 +422,33 @@ type Watches struct {
     Txs       []Watch
 }
 
-// Options supplies the chain data a Mini App renders, one function per kind of
-// data. main passes them to both; the Mini Apps stay unaware of the fee cache,
-// Bitcoin Core and the price feeds.
+// Source supplies the chain data a Mini App renders, one method per kind of
+// data. main implements it and hands one to each Mini App; the Mini Apps stay
+// unaware of the fee cache, Bitcoin Core and the price feeds.
 //
-// Everything a function renders text into takes the reader's language, because
+// Everything a method renders text into takes the reader's language, because
 // the words are main's rather than the page's: the details rows are the very
 // lines the bot prints, and a block row's "Unknown" miner or a period's "1w" is a
-// string main chose. The functions that carry no words of their own — the fee
+// string main chose. The methods that carry no words of their own — the fee
 // tiers and the chain figures are numbers, a watch list is ids — take none, and
 // their labels come from the translated page around them.
-type Options struct {
-    Fees       func() Fees
-    Network    func() Network
-    Market     func(lang string) Market
-    Blocks     func(lang string, rng Range) Blocks
-    Addresses  func(lang string, rng AddrRange) Addrs
-    BlockInfo  func(lang string, height int64) Info
-    TxInfo     func(lang, txid string) Info
-    AddrInfo   func(lang, address string) Info
-    AddrTxs    func(lang, address string, from int) Txs
-    MinerInfo  func(lang, name string) Info
-    MinerChart func(lang, name, data, period string) Chart
-    Mempool    func(lang string, after int64) Mempool
-    Watches    func(chat int64) Watches
-    Watching   func(chat int64, kind, id string) bool
-    SetWatch   func(chat int64, kind, id string, on bool) (bool, error)
-    SetAlias   func(chat int64, kind, id, alias string) (bool, error)
+type Source interface {
+    Fees() Fees
+    Network() Network
+    Market(lang string) Market
+    Blocks(lang string, rng Range) Blocks
+    Addresses(lang string, rng AddrRange) Addrs
+    BlockInfo(lang string, height int64) Info
+    TxInfo(lang, txid string) Info
+    AddrInfo(lang, address string) Info
+    AddrTxs(lang, address string, from int) Txs
+    MinerInfo(lang, name string) Info
+    MinerChart(lang, name, data, period string) Chart
+    Mempool(lang string, after int64) Mempool
+    Watches(chat int64) Watches
+    Watching(chat int64, kind, id string) bool
+    SetWatch(chat int64, kind, id string, on bool) (bool, error)
+    SetAlias(chat int64, kind, id, alias string) (bool, error)
 }
 
 // 000000 prefix is likely a block hash not transaction id

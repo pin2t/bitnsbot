@@ -120,7 +120,7 @@ func TestMaxWatchesAreScopedToThePlatform(t *testing.T) {
     }))
     defer tg.Close()
     useTelegram(t, tg.URL)
-    if err := openDB(filepath.Join(t.TempDir(), "watches.db")); err != nil { t.Fatal(err) }
+    if err := openTestDB(filepath.Join(t.TempDir(), "watches.db")); err != nil { t.Fatal(err) }
     defer closeDB()
     stopNotify()
     defer stopNotify()
@@ -194,15 +194,15 @@ func TestMaxConfirmationGoesToItsPlatform(t *testing.T) {
     if len(tgSent) != 1 || !strings.Contains(tgSent[0], "(on telegram)") { t.Fatalf("Telegram got %q", tgSent) }
 }
 
-// The MAX Mini App is built from the same appOptions as Telegram's, for the MAX
+// The MAX Mini App is built from the same appSource as Telegram's, for the MAX
 // platform: its watch list is MAX's alone, a watch it files is filed under
 // "max" and named there, and Telegram's chat of the same number sees none of it.
-func TestMaxAppOptionsActOnMaxWatches(t *testing.T) {
-    if err := openDB(filepath.Join(t.TempDir(), "watches.db")); err != nil { t.Fatal(err) }
+func TestMaxAppSourceActsOnMaxWatches(t *testing.T) {
+    if err := openTestDB(filepath.Join(t.TempDir(), "watches.db")); err != nil { t.Fatal(err) }
     defer closeDB()
     stopNotify()
     defer stopNotify()
-    var opt = appOptions("max")
+    var opt = appSource{platform: "max"}
     if err := watches.Add("tg", 5, "bc1qtelegram", "tg", nil); err != nil { t.Fatal(err) }
     var on, err = opt.SetWatch(5, "address", "bc1qmax", true)
     if err != nil || !on { t.Fatalf("SetWatch = %v, %v", on, err) }
@@ -216,7 +216,7 @@ func TestMaxAppOptionsActOnMaxWatches(t *testing.T) {
     for _, w := range stored {
         if w.Address == "bc1qmax" && w.Platform != "max" { t.Fatalf("filed under %q", w.Platform) }
     }
-    if tg := appWatches("tg", 5); len(tg.Addresses) != 1 || tg.Addresses[0].Id != "bc1qtelegram" { t.Fatalf("Telegram listed %+v", tg) }
+    if tg := (appSource{platform: "tg"}).Watches(5); len(tg.Addresses) != 1 || tg.Addresses[0].Id != "bc1qtelegram" { t.Fatalf("Telegram listed %+v", tg) }
     if on, err := opt.SetWatch(5, "address", "bc1qmax", false); err != nil || on { t.Fatalf("unwatch = %v, %v", on, err) }
     if list = opt.Watches(5); len(list.Addresses) != 0 { t.Fatalf("left %+v", list) }
 }
@@ -237,7 +237,7 @@ func TestMaxFieldsAreNotAligned(t *testing.T) {
     useTelegram(t, tg.URL)
     var f = &fakeMax{}
     useMax(t, f)
-    if err := openDB(filepath.Join(t.TempDir(), "bitnsbot.sqlite")); err != nil { t.Fatal(err) }
+    if err := openTestDB(filepath.Join(t.TempDir(), "bitnsbot.sqlite")); err != nil { t.Fatal(err) }
     defer closeDB()
     if err := rates.Add(66223); err != nil { t.Fatal(err) }
     message("tg", 4, "", "/market", "en", nil)

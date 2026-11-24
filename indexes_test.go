@@ -20,8 +20,8 @@ import "bitnsbot/addrindex"
 // addresses to follow, so those two steps fetch nothing; addrbal stops six
 // below the tip, which is below genesis here.
 func TestUpdateIndexesRunsInOrder(t *testing.T) {
-    if err := openDB(filepath.Join(t.TempDir(), "indexes.db")); err != nil {
-        t.Fatalf("openDB: %v", err)
+    if err := openTestDB(filepath.Join(t.TempDir(), "indexes.db")); err != nil {
+        t.Fatalf("openTestDB: %v", err)
     }
     defer closeDB()
     var mu sync.Mutex
