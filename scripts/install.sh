@@ -8,7 +8,7 @@
 #
 # Layout it creates (self-contained under /opt/bitnsbot):
 #   /opt/bitnsbot/bitnsbot        the binary
-#   /opt/bitnsbot/bitnsbot.conf    config (name=value; created as a template if absent)
+#   /opt/bitnsbot/bitnsbot.toml   config (TOML; created as a template if absent)
 #   /opt/bitnsbot/bitnsbot.db     SQLite database (created by the service on first run)
 #   /opt/bitnsbot/update.sh       copy of the auto-update script (run by the timer)
 #   /opt/bitnsbot/deploy.env      records REPO_DIR and BUILD_USER for update.sh
@@ -20,7 +20,7 @@ set -euo pipefail
 PREFIX=/opt/bitnsbot
 SERVICE=bitnsbot
 BINARY=$PREFIX/bitnsbot
-CONFIG=$PREFIX/bitnsbot.conf
+CONFIG=$PREFIX/bitnsbot.toml
 DB=$PREFIX/bitnsbot.db
 ENVFILE=$PREFIX/deploy.env
 UNIT=/etc/systemd/system/$SERVICE.service
@@ -86,41 +86,60 @@ NEEDS_CONFIG=0
 if [ ! -f "$CONFIG" ]; then
     NEEDS_CONFIG=1
     echo ">> writing config template $CONFIG (edit it before the service can run)"
-    cat > "$CONFIG" <<'CFG'
-# bitnsbot configuration — one flag per line as name=value.
-# See CLAUDE.md / main.go for the full flag list. The -config and -db flags in
-# the systemd unit take precedence over anything set here.
+    cat > "$CONFIG" <<CFG
+# bitnsbot configuration (TOML). See CLAUDE.md / config.go for every setting;
+# a key left out keeps its default, and an unknown one stops the bot starting.
 
-# Required: Telegram bot token (keep this file private, it is chmod 600).
-botToken=PUT-YOUR-TELEGRAM-BOT-TOKEN-HERE
-
-# Webhook the local telegram-bot-api proxy POSTs updates to.
-webhookURL=http://localhost:8080/bot
-#apiBaseURL=http://localhost:8081
-#listen=:8080
-#secretToken=
-
-# Bitcoin Core JSON-RPC (leave coreURL empty to run without a node).
-coreURL=http://127.0.0.1:8332
+[core]
+# Bitcoin Core JSON-RPC (leave url empty to run without a node).
+url = "http://127.0.0.1:8332"
 # Authenticate with either the cookie file Core writes into its data directory
 # (simplest — it needs no configuration on Core's side and is rotated on every
 # restart), or an explicit rpcuser/rpcpassword pair. Set one, not both.
-coreCookie=/home/pi/.bitcoin/.cookie
-#coreUser=
-#corePass=
-
+cookie = "/home/pi/.bitcoin/.cookie"
+#user = ""
+#password = ""
 # ZeroMQ endpoints for block and mempool notifications. Core publishes each
-# topic on whatever address its own -zmqpub* option names, so this is a
-# comma-separated list; the bot needs hashblock and rawtx, and sequence to
-# drop blocks a reorg disconnected from its cache. The matching bitcoin.conf
-# side is:
+# topic on whatever address its own -zmqpub* option names; the bot needs
+# hashblock and rawtx, and sequence to drop blocks a reorg disconnected from
+# its cache. The matching bitcoin.conf side is:
 #     zmqpubhashblock=tcp://127.0.0.1:28332
 #     zmqpubsequence=tcp://127.0.0.1:28332
 #     zmqpubrawtx=tcp://127.0.0.1:28333
 # Without this the bot still answers commands but never sends notifications.
-coreZMQ=tcp://127.0.0.1:28332,tcp://127.0.0.1:28333
+zmq = ["tcp://127.0.0.1:28332", "tcp://127.0.0.1:28333"]
 
-#verbose=1
+[telegram]
+# Telegram bot token (keep this file private, it is chmod 600). telegram.token
+# or max.token is required.
+token = "PUT-YOUR-TELEGRAM-BOT-TOKEN-HERE"
+# Webhook the local telegram-bot-api proxy POSTs updates to; its path is the
+# one the webhook server on listen accepts them on.
+webhookURL = "http://localhost:8082/bot"
+#listen = ":8082"
+#api = "http://localhost:8081"
+#secret = ""
+#registerWebhook = true
+
+[telegram.app]
+#listen = "127.0.0.1:8080"
+
+[max]
+#token = ""
+#listen = ":8084"
+#webhookURL = ""
+#secret = ""
+
+[max.app]
+#listen = "127.0.0.1:8085"
+
+[db]
+path = "$DB"
+
+[db.backup]
+#path = "$DB.bak"
+#interval = "24h"
+#script = ""
 CFG
     chown "$BUILD_USER" "$CONFIG"
     chmod 600 "$CONFIG"
@@ -147,7 +166,7 @@ Wants=network-online.target
 Type=simple
 User=$BUILD_USER
 WorkingDirectory=$PREFIX
-ExecStart=$BINARY -config $CONFIG -db $DB
+ExecStart=$BINARY -config $CONFIG
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=true
@@ -191,7 +210,7 @@ systemctl enable --now "$UPDATE_SERVICE.timer" >/dev/null
 
 if [ "$NEEDS_CONFIG" -eq 1 ]; then
     echo
-    echo "!! Service enabled but NOT started — edit $CONFIG (botToken, coreURL, ...), then:"
+    echo "!! Service enabled but NOT started — edit $CONFIG (telegram.token, core.url, ...), then:"
     echo "!!     sudo systemctl start $SERVICE"
 else
     echo ">> starting $SERVICE"

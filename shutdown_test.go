@@ -40,7 +40,7 @@ func TestShutdownDrainsHandlersBeforeClosingStore(t *testing.T) {
         var _, listErr = watches.List()
         finished <- listErr
     }
-    if err := telegram.Start(telegram.Options{Token: "TESTTOKEN", Listen: addr, WebhookPath: "/bot", Message: slow}); err != nil {
+    if err := telegram.Start(telegram.Options{Token: "TESTTOKEN", Listen: addr, WebhookURL: "http://" + addr + "/bot", Message: slow}); err != nil {
         t.Fatalf("start: %v", err)
     }
     go http.Post("http://"+addr+"/bot", "application/json", strings.NewReader(`{"message":{"chat":{"id":1},"text":"/watches"}}`))

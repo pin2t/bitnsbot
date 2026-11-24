@@ -15,7 +15,6 @@ import "sync"
 import "syscall"
 import "time"
 import "runtime/debug"
-import "github.com/pin2t/flagex"
 import "bitnsbot/blocks"
 import "bitnsbot/addrbal"
 import "bitnsbot/app"
@@ -36,35 +35,10 @@ import "regexp"
 import "bitnsbot/lru"
 import "sort"
 
-var configPath      = flag.String("config", "", "path to a properties file (name=value lines) with flag values; command-line flags take precedence")
+var configPath      = flag.String("config", "", "path to the TOML configuration file")
 var verbose         = flag.Int("verbose", 0, "log verbosity: 0=ERR/WARN/status, 1=+INFO, 2=+NET/DB (raw external traffic and storage requests)")
-var botToken        = flag.String("botToken", "", "Telegram bot token authenticating outbound Bot API calls (required)")
-var listenAddr      = flag.String("listen", ":8082", "address the Telegram webhook server binds to")
-var webhookPath     = flag.String("webhookPath", "/bot", "path the Bot API server will POST updates to")
-var webhookURL      = flag.String("webhookURL", "", "URL the Bot API server should send updates to, e.g. http://localhost:8080/bot")
-var apiBaseURL      = flag.String("apiBaseURL", "http://localhost:8081", "base URL of the local telegram-bot-api server")
-var secretToken     = flag.String("secretToken", "", "optional secret checked against the X-Telegram-Bot-Api-Secret-Token header")
-var registerHook    = flag.Bool("registerWebhook", true, "call setWebhook on startup")
-var dbPath          = flag.String("db", "bitnsbot.db", "path to the bot's SQLite database")
-var coreURL         = flag.String("coreURL", "", "Bitcoin Core JSON-RPC URL, e.g. http://127.0.0.1:8332 (leave empty to skip connecting to the node)")
-var coreUser        = flag.String("coreUser", "", "Bitcoin Core RPC username (or use -coreCookie)")
-var corePass        = flag.String("corePass", "", "Bitcoin Core RPC password (or use -coreCookie)")
-var coreCookie      = flag.String("coreCookie", "", "path to Bitcoin Core's .cookie file, an alternative to -coreUser/-corePass")
-var coreZMQ         = flag.String("coreZMQ", "", "comma-separated ZMQ endpoints publishing hashblock, rawtx and sequence, e.g. tcp://127.0.0.1:28332,tcp://127.0.0.1:28333")
-var backupPath      = flag.String("backup", "", "path to copy the database to periodically (empty disables backups)")
-var backupInterval  = flag.Duration("backupInterval", 24*time.Hour, "how old the backup may get before a fresh one is taken")
-var backupScript    = flag.String("backupScript", "", "command run after each backup, with the backup's path as $1 and in $BACKUP_FILE (empty runs nothing)")
-var appListen       = flag.String("appListen", "127.0.0.1:8080", "address the Telegram Mini App web server binds to (empty disables it; bind to localhost — the Cloudflare tunnel is what faces the network)")
-var dbuiListen      = flag.String("dbuiListen", "", "ignored — the database UI speaks bbolt and is github.com/pin2t/bboltwui now; kept so a config file that sets it still starts")
-var historyFile     = flag.String("historyFile", "", "path to a JSON file containing historical BTC/USD rates (same format as blockchain.info/charts/market-price); backfilled from this file on first run instead of fetching over the network")
-var maxToken        = flag.String("maxToken", "", "MAX messenger bot token; when set, the MAX webhook server is started on -maxListen")
-var maxListen       = flag.String("maxListen", ":8084", "address the MAX webhook server binds to")
-var maxWebhookURL   = flag.String("maxWebhookURL", "", "public https URL MAX should send updates to, registered via POST /subscriptions on startup; its path is the one the MAX webhook server accepts updates on (empty skips subscribing and accepts them on /)")
-var maxSecret       = flag.String("maxSecret", "", "optional secret passed to MAX on subscribing and checked against the X-Max-Bot-Api-Secret header of every update")
-var maxAppListen    = flag.String("maxAppListen", "127.0.0.1:8085", "address the MAX Mini App web server binds to when -maxToken is set (empty disables it; bind to localhost and put a tunnel in front, as with -appListen)")
 
-
-// stopBackup ends the backup goroutine, set when -backup started one. shutdown
+// stopBackup ends the backup goroutine, set when db.backup.path started one. shutdown
 // runs it before closing the database, since a copy in flight is reading it.
 var stopBackup func()
 
@@ -468,7 +442,7 @@ var commit = ""
 // the index says which transactions an address is in, where this says
 // what they did to it, and the two advance at different rates.
 //
-// At least one of -botToken and -maxToken is required, and each messenger is
+// At least one of telegram.token and max.token is required, and each messenger is
 // started only if its token is given. A first build of the chain-derived
 // indexes, which is hours of work, is the tools' job (tools/addrindex,
 // tools/addrstat), run against the same database file the bot then serves from.
@@ -484,69 +458,63 @@ func main() {
         flag.PrintDefaults()
     }
     flag.Parse()
-    if *configPath != "" {
-        if err := flagex.ParseFile(*configPath); err != nil {
-            logging.Fatal("apply config: %v", err)
-        }
-    }
     logging.SetVerbose(*verbose)
-    if *botToken == "" && *maxToken == "" {
-        logging.Fatal("-botToken or -maxToken is required")
+    var cfg, cfgErr = loadConfig(*configPath)
+    if cfgErr != nil {
+        logging.Fatal("config: %v", cfgErr)
     }
-    if *registerHook && *webhookURL == "" {
-        logging.Fatal("-webhookURL is required when -registerWebhook=true")
+    if cfg.Telegram.Token == "" && cfg.Max.Token == "" {
+        logging.Fatal("telegram.token or max.token is required")
+    }
+    if cfg.Telegram.Token != "" && cfg.Telegram.RegisterWebhook && cfg.Telegram.WebhookURL == "" {
+        logging.Fatal("telegram.webhookURL is required when telegram.registerWebhook is true")
     }
     var err error
-    if err = openDB(*dbPath); err != nil {
+    if err = openDB(cfg.DB.Path); err != nil {
         logging.Fatal("open database: %v", err)
     }
-    rates.SetHistoryFile(*historyFile)
     rates.Start()
-    if *dbuiListen != "" {
-        logging.Warn("database UI not started: it speaks bbolt, and the bot's database is SQLite now — run github.com/pin2t/bboltwui against a bbolt file instead")
+    if cfg.DB.Backup.Path != "" {
+        _, stopBackup = startBackup(cfg.DB.Backup.Path, cfg.DB.Backup.Interval, cfg.DB.Backup.Script)
     }
-    if *backupPath != "" {
-        _, stopBackup = startBackup(*backupPath, *backupInterval, *backupScript)
-    }
-    if *coreURL != "" {
-        if err := core.Init(*coreURL, *coreUser, *corePass, *coreCookie); err != nil {
+    if cfg.Core.URL != "" {
+        if err := core.Init(cfg.Core.URL, cfg.Core.User, cfg.Core.Password, cfg.Core.Cookie); err != nil {
             logging.Fatal("Bitcoin Core client: %v", err)
         }
         var ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
         var height, herr = core.GetBlockCount(ctx)
         cancel()
         if herr != nil {
-            logging.Fatal("Bitcoin Core at %s: %v", *coreURL, herr)
+            logging.Fatal("Bitcoin Core at %s: %v", cfg.Core.URL, herr)
         }
-        logging.Status("connected to Bitcoin Core at %s (height %d)", *coreURL, height)
+        logging.Status("connected to Bitcoin Core at %s (height %d)", cfg.Core.URL, height)
     }
     var platforms []string
-    if *botToken != "" {
+    if cfg.Telegram.Token != "" {
         if err := telegram.Start(telegram.Options{
-            Token:       *botToken,
-            APIBaseURL:  *apiBaseURL,
-            Listen:      *listenAddr,
-            WebhookPath: *webhookPath,
-            WebhookURL:  *webhookURL,
-            Secret:      *secretToken,
-            Register:    *registerHook,
+            Token:       cfg.Telegram.Token,
+            APIBaseURL:  cfg.Telegram.API,
+            Listen:      cfg.Telegram.Listen,
+            WebhookURL:  cfg.Telegram.WebhookURL,
+            Secret:      cfg.Telegram.Secret,
+            Register:    cfg.Telegram.RegisterWebhook,
             Menus:       menus(),
             Message:     message,
             Callback:    callback,
-            AppListen:   *appListen,
+            AppListen:   cfg.Telegram.App.Listen,
             App:         appOptions(telegram.Platform),
         }); err != nil {
             logging.Fatal("Telegram: %v", err)
         }
         platforms = append(platforms, telegram.Platform)
     }
-    if *maxToken != "" {
+    if cfg.Max.Token != "" {
         if err := max.Start(max.Options{
-            Token:      *maxToken,
-            Listen:     *maxListen,
-            WebhookURL: *maxWebhookURL,
-            Secret:     *maxSecret,
-            AppListen:  *maxAppListen,
+            Token:      cfg.Max.Token,
+            Listen:     cfg.Max.Listen,
+            WebhookURL: cfg.Max.WebhookURL,
+            Secret:     cfg.Max.Secret,
+            AppListen:  cfg.Max.App.Listen,
             App:        appOptions(max.Platform),
             Message:    message,
             Callback:   callback,
@@ -564,8 +532,8 @@ func main() {
     startMempoolFees()
     startNetworkStats()
     startMarketUpdates()
-    if core.Enabled() && *coreZMQ != "" {
-        if err := startZMQ(context.Background(), strings.Split(*coreZMQ, ",")); err != nil {
+    if core.Enabled() && len(cfg.Core.ZMQ) > 0 {
+        if err := startZMQ(context.Background(), cfg.Core.ZMQ); err != nil {
             logging.Fatal("subscribe to Bitcoin Core ZMQ: %v", err)
         }
     }
