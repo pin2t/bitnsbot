@@ -10,16 +10,7 @@ import "strings"
 import "syscall"
 import "time"
 import "modernc.org/sqlite"
-import "bitnsbot/blocks"
-import "bitnsbot/addrbal"
-import "bitnsbot/addrindex"
-import "bitnsbot/addrstat"
-import "bitnsbot/chats"
-import "bitnsbot/cursors"
 import "bitnsbot/logging"
-import "bitnsbot/miners"
-import "bitnsbot/rates"
-import "bitnsbot/watches"
 
 // db is the bot's SQLite database, and the handle every package that stores
 // anything is given. One file, one handle.
@@ -47,17 +38,9 @@ func dsn(path string) string {
         "&_pragma=foreign_keys(on)"
 }
 
-// openDB opens the SQLite database and hands the handle to every package that
-// stores something. Each package's Init creates its own tables and indexes when
-// they are missing — every statement is `create ... if not exists`, since it runs
-// on every start — so the schema lives beside the code that reads it. cursors
-// comes first, because the scans keep their place in its table.
-//
-// Every package that owns tables must be Init'd here. Forgetting one is not a
-// loud failure: those packages guard their operations on a nil handle, so the
-// package silently does nothing — which is exactly how the address index came to
-// fetch and parse the whole chain while storing none of it. TestOpenDBTables
-// pins the full set.
+// openDB opens the SQLite database into db. It hands the handle to no package:
+// main does that right after, each package's Init creating its tables, and the
+// tests do it through openTestDB.
 //
 // A few connections rather than one: reads should not queue behind a
 // thousand-block flush. Writes serialize on SQLite's own write lock, which
@@ -71,15 +54,7 @@ func openDB(path string) error {
     opened.SetMaxIdleConns(4)
     if err := opened.Ping(); err != nil { return err }
     db = opened
-    if err := cursors.Init(db); err != nil { return err }
-    if err := chats.Init(db); err != nil { return err }
-    if err := blocks.Init(db); err != nil { return err }
-    if err := rates.Init(db); err != nil { return err }
-    if err := watches.Init(db); err != nil { return err }
-    if err := miners.Init(db); err != nil { return err }
-    if err := addrstat.Init(db); err != nil { return err }
-    if err := addrbal.Init(db); err != nil { return err }
-    return addrindex.Init(db)
+    return nil
 }
 
 // loggedConnector opens connections that log every statement they run at DB

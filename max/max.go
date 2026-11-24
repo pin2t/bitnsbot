@@ -4,7 +4,7 @@
 //
 // Start is the one way in. Running a command is package main's business, so
 // the webhook hands each update to the handlers main passes in Options, the
-// Mini App reads its chain data through the same app.Options functions the
+// Mini App reads its chain data through the same app.Source functions the
 // Telegram Mini App does, and main replies through Send. The package holds the
 // process's one Bot API connection in package variables, the way core holds
 // its one node.
@@ -52,7 +52,7 @@ type Options struct {
     // AppListen is the address the Mini App binds to; empty starts none.
     AppListen string
     // App is the chain data the Mini App renders, asked in Russian.
-    App app.Options
+    App app.Source
     // Message is a message somebody typed: a command, or the argument a bare
     // command asked for. body is the whole update, as it arrived; every handler
     // gets it.

@@ -15,14 +15,14 @@ import "bitnsbot/txwatches"
 import "bitnsbot/watches"
 
 // The Mini App's Watches tab is the only per-user thing the app serves, and this
-// is the line that scopes it. The Mini App's own tests run against a fake app.Options,
+// is the line that scopes it. The Mini App's own tests run against a fake app.Source,
 // so without this one nothing would catch the filter being dropped.
 //
 // the short form is what the row shows, the full id is what its link carries
 //
 // a chat watching nothing gets an empty list, not everyone else's
 func TestAppWatchesAreScopedToTheChat(t *testing.T) {
-    if err := openDB(filepath.Join(t.TempDir(), "watches.db")); err != nil {
+    if err := openTestDB(filepath.Join(t.TempDir(), "watches.db")); err != nil {
         t.Fatalf("open db: %v", err)
     }
     defer closeDB()
@@ -31,7 +31,7 @@ func TestAppWatchesAreScopedToTheChat(t *testing.T) {
     if err := watches.Add("tg", 99, "bc1qtheirs", "", nil); err != nil { t.Fatalf("add: %v", err) }
     txwatches.Add(strings.Repeat("a", 64), "tg", 42, "mine")
     txwatches.Add(strings.Repeat("b", 64), "tg", 99, "theirs")
-    var mine = appWatches("tg", 42)
+    var mine = appSource{platform: "tg"}.Watches(42)
     if !mine.OK { t.Fatal("lookup failed") }
     if len(mine.Addresses) != 1 || mine.Addresses[0].Id != "bc1qmine" {
         t.Errorf("addresses = %+v; want only this chat's", mine.Addresses)
@@ -45,11 +45,11 @@ func TestAppWatchesAreScopedToTheChat(t *testing.T) {
     if mine.Txs[0].Short != short(strings.Repeat("a", 64)) {
         t.Errorf("Short = %q, want the shortened id", mine.Txs[0].Short)
     }
-    var theirs = appWatches("tg", 99)
+    var theirs = appSource{platform: "tg"}.Watches(99)
     if len(theirs.Addresses) != 1 || theirs.Addresses[0].Id != "bc1qtheirs" {
         t.Errorf("the other chat got %+v", theirs.Addresses)
     }
-    var none = appWatches("tg", 7)
+    var none = appSource{platform: "tg"}.Watches(7)
     if len(none.Addresses) != 0 || len(none.Txs) != 0 {
         t.Errorf("an unrelated chat was served %+v / %+v", none.Addresses, none.Txs)
     }
@@ -62,7 +62,7 @@ func TestAppWatchesAreScopedToTheChat(t *testing.T) {
 // own lines, and the reader's language reaches them as an argument rather than
 // through a chat — a page opened from the webview has no chat behind it. Only
 // main can catch a regression here: the Mini App's own tests run against a fake
-// app.Options, which has no words of its own to translate.
+// app.Source, which has no words of its own to translate.
 //
 // the values are translated too, not only the labels: a size carries its
 // unit and an unknown fee distribution says so in words
@@ -74,7 +74,7 @@ func TestAppWatchesAreScopedToTheChat(t *testing.T) {
 //
 // the market card's periods, which main names rather than the page
 func TestAppSectionsAreTranslated(t *testing.T) {
-    if err := openDB(filepath.Join(t.TempDir(), "watches.db")); err != nil {
+    if err := openTestDB(filepath.Join(t.TempDir(), "watches.db")); err != nil {
         t.Fatalf("open db: %v", err)
     }
     defer closeDB()
@@ -91,11 +91,11 @@ func TestAppSectionsAreTranslated(t *testing.T) {
         for _, r := range i.Rows { out = append(out, r.Label+"="+r.Value) }
         return strings.Join(out, "\n")
     }
-    var en = appBlockInfo("", 700001)
+    var en = appSource{}.BlockInfo("", 700001)
     if en.Title != "Block 700 001" || !strings.Contains(labels(en), "Hash=") {
         t.Errorf("English block page:\n%s\n%s", en.Title, labels(en))
     }
-    var ru = appBlockInfo("ru", 700001)
+    var ru = appSource{}.BlockInfo("ru", 700001)
     if ru.Title != "Блок 700 001" {
         t.Errorf("block title = %q, want it translated", ru.Title)
     }
@@ -112,7 +112,7 @@ func TestAppSectionsAreTranslated(t *testing.T) {
     if strings.Contains(labels(ru), "Hash=") {
         t.Errorf("an English label survived translation:\n%s", labels(ru))
     }
-    var list = appBlocks("ru", app.Range{})
+    var list = appSource{}.Blocks("ru", app.Range{})
     if len(list.Rows) != 2 { t.Fatalf("block list has %d rows, want 2", len(list.Rows)) }
     if list.Rows[0].Miner != "неизвестен" || list.Rows[0].MinerKnown {
         t.Errorf("unattributed miner = %q, want it translated", list.Rows[0].Miner)
@@ -120,7 +120,7 @@ func TestAppSectionsAreTranslated(t *testing.T) {
     if list.Rows[0].Txs != "2 100 тр." {
         t.Errorf("transaction count = %q, want it translated", list.Rows[0].Txs)
     }
-    if got := appBlocks("", app.Range{}).Rows[0].Txs; got != "2 100 txs" {
+    if got := (appSource{}).Blocks("", app.Range{}).Rows[0].Txs; got != "2 100 txs" {
         t.Errorf("English transaction count = %q", got)
     }
     if _, err := db.Exec(`insert into miners (name, blocks, reward, fees, totalWork, lastWork)
@@ -131,16 +131,16 @@ func TestAppSectionsAreTranslated(t *testing.T) {
     if merr != nil { t.Fatal(merr) }
     if err := cursors.Set(mtx, cursors.Miners, 9); err != nil { t.Fatal(err) }
     if err := mtx.Commit(); err != nil { t.Fatal(err) }
-    var miner = appMinerInfo("ru", "AntPool")
+    var miner = appSource{}.MinerInfo("ru", "AntPool")
     if !miner.OK || !strings.Contains(labels(miner), "Блоков добыто=6 блоков") {
         t.Errorf("miner page:\n%s", labels(miner))
     }
     rates.Add(65000)
-    var market = appMarket("ru")
+    var market = appSource{}.Market("ru")
     if len(market.Changes) == 0 || market.Changes[0].Label != "1 д" {
         t.Errorf("market periods = %+v, want them translated", market.Changes)
     }
-    if got := appMarket("").Changes[0].Label; got != "1 d" {
+    if got := (appSource{}).Market("").Changes[0].Label; got != "1 d" {
         t.Errorf("English market period = %q", got)
     }
 }
@@ -151,7 +151,7 @@ func TestAppSectionsAreTranslated(t *testing.T) {
 //
 // and a row that mentions no id is left whole
 func TestBlockHashIsLinked(t *testing.T) {
-    if err := openDB(filepath.Join(t.TempDir(), "watches.db")); err != nil {
+    if err := openTestDB(filepath.Join(t.TempDir(), "watches.db")); err != nil {
         t.Fatalf("open db: %v", err)
     }
     defer closeDB()
@@ -161,7 +161,7 @@ func TestBlockHashIsLinked(t *testing.T) {
         Reward: 312500000, Total: 320000000}}); err != nil {
         t.Fatalf("store block: %v", err)
     }
-    var info = appBlockInfo("", 700001)
+    var info = appSource{}.BlockInfo("", 700001)
     if !info.OK || len(info.Rows) == 0 { t.Fatal("no block page") }
     var row = info.Rows[0]
     if row.Value != short(hash) {
@@ -180,7 +180,7 @@ func TestBlockHashIsLinked(t *testing.T) {
 // The block page's miner is tappable too, opening the miner page — which
 // /search cannot classify, so the part carries the URL outright rather than an id.
 func TestBlockMinerIsLinked(t *testing.T) {
-    if err := openDB(filepath.Join(t.TempDir(), "watches.db")); err != nil {
+    if err := openTestDB(filepath.Join(t.TempDir(), "watches.db")); err != nil {
         t.Fatalf("open db: %v", err)
     }
     defer closeDB()
@@ -190,7 +190,7 @@ func TestBlockMinerIsLinked(t *testing.T) {
         Reward: 312500000, Total: 320000000}}); err != nil {
         t.Fatalf("store block: %v", err)
     }
-    var info = appBlockInfo("", 700001)
+    var info = appSource{}.BlockInfo("", 700001)
     if !info.OK { t.Fatal("no block page") }
     var miner app.Field
     for _, r := range info.Rows {
@@ -209,7 +209,7 @@ func TestBlockMinerIsLinked(t *testing.T) {
 
 // An unattributed block's miner is not a pool, so it must not become a link.
 func TestBlockMinerUnknownNotLinked(t *testing.T) {
-    if err := openDB(filepath.Join(t.TempDir(), "watches.db")); err != nil {
+    if err := openTestDB(filepath.Join(t.TempDir(), "watches.db")); err != nil {
         t.Fatalf("open db: %v", err)
     }
     defer closeDB()
@@ -218,7 +218,7 @@ func TestBlockMinerUnknownNotLinked(t *testing.T) {
         Reward: 312500000, Total: 320000000}}); err != nil {
         t.Fatalf("store block: %v", err)
     }
-    var info = appBlockInfo("", 700001)
+    var info = appSource{}.BlockInfo("", 700001)
     if !info.OK { t.Fatal("no block page") }
     for _, r := range info.Rows {
         if r.Label == "Miner" && r.Parts != nil {
@@ -290,7 +290,7 @@ func TestTxInfoLinksBlockAndAddresses(t *testing.T) {
     })
     defer srv.Close()
     coretest.Use(t, srv)
-    var info = appTxInfo("", txid)
+    var info = appSource{}.TxInfo("", txid)
     if !info.OK { t.Fatal("no transaction page") }
     if !info.Confirmed {
         t.Error("a transaction with confirmations should report Confirmed")
@@ -344,7 +344,7 @@ func TestTxInfoLinksBlockAndAddresses(t *testing.T) {
 //
 // and the block endpoint says the same thing about the same page
 func TestTxInfoOnABlockHashIsABlockPage(t *testing.T) {
-    if err := openDB(filepath.Join(t.TempDir(), "watches.db")); err != nil { t.Fatal(err) }
+    if err := openTestDB(filepath.Join(t.TempDir(), "watches.db")); err != nil { t.Fatal(err) }
     defer closeDB()
     var hash = "0000000000000000000209d0dbbd5a37b0e0e0a2f8a1ba36d6f4f0e9c0b1a2f3"
     if err := blocks.Flush([]*blocks.Info{{Height: 700001, Hash: hash, Time: 1700000000,
@@ -359,14 +359,14 @@ func TestTxInfoOnABlockHashIsABlockPage(t *testing.T) {
     })
     defer srv.Close()
     coretest.Use(t, srv)
-    var info = appTxInfo("", hash)
+    var info = appSource{}.TxInfo("", hash)
     if !info.OK || info.Title != "Block 700 001" {
         t.Fatalf("a block hash should open the block page, got %#v", info.Title)
     }
     if info.Kind != "block" {
         t.Errorf("Kind = %q, want block — this is what keeps the watch button off it", info.Kind)
     }
-    if got := appBlockInfo("", 700001); got.Kind != "block" {
+    if got := (appSource{}).BlockInfo("", 700001); got.Kind != "block" {
         t.Errorf("BlockInfo Kind = %q, want block", got.Kind)
     }
 }
@@ -406,7 +406,7 @@ func seedAddrList(t *testing.T, kind string, rows map[string]int64) {
 //
 // a balance under a whole coin keeps its satoshi rather than rounding away
 func TestAppAddressListsAreRanked(t *testing.T) {
-    if err := openDB(filepath.Join(t.TempDir(), "watches.db")); err != nil {
+    if err := openTestDB(filepath.Join(t.TempDir(), "watches.db")); err != nil {
         t.Fatalf("open db: %v", err)
     }
     defer closeDB()
@@ -423,7 +423,7 @@ func TestAppAddressListsAreRanked(t *testing.T) {
         {"abandoned", []string{"bbb", "ccc", "aaa"}, "3 february 2009"},
     }
     for _, c := range cases {
-        var got = appAddresses("", app.AddrRange{Kind: c.kind})
+        var got = appSource{}.Addresses("", app.AddrRange{Kind: c.kind})
         if !got.OK || len(got.Rows) != len(c.order) {
             t.Fatalf("%s: got %d rows, want %d (%+v)", c.kind, len(got.Rows), len(c.order), got)
         }
@@ -442,7 +442,7 @@ func TestAppAddressListsAreRanked(t *testing.T) {
             t.Errorf("%s: a list shorter than a batch has nothing more to fetch", c.kind)
         }
     }
-    var rich = appAddresses("", app.AddrRange{Kind: "rich"})
+    var rich = appSource{}.Addresses("", app.AddrRange{Kind: "rich"})
     if rich.Rows[2].Value != "0.0999 BTC" {
         t.Errorf("small balance reads %q, want 0.0999 BTC", rich.Rows[2].Value)
     }
@@ -458,7 +458,7 @@ func TestAppAddressListsAreRanked(t *testing.T) {
 // counts them: a staged payment can lift an address above a folded one, and one
 // they emptied drops out of the lists that need a balance.
 func TestAppAddressListsCountStagedBlocks(t *testing.T) {
-    if err := openDB(filepath.Join(t.TempDir(), "watches.db")); err != nil {
+    if err := openTestDB(filepath.Join(t.TempDir(), "watches.db")); err != nil {
         t.Fatalf("open db: %v", err)
     }
     defer closeDB()
@@ -472,14 +472,14 @@ func TestAppAddressListsCountStagedBlocks(t *testing.T) {
             values (?, '', ?, ?, ?, ?, 0, 1, 0, 0, ?)`, r.addr, r.recv-r.sent, r.recv, r.sent, r.recv+r.sent, r.block)
         if err != nil { t.Fatal(err) }
     }
-    var got = appAddresses("", app.AddrRange{Kind: "rich"})
+    var got = appSource{}.Addresses("", app.AddrRange{Kind: "rich"})
     var ids []string
     for _, r := range got.Rows { ids = append(ids, r.Id) }
     if strings.Join(ids, ",") != "bbb,aaa,ddd" { t.Errorf("rich ranks %v, want bbb (700), aaa (500), ddd (350)", ids) }
 }
 // and a restored list reaches the row Back returns to, in one batch
 func TestAppAddressListPages(t *testing.T) {
-    if err := openDB(filepath.Join(t.TempDir(), "watches.db")); err != nil {
+    if err := openTestDB(filepath.Join(t.TempDir(), "watches.db")); err != nil {
         t.Fatalf("open db: %v", err)
     }
     defer closeDB()
@@ -494,7 +494,7 @@ func TestAppAddressListPages(t *testing.T) {
     var seen []string
     var from, batches int
     for {
-        var got = appAddresses("", app.AddrRange{Kind: "active", From: from})
+        var got = appSource{}.Addresses("", app.AddrRange{Kind: "active", From: from})
         if batches == 0 && len(got.Rows) != addrsFirstPage {
             t.Fatalf("first batch has %d rows, want %d", len(got.Rows), addrsFirstPage)
         }
@@ -516,7 +516,7 @@ func TestAppAddressListPages(t *testing.T) {
                 i-1, i, seen[i-1], vals[seen[i-1]], seen[i], vals[seen[i]])
         }
     }
-    var back = appAddresses("", app.AddrRange{Kind: "active", Down: 22, Restore: true})
+    var back = appSource{}.Addresses("", app.AddrRange{Kind: "active", Down: 22, Restore: true})
     if len(back.Rows) != 23 || back.Rows[22].Idx != 22 {
         t.Errorf("restored list has %d rows, want 23 reaching offset 22", len(back.Rows))
     }
@@ -533,7 +533,7 @@ func TestAppAddressListPages(t *testing.T) {
 //
 // and paging through the same ranking a row at a time visits each once
 func TestAppAddressListRanksCollidingValues(t *testing.T) {
-    if err := openDB(filepath.Join(t.TempDir(), "watches.db")); err != nil {
+    if err := openTestDB(filepath.Join(t.TempDir(), "watches.db")); err != nil {
         t.Fatalf("open db: %v", err)
     }
     defer closeDB()
@@ -542,7 +542,7 @@ func TestAppAddressListRanksCollidingValues(t *testing.T) {
         rows[fmt.Sprintf("addr%02d", i)] = int64(500 + i%2)
     }
     seedAddrList(t, "active", rows)
-    var got = appAddresses("", app.AddrRange{Kind: "active"})
+    var got = appSource{}.Addresses("", app.AddrRange{Kind: "active"})
     if len(got.Rows) != 8 {
         t.Fatalf("the list shows %d of 8 addresses: %+v", len(got.Rows), got.Rows)
     }
@@ -557,7 +557,7 @@ func TestAppAddressListRanksCollidingValues(t *testing.T) {
     }
     var page []string
     for from := 0; from < 8; from++ {
-        var batch = appAddresses("", app.AddrRange{Kind: "active", From: from})
+        var batch = appSource{}.Addresses("", app.AddrRange{Kind: "active", From: from})
         if len(batch.Rows) == 0 { break }
         page = append(page, batch.Rows[0].Id)
     }
@@ -572,13 +572,13 @@ func TestAppAddressListRanksCollidingValues(t *testing.T) {
 // can only come from an edited URL. Neither is an error, and neither may serve
 // another list's rows.
 func TestAppAddressListMissing(t *testing.T) {
-    if err := openDB(filepath.Join(t.TempDir(), "watches.db")); err != nil {
+    if err := openTestDB(filepath.Join(t.TempDir(), "watches.db")); err != nil {
         t.Fatalf("open db: %v", err)
     }
     defer closeDB()
     seedAddrList(t, "active", map[string]int64{"aaa": 10})
     for _, kind := range []string{"rich", "abandoned", "nonesuch", ""} {
-        var got = appAddresses("", app.AddrRange{Kind: kind})
+        var got = appSource{}.Addresses("", app.AddrRange{Kind: kind})
         if got.OK || len(got.Rows) != 0 {
             t.Errorf("kind %q served %+v", kind, got.Rows)
         }
@@ -594,7 +594,7 @@ func TestAppAddressListMissing(t *testing.T) {
 //
 // and it still continues from where it stopped rather than claiming the end
 func TestAppAddressListBoundsARestore(t *testing.T) {
-    if err := openDB(filepath.Join(t.TempDir(), "watches.db")); err != nil {
+    if err := openTestDB(filepath.Join(t.TempDir(), "watches.db")); err != nil {
         t.Fatalf("open db: %v", err)
     }
     defer closeDB()
@@ -603,7 +603,7 @@ func TestAppAddressListBoundsARestore(t *testing.T) {
         rows[fmt.Sprintf("a%05d", i)] = int64(100000 - i)
     }
     seedAddrList(t, "rich", rows)
-    var got = appAddresses("", app.AddrRange{Kind: "rich", Down: addrsRestoreRows + 40, Restore: true})
+    var got = appSource{}.Addresses("", app.AddrRange{Kind: "rich", Down: addrsRestoreRows + 40, Restore: true})
     if len(got.Rows) != addrsRestoreRows {
         t.Errorf("a restore returned %d rows, want it capped at %d", len(got.Rows), addrsRestoreRows)
     }

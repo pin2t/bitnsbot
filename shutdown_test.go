@@ -21,9 +21,9 @@ import "bitnsbot/watches"
 // must wait for the in-flight handler, then close the store
 func TestShutdownDrainsHandlersBeforeClosingStore(t *testing.T) {
     var err error
-    err = openDB(filepath.Join(t.TempDir(), "watches.db"))
+    err = openTestDB(filepath.Join(t.TempDir(), "watches.db"))
     if err != nil {
-        t.Fatalf("openDB: %v", err)
+        t.Fatalf("openTestDB: %v", err)
     }
     core.Reset()
     var started = make(chan struct{})

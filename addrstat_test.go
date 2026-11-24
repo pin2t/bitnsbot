@@ -13,7 +13,7 @@ import "bitnsbot/addrstat"
 // Init here.
 func seedAddrStat(t *testing.T, addr string, s addrstat.Stat) {
     t.Helper()
-    if err := openDB(filepath.Join(t.TempDir(), "bitnsbot.db")); err != nil { t.Fatalf("openDB: %v", err) }
+    if err := openTestDB(filepath.Join(t.TempDir(), "bitnsbot.db")); err != nil { t.Fatalf("openTestDB: %v", err) }
     t.Cleanup(func() { closeDB() })
     var _, err = db.Exec(`insert into addrstat (addr, type, balance, recv, sent, flow, fees, txs,
         first, last) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, addr, s.Type, s.Balance, s.Recv,
@@ -72,7 +72,7 @@ func TestAppAddressPageUsesStatistics(t *testing.T) {
     var addr = "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"
     seedAddrStat(t, addr, addrstat.Stat{Type: "segwit", Balance: 100000000, Recv: 100000000, Txs: 7})
     core.Reset()
-    var info = appAddrInfo("", addr)
+    var info = appSource{}.AddrInfo("", addr)
     if !info.OK { t.Fatal("the app got nothing for a gathered address") }
     var labels []string
     for _, f := range info.Rows { labels = append(labels, f.Label+"="+f.Value) }

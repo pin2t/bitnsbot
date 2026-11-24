@@ -6,10 +6,36 @@ import "os"
 import "path/filepath"
 import "strings"
 import "testing"
+import "bitnsbot/addrbal"
+import "bitnsbot/addrindex"
+import "bitnsbot/addrstat"
+import "bitnsbot/blocks"
+import "bitnsbot/chats"
+import "bitnsbot/cursors"
 import "bitnsbot/logging"
+import "bitnsbot/miners"
+import "bitnsbot/rates"
+import "bitnsbot/watches"
 
-// Every package that owns tables is Init'd by openDB, and every table it stores
-// into is created there. This is pinned because forgetting one fails *silently*:
+// openTestDB is what the tests open the database with: openDB, then every
+// package's Init, the same set and order main() runs after it — so a test sees
+// the tables the bot does. A package added to one has to be added to the other.
+func openTestDB(path string) error {
+    if err := openDB(path); err != nil { return err }
+    if err := cursors.Init(db); err != nil { return err }
+    if err := chats.Init(db); err != nil { return err }
+    if err := blocks.Init(db); err != nil { return err }
+    if err := rates.Init(db); err != nil { return err }
+    if err := watches.Init(db); err != nil { return err }
+    if err := miners.Init(db); err != nil { return err }
+    if err := addrstat.Init(db); err != nil { return err }
+    if err := addrbal.Init(db); err != nil { return err }
+    return addrindex.Init(db)
+}
+
+// Every package that owns tables is Init'd by openTestDB, as main() does after
+// openDB, and every table it stores into is created there. This is pinned
+// because forgetting one fails *silently*:
 // those packages guard on a nil handle, so the bot runs, logs progress, and
 // stores nothing. The address index shipped in exactly that state.
 //
@@ -33,8 +59,8 @@ import "bitnsbot/logging"
 // planner has to actually use — without it the query is a scan of the chain
 func TestOpenDBTables(t *testing.T) {
     var path = filepath.Join(t.TempDir(), "bitnsbot.sqlite")
-    if err := openDB(path); err != nil {
-        t.Fatalf("openDB: %v", err)
+    if err := openTestDB(path); err != nil {
+        t.Fatalf("openTestDB: %v", err)
     }
     defer closeDB()
     var want = []string{
@@ -60,7 +86,7 @@ func TestOpenDBTables(t *testing.T) {
     }
     for _, name := range want {
         if !got[name] {
-            t.Errorf("table %q was never created — is its package missing an Init in openDB?", name)
+            t.Errorf("table %q was never created — is its package missing an Init in main and openTestDB?", name)
         }
     }
     if len(got) != len(want) {
@@ -96,7 +122,7 @@ func TestOpenDBTables(t *testing.T) {
 func TestOpenDBIsRepeatable(t *testing.T) {
     var path = filepath.Join(t.TempDir(), "bitnsbot.sqlite")
     for i := 0; i < 3; i++ {
-        if err := openDB(path); err != nil { t.Fatalf("openDB %d: %v", i, err) }
+        if err := openTestDB(path); err != nil { t.Fatalf("openTestDB %d: %v", i, err) }
         if err := closeDB(); err != nil { t.Fatalf("closeDB %d: %v", i, err) }
     }
 }
@@ -113,7 +139,7 @@ func TestOpenDBLogsQueries(t *testing.T) {
     defer log.SetFlags(log.LstdFlags)
     logging.SetVerbose(2)
     defer logging.SetVerbose(0)
-    if err := openDB(filepath.Join(t.TempDir(), "bitnsbot.sqlite")); err != nil { t.Fatal(err) }
+    if err := openTestDB(filepath.Join(t.TempDir(), "bitnsbot.sqlite")); err != nil { t.Fatal(err) }
     defer closeDB()
     if !strings.Contains(buf.String(), "[DB] create table if not exists blocks (height INTEGER PRIMARY KEY, hash TEXT NOT NULL, ts INTEGER NOT NULL, size INTEGER NOT NULL, txs INTEGER NOT NULL, m...\n") {
         t.Errorf("schema not logged on one line, cut at 150:\n%s", buf.String())

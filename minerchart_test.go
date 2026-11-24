@@ -10,7 +10,7 @@ import "bitnsbot/app"
 // chartDB opens a database holding the given blocks, each a height, a time, the
 // pool that mined it and the difficulty it was mined at.
 func chartDB(t *testing.T, infos ...blocks.Info) {
-    if err := openDB(filepath.Join(t.TempDir(), "chart.db")); err != nil {
+    if err := openTestDB(filepath.Join(t.TempDir(), "chart.db")); err != nil {
         t.Fatalf("open db: %v", err)
     }
     t.Cleanup(func() { closeDB() })

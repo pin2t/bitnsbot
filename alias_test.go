@@ -65,7 +65,7 @@ func TestSetAliasRenamesALiveWatch(t *testing.T) {
         return nil, nil
     })
     coretest.Use(t, srv)
-    openDB(filepath.Join(t.TempDir(), "watches.db"))
+    openTestDB(filepath.Join(t.TempDir(), "watches.db"))
     defer closeDB()
     stopNotify()
     resetWatched()
@@ -104,7 +104,7 @@ func TestSetAliasRenamesALiveWatch(t *testing.T) {
 // Renaming is chat-scoped like every other watch operation, and a watch nobody
 // holds is not renamed into existence.
 func TestSetAliasIsScopedToTheChat(t *testing.T) {
-    openDB(filepath.Join(t.TempDir(), "watches.db"))
+    openTestDB(filepath.Join(t.TempDir(), "watches.db"))
     defer closeDB()
     stopNotify()
     resetWatched()
@@ -126,7 +126,7 @@ func TestSetAliasIsScopedToTheChat(t *testing.T) {
 // A transaction watch is renamed in the in-memory list the same way, and shows
 // up renamed in /watches.
 func TestSetAliasOnATransactionWatch(t *testing.T) {
-    openDB(filepath.Join(t.TempDir(), "watches.db"))
+    openTestDB(filepath.Join(t.TempDir(), "watches.db"))
     defer closeDB()
     stopNotify()
     defer stopNotify()

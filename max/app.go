@@ -27,7 +27,7 @@ import "bitnsbot/lru"
 var page []byte
 
 // lang is the one language the MAX Mini App speaks. The page's own words are
-// Russian, and every Options function that renders words is asked in it too, so
+// Russian, and every Source method that renders words is asked in it too, so
 // a details row reads the same as the labels around it.
 const lang = "ru"
 
@@ -312,9 +312,9 @@ type watchState struct {
 //
 // Shutdown runs the hook before it starts waiting, so the open event streams
 // end instead of holding it open until the deadline.
-func startApp(addr, token string, opt app.Options) *http.Server {
+func startApp(addr, token string, src app.Source) *http.Server {
     var closing = make(chan struct{})
-    var srv = &http.Server{Addr: addr, Handler: routes(token, opt, closing)}
+    var srv = &http.Server{Addr: addr, Handler: routes(token, src, closing)}
     srv.RegisterOnShutdown(func() { close(closing) })
     go func() {
         logging.Status("MAX mini app listening on %s", addr)
@@ -325,7 +325,7 @@ func startApp(addr, token string, opt app.Options) *http.Server {
     return srv
 }
 
-// routes is the Mini App's handler. The data comes from opt, the same functions
+// routes is the Mini App's handler. The data comes from src, the same methods
 // the Telegram Mini App renders from, asked in Russian. Every endpoint under
 // /api/ answers JSON and needs signed launch data; the page and the event
 // stream need none. closing ends the event streams. Every request is logged
@@ -350,7 +350,7 @@ func startApp(addr, token string, opt app.Options) *http.Server {
 //
 // An empty alias leaves the watch alone, since Save on an empty field is how
 // a reader dismisses the dialog; a long one is cut rather than refused.
-func routes(token string, opt app.Options, closing <-chan struct{}) http.Handler {
+func routes(token string, src app.Source, closing <-chan struct{}) http.Handler {
     var mux = http.NewServeMux()
     mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
         if r.URL.Path != "/" {
@@ -364,20 +364,20 @@ func routes(token string, opt app.Options, closing <-chan struct{}) http.Handler
     })
     mux.HandleFunc("/events", func(w http.ResponseWriter, r *http.Request) { events(w, r, closing) })
     var api = func(name string, h http.HandlerFunc) { mux.HandleFunc("/api/"+name, requireInitData(token, h)) }
-    api("fees", func(w http.ResponseWriter, r *http.Request) { serve(w, r, func() any { return opt.Fees() }) })
-    api("network", func(w http.ResponseWriter, r *http.Request) { serve(w, r, func() any { return opt.Network() }) })
-    api("market", func(w http.ResponseWriter, r *http.Request) { serve(w, r, func() any { return opt.Market(lang) }) })
+    api("fees", func(w http.ResponseWriter, r *http.Request) { serve(w, r, func() any { return src.Fees() }) })
+    api("network", func(w http.ResponseWriter, r *http.Request) { serve(w, r, func() any { return src.Network() }) })
+    api("market", func(w http.ResponseWriter, r *http.Request) { serve(w, r, func() any { return src.Market(lang) }) })
     api("blocks", func(w http.ResponseWriter, r *http.Request) {
         if after := number(r, "after", 0); after > 0 {
-            fresh(w, r, opt.Blocks(lang, app.Range{After: after}))
+            fresh(w, r, src.Blocks(lang, app.Range{After: after}))
             return
         }
         var before = number(r, "before", 0)
-        serve(w, r, func() any { return opt.Blocks(lang, app.Range{Before: before}) })
+        serve(w, r, func() any { return src.Blocks(lang, app.Range{Before: before}) })
     })
     api("addresses", func(w http.ResponseWriter, r *http.Request) {
         var rng = app.AddrRange{Kind: addrKind(r), From: int(number(r, "from", 0))}
-        serve(w, r, func() any { return opt.Addresses(lang, rng) })
+        serve(w, r, func() any { return src.Addresses(lang, rng) })
     })
     api("block", func(w http.ResponseWriter, r *http.Request) {
         var height = number(r, "height", -1)
@@ -385,7 +385,7 @@ func routes(token string, opt app.Options, closing <-chan struct{}) http.Handler
             http.Error(w, "no such block", http.StatusBadRequest)
             return
         }
-        serve(w, r, func() any { return details(opt.BlockInfo(lang, height), "", "") })
+        serve(w, r, func() any { return details(src.BlockInfo(lang, height), "", "") })
     })
     api("tx", func(w http.ResponseWriter, r *http.Request) {
         var id = strings.TrimSpace(r.URL.Query().Get("id"))
@@ -393,7 +393,7 @@ func routes(token string, opt app.Options, closing <-chan struct{}) http.Handler
             http.Error(w, "no such transaction", http.StatusBadRequest)
             return
         }
-        serve(w, r, func() any { return details(opt.TxInfo(lang, id), "tx", id) })
+        serve(w, r, func() any { return details(src.TxInfo(lang, id), "tx", id) })
     })
     api("address", func(w http.ResponseWriter, r *http.Request) {
         var a = strings.TrimSpace(r.URL.Query().Get("a"))
@@ -401,7 +401,7 @@ func routes(token string, opt app.Options, closing <-chan struct{}) http.Handler
             http.Error(w, "no address", http.StatusBadRequest)
             return
         }
-        serve(w, r, func() any { return details(opt.AddrInfo(lang, a), "address", a) })
+        serve(w, r, func() any { return details(src.AddrInfo(lang, a), "address", a) })
     })
     api("addrtxs", func(w http.ResponseWriter, r *http.Request) {
         var a = strings.TrimSpace(r.URL.Query().Get("a"))
@@ -410,7 +410,7 @@ func routes(token string, opt app.Options, closing <-chan struct{}) http.Handler
             http.Error(w, "no such transactions", http.StatusBadRequest)
             return
         }
-        serve(w, r, func() any { return opt.AddrTxs(lang, a, from) })
+        serve(w, r, func() any { return src.AddrTxs(lang, a, from) })
     })
     api("miner", func(w http.ResponseWriter, r *http.Request) {
         var name = strings.TrimSpace(r.URL.Query().Get("name"))
@@ -419,9 +419,9 @@ func routes(token string, opt app.Options, closing <-chan struct{}) http.Handler
             return
         }
         serve(w, r, func() any {
-            var info = details(opt.MinerInfo(lang, name), "", "")
+            var info = details(src.MinerInfo(lang, name), "", "")
             if info.OK {
-                var chart = opt.MinerChart(lang, name, "blocks", "month")
+                var chart = src.MinerChart(lang, name, "blocks", "month")
                 info.Chart = &chart
             }
             return info
@@ -434,10 +434,10 @@ func routes(token string, opt app.Options, closing <-chan struct{}) http.Handler
             return
         }
         var data, period = chartData(r), chartPeriod(r)
-        serve(w, r, func() any { return opt.MinerChart(lang, name, data, period) })
+        serve(w, r, func() any { return src.MinerChart(lang, name, data, period) })
     })
     api("mempool", func(w http.ResponseWriter, r *http.Request) {
-        fresh(w, r, opt.Mempool(lang, number(r, "after", -1)))
+        fresh(w, r, src.Mempool(lang, number(r, "after", -1)))
     })
     api("watches", func(w http.ResponseWriter, r *http.Request) {
         var chat = chatOf(r.Header.Get(initHeader))
@@ -445,7 +445,7 @@ func routes(token string, opt app.Options, closing <-chan struct{}) http.Handler
             http.Error(w, "open this from the chat with the bot", http.StatusForbidden)
             return
         }
-        fresh(w, r, opt.Watches(chat))
+        fresh(w, r, src.Watches(chat))
     })
     api("watch", func(w http.ResponseWriter, r *http.Request) {
         var kind, id = r.FormValue("kind"), strings.TrimSpace(r.FormValue("id"))
@@ -459,10 +459,10 @@ func routes(token string, opt app.Options, closing <-chan struct{}) http.Handler
             return
         }
         if r.Method != http.MethodPost {
-            fresh(w, r, watchState{On: opt.Watching(chat, kind, id)})
+            fresh(w, r, watchState{On: src.Watching(chat, kind, id)})
             return
         }
-        var on, err = opt.SetWatch(chat, kind, id, r.FormValue("on") == "1")
+        var on, err = src.SetWatch(chat, kind, id, r.FormValue("on") == "1")
         if err != nil { logging.Err("max app: set watch %s: %v", id, err) }
         fresh(w, r, watchState{On: on, Error: err != nil})
     })
@@ -487,7 +487,7 @@ func routes(token string, opt app.Options, closing <-chan struct{}) http.Handler
             w.WriteHeader(http.StatusNoContent)
             return
         }
-        if _, err := opt.SetAlias(chat, kind, id, alias); err != nil {
+        if _, err := src.SetAlias(chat, kind, id, alias); err != nil {
             logging.Err("max app: set alias %s: %v", id, err)
             http.Error(w, "internal server error", http.StatusInternalServerError)
             return

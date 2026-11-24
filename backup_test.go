@@ -13,8 +13,8 @@ import "bitnsbot/watches"
 // openBackupDB opens a database holding one watch, so a backup has something
 // recognisable in it.
 func openBackupDB(t *testing.T) {
-    if err := openDB(filepath.Join(t.TempDir(), "watches.db")); err != nil {
-        t.Fatalf("openDB: %v", err)
+    if err := openTestDB(filepath.Join(t.TempDir(), "watches.db")); err != nil {
+        t.Fatalf("openTestDB: %v", err)
     }
     t.Cleanup(func() { closeDB() })
     if err := watches.Add("tg", 7, "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa", "Savings", nil); err != nil {

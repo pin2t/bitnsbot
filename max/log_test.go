@@ -15,7 +15,7 @@ import "bitnsbot/logging"
 // is written by the time it returns.
 func TestRequestsAreLogged(t *testing.T) {
     var rec, _, closing = serveApp(t)
-    var h = routes(testToken, rec.options(), closing)
+    var h = routes(testToken, rec, closing)
     var buf bytes.Buffer
     log.SetOutput(&buf)
     defer log.SetOutput(os.Stderr)

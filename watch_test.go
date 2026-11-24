@@ -113,7 +113,7 @@ func TestWatchNotification(t *testing.T) {
 	cachedFeesOK = true
 	cachedFeesCount = 1000
 	feesMu.Unlock()
-	openDB(filepath.Join(t.TempDir(), "watches.db"))
+	openTestDB(filepath.Join(t.TempDir(), "watches.db"))
 	defer closeDB()
 	stopNotify()
 	resetWatched()
@@ -186,7 +186,7 @@ func TestUnwatchFlow(t *testing.T) {
 	core.Reset()
 	stopNotify()
 	defer stopNotify()
-	openDB(filepath.Join(t.TempDir(), "watches.db"))
+	openTestDB(filepath.Join(t.TempDir(), "watches.db"))
 	defer closeDB()
 	var addr = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
 	message("tg", 1, "", "/watch "+addr, "", nil)
@@ -244,7 +244,7 @@ func TestWatchesFlow(t *testing.T) {
 	}))
 	defer server.Close()
 	useTelegram(t, server.URL)
-	openDB(filepath.Join(t.TempDir(), "watches.db"))
+	openTestDB(filepath.Join(t.TempDir(), "watches.db"))
 	defer closeDB()
 	stopNotify()
 	defer stopNotify()
@@ -301,7 +301,7 @@ func TestWatchLimit(t *testing.T) {
 	defer stopNotify()
 	txwatches.Reset()
 	defer txwatches.Reset()
-	openDB(filepath.Join(t.TempDir(), "watches.db"))
+	openTestDB(filepath.Join(t.TempDir(), "watches.db"))
 	defer closeDB()
 	for i := 0; i < maxSubscriptionsPerChat; i++ {
 		if err := watches.Add("tg", 42, fmt.Sprintf("addr%d", i), "", nil); err != nil {
@@ -356,7 +356,7 @@ func TestTxConfirmation(t *testing.T) {
 	})
 	defer srv.Close()
 	coretest.Use(t, srv)
-	openDB(filepath.Join(t.TempDir(), "watches.db"))
+	openTestDB(filepath.Join(t.TempDir(), "watches.db"))
 	defer closeDB()
 	stopNotify()
 	defer stopNotify()
@@ -556,7 +556,7 @@ func awaitNotification(t *testing.T, btcdSrv *httptest.Server, watchedAddr strin
 	cachedFeesOK = true
 	cachedFeesCount = 1000
 	feesMu.Unlock()
-	openDB(filepath.Join(t.TempDir(), "watches.db"))
+	openTestDB(filepath.Join(t.TempDir(), "watches.db"))
 	stopNotify()
 	resetWatched()
 	t.Cleanup(tg.Close)

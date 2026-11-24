@@ -59,7 +59,7 @@ func TestInfoFlow(t *testing.T) {
     }))
     defer server.Close()
     useTelegram(t, server.URL)
-    if err := openDB(filepath.Join(t.TempDir(), "bitnsbot.sqlite")); err != nil { t.Fatalf("openDB: %v", err) }
+    if err := openTestDB(filepath.Join(t.TempDir(), "bitnsbot.sqlite")); err != nil { t.Fatalf("openTestDB: %v", err) }
     defer closeDB()
     message("tg", 1, "", "/info", "", nil)
     if len(sent) != 1 || sent[0] != "Please send Bitcoin address or transaction or block number or block hash" {
@@ -269,9 +269,9 @@ func TestWatchFlow(t *testing.T) {
     defer server.Close()
     useTelegram(t, server.URL)
     var err error
-    err = openDB(filepath.Join(t.TempDir(), "watches.db"))
+    err = openTestDB(filepath.Join(t.TempDir(), "watches.db"))
     if err != nil {
-        t.Fatalf("openDB: %v", err)
+        t.Fatalf("openTestDB: %v", err)
     }
     defer closeDB()
     stopNotify()
@@ -566,9 +566,9 @@ func TestI18nSetLanguage(t *testing.T) {
 	}))
 	defer server.Close()
 	useTelegram(t, server.URL)
-	var err = openDB(filepath.Join(t.TempDir(), "watches.db"))
+	var err = openTestDB(filepath.Join(t.TempDir(), "watches.db"))
 	if err != nil {
-		t.Fatalf("openDB: %v", err)
+		t.Fatalf("openTestDB: %v", err)
 	}
 	defer closeDB()
 	stopNotify()
@@ -614,9 +614,9 @@ func TestI18nAutoDetect(t *testing.T) {
 	}))
 	defer server.Close()
 	useTelegram(t, server.URL)
-	var err = openDB(filepath.Join(t.TempDir(), "watches.db"))
+	var err = openTestDB(filepath.Join(t.TempDir(), "watches.db"))
 	if err != nil {
-		t.Fatalf("openDB: %v", err)
+		t.Fatalf("openTestDB: %v", err)
 	}
 	defer closeDB()
 	stopNotify()
@@ -664,8 +664,8 @@ func TestMinersFlow(t *testing.T) {
     }))
     defer server.Close()
     useTelegram(t, server.URL)
-    if err := openDB(filepath.Join(t.TempDir(), "miners.db")); err != nil {
-        t.Fatalf("openDB: %v", err)
+    if err := openTestDB(filepath.Join(t.TempDir(), "miners.db")); err != nil {
+        t.Fatalf("openTestDB: %v", err)
     }
     defer closeDB()
     message("tg", 1, "", "/miners", "", nil)
@@ -724,7 +724,7 @@ func TestChatsRecordMessages(t *testing.T) {
     useTelegram(t, server.URL)
     core.Reset()
     var path = filepath.Join(t.TempDir(), "bitnsbot.sqlite")
-    if err := openDB(path); err != nil { t.Fatalf("openDB: %v", err) }
+    if err := openTestDB(path); err != nil { t.Fatalf("openTestDB: %v", err) }
     var first = `{"update_id":1,"message":{"chat":{"id":5},"text":"/info"}}`
     message("tg", 5, "alice", "/info", "ru", []byte(first))
     var c, ok, err = chats.Get("tg", 5)
@@ -732,7 +732,7 @@ func TestChatsRecordMessages(t *testing.T) {
         t.Fatalf("after /info: %+v %v %v", c, ok, err)
     }
     closeDB()
-    if err := openDB(path); err != nil { t.Fatalf("reopen: %v", err) }
+    if err := openTestDB(path); err != nil { t.Fatalf("reopen: %v", err) }
     defer closeDB()
     message("tg", 5, "alice", "hello", "", []byte(`{"update_id":2}`))
     if len(sent) != 2 || sent[1] != "Нет соединения с сетью Bitcoin" {
@@ -759,7 +759,7 @@ func TestInfoArgumentExpires(t *testing.T) {
     defer server.Close()
     useTelegram(t, server.URL)
     core.Reset()
-    if err := openDB(filepath.Join(t.TempDir(), "bitnsbot.sqlite")); err != nil { t.Fatalf("openDB: %v", err) }
+    if err := openTestDB(filepath.Join(t.TempDir(), "bitnsbot.sqlite")); err != nil { t.Fatalf("openTestDB: %v", err) }
     defer closeDB()
     message("tg", 6, "bob", "/info", "", nil)
     var old = time.Now().Add(-11 * time.Minute).Unix()
@@ -786,7 +786,7 @@ func TestWatchArgumentExpires(t *testing.T) {
     defer server.Close()
     useTelegram(t, server.URL)
     core.Reset()
-    if err := openDB(filepath.Join(t.TempDir(), "bitnsbot.sqlite")); err != nil { t.Fatalf("openDB: %v", err) }
+    if err := openTestDB(filepath.Join(t.TempDir(), "bitnsbot.sqlite")); err != nil { t.Fatalf("openTestDB: %v", err) }
     defer closeDB()
     stopNotify()
     defer stopNotify()
@@ -816,7 +816,7 @@ func TestWatchKeepsItsCreateMsg(t *testing.T) {
     defer server.Close()
     useTelegram(t, server.URL)
     core.Reset()
-    if err := openDB(filepath.Join(t.TempDir(), "bitnsbot.sqlite")); err != nil { t.Fatalf("openDB: %v", err) }
+    if err := openTestDB(filepath.Join(t.TempDir(), "bitnsbot.sqlite")); err != nil { t.Fatalf("openTestDB: %v", err) }
     defer closeDB()
     stopNotify()
     defer stopNotify()
