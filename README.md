@@ -22,58 +22,60 @@ Bitcoin blockchain explorer and events notification bot. It can send notificatio
 
 | Flag | Default | Description |
 |---|---|---|
-| `-botToken` | *(required)* | Telegram bot token used to authenticate<br>outbound Bot API calls |
-| `-listen` | `:8080` | Address the webhook server listens on |
-| `-webhookPath` | `/bot` | Path the Bot API server will POST updates to |
-| `-webhookURL` | | URL the Bot API server should send updates to<br>e.g. `http://localhost:8080/bot` |
-| `-apiBaseURL` | `http://localhost:8081` | Base URL of the local `telegram-bot-api` server |
-| `-secretToken` | | Optional secret checked against the<br>`X-Telegram-Bot-Api-Secret-Token` header |
-| `-registerWebhook` | `true` | Call `setWebhook` on startup |
-| `-db` | `bitnsbot.db` | Path to the database |
-| `-coreURL` | | Bitcoin Core JSON-RPC URL<br>e.g. `http://127.0.0.1:8332` (leave empty<br>to skip connecting to the node) |
-| `-coreUser` | | Bitcoin Core RPC username (or use `-coreCookie`) |
-| `-corePass` | | Bitcoin Core RPC password (or use `-coreCookie`) |
-| `-coreCookie` | | Path to Bitcoin Core's `.cookie` file, an alternative to<br>`-coreUser`/`-corePass` |
-| `-coreZMQ` | | Comma-separated ZMQ endpoints publishing<br>`hashblock` and `rawtx`,<br>e.g. `tcp://127.0.0.1:28332,tcp://127.0.0.1:28333` |
-| `-backup` | | Path to copy the database to periodically<br>(empty disables backups) |
-| `-backupInterval` | `24h` | How often to back up the database |
-| `-backupScript` | | Command run after each backup,<br>with the backup path as `$1` and in `$BACKUP_FILE` |
+| `-config` | | Path to the TOML configuration file |
 | `-verbose` | `0` | Log verbosity: `0` = ERR/WARN/status, `1` = +INFO,<br>`2` = +NET/DB |
-| `-dbuiListen` | | Ignored, and kept only so a config file<br>that sets it still starts —<br>the database UI speaks bbolt and is now<br>[bboltwui](https://github.com/pin2t/bboltwui) |
-| `-historyFile` | | Path to a JSON file containing<br>historical BTC/USD rates |
-| `-config` | | Path to a properties file<br>(`name=value` lines) with flag values;<br>command-line flags take precedence |
 
 #### Configuration file
 
-Instead of passing all flags on the command line, you can use a properties file. Lines are `name=value` pairs (without the leading `-`). Comments start with `#`.
+Every other setting lives in a TOML file. A key left out keeps its default; an unknown key stops the bot from starting.
 
-Example `bitnsbot.conf`:
+| Section | Key | Default | Description |
+|---|---|---|---|
+| `[core]` | `url` | | Bitcoin Core JSON-RPC URL, e.g. `http://127.0.0.1:8332`<br>(leave empty to skip connecting to the node) |
+| | `user`, `password` | | Bitcoin Core RPC credentials (or use `cookie`) |
+| | `cookie` | | Path to Bitcoin Core's `.cookie` file |
+| | `zmq` | | ZMQ endpoints publishing `hashblock`, `rawtx` and `sequence` |
+| `[telegram]` | `token` | | Telegram bot token (it or `max.token` is required) |
+| | `listen` | `:8082` | Address the webhook server listens on |
+| | `webhookURL` | | URL the Bot API server should send updates to;<br>its path is the one the webhook server accepts them on |
+| | `api` | `http://localhost:8081` | Base URL of the local `telegram-bot-api` server |
+| | `secret` | | Optional secret checked against the<br>`X-Telegram-Bot-Api-Secret-Token` header |
+| | `registerWebhook` | `true` | Call `setWebhook` on startup |
+| `[telegram.app]` | `listen` | `127.0.0.1:8080` | Telegram Mini App address (empty disables it) |
+| `[max]` | `token` | | MAX bot token |
+| | `listen` | `:8084` | Address the MAX webhook server listens on |
+| | `webhookURL` | | Public URL MAX sends updates to |
+| | `secret` | | Optional secret checked on every MAX update |
+| `[max.app]` | `listen` | `127.0.0.1:8085` | MAX Mini App address (empty disables it) |
+| `[db]` | `path` | `bitnsbot.db` | Path to the database |
+| `[db.backup]` | `path` | | Path to copy the database to periodically<br>(empty disables backups) |
+| | `interval` | `24h` | How old the backup may get |
+| | `script` | | Command run after each backup,<br>with the backup path as `$1` and in `$BACKUP_FILE` |
 
-```properties
-# Telegram
-botToken=123456:ABC-DEF1234ghijklmnop
-webhookURL=http://127.0.0.1:8082/bot
-listen=127.0.0.1:8082
-apiBaseURL=http://localhost:8081
+Example `bitnsbot.toml`:
 
-# Database
-db=bitnsbot.db
+```toml
+[core]
+url = "http://127.0.0.1:8332"
+cookie = "/path/to/.cookie"
+# user = "rpcuser"
+# password = "rpcpassword"
+zmq = ["tcp://127.0.0.1:28332", "tcp://127.0.0.1:28333"]
 
-# Bitcoin Core RPC (use either cookie or user/pass)
-coreURL=http://127.0.0.1:8332
-# coreUser=rpcuser
-# corePass=rpcpassword
-coreCookie=/path/to/.cookie
+[telegram]
+token = "123456:ABC-DEF1234ghijklmnop"
+webhookURL = "http://127.0.0.1:8082/bot"
+listen = "127.0.0.1:8082"
 
-# Bitcoin Core ZMQ for real-time block/tx notifications
-coreZMQ=tcp://127.0.0.1:28332,tcp://127.0.0.1:28333
+[telegram.app]
+listen = "127.0.0.1:8080"
 
-# Backups
-backup=/var/backups/bitnsbot.db
-backupInterval=24h
+[db]
+path = "bitnsbot.db"
 
-# Logging
-verbose=1
+[db.backup]
+path = "/var/backups/bitnsbot.db"
+interval = "24h"
 ```
 
 #### Running
@@ -84,22 +86,8 @@ Build and run:
 go test ./... && go build .
 ```
 
-**With a configuration file:**
-
 ```bash
-./bitnsbot -config=bitnsbot.conf
-```
-
-Any flags passed on the command line override values from the config file:
-
-```bash
-./bitnsbot -config=bitnsbot.conf -verbose=2
-```
-
-**With command-line flags only:**
-
-```bash
-./bitnsbot -botToken=... -webhookURL=http://127.0.0.1:8082/bot -listen=127.0.0.1:8082 -db=bitnsbot.db -coreURL=http://127.0.0.1:8332 -coreCookie=cookie -coreZMQ=tcp://127.0.0.1:28332 -verbose=1
+./bitnsbot -config=bitnsbot.toml -verbose=1
 ```
 
 Another option: there are [scripts](scripts) to deploy a bot as a systemd service.

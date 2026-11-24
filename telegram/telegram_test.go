@@ -128,7 +128,7 @@ func TestSendButtons(t *testing.T) {
 }
 
 // Start registers the webhook with its secret, publishes each language's menu
-// in a fixed order, and serves updates on Listen at WebhookPath until
+// in a fixed order, and serves updates on Listen at WebhookURL's path until
 // Shutdown. Registering with no URL would remove the webhook, so it is refused.
 func TestStartRegistersAndServes(t *testing.T) {
     var f = &fakeAPI{}
@@ -138,7 +138,7 @@ func TestStartRegistersAndServes(t *testing.T) {
     ln.Close()
     var c = &called{}
     var opt = c.options("s3cret")
-    opt.Token, opt.APIBaseURL, opt.Listen, opt.WebhookPath = "T", f.server(t).URL, addr, "/bot"
+    opt.Token, opt.APIBaseURL, opt.Listen = "T", f.server(t).URL, addr
     opt.Register, opt.WebhookURL = true, "https://example.org/bot"
     opt.Menus = map[string][]Command{"ru": {{"start", "показать"}}, "": {{"start", "show"}}}
     if err := Start(opt); err != nil { t.Fatal(err) }

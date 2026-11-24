@@ -355,7 +355,7 @@ func confEstimate(feeRate float64) string {
 // on startup and, if core is connected, loads the watched addresses into core's
 // transaction filter so notifications resume across restarts. Only the watches
 // of the platforms running are started; one whose platform is not running this
-// time (MAX without -maxToken) is left in the store, untouched, for a start
+// time (MAX without max.token) is left in the store, untouched, for a start
 // that is.
 func startNotify(platforms ...string) {
 	var records, err = watches.List()

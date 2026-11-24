@@ -23,6 +23,7 @@ import "fmt"
 import "io"
 import "net"
 import "net/http"
+import "net/url"
 import "sort"
 import "strings"
 import "sync"
@@ -52,9 +53,8 @@ type Options struct {
     APIBaseURL string
     // Listen is the address the webhook server binds to; empty starts none.
     Listen string
-    // WebhookPath is the path the Bot API server POSTs updates to.
-    WebhookPath string
-    // WebhookURL is the URL registered with setWebhook.
+    // WebhookURL is the URL registered with setWebhook, and its path the one
+    // the webhook server accepts updates on ("/" when it has none).
     WebhookURL string
     // Secret, when set, is registered with the webhook and then checked
     // against X-Telegram-Bot-Api-Secret-Token on every update — the only
@@ -138,10 +138,12 @@ func Start(opt Options) error {
         }
     }
     if opt.Listen != "" {
-        var ln, err = net.Listen("tcp", opt.Listen)
-        if err != nil { return err }
-        var path = opt.WebhookPath
+        var hookURL, err = url.Parse(opt.WebhookURL)
+        if err != nil { return fmt.Errorf("webhook URL: %w", err) }
+        var path = hookURL.Path
         if path == "" { path = "/" }
+        var ln, lerr = net.Listen("tcp", opt.Listen)
+        if lerr != nil { return lerr }
         var mux = http.NewServeMux()
         mux.HandleFunc(path, webhook(opt))
         var srv = &http.Server{Handler: mux}
@@ -149,7 +151,7 @@ func Start(opt Options) error {
         server = srv
         mu.Unlock()
         go func() {
-            logging.Status("listening on %s", opt.Listen)
+            logging.Status("listening on %s%s", opt.Listen, path)
             if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
                 logging.Fatal("error listening: %v", err)
             }
