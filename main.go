@@ -1,11 +1,9 @@
 package main
 
 import "context"
-import "encoding/json"
 import "flag"
 import "fmt"
 import "html"
-import "net/http"
 import "os"
 import "os/signal"
 import "strconv"
@@ -15,6 +13,7 @@ import "syscall"
 import "time"
 import "runtime/debug"
 import "bitnsbot/blocks"
+import "bitnsbot/btcnodes"
 import "bitnsbot/addrbal"
 import "bitnsbot/app"
 import "bitnsbot/core"
@@ -623,34 +622,6 @@ var activeNodeWindow = 48 * time.Hour
 var networkMu sync.Mutex
 var cachedNetwork app.Network
 
-// btcnodesURL is BTC Nodes' list of reachable nodes. One page of one row is
-// enough: the response carries the total in its count field. A var so tests
-// point it at a local server.
-var btcnodesURL = "https://btcnodes.io/api/v1/nodes/?limit=1"
-
-// btcnodesClient fetches the count with its own timeout, like the rate and
-// market clients, so a slow API cannot stall a refresh.
-var btcnodesClient = &http.Client{Timeout: 10 * time.Second}
-
-// btcnodesTTL is how long a successful btcnodes.io count is reused before the
-// API is asked again. Six hours is four requests a day, inside its daily limit;
-// the same interval also spaces out retries after a failure, so a down or
-// throttled API is not hammered between ticks.
-var btcnodesTTL = 6 * time.Hour
-
-// btcnodesMaxAge is how old the cached count may get before the refresh stops
-// trusting it. More than two days old and the node's own getnodeaddresses scan
-// takes over.
-var btcnodesMaxAge = 48 * time.Hour
-
-// The btcnodes.io crawl, cached. Count is the last successful count (0 means
-// none yet); seen is when that count was fetched; next is the earliest time the
-// API may be asked again. All are touched only by the network-stats ticker, so
-// they need no lock.
-var btcnodesCount int64
-var btcnodesSeen time.Time
-var btcnodesNext time.Time
-
 // startNetworkStats keeps the Mini App's Network card fresh. getnodeaddresses
 // returns every address the node knows — 65k entries and several megabytes on
 // mainnet — so this must never run in a request path.
@@ -691,58 +662,14 @@ func startNetworkStats() {
     }()
 }
 
-// btcnodesActive fetches the count of reachable Bitcoin nodes from btcnodes.io.
-// That crawl probes every known node and counts the ones that answer, so it is
-// the network-wide "active nodes" figure — smaller than the node's own address
-// manager, which counts every gossiped address whether or not it is reachable.
-// It reports an error when the API is unreachable, throttled (429), or the
-// response cannot be parsed.
-func btcnodesActive(ctx context.Context) (int64, error) {
-    logging.Net("network: GET %s", btcnodesURL)
-    var req, err = http.NewRequestWithContext(ctx, http.MethodGet, btcnodesURL, nil)
-    if err != nil { return 0, err }
-    var resp, derr = btcnodesClient.Do(req)
-    if derr != nil { return 0, derr }
-    defer resp.Body.Close()
-    if resp.StatusCode != http.StatusOK {
-        return 0, fmt.Errorf("status %d", resp.StatusCode)
-    }
-    var v struct {
-        Count int64 `json:"count"`
-    }
-    if err := json.NewDecoder(resp.Body).Decode(&v); err != nil { return 0, err }
-    if v.Count <= 0 { return 0, fmt.Errorf("non-positive count %d", v.Count) }
-    return v.Count, nil
-}
-
 // resolveActiveNodes returns the "Active nodes" figure for the Network card.
 // The btcnodes.io crawl is the preferred source — it counts reachable, verified
-// nodes rather than gossip. A successful result is reused for btcnodesTTL (six
-// hours — four requests a day, inside the API's daily limit), and remains
-// authoritative for up to btcnodesMaxAge (two days). Only when the cached count
-// is older than that, or was never fetched, does the node's own getnodeaddresses
-// scan take over; and if that too fails, prev — the last known figure — is
-// carried forward rather than showing a misleading 0.
+// nodes rather than gossip (see the btcnodes package for how long its count is
+// reused and trusted). Only when it has no count to trust does the node's own
+// getnodeaddresses scan take over; and if that too fails, prev — the last known
+// figure — is carried forward rather than showing a misleading 0.
 func resolveActiveNodes(ctx context.Context, prev string) string {
-    if time.Now().Before(btcnodesNext) {
-        return btcnodesOrScan(ctx, prev)
-    }
-    btcnodesNext = time.Now().Add(btcnodesTTL)
-    var count, err = btcnodesActive(ctx)
-    if err == nil {
-        btcnodesCount, btcnodesSeen = count, time.Now()
-        return group(count)
-    }
-    logging.Warn("network stats: btcnodes.io: %v", err)
-    return btcnodesOrScan(ctx, prev)
-}
-
-// btcnodesOrScan serves the cached btcnodes count while it is young enough to
-// trust, and falls back to the node's own scan once it is not.
-func btcnodesOrScan(ctx context.Context, prev string) string {
-    if btcnodesCount > 0 && time.Since(btcnodesSeen) <= btcnodesMaxAge {
-        return group(btcnodesCount)
-    }
+    if n, ok := btcnodes.Count(ctx); ok { return group(n) }
     var addrs, aerr = core.GetNodeAddresses(ctx)
     if aerr == nil {
         var cutoff = time.Now().Add(-activeNodeWindow).Unix()
