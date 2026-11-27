@@ -57,10 +57,3 @@ func Set(tx *sql.Tx, name string, v int64) error {
         "on conflict(name) do update set place = excluded.place", name, v)
     return err
 }
-
-// Delete forgets a scan's place inside the caller's transaction, so the scan
-// starts from its own beginning again.
-func Delete(tx *sql.Tx, name string) error {
-    var _, err = tx.Exec("delete from cursors where name = ?", name)
-    return err
-}

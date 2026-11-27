@@ -72,13 +72,10 @@ func TestSetIsPartOfTheCallersTransaction(t *testing.T) {
     get(t, Miners, 500)
 }
 
-// Delete forgets a place, so the scan starts from its own beginning again.
+// A deleted row forgets a place, so the scan starts from its own beginning again.
 func TestDeleteForgetsAPlace(t *testing.T) {
     var handle = open(t)
     set(t, handle, AddrStat, 700)
-    var tx, err = handle.Begin()
-    if err != nil { t.Fatal(err) }
-    if err := Delete(tx, AddrStat); err != nil { t.Fatal(err) }
-    if err := tx.Commit(); err != nil { t.Fatal(err) }
+    if _, err := handle.Exec("delete from cursors where name = ?", AddrStat); err != nil { t.Fatal(err) }
     if v, ok := Get(AddrStat); ok { t.Errorf("the place survived as %d", v) }
 }
